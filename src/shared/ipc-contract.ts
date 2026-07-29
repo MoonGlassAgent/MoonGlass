@@ -8,6 +8,8 @@ import type {
   AgentSessionInfo,
   AgentUiMessage,
   ChipProject,
+  FileContentResult,
+  FileTreeNode,
   LlmProviderConfig,
   Phase,
   PhaseAdvanceResult,
@@ -49,6 +51,10 @@ export const IPC = {
     ResetSession: 'agent:reset-session',
     /** 主进程 → 渲染进程的事件推送通道（send，非 invoke） */
     Event: 'agent:event'
+  },
+  Fs: {
+    Tree: 'fs:tree',
+    ReadFile: 'fs:read-file'
   }
 } as const
 
@@ -89,6 +95,12 @@ export interface MoonGlassApi {
     resetSession(projectId: string): Promise<AgentSessionInfo>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
+  }
+  fs: {
+    /** 项目工作目录的文件树 */
+    tree(projectId: string): Promise<FileTreeNode[]>
+    /** 读取文件内容（相对路径，超限截断；二进制/越界返回 null 或提示） */
+    readFile(projectId: string, relPath: string): Promise<FileContentResult | null>
   }
 }
 

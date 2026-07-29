@@ -11,7 +11,7 @@ import type { ApplicationServices } from './core/application'
 import { projectWorkspaceDir } from './core/paths'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
-  const { projects, phaseEngine, python, eda, llm, agent } = services
+  const { projects, phaseEngine, python, eda, llm, agent, files } = services
 
   // ==================== 项目 ====================
   ipcMain.handle(IPC.Project.List, () => projects.list())
@@ -83,4 +83,11 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Agent.GetMessages, (_e, projectId: string) => agent.getMessages(projectId))
 
   ipcMain.handle(IPC.Agent.ResetSession, (_e, projectId: string) => agent.resetSession(projectId))
+
+  // ==================== 项目文件 ====================
+  ipcMain.handle(IPC.Fs.Tree, (_e, projectId: string) => files.tree(projectId))
+
+  ipcMain.handle(IPC.Fs.ReadFile, (_e, projectId: string, relPath: string) =>
+    files.readFile(projectId, relPath)
+  )
 }

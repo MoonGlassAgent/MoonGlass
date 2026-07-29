@@ -1,8 +1,9 @@
 /**
  * 阶段工作区（规格书 §5.3）
  *
- * 布局：顶部 PhaseBoard + 左侧文件树占位 + 中部 Agent 对话面板（Phase 2 已接入）+ 底部面板 Tab 占位。
- * 阶段推进/回退与对话均通过 IPC 走通。
+ * 布局：顶部 PhaseBoard + 左侧文件树（自动扫描工作目录）+
+ * 中部选项卡区（Agent 对话 + 文件查看）+ 底部面板 Tab 占位。
+ * 阶段推进/回退、对话、文件树均通过 IPC 走通。
  */
 
 import { useCallback, useEffect, useState } from 'react'
@@ -10,14 +11,29 @@ import { Link, useParams } from '@tanstack/react-router'
 import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase } from '@shared/types'
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
 import { ChatPanel } from '../components/ChatPanel'
+import { FileTree } from '../components/FileTree'
+import { useChatStore } from '../store/chatStore'
 
 const BOTTOM_TABS = ['🐍 Python', '📊 Lint', '🔬 仿真', '📈 波形', '📝 日志'] as const
+
+/** 中部主区选项卡：'chat' 或已打开文件的相对路径 */
+type MainTab = 'chat' | string
+
+interface OpenFile {
+  path: string
+  content: string
+  truncated: boolean
+}
 
 export function WorkspacePage(): React.JSX.Element {
   const { projectId } = useParams({ from: '/workspace/$projectId' })
   const [project, setProject] = useState<ChipProject | null>(null)
   const [gate, setGate] = useState<GatePanelData | null>(null)
   const [activeTab, setActiveTab] = useState<(typeof BOTTOM_TABS)[number]>(BOTTOM_TABS[0])
+  const [mainTab, setMainTab] = useState<MainTab>('chat')
+  const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
+  const [treeTick, setTreeTick] = useState(0)
+  const agentStreaming = useChatStore((s) => s.streaming)
 
   const reload = useCallback(async () => {
     setProject(await window.moonglass.project.get(projectId))
@@ -26,6 +42,29 @@ export function WorkspacePage(): React.JSX.Element {
   useEffect(() => {
     void reload()
   }, [reload])
+
+  // Agent 运行结束（含首次加载）后刷新文件树，及时反映 Agent 写出的文件
+  useEffect(() => {
+    if (!agentStreaming) setTreeTick((t) => t + 1)
+  }, [agentStreaming])
+
+  const openFile = async (relPath: string): Promise<void> => {
+    if (!openFiles.some((f) => f.path === relPath)) {
+      const result = await window.moonglass.fs.readFile(projectId, relPath)
+      setOpenFiles((files) => [
+        ...files,
+        result
+          ? { path: relPath, content: result.content, truncated: result.truncated }
+          : { path: relPath, content: '（无法读取该文件）', truncated: false }
+      ])
+    }
+    setMainTab(relPath)
+  }
+
+  const closeFile = (relPath: string): void => {
+    setOpenFiles((files) => files.filter((f) => f.path !== relPath))
+    if (mainTab === relPath) setMainTab('chat')
+  }
 
   const handleAdvance = async (to: Phase): Promise<void> => {
     const result = await window.moonglass.phase.advance(projectId, to)
@@ -48,6 +87,8 @@ export function WorkspacePage(): React.JSX.Element {
     )
   }
 
+  const activeFile = openFiles.find((f) => f.path === mainTab)
+
   return (
     <div className="flex h-full flex-col">
       {/* 顶部：项目信息 + 阶段看板 */}
@@ -62,20 +103,60 @@ export function WorkspacePage(): React.JSX.Element {
       </header>
 
       <div className="flex min-h-0 flex-1">
-        {/* 左侧：文件树占位 */}
+        {/* 左侧：文件树 */}
         <aside className="w-52 border-r border-zinc-200 bg-white p-3 text-sm text-zinc-500">
-          <div className="mb-2 font-medium text-zinc-700">项目文件</div>
-          <div className="rounded border border-dashed border-zinc-300 p-3 text-center text-xs">
-            文件树待接入
-            <br />
-            （Phase 1 后续）
-          </div>
+          <FileTree projectId={project.id} onOpenFile={(p) => void openFile(p)} refreshTick={treeTick} />
         </aside>
 
-        {/* 中部：对话面板 + 底部面板 */}
+        {/* 中部：选项卡区（对话 / 文件查看）+ 底部面板 */}
         <div className="flex min-w-0 flex-1 flex-col">
+          {/* 主区选项卡条 */}
+          <div className="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-2 pt-1.5">
+            <button
+              onClick={() => setMainTab('chat')}
+              className={`shrink-0 rounded-t px-3 py-1.5 text-xs ${
+                mainTab === 'chat' ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
+              }`}
+            >
+              💬 对话
+            </button>
+            {openFiles.map((f) => (
+              <span
+                key={f.path}
+                className={`flex shrink-0 items-center gap-1 rounded-t px-2 py-1.5 text-xs ${
+                  mainTab === f.path ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500'
+                }`}
+              >
+                <button onClick={() => setMainTab(f.path)} className="max-w-40 truncate font-mono hover:text-zinc-700">
+                  {f.path.split(/[\\/]/).pop()}
+                </button>
+                <button
+                  onClick={() => closeFile(f.path)}
+                  className="text-zinc-400 hover:text-red-600"
+                  title="关闭"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+
+          {/* 主区内容：对话常驻挂载（保输入草稿），文件页只读展示 */}
           <div className="min-h-0 flex-1">
-            <ChatPanel projectId={project.id} phase={project.currentPhase} />
+            <div className={mainTab === 'chat' ? 'h-full' : 'hidden'}>
+              <ChatPanel projectId={project.id} phase={project.currentPhase} />
+            </div>
+            {activeFile && (
+              <div className="flex h-full flex-col overflow-hidden p-3">
+                <div className="mb-1 shrink-0 font-mono text-xs text-zinc-400">{activeFile.path}</div>
+                <pre className="min-h-0 flex-1 overflow-auto rounded border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs whitespace-pre-wrap text-zinc-800">
+                  {activeFile.content}
+                </pre>
+                {activeFile.truncated && (
+                  <p className="mt-1 shrink-0 text-xs text-zinc-400">（内容过大，仅显示前 256 KB）</p>
+                )}
+              </div>
+            )}
           </div>
 
           {/* 底部面板 */}

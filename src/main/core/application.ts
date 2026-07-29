@@ -12,6 +12,7 @@ import { EdaService } from '../services/EdaService'
 import { LlmProviderService } from '../services/LlmProviderService'
 import { AgentModelStore } from '../services/AgentModelStore'
 import { AgentService } from '../services/AgentService'
+import { FileService } from '../services/FileService'
 
 export interface ApplicationServices {
   lifecycle: LifecycleManager
@@ -22,6 +23,7 @@ export interface ApplicationServices {
   llm: LlmProviderService
   modelStore: AgentModelStore
   agent: AgentService
+  files: FileService
 }
 
 export function createApplication(): ApplicationServices {
@@ -34,6 +36,7 @@ export function createApplication(): ApplicationServices {
   const llm = new LlmProviderService()
   const modelStore = new AgentModelStore()
   const agent = new AgentService(projects, llm, modelStore)
+  const files = new FileService()
 
   // 注册顺序即启动顺序
   lifecycle
@@ -44,6 +47,7 @@ export function createApplication(): ApplicationServices {
     .register(llm)
     .register(modelStore)
     .register(agent)
+    .register(files)
 
-  return { lifecycle, projects, phaseEngine, python, eda, llm, modelStore, agent }
+  return { lifecycle, projects, phaseEngine, python, eda, llm, modelStore, agent, files }
 }

@@ -24,6 +24,7 @@ function createMainWindow(): BrowserWindow {
     show: false,
     autoHideMenuBar: true,
     title: 'MoonGlass',
+    icon: join(__dirname, '../../resources/moonglass/logo.png'),
     backgroundColor: '#f4f4f5',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),

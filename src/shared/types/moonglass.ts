@@ -120,6 +120,22 @@ export interface PhaseAdvanceResult {
   }
 }
 
+// ==================== 项目文件树 ====================
+
+/** 文件树节点（path 为相对项目工作目录的路径） */
+export interface FileTreeNode {
+  name: string
+  path: string
+  type: 'file' | 'dir'
+  children?: FileTreeNode[]
+}
+
+/** 读取文件内容的结果（超限截断） */
+export interface FileContentResult {
+  content: string
+  truncated: boolean
+}
+
 // ==================== EDA 工具链（§3.5） ====================
 
 export type SimulatorType = 'verilator' | 'vcs' | 'xcelium'

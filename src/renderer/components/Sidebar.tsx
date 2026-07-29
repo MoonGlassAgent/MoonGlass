@@ -6,6 +6,7 @@
  */
 
 import { Link, useRouterState } from '@tanstack/react-router'
+import logoUrl from '../assets/logo.png'
 
 interface NavItem {
   to: string
@@ -26,8 +27,8 @@ export function Sidebar(): React.JSX.Element {
 
   return (
     <nav className="flex w-16 flex-col items-center gap-1 border-r border-zinc-200 bg-white py-4">
-      <div className="mb-4 text-xl" title="MoonGlass">
-        🌙
+      <div className="mb-4" title="MoonGlass">
+        <img src={logoUrl} alt="MoonGlass" className="size-9 rounded-lg" />
       </div>
       {NAV_ITEMS.map((item) => {
         const active = location.pathname.startsWith(item.to)

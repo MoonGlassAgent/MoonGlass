@@ -45,6 +45,11 @@ const api: MoonGlassApi = {
       ipcRenderer.on(IPC.Agent.Event, listener)
       return () => ipcRenderer.removeListener(IPC.Agent.Event, listener)
     }
+  },
+  fs: {
+    tree: (projectId: string) => ipcRenderer.invoke(IPC.Fs.Tree, projectId),
+    readFile: (projectId: string, relPath: string) =>
+      ipcRenderer.invoke(IPC.Fs.ReadFile, projectId, relPath)
   }
 }
 
