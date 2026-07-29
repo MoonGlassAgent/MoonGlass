@@ -1,0 +1,34 @@
+{
+  "toolchains": [
+    {
+      "id": "verilator-yosys",
+      "name": "开源工具链 (Verilator + Yosys)",
+      "simulator": {
+        "type": "verilator",
+        "path": "verilator"
+      },
+      "synthesis": {
+        "type": "yosys",
+        "path": "yosys",
+        "libraries": []
+      },
+      "lint": {
+        "type": "verible",
+        "path": "verible-verilog-lint",
+        "rules": "resources/moonglass/rules/verible_default_rules.txt"
+      }
+    },
+    {
+      "id": "synopsys-enterprise",
+      "name": "Synopsys 企业工具链（占位）",
+      "simulator": {
+        "type": "vcs",
+        "path": "/tools/synopsys/vcs/bin/vcs"
+      },
+      "synthesis": {
+        "type": "dc",
+        "path": "/tools/synopsys/dc/bin/dc_shell"
+      }
+    }
+  ]
+}

@@ -1,0 +1,22 @@
+# MoonGlass 默认 Verible Lint 规则
+# 参考: https://chipsalliance.github.io/verible/lint.html
+# 用法: verible-verilog-lint --rules_config=verible_default_rules.txt <file>
+
+# 命名规范（配合 i_/o_/w_/r_ 前缀约定）
++parameter-name-style=localparam_style:ALL_CAPS
++module-filename
+
+# 可综合性与常见陷阱
++always-comb-blocking
++always-ff-non-blocking
++case-missing-default
++explicit-parameter-storage-type
++generate-label
++legacy-genvar-declaration
++macro-name-style
++no-trailing-spaces
++port-name-suffix
++proper-parameter-declaration
++signal-name-style
++undersized-binary-literal
++unpacked-dimensions-range-ordering

@@ -1,0 +1,21 @@
+{
+  "extends": "./tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "jsx": "react-jsx",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "types": ["node"],
+    "paths": {
+      "@shared/*": ["./src/shared/*"],
+      "@renderer/*": ["./src/renderer/*"],
+      "@moonglass/prompts": ["./packages/prompts/src/index.ts"],
+      "@moonglass/eda-bridge": ["./packages/eda-bridge/src/index.ts"],
+      "@moonglass/rtl-engine": ["./packages/rtl-engine/src/index.ts"]
+    }
+  },
+  "include": [
+    "src/**/*",
+    "packages/*/src/**/*",
+    "electron.vite.config.ts"
+  ]
+}
