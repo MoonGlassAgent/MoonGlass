@@ -88,9 +88,15 @@ export class AgentService implements MoonGlassService {
     // 桥接扩展复制到 userData（pi 经 -e 加载；仓库内原件在 resources/moonglass/pi-bridge/）
     this.bridgeDir = join(app.getPath('userData'), 'moonglass', 'pi-bridge')
     mkdirSync(this.bridgeDir, { recursive: true })
-    const src = join(process.cwd(), 'resources', 'moonglass', 'pi-bridge', 'moonglass-providers.ts')
-    if (existsSync(src)) copyFileSync(src, join(this.bridgeDir, 'moonglass-providers.ts'))
-    else console.error('[agent-service] 未找到桥接扩展源文件:', src)
+
+    const copyExt = (name: string): void => {
+      const src = join(process.cwd(), 'resources', 'moonglass', 'pi-bridge', name)
+      if (existsSync(src)) copyFileSync(src, join(this.bridgeDir, name))
+      else console.error(`[agent-service] 未找到扩展源文件: ${src}`)
+    }
+
+    copyExt('moonglass-providers.ts')
+    copyExt('moonglass-tools.ts') // Phase 4：芯片专用工具集
   }
 
   stop(): void {
@@ -162,7 +168,8 @@ export class AgentService implements MoonGlassService {
         '-a', // 信任项目目录（.pi/APPEND_SYSTEM.md 生效的前提）
         '--session', sessionFile,
         '--name', `${projectName} / ${phase}`,
-        '-e', join(this.bridgeDir, 'moonglass-providers.ts')
+        '-e', join(this.bridgeDir, 'moonglass-providers.ts'),
+        '-e', join(this.bridgeDir, 'moonglass-tools.ts') // Phase 4：芯片专用工具集
       ],
       cwd: workspace,
       env: {
@@ -260,7 +267,8 @@ export class AgentService implements MoonGlassService {
   async prompt(projectId: string, text: string): Promise<void> {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
-    await session.client.command({ type: 'prompt', message: text })
+    // prompt 回执在模型长响应时可能远超 30s（实际输出走事件流），超时放宽到 15 分钟
+    await session.client.command({ type: 'prompt', message: text }, 15 * 60_000)
   }
 
   /**

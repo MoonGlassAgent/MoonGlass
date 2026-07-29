@@ -1,9 +1,17 @@
 /**
- * 芯片专用工具集注册表（骨架）
+ * 芯片专用工具集注册表（文档参照）
  *
- * 依据规格书 §3.2 定义全部工具的名称 / 描述 / 输入模式；
- * handler 统一为桩实现，待 Phase 4 接入 @moonglass/eda-bridge 与
- * @moonglass/rtl-engine 的真实能力后逐个替换。
+ * 依据规格书 §3.2 定义全部工具的名称 / 描述 / 输入模式。
+ *
+ * Phase 4 注：handler 已不在本文件实现。真实芯片工具以 Pi 扩展形式
+ * 注入 Agent 运行时（resources/moonglass/pi-bridge/moonglass-tools.ts），
+ * 由 AgentService start() 复制到 userData 并通过 pi -e 加载。
+ * 当前已在 pi 扩展中实现的工具：
+ *   - run_verible_lint（含 verible/verilator 回退 + autofix）
+ *   - check_synthesizability（yosys check + stat 解析）
+ *   - read_verilog（端口/参数提取）
+ *   - collect_rtl_files（工作区 RTL 扫描）
+ * 其余工具待后续 Phase 逐步实现。
  */
 
 export type ToolCategory = 'rtl' | 'verification' | 'synthesis' | 'python' | 'knowledge'
