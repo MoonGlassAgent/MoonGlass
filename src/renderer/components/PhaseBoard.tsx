@@ -3,10 +3,17 @@
  *
  * 7 个阶段节点横向排列，四态样式：
  *   locked(灰) / active(蓝) / completed(绿) / blocked(红)
- * 骨架阶段：展示状态 + 推进/回退按钮，门禁提示悬停展示。
+ * 推进/回退按钮 + 门禁检查结果展示（Phase 3：Error 级失败阻断推进）。
  */
 
-import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase, type PhaseStatus } from '@shared/types'
+import {
+  PHASE_LABELS,
+  PHASE_ORDER,
+  type ChipProject,
+  type GateCheckResult,
+  type Phase,
+  type PhaseStatus
+} from '@shared/types'
 
 const STATUS_STYLES: Record<PhaseStatus, string> = {
   locked: 'border-zinc-300 bg-zinc-100 text-zinc-400',
@@ -22,13 +29,20 @@ const STATUS_DOTS: Record<PhaseStatus, string> = {
   blocked: 'bg-red-500'
 }
 
+export interface GatePanelData {
+  blocked: boolean
+  results: GateCheckResult[]
+}
+
 interface PhaseBoardProps {
   project: ChipProject
   onAdvance?: (to: Phase) => void
   onRollback?: (to: Phase) => void
+  /** 最近一次推进尝试的门禁结果（含被阻断的情况） */
+  gate?: GatePanelData | null
 }
 
-export function PhaseBoard({ project, onAdvance, onRollback }: PhaseBoardProps): React.JSX.Element {
+export function PhaseBoard({ project, onAdvance, onRollback, gate }: PhaseBoardProps): React.JSX.Element {
   const currentIdx = PHASE_ORDER.indexOf(project.currentPhase)
   const nextPhase = PHASE_ORDER[currentIdx + 1] as Phase | undefined
   const prevPhase = PHASE_ORDER[currentIdx - 1] as Phase | undefined
@@ -75,6 +89,38 @@ export function PhaseBoard({ project, onAdvance, onRollback }: PhaseBoardProps):
           </button>
         )}
       </div>
+
+      {gate && gate.results.length > 0 && (
+        <div
+          className={`rounded-md border px-3 py-2 text-xs ${
+            gate.blocked ? 'border-red-300 bg-red-50' : 'border-zinc-200 bg-zinc-50'
+          }`}
+        >
+          {gate.blocked && (
+            <p className="mb-1 font-medium text-red-700">门禁未通过，已阻止推进。修复后请重试。</p>
+          )}
+          <ul className="space-y-0.5">
+            {gate.results.map((r) => (
+              <li key={r.checkId} className="flex gap-1.5">
+                <span className="shrink-0">
+                  {r.severity === 'info' ? '○' : r.passed ? '✓' : '✗'}
+                </span>
+                <span
+                  className={
+                    r.severity === 'error' && !r.passed
+                      ? 'text-red-700'
+                      : r.severity === 'info'
+                        ? 'text-zinc-500'
+                        : 'text-emerald-700'
+                  }
+                >
+                  {r.checkName} — {r.message}
+                </span>
+              </li>
+            ))}
+          </ul>
+        </div>
+      )}
     </div>
   )
 }

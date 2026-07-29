@@ -1,9 +1,17 @@
 /**
- * Yosys 可综合性检查与逻辑综合封装（骨架桩）
+ * Yosys 可综合性检查与逻辑综合封装
  *
- * TODO(Phase 4): 调用 yosys 子进程执行 read_verilog → hierarchy → check，
- * 解析报告为结构化结果。
+ * checkSynthesizability（Phase 3 真实现）：
+ *   yosys -p 'read_verilog -sv <files...>; hierarchy -auto-top; check; stat'
+ *   解析 ERROR / Warning 行与 stat 统计为结构化结果。
+ * runLogicSynthesis 仍为桩（Phase 6 范畴）。
  */
+
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { delimiter, dirname, join } from 'node:path'
+
+const execFileAsync = promisify(execFile)
 
 export interface SynthesisIssue {
   severity: 'error' | 'warning'
@@ -25,13 +33,111 @@ export interface SynthesizabilityResult {
 
 export interface SynthCheckOptions {
   rtlFiles: string[]
-  topModule: string
+  /** 预留：指定顶层模块；缺省时 hierarchy -auto-top 自动识别 */
+  topModule?: string
+}
+
+const EXEC_TIMEOUT_MS = 60_000
+const MAX_BUFFER = 8 * 1024 * 1024
+
+const YOSYS_ERROR = /^ERROR:\s*(.+)$/
+const YOSYS_WARNING = /^Warning:\s*(.+)$/
+// yosys 0.67 stat 表格式："        6 wires" / "        2 cells"
+const STAT_NUMBER = /^\s*(\d+)\s+(wires|cells|memories)\s*$/
+
+/** 在 PATH 中定位工具（Windows 优先 .exe，规避无扩展名脚本无法 CreateProcess 的问题） */
+async function locateTool(names: string[]): Promise<string | null> {
+  const locator = process.platform === 'win32' ? 'where' : 'which'
+  for (const name of names) {
+    try {
+      const { stdout } = await execFileAsync(locator, [name], { timeout: 5000 })
+      const found = stdout.trim().split(/\r?\n/)[0]
+      if (found) return found
+    } catch {
+      // 尝试下一个候选名
+    }
+  }
+  return null
+}
+
+/**
+ * 构造工具执行环境：把工具所在 bin 与同级 lib 提到 PATH 最前。
+ * oss-cad-suite 的工具依赖自带 DLL（bin/lib），且必须位于 PATH 前端，
+ * 否则会被系统中其他 mingw DLL（Strawberry Perl 等）抢占导致加载失败。
+ */
+function toolEnv(toolPath: string): NodeJS.ProcessEnv {
+  const bin = dirname(toolPath)
+  return {
+    ...process.env,
+    PATH: `${bin}${delimiter}${join(bin, '..', 'lib')}${delimiter}${process.env.PATH ?? ''}`
+  }
 }
 
 export async function checkSynthesizability(
-  _options: SynthCheckOptions
+  options: SynthCheckOptions
 ): Promise<SynthesizabilityResult> {
-  throw new Error('NotImplemented: checkSynthesizability 将在 Phase 4（芯片专用工具集）实现')
+  const yosysPath = await locateTool(process.platform === 'win32' ? ['yosys.exe', 'yosys'] : ['yosys'])
+  if (!yosysPath) throw new Error('工具未找到: yosys')
+
+  const readCmd = `read_verilog -sv ${options.rtlFiles.map((f) => `"${f}"`).join(' ')}`
+  const topCmd = options.topModule ? `hierarchy -top ${options.topModule}` : 'hierarchy -auto-top'
+  const script = `${readCmd}; ${topCmd}; check; stat`
+
+  const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
+    (resolve, reject) => {
+      execFile(
+        yosysPath,
+        ['-p', script],
+        { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_BUFFER, env: toolEnv(yosysPath) },
+        (err, out, serr) => {
+          if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
+            reject(new Error('工具未找到: yosys'))
+            return
+          }
+          resolve({ stdout: out ?? '', stderr: serr ?? '', code: err ? ((err as { code?: number }).code ?? 1) : 0 })
+        }
+      )
+    }
+  )
+
+  const issues: SynthesisIssue[] = []
+  const resourceEstimate: ResourceEstimate = {}
+
+  for (const raw of (stdout + '\n' + stderr).split(/\r?\n/)) {
+    const line = raw.trim()
+    const errMatch = YOSYS_ERROR.exec(line)
+    if (errMatch) {
+      issues.push({ severity: 'error', message: errMatch[1] })
+      continue
+    }
+    const warnMatch = YOSYS_WARNING.exec(line)
+    if (warnMatch) {
+      issues.push({ severity: 'warning', message: warnMatch[1] })
+      continue
+    }
+    const statMatch = STAT_NUMBER.exec(line)
+    if (statMatch) {
+      const value = Number(statMatch[1])
+      if (statMatch[2] === 'cells') resourceEstimate.cells = value
+      else if (statMatch[2] === 'wires') resourceEstimate.wires = value
+      else if (statMatch[2] === 'memories') resourceEstimate.memories = value
+    }
+  }
+
+  // 非零退出但未解析到 ERROR 行时，兜底为通用错误（防止加载失败被误判为可综合）
+  const hasParsedError = issues.some((i) => i.severity === 'error')
+  if (code !== null && code !== 0 && !hasParsedError) {
+    issues.push({
+      severity: 'error',
+      message: `yosys 异常退出 (code=${code}): ${stderr.trim().split(/\r?\n/).pop() ?? ''}`
+    })
+  }
+
+  return {
+    synthesizable: !issues.some((i) => i.severity === 'error') && code === 0,
+    issues,
+    resourceEstimate
+  }
 }
 
 export interface LogicSynthesisOptions {
@@ -51,5 +157,5 @@ export interface LogicSynthesisResult {
 export async function runLogicSynthesis(
   _options: LogicSynthesisOptions
 ): Promise<LogicSynthesisResult> {
-  throw new Error('NotImplemented: runLogicSynthesis 将在 Phase 4（芯片专用工具集）实现')
+  throw new Error('NotImplemented: runLogicSynthesis 将在 Phase 6（EDA 深度集成）实现')
 }

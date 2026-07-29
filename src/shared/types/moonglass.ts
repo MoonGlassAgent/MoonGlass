@@ -110,6 +110,16 @@ export interface GateRule {
   autoChecks: string[]
 }
 
+/** 阶段推进结果（Phase 3：含门禁检查结果与阻断标记） */
+export interface PhaseAdvanceResult {
+  /** blocked=true 时为未推进的原项目状态（门禁结果已落库） */
+  project: ChipProject
+  gate: {
+    blocked: boolean
+    results: GateCheckResult[]
+  }
+}
+
 // ==================== EDA 工具链（§3.5） ====================
 
 export type SimulatorType = 'verilator' | 'vcs' | 'xcelium'

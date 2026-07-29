@@ -8,6 +8,7 @@ import { ipcMain } from 'electron'
 import { IPC } from '@shared/ipc-contract'
 import type { LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
+import { projectWorkspaceDir } from './core/paths'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
   const { projects, phaseEngine, python, eda, llm, agent } = services
@@ -31,12 +32,18 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Project.Delete, (_e, id: string) => projects.delete(id))
 
   // ==================== 阶段流转 ====================
-  ipcMain.handle(IPC.Phase.Advance, (_e, projectId: string, to: Phase) => {
+  ipcMain.handle(IPC.Phase.Advance, async (_e, projectId: string, to: Phase) => {
     const project = projects.get(projectId)
     if (!project) return null
-    // 运行门禁检查（骨架阶段默认放行，结果落库供 UI 展示）
-    project.phases[project.currentPhase].gateCheckResults = phaseEngine.runGateChecks(project, to)
-    return projects.save(phaseEngine.advance(project, to))
+    // 运行门禁检查（Error 级失败阻断推进；结果落库供 UI 展示）
+    const results = await phaseEngine.runGateChecks(project, to, {
+      workspaceDir: projectWorkspaceDir(projectId)
+    })
+    project.phases[project.currentPhase].gateCheckResults = results
+    if (phaseEngine.isBlocked(results)) {
+      return { project: projects.save(project), gate: { blocked: true, results } }
+    }
+    return { project: projects.save(phaseEngine.advance(project, to)), gate: { blocked: false, results } }
   })
 
   ipcMain.handle(IPC.Phase.Rollback, (_e, projectId: string, to: Phase) => {

@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase } from '@shared/types'
-import { PhaseBoard } from '../components/PhaseBoard'
+import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
 import { ChatPanel } from '../components/ChatPanel'
 
 const BOTTOM_TABS = ['🐍 Python', '📊 Lint', '🔬 仿真', '📈 波形', '📝 日志'] as const
@@ -16,6 +16,7 @@ const BOTTOM_TABS = ['🐍 Python', '📊 Lint', '🔬 仿真', '📈 波形', '
 export function WorkspacePage(): React.JSX.Element {
   const { projectId } = useParams({ from: '/workspace/$projectId' })
   const [project, setProject] = useState<ChipProject | null>(null)
+  const [gate, setGate] = useState<GatePanelData | null>(null)
   const [activeTab, setActiveTab] = useState<(typeof BOTTOM_TABS)[number]>(BOTTOM_TABS[0])
 
   const reload = useCallback(async () => {
@@ -27,12 +28,16 @@ export function WorkspacePage(): React.JSX.Element {
   }, [reload])
 
   const handleAdvance = async (to: Phase): Promise<void> => {
-    setProject(await window.moonglass.phase.advance(projectId, to))
+    const result = await window.moonglass.phase.advance(projectId, to)
+    if (!result) return
+    setProject(result.project)
+    setGate(result.gate)
   }
 
   const handleRollback = async (to: Phase): Promise<void> => {
     if (!window.confirm(`回退到 ${to} 后，后续阶段产出将被标记为废弃。确认回退？`)) return
     setProject(await window.moonglass.phase.rollback(projectId, to))
+    setGate(null)
   }
 
   if (!project) {
@@ -53,7 +58,7 @@ export function WorkspacePage(): React.JSX.Element {
             当前阶段：{project.currentPhase} · {PHASE_LABELS[project.currentPhase]}
           </span>
         </div>
-        <PhaseBoard project={project} onAdvance={handleAdvance} onRollback={handleRollback} />
+        <PhaseBoard project={project} onAdvance={handleAdvance} onRollback={handleRollback} gate={gate} />
       </header>
 
       <div className="flex min-h-0 flex-1">

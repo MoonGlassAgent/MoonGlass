@@ -10,6 +10,7 @@ import type {
   ChipProject,
   LlmProviderConfig,
   Phase,
+  PhaseAdvanceResult,
   PythonRunRequest,
   PythonRunResult,
   ToolDetection
@@ -61,7 +62,8 @@ export interface MoonGlassApi {
     delete(id: string): Promise<boolean>
   }
   phase: {
-    advance(projectId: string, to: Phase): Promise<ChipProject | null>
+    /** 推进阶段（先跑门禁检查，Error 级失败则阻断并返回未推进的原状态） */
+    advance(projectId: string, to: Phase): Promise<PhaseAdvanceResult | null>
     rollback(projectId: string, to: Phase): Promise<ChipProject | null>
   }
   eda: {
