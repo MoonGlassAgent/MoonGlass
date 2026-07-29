@@ -16,7 +16,7 @@ interface ChatPanelProps {
 }
 
 export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Element {
-  const { sessionInfo, messages, streaming, ensure, send, abort, setModel } = useChatStore()
+  const { sessionInfo, messages, streaming, ensure, send, abort, setModel, reset } = useChatStore()
   const [input, setInput] = useState('')
   const [providers, setProviders] = useState<LlmProviderConfig[]>([])
   const [ensuring, setEnsuring] = useState(false)
@@ -68,7 +68,19 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           🤖 {PHASE_LABELS[phase]}阶段 Agent
           {ensuring && <span className="ml-2 text-xs text-zinc-400">会话启动中…</span>}
         </span>
-        <select
+        <div className="flex items-center gap-2">
+          <button
+            onClick={() => {
+              if (window.confirm('开启新会话？当前对话历史将归档，不再继承到后续对话。')) {
+                void reset()
+              }
+            }}
+            title="开启新会话（不继承当前对话历史）"
+            className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100"
+          >
+            新会话
+          </button>
+          <select
           value={sessionInfo?.selectedModel ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId]) : ''}
           onChange={(e) => {
             const parsed = JSON.parse(e.target.value) as [string, string]
@@ -89,6 +101,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
             ))
           )}
         </select>
+        </div>
       </div>
 
       {/* 消息列表 */}

@@ -45,6 +45,7 @@ export const IPC = {
     Abort: 'agent:abort',
     SetModel: 'agent:set-model',
     GetMessages: 'agent:get-messages',
+    ResetSession: 'agent:reset-session',
     /** 主进程 → 渲染进程的事件推送通道（send，非 invoke） */
     Event: 'agent:event'
   }
@@ -82,6 +83,8 @@ export interface MoonGlassApi {
     abort(projectId: string): Promise<void>
     setModel(projectId: string, providerId: string, modelId: string): Promise<AgentSessionInfo>
     getMessages(projectId: string): Promise<AgentUiMessage[]>
+    /** 新会话：不继承原对话（原会话归档为 session.bak.jsonl） */
+    resetSession(projectId: string): Promise<AgentSessionInfo>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
   }

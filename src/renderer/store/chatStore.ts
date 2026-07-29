@@ -20,6 +20,8 @@ interface ChatState {
   send: (text: string) => Promise<void>
   abort: () => Promise<void>
   setModel: (providerId: string, modelId: string) => Promise<void>
+  /** 新会话：不继承原对话历史 */
+  reset: () => Promise<void>
 }
 
 let eventSubscribed = false
@@ -110,6 +112,17 @@ export const useChatStore = create<ChatState>((set, get) => {
         set({ sessionInfo: info })
       } catch (err) {
         // 切换失败（如进程内 Provider 注册表过期）：显示原因，下拉框回弹到原模型
+        pushError(set, err)
+      }
+    },
+
+    reset: async () => {
+      const { projectId } = get()
+      if (!projectId) return
+      try {
+        const info = await window.moonglass.agent.resetSession(projectId)
+        set({ sessionInfo: info, messages: [], streaming: false, streamTargetId: null })
+      } catch (err) {
         pushError(set, err)
       }
     }

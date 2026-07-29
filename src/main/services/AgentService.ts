@@ -5,7 +5,10 @@
  * 每个项目一个 pi 子进程（`pi --mode rpc`），cwd 为项目工作目录，
  * 系统提示词经 `.pi/APPEND_SYSTEM.md` 注入（buildSystemPrompt 按阶段组装），
  * Provider 配置经桥接扩展 + MOONGLASS_PROVIDERS_JSON 环境变量注入。
- * 阶段切换时重写提示词文件并开启新会话。
+ *
+ * 会话模型：项目唯一会话文件 session.jsonl —— 阶段推进/回退、关闭重开都延续
+ * 同一份对话历史；阶段切换需秒级重启进程（系统提示词仅启动时读取），但会话
+ * 文件不变、对话无缝连续。用户可主动「新会话」（resetSession）放弃继承。
  *
  * TODO(Phase 4): 芯片工具集以 pi 扩展注册；按阶段限制工具白名单
  *                （当前使用 pi 默认的 read/write/edit/bash 四工具，不做限制）。
@@ -13,7 +16,7 @@
  */
 
 import { app } from 'electron'
-import { copyFileSync, existsSync, mkdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, Phase } from '@shared/types'
@@ -119,11 +122,22 @@ export class AgentService implements MoonGlassService {
     return join(app.getPath('userData'), 'moonglass', 'workspaces', projectId)
   }
 
-  /** 阶段专属会话文件路径；pi --session 支持绝对路径，文件不存在时会自动创建 */
-  private sessionFilePath(projectId: string, phase: Phase): string {
+  /**
+   * 项目唯一会话文件：阶段推进/回退、关闭重开都复用同一份对话历史，
+   * 除非用户主动「新会话」（见 resetSession）。
+   * pi --session 支持绝对路径，文件不存在时会自动创建。
+   */
+  private sessionFilePath(projectId: string): string {
     const dir = join(app.getPath('userData'), 'moonglass', 'pi-sessions', projectId)
     mkdirSync(dir, { recursive: true })
-    return join(dir, `${phase}.jsonl`)
+    const file = join(dir, 'session.jsonl')
+    // 迁移：v0.2 增量版曾按阶段分文件（<PHASE>.jsonl），首次切换时继承当前阶段的历史
+    if (!existsSync(file)) {
+      const project = this.projects.get(projectId)
+      const legacy = project ? join(dir, `${project.currentPhase}.jsonl`) : ''
+      if (legacy && existsSync(legacy)) copyFileSync(legacy, file)
+    }
+    return file
   }
 
   private writeSystemPrompt(projectId: string, phase: Phase): void {
@@ -140,7 +154,7 @@ export class AgentService implements MoonGlassService {
     this.writeSystemPrompt(projectId, phase)
 
     const providers = this.readyProviders()
-    const sessionFile = this.sessionFilePath(projectId, phase)
+    const sessionFile = this.sessionFilePath(projectId)
     const client = new PiRpcClient({
       binPath: this.piBinPath,
       args: [
@@ -204,9 +218,9 @@ export class AgentService implements MoonGlassService {
     const fingerprint = this.providersFingerprint()
     let session = this.sessions.get(projectId)
 
-    // Provider 配置变更或阶段变化都需要重启/重建 pi 进程：
-    // - Provider 注册表在进程启动时固化；
-    // - 阶段变化需切换到阶段专属会话文件以保留各阶段历史。
+    // Provider 配置变更或阶段变化都需要重启 pi 进程（两者都只能在进程启动时生效：
+    // Provider 注册表经环境变量固化，阶段系统提示词仅在启动时读取）。
+    // 注意：会话文件是项目唯一的 session.jsonl，进程重启后对话历史无缝延续。
     if (session && (session.fingerprint !== fingerprint || session.phase !== project.currentPhase)) {
       session.client.dispose()
       this.sessions.delete(projectId)
@@ -247,6 +261,26 @@ export class AgentService implements MoonGlassService {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
     await session.client.command({ type: 'prompt', message: text })
+  }
+
+  /**
+   * 新会话（用户主动选择不继承原对话）：
+   * 停掉当前进程、把现有会话文件归档为 session.bak.jsonl（覆盖旧备份），
+   * 然后按当前阶段重建全新会话。
+   */
+  async resetSession(projectId: string): Promise<AgentSessionInfo> {
+    const session = this.sessions.get(projectId)
+    if (session) {
+      session.client.dispose()
+      this.sessions.delete(projectId)
+    }
+    const file = this.sessionFilePath(projectId)
+    if (existsSync(file)) {
+      copyFileSync(file, file.replace('session.jsonl', 'session.bak.jsonl'))
+      // 归档后删除原文件，下次 spawn 时 pi 自动创建全新会话
+      rmSync(file)
+    }
+    return this.ensureSession(projectId)
   }
 
   async abort(projectId: string): Promise<void> {
