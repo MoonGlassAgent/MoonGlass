@@ -4,7 +4,9 @@
  * 集中创建并注册所有主进程服务，供入口与 IPC 层取用。
  */
 
+import { app } from 'electron'
 import { LifecycleManager } from './lifecycle'
+import { DbService } from '../services/DbService'
 import { ProjectService } from '../services/ProjectService'
 import { PhaseEngine } from '../services/PhaseEngine'
 import { PythonService } from '../services/PythonService'
@@ -16,6 +18,7 @@ import { FileService } from '../services/FileService'
 
 export interface ApplicationServices {
   lifecycle: LifecycleManager
+  db: DbService
   projects: ProjectService
   phaseEngine: PhaseEngine
   python: PythonService
@@ -29,8 +32,10 @@ export interface ApplicationServices {
 export function createApplication(): ApplicationServices {
   const lifecycle = new LifecycleManager()
 
-  const projects = new ProjectService()
-  const phaseEngine = new PhaseEngine()
+  const userDataDir = app.getPath('userData')
+  const db = new DbService(userDataDir)
+  const projects = new ProjectService(db, userDataDir)
+  const phaseEngine = new PhaseEngine(db)
   const python = new PythonService()
   const eda = new EdaService()
   const llm = new LlmProviderService()
@@ -38,8 +43,9 @@ export function createApplication(): ApplicationServices {
   const agent = new AgentService(projects, llm, modelStore)
   const files = new FileService()
 
-  // 注册顺序即启动顺序
+  // 注册顺序即启动顺序；db 必须在 projects 之前启动
   lifecycle
+    .register(db)
     .register(projects)
     .register(phaseEngine)
     .register(python)
@@ -49,5 +55,5 @@ export function createApplication(): ApplicationServices {
     .register(agent)
     .register(files)
 
-  return { lifecycle, projects, phaseEngine, python, eda, llm, modelStore, agent, files }
+  return { lifecycle, db, projects, phaseEngine, python, eda, llm, modelStore, agent, files }
 }

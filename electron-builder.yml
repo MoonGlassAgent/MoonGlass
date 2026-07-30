@@ -1,0 +1,46 @@
+appId: com.moonglass.studio
+productName: MoonGlass
+copyright: Copyright © 2026 MoonGlass Contributors
+directories:
+  output: dist
+  buildResources: build-resources
+files:
+  - out/**/*
+  - resources/**/*
+  - package.json
+extraResources:
+  - from: node_modules/@earendil-works/pi-coding-agent
+    to: pi-coding-agent
+    filter:
+      - dist/**
+      - package.json
+  - from: resources/moonglass/pi-bridge
+    to: pi-bridge
+  - from: packages/eda-bridge/src
+    to: pi-bridge/eda-bridge
+  - from: resources/moonglass/ip-library
+    to: ip-library
+  - from: resources/moonglass/rules
+    to: rules
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+  icon: resources/moonglass/logo.png
+mac:
+  target:
+    - target: dmg
+      arch:
+        - x64
+        - arm64
+  icon: resources/moonglass/logo.png
+linux:
+  target:
+    - target: AppImage
+      arch:
+        - x64
+  icon: resources/moonglass/logo.png
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

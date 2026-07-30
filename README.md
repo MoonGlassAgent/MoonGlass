@@ -8,7 +8,7 @@ MoonGlass 是一个面向 ASIC/SoC 设计工程师的 AI 工作台：以 **7 阶
 
 MoonGlass 在**架构思想**上借鉴了 [Cherry Studio](https://github.com/CherryHQ/cherry-studio)（Electron 主/渲染进程分层、侧边栏导航交互、服务生命周期管理、IPC 契约中心等业界通用模式），但 **全部代码独立编写，不包含 Cherry Studio 的任何源码，也不是其 Fork**。因此本项目不受 Cherry Studio AGPL-3.0 的传染性约束，采用 **Apache-2.0** 许可证。
 
-## 当前状态：v0.1 架构骨架
+## 当前状态：v0.3 Phase 4 开发中
 
 | 模块 | 状态 |
 |------|------|
@@ -16,31 +16,43 @@ MoonGlass 在**架构思想**上借鉴了 [Cherry Studio](https://github.com/Che
 | 核心领域类型（`src/shared/types`） | ✅ 完整定义 |
 | 提示词分层约束系统（`@moonglass/prompts`） | ✅ 完整实现 |
 | 项目 CRUD + 7 阶段状态机推进/回退（IPC 全链路） | ✅ 可用（JSON 文件存储） |
+| LLM Provider 配置与 Agent 对话闭环（Pi RPC） | ✅ 可用 |
+| EDA 工具探测与门禁检查（Lint / Yosys / 简单 CDC） | ✅ Phase 3 已接入 |
+| 工作区分栏 UI / 文件树 / 选项卡代码查看 / Prism 高亮 | ✅ Phase 4 已接入 |
 | Python 脚本引擎（spawn + 超时） | ✅ 最小可用 |
-| EDA 工具探测（`@moonglass/eda-bridge`） | ✅ 可用 |
-| 阶段看板 / 项目卡片 / 6 大页面 | ✅ 骨架 UI |
-| Lint / 仿真 / 综合 / RTL 生成等芯片工具 | 🚧 桩（Phase 4） |
-| LLM Provider 接入与 Agent 对话 | 🚧 占位（Phase 2） |
-| drizzle schema（§4 全部 5 张表） | 📐 已定义，未接线 |
+| Agent 芯片专用工具集（lint / 综合 / 仿真 / CDC / 测试台生成） | ✅ 7 个工具已注册 |
+| RTL 解析与模板生成（`@moonglass/rtl-engine`） | ✅ Phase 4 已实现 |
+| 逻辑综合网表生成（`runLogicSynthesis`） | 🚧 桩（Phase 6） |
+| IP 模板库内容 | 🚧 占位（Phase 5） |
+| 知识库（sqlite-vec RAG） | 🚧 占位（Phase 5） |
+| better-sqlite3 + drizzle 数据库接线 | ✅ 已实现（ProjectService + 门禁历史） |
+| Electron 打包分发（electron-builder） | ✅ 已配置，可生成安装包 |
 
 ## 快速开始
 
 ```bash
 pnpm install
-pnpm dev        # 开发模式（electron-vite，HMR）
-pnpm build      # 产物构建（out/）
-pnpm typecheck  # 全 workspace 类型检查
+pnpm dev              # 开发模式（electron-vite，HMR）
+pnpm build            # 产物构建（out/）
+pnpm typecheck        # 全 workspace 类型检查
+pnpm dist             # 打包安装包（dist/）
+
+# better-sqlite3 是原生模块：
+# - 开发前需要编译到 Electron ABI：pnpm rebuild:electron
+# - Node 冒烟测试前需要编译到系统 Node ABI：pnpm rebuild:node
 ```
 
 要求：Node ≥ 22，pnpm ≥ 10。可选：Python 3.10+（脚本引擎）、Verible / Yosys / Verilator（EDA 功能）。
+
+更详细的总体说明与交接文档见 [`reports/overall-report.md`](./reports/overall-report.md) 和 [`reports/progress-report.md`](./reports/progress-report.md)。
 
 ## 目录结构
 
 ```
 ├── packages/
 │   ├── prompts/      # @moonglass/prompts  —— 全局/阶段/安全分层提示词 + buildSystemPrompt()
-│   ├── rtl-engine/   # @moonglass/rtl-engine —— RTL 解析/模板生成（桩）
-│   └── eda-bridge/   # @moonglass/eda-bridge —— EDA 工具封装（探测可用，其余为桩）
+│   ├── rtl-engine/   # @moonglass/rtl-engine —— RTL 解析/模板生成（已实现）
+│   └── eda-bridge/   # @moonglass/eda-bridge —— EDA 工具封装（探测/Lint/可综合已可用）
 ├── src/
 │   ├── shared/       # 领域类型 + IPC 通道契约（三端共享的唯一契约源）
 │   ├── main/         # Electron 主进程：core(lifecycle/application) services ai ipc
@@ -51,4 +63,4 @@ pnpm typecheck  # 全 workspace 类型检查
 
 ## 开发路线
 
-见规格书 §6。骨架之后的优先级：① LLM Provider + Agent 对话闭环 → ② 门禁检查接入真实 EDA 工具 → ③ IP 模板库内容导入 → ④ better-sqlite3 + drizzle 接线（schema 已备好）。
+见规格书 §6。骨架之后的优先级：① LLM Provider + Agent 对话闭环 → ② 门禁检查接入真实 EDA 工具 → ③ IP 模板库内容导入 → ④ better-sqlite3 + drizzle 接线 → ⑤ 项目数据跟随工程目录迁移。

@@ -17,7 +17,8 @@ const api: MoonGlassApi = {
   },
   phase: {
     advance: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Advance, projectId, to),
-    rollback: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Rollback, projectId, to)
+    rollback: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Rollback, projectId, to),
+    gateCheck: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.GateCheck, projectId, to)
   },
   eda: {
     detectTools: () => ipcRenderer.invoke(IPC.Eda.DetectTools)
@@ -28,7 +29,8 @@ const api: MoonGlassApi = {
   llm: {
     list: () => ipcRenderer.invoke(IPC.Llm.List),
     upsert: (config: LlmProviderConfig) => ipcRenderer.invoke(IPC.Llm.Upsert, config),
-    delete: (id: string) => ipcRenderer.invoke(IPC.Llm.Delete, id)
+    delete: (id: string) => ipcRenderer.invoke(IPC.Llm.Delete, id),
+    test: (id: string) => ipcRenderer.invoke(IPC.Llm.Test, id)
   },
   agent: {
     ensureSession: (projectId: string) => ipcRenderer.invoke(IPC.Agent.EnsureSession, projectId),
@@ -38,7 +40,9 @@ const api: MoonGlassApi = {
     setModel: (projectId: string, providerId: string, modelId: string) =>
       ipcRenderer.invoke(IPC.Agent.SetModel, projectId, providerId, modelId),
     getMessages: (projectId: string) => ipcRenderer.invoke(IPC.Agent.GetMessages, projectId),
-    resetSession: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ResetSession, projectId),
+    resetSession: (projectId: string, sessionName?: string) => ipcRenderer.invoke(IPC.Agent.ResetSession, projectId, sessionName),
+    listSessions: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ListSessions, projectId),
+    switchSession: (projectId: string, sessionName: string) => ipcRenderer.invoke(IPC.Agent.SwitchSession, projectId, sessionName),
     onEvent: (cb: (payload: AgentEventPayload) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, payload: AgentEventPayload): void =>
         cb(payload)
@@ -49,7 +53,8 @@ const api: MoonGlassApi = {
   fs: {
     tree: (projectId: string) => ipcRenderer.invoke(IPC.Fs.Tree, projectId),
     readFile: (projectId: string, relPath: string) =>
-      ipcRenderer.invoke(IPC.Fs.ReadFile, projectId, relPath)
+      ipcRenderer.invoke(IPC.Fs.ReadFile, projectId, relPath),
+    openExternal: (filePath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, filePath)
   }
 }
 

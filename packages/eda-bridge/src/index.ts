@@ -1,4 +1,5 @@
 export * from './detect'
+export * from './tool-runner'
 export * from './lint'
 export * from './synthesis'
 export * from './simulation'

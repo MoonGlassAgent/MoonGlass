@@ -34,6 +34,8 @@ function LlmProviderSection(): React.JSX.Element {
   const [savedTip, setSavedTip] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [newModel, setNewModel] = useState('')
+  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [testing, setTesting] = useState(false)
 
   useEffect(() => {
     void window.moonglass.llm.list().then((list) => {
@@ -49,8 +51,32 @@ function LlmProviderSection(): React.JSX.Element {
     setSelectedId(p.id)
     setDraft({ ...p, models: [...p.models] })
     setSavedTip('')
+    setTestResult(null)
     setShowKey(false)
     setNewModel('')
+  }
+
+  const testProvider = async (): Promise<void> => {
+    if (!draft) return
+    setTesting(true)
+    setTestResult(null)
+    try {
+      const result = await window.moonglass.llm.test(draft.id)
+      if (result.ok) {
+        setTestResult({ ok: true, message: `连接成功（HTTP ${result.status ?? 200}）` })
+      } else {
+        setTestResult({
+          ok: false,
+          message: result.status
+            ? `连接失败：${result.error ?? `HTTP ${result.status}`}`
+            : `连接失败：${result.error ?? '未知错误'}`
+        })
+      }
+    } catch (err) {
+      setTestResult({ ok: false, message: `测试异常：${err instanceof Error ? err.message : String(err)}` })
+    } finally {
+      setTesting(false)
+    }
   }
 
   const patch = (partial: Partial<LlmProviderConfig>): void => {
@@ -257,6 +283,13 @@ function LlmProviderSection(): React.JSX.Element {
                 >
                   {saving ? '保存中…' : '保存'}
                 </button>
+                <button
+                  onClick={() => void testProvider()}
+                  disabled={testing || !draft.apiKey}
+                  className="rounded border border-zinc-300 px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+                >
+                  {testing ? '测试中…' : '测试连接'}
+                </button>
                 {!draft.builtin && (
                   <button
                     onClick={() => void remove()}
@@ -266,6 +299,13 @@ function LlmProviderSection(): React.JSX.Element {
                   </button>
                 )}
                 {savedTip && <span className="text-sm text-emerald-600">{savedTip}</span>}
+                {testResult && (
+                  <span
+                    className={`text-sm ${testResult.ok ? 'text-emerald-600' : 'text-red-600'}`}
+                  >
+                    {testResult.message}
+                  </span>
+                )}
               </div>
             </div>
           )}

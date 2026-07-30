@@ -1,3 +1,3 @@
-export * from './types'
-export * from './parser'
-export * from './generator'
+export * from './types.ts'
+export * from './parser.ts'
+export * from './generator.ts'

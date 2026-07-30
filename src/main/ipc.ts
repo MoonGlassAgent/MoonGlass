@@ -4,7 +4,7 @@
  * 依据 shared/ipc-contract.ts 的通道契约注册全部 handler。
  */
 
-import { ipcMain } from 'electron'
+import { ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-contract'
 import type { LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
@@ -52,6 +52,19 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     return projects.save(phaseEngine.rollback(project, to))
   })
 
+  // 仅运行门禁检查（不推进阶段），供「重新检查」按钮使用
+  ipcMain.handle(IPC.Phase.GateCheck, async (_e, projectId: string, to: Phase) => {
+    const project = projects.get(projectId)
+    if (!project) return null
+    const results = await phaseEngine.runGateChecks(project, to, {
+      workspaceDir: projectWorkspaceDir(projectId)
+    })
+    // 结果落库供展示
+    project.phases[project.currentPhase].gateCheckResults = results
+    projects.save(project)
+    return results
+  })
+
   // ==================== EDA ====================
   ipcMain.handle(IPC.Eda.DetectTools, () => eda.detectTools())
 
@@ -64,6 +77,8 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Llm.Upsert, (_e, config: LlmProviderConfig) => llm.upsert(config))
 
   ipcMain.handle(IPC.Llm.Delete, (_e, id: string) => llm.delete(id))
+
+  ipcMain.handle(IPC.Llm.Test, (_e, id: string) => llm.test(id))
 
   // ==================== Agent 对话 ====================
   ipcMain.handle(IPC.Agent.EnsureSession, (_e, projectId: string) => agent.ensureSession(projectId))
@@ -82,7 +97,15 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(IPC.Agent.GetMessages, (_e, projectId: string) => agent.getMessages(projectId))
 
-  ipcMain.handle(IPC.Agent.ResetSession, (_e, projectId: string) => agent.resetSession(projectId))
+  ipcMain.handle(IPC.Agent.ResetSession, (_e, projectId: string, sessionName?: string) =>
+    agent.resetSession(projectId, sessionName)
+  )
+
+  ipcMain.handle(IPC.Agent.ListSessions, (_e, projectId: string) => agent.listSessions(projectId))
+
+  ipcMain.handle(IPC.Agent.SwitchSession, (_e, projectId: string, sessionName: string) =>
+    agent.switchSession(projectId, sessionName)
+  )
 
   // ==================== 项目文件 ====================
   ipcMain.handle(IPC.Fs.Tree, (_e, projectId: string) => files.tree(projectId))
@@ -90,4 +113,13 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Fs.ReadFile, (_e, projectId: string, relPath: string) =>
     files.readFile(projectId, relPath)
   )
+
+  ipcMain.handle(IPC.Fs.OpenExternal, async (_e, filePath: string) => {
+    try {
+      await shell.openPath(filePath)
+      return true
+    } catch {
+      return false
+    }
+  })
 }

@@ -7,6 +7,7 @@
  */
 
 import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core'
+import type { Phase, PhaseState } from '@shared/types'
 
 const PHASE_ENUM = ['REQ', 'SPEC', 'ARCH', 'RTL', 'VERIF', 'QA', 'SYNTH'] as const
 
@@ -23,6 +24,11 @@ export const chipProjects = sqliteTable('chip_projects', {
   targetFrequency: real('target_frequency'), // MHz
   targetArea: real('target_area'), // mm²
   targetPower: real('target_power'), // mW
+
+  // 阶段状态快照（Phase 1 先以 JSON 整体落库，后续逐步拆分到独立表）
+  phasesJson: text('phases_json', { mode: 'json' })
+    .notNull()
+    .$type<Record<Phase, PhaseState>>(),
 
   // Git 集成
   gitRepoUrl: text('git_repo_url'),

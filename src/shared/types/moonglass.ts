@@ -207,6 +207,15 @@ export interface LlmProviderConfig {
   builtin: boolean
 }
 
+/** Provider 连接测试结果 */
+export interface LlmProviderTestResult {
+  ok: boolean
+  /** 状态码或错误码 */
+  status?: number
+  /** 错误信息 */
+  error?: string
+}
+
 // ==================== Agent 对话（Phase 2：Pi Coding Agent RPC 嵌入） ====================
 
 /** 渲染端展示用的消息（由 pi 的 AgentMessage 映射简化而来） */

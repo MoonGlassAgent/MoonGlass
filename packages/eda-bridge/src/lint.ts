@@ -6,7 +6,14 @@
  * 两者解析到统一的 LintResult，engine 字段标注实际使用的引擎。
  */
 
-import { execFile } from 'node:child_process'
+import {
+  locateTool,
+  run,
+  runWithFallback,
+  toolEnv,
+  VERILATOR_CANDIDATES,
+  VERIBLE_CANDIDATES
+} from './tool-runner'
 
 export interface LintIssue {
   line: number
@@ -31,60 +38,18 @@ export interface VeribleLintOptions {
   autofix?: boolean
 }
 
-const EXEC_TIMEOUT_MS = 30_000
-const MAX_BUFFER = 4 * 1024 * 1024
-
-interface ExecOutput {
-  stdout: string
-  stderr: string
-  code: number | null
-}
-
-/** execFile 的宽松封装：非零退出不抛异常，统一返回输出与退出码 */
-function run(cmd: string, args: string[]): Promise<ExecOutput> {
-  return new Promise((resolve, reject) => {
-    execFile(cmd, args, { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_BUFFER }, (err, stdout, stderr) => {
-      if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-        reject(new Error(`工具未找到: ${cmd}`))
-        return
-      }
-      resolve({ stdout: stdout ?? '', stderr: stderr ?? '', code: err ? ((err as { code?: number }).code ?? 1) : 0 })
-    })
-  })
-}
-
 let veribleAvailable: boolean | null = null
 
 async function hasVerible(): Promise<boolean> {
   if (veribleAvailable !== null) return veribleAvailable
-  try {
-    await run('verible-verilog-lint', ['--version'])
-    veribleAvailable = true
-  } catch {
-    veribleAvailable = false
-  }
+  veribleAvailable = (await locateTool(VERIBLE_CANDIDATES)) !== null
   return veribleAvailable
 }
 
-/** Windows 上 oss-cad-suite 的 verilator 是无扩展名脚本（CreateProcess 无法执行），需回退到 verilator_bin.exe */
-const VERILATOR_CANDIDATES = ['verilator', 'verilator_bin.exe']
-
-async function runVerilator(args: string[]): Promise<ExecOutput> {
-  let lastErr: unknown
-  for (const cmd of VERILATOR_CANDIDATES) {
-    try {
-      return await run(cmd, args)
-    } catch (err) {
-      lastErr = err
-    }
-  }
-  throw lastErr instanceof Error ? lastErr : new Error('工具未找到: verilator')
-}
-
 // verible 输出：file:line:col: message [rule-name]
-const VERIBLE_LINE = /^.+?:(\d+):(\d+):\s*(.+?)\s*\[([a-z0-9-]+)\]\s*$/
+const VERIBLE_LINE = /^(.+):(\d+):(\d+):\s*(.+?)\s*\[([a-z0-9-]+)\]\s*$/
 // verilator 输出：%Error[-CODE]: file:line:col: message / %Warning-CODE: file:line:col: message
-const VERILATOR_LINE = /^%(Error|Warning)(?:-([A-Z0-9_]+))?:\s*.+?:(\d+):(\d+):\s*(.+)$/
+const VERILATOR_LINE = /^%(Error|Warning)(?:-([A-Z0-9_]+))?:\s*(.+):(\d+):(\d+):\s*(.+)$/
 
 function parseVerible(output: string): LintIssue[] {
   const issues: LintIssue[] = []
@@ -93,11 +58,11 @@ function parseVerible(output: string): LintIssue[] {
     if (!m) continue
     // verible lint 违规按门禁语义一律计为 error（门禁要求零违规）
     issues.push({
-      line: Number(m[1]),
-      column: Number(m[2]),
+      line: Number(m[2]),
+      column: Number(m[3]),
       severity: 'error',
-      rule: m[4],
-      message: m[3]
+      rule: m[5],
+      message: m[4]
     })
   }
   return issues
@@ -110,11 +75,11 @@ function parseVerilator(output: string): { errors: LintIssue[]; warnings: LintIs
     const m = VERILATOR_LINE.exec(line.trim())
     if (!m) continue
     const issue: LintIssue = {
-      line: Number(m[3]),
-      column: Number(m[4]),
+      line: Number(m[4]),
+      column: Number(m[5]),
       severity: m[1] === 'Error' ? 'error' : 'warning',
       rule: m[2] ?? (m[1] === 'Error' ? 'error' : 'warning'),
-      message: m[5]
+      message: m[6]
     }
     if (issue.severity === 'error') errors.push(issue)
     else warnings.push(issue)
@@ -124,12 +89,15 @@ function parseVerilator(output: string): { errors: LintIssue[]; warnings: LintIs
 
 /** 调用 verible-verilog-lint（未安装时抛错，调用方应改用 runLint 门面） */
 export async function runVeribleLint(options: VeribleLintOptions): Promise<LintResult> {
+  const veriblePath = await locateTool(VERIBLE_CANDIDATES)
+  if (!veriblePath) throw new Error('工具未找到: verible-verilog-lint')
+
   const args: string[] = []
   if (options.rulesFile) args.push(`--rules_config=${options.rulesFile}`)
   if (options.autofix) args.push('--autofix')
   args.push(options.filePath)
 
-  const { stdout, stderr } = await run('verible-verilog-lint', args)
+  const { stdout, stderr } = await run(veriblePath, args, toolEnv(veriblePath))
   const issues = parseVerible(stdout + '\n' + stderr)
   return {
     passed: issues.length === 0,
@@ -141,7 +109,11 @@ export async function runVeribleLint(options: VeribleLintOptions): Promise<LintR
 
 /** verilator --lint-only 回退实现 */
 async function runVerilatorLint(options: VeribleLintOptions): Promise<LintResult> {
-  const { stdout, stderr } = await runVerilator(['--lint-only', '-Wno-fatal', options.filePath])
+  const { stdout, stderr } = await runWithFallback(VERILATOR_CANDIDATES, [
+    '--lint-only',
+    '-Wno-fatal',
+    options.filePath
+  ])
   const { errors, warnings } = parseVerilator(stdout + '\n' + stderr)
   return {
     passed: errors.length === 0,

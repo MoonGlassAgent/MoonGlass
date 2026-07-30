@@ -7,7 +7,10 @@ import { pathToFileURL } from 'node:url'
 import { join } from 'node:path'
 
 const ALIASES = {
-  '@shared/types': join(process.cwd(), 'src', 'shared', 'types', 'index.ts')
+  '@shared/types': join(process.cwd(), 'src', 'shared', 'types', 'index.ts'),
+  '@moonglass/eda-bridge': join(process.cwd(), 'packages', 'eda-bridge', 'src', 'index.ts'),
+  '@moonglass/prompts': join(process.cwd(), 'packages', 'prompts', 'src', 'index.ts'),
+  '@moonglass/rtl-engine': join(process.cwd(), 'packages', 'rtl-engine', 'src', 'index.ts')
 }
 
 export async function resolve(specifier, context, next) {

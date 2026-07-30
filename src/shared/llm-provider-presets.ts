@@ -88,5 +88,15 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     models: ['qwen-plus', 'qwen-max'],
     enabled: false,
     builtin: true
+  },
+  {
+    id: 'siliconflow',
+    name: '硅基流动',
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.siliconflow.cn/v1',
+    apiKey: '',
+    models: ['Pro/deepseek-ai/DeepSeek-V3', 'deepseek-ai/DeepSeek-V2.5', 'Qwen/Qwen2.5-72B-Instruct', 'THUDM/glm-4-9b-chat'],
+    enabled: true,
+    builtin: true
   }
 ]

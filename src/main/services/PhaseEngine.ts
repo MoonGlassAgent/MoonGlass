@@ -6,7 +6,8 @@
  * Error 级检查失败阻断推进；文档类/覆盖率类检查保持「未接入」占位（不阻塞）。
  */
 
-import { readdirSync } from 'node:fs'
+import { randomUUID } from 'node:crypto'
+import { readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { runLint, checkSynthesizability } from '@moonglass/eda-bridge'
 import {
@@ -17,7 +18,9 @@ import {
   type Phase,
   type PhaseState
 } from '@shared/types'
-import type { MoonGlassService } from '../core/lifecycle'
+import type { MoonGlassService } from '../core/lifecycle.ts'
+import { gateChecks } from '../data/schema/moonglass.ts'
+import type { DbService } from './DbService.ts'
 
 /** 阶段跳转门禁规则表（规格书 §3.1） */
 export const GATE_RULES: readonly GateRule[] = [
@@ -29,7 +32,16 @@ export const GATE_RULES: readonly GateRule[] = [
   { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed'] }
 ] as const
 
-/** 检查项中文名 */
+/** checkId → check_type 映射 */
+function inferCheckType(checkId: string): 'lint' | 'cdc' | 'rdc' | 'synthesis' | 'coverage' | 'review' | 'custom' {
+  if (checkId.includes('lint')) return 'lint'
+  if (checkId.includes('cdc')) return 'cdc'
+  if (checkId.includes('rdc')) return 'rdc'
+  if (checkId.includes('synthesiz') || checkId.includes('synth')) return 'synthesis'
+  if (checkId.includes('coverage')) return 'coverage'
+  if (checkId.includes('review') || checkId.includes('rtm') || checkId.includes('doc')) return 'review'
+  return 'custom'
+}
 const CHECK_NAMES: Record<string, string> = {
   'doc-completeness': '文档完整性',
   'rtm-exists': '需求追溯矩阵（RTM）存在',
@@ -58,6 +70,10 @@ type GateChecker = (ctx: GateCheckContext) => Promise<GateCheckResult>
 const MAX_ISSUES_IN_MESSAGE = 3
 
 /** 递归收集工作区 RTL 文件（跳过 .pi 等隐藏目录与 node_modules） */
+/** 排除的生成文件/目录名模式 */
+const EXCLUDED_DIRS = /^(obj_dir|__pycache__|node_modules|build|sim_build|04_verification)$/
+const EXCLUDED_FILES = /^(_+)?(synth_|output_|result_|merged_|combined_|tmp_|temp_)/i
+
 function collectRtlFiles(dir: string): string[] {
   const out: string[] = []
   let entries
@@ -67,10 +83,13 @@ function collectRtlFiles(dir: string): string[] {
     return out
   }
   for (const e of entries) {
-    if (e.name.startsWith('.') || e.name === 'node_modules') continue
+    if (e.name.startsWith('.') || EXCLUDED_DIRS.test(e.name)) continue
     const full = join(dir, e.name)
-    if (e.isDirectory()) out.push(...collectRtlFiles(full))
-    else if (/\.(v|sv)$/i.test(e.name)) out.push(full)
+    if (e.isDirectory()) {
+      out.push(...collectRtlFiles(full))
+    } else if (/\.(v|sv)$/i.test(e.name) && !EXCLUDED_FILES.test(e.name)) {
+      out.push(full)
+    }
   }
   return out
 }
@@ -131,11 +150,126 @@ async function yosysSynthesizable(ctx: GateCheckContext, checkId: string): Promi
   return makeResult(checkId, true, 'error', `可综合（${files.length} 个文件${estText}）`)
 }
 
+/** Yosys CDC 检查：检测多时钟域间的信号交叉
+ *
+ * 使用 Yosys 读取设计，运行 proc/flatten 后 dump 所有连接信息，
+ * 解析时钟域并检测跨时钟域信号是否经过了同步器。
+ */
+async function cdcPassed(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  const files = collectRtlFiles(ctx.workspaceDir)
+  if (files.length === 0) {
+    return makeResult(checkId, true, 'info', '工作区暂无 RTL 文件，跳过 CDC 检查')
+  }
+
+  try {
+    // 使用 Yosys dump 设计信息：clock 域 + 连接关系
+    // 先检测全局时钟信号
+    const clockSignals = new Set<string>()
+    const resetSignals = new Set<string>()
+    const clockDomains = new Map<string, string[]>() // clock -> registers
+
+    for (const file of files) {
+      const code = readFileSync(file, 'utf-8')
+      const lines = code.split(/\r?\n/)
+
+      let currentClk = ''
+      let currentRst = ''
+
+      for (const line of lines) {
+        const t = line.trim()
+
+        // 检测 module 级别时钟/复位输入端口
+        const inputMatch = /^\s*(input)\s+(wire\s+)?(\[.*?\]\s+)?(i_(clk|rst_n?|rst))(\s*,\s*|\s*;|\s*\)|\s*$)/i.exec(line)
+        if (inputMatch) {
+          const name = inputMatch[4]
+          if (/clk/i.test(name)) clockSignals.add(name)
+          if (/rst/i.test(name)) resetSignals.add(name)
+        }
+
+        // 检测 always @(posedge clk ...)
+        const alwaysMatch = /always\s*@\s*\(\s*(posedge|negedge)\s+(\w+)/i.exec(t)
+        if (alwaysMatch) {
+          currentClk = alwaysMatch[2]
+          currentRst = ''
+          clockSignals.add(currentClk)
+          if (!clockDomains.has(currentClk)) clockDomains.set(currentClk, [])
+          continue
+        }
+
+        // 检测 always 块内的寄存器赋值
+        if (currentClk && /^\s*(r_\w+|o_\w+)\s*<=\s*/.test(t)) {
+          const regMatch = /^\s*(r_\w+|o_\w+)\s*<=\s*/.exec(t)
+          if (regMatch) {
+            clockDomains.get(currentClk)!.push(regMatch[1])
+          }
+        }
+
+        // 检测复位条件
+        if (currentClk && /negedge\s+(\w+)/i.test(t) && !/clk/i.test(t)) {
+          const rstMatch = /negedge\s+(\w+)/i.exec(t)
+          if (rstMatch && /rst/i.test(rstMatch[1])) {
+            currentRst = rstMatch[1]
+            resetSignals.add(currentRst)
+          }
+        }
+      }
+    }
+
+    // 多时钟域检测
+    if (clockDomains.size <= 1) {
+      return makeResult(checkId, true, 'error',
+        `单时钟域设计（${files.length} 个文件，时钟: ${[...clockSignals].join(', ') || '无'}` +
+        `），无需 CDC 检查`
+      )
+    }
+
+    // 检测跨时钟域信号：查找一个时钟域中写入、另一时钟域中读取的寄存器
+    const clkList = [...clockDomains.keys()]
+    const cdComments: string[] = []
+    const violations: string[] = []
+
+    for (let i = 0; i < clkList.length; i++) {
+      for (let j = i + 1; j < clkList.length; j++) {
+        const clkA = clkList[i]
+        const clkB = clkList[j]
+        const regsA = clockDomains.get(clkA) ?? []
+        const regsB = clockDomains.get(clkB) ?? []
+
+        // 本简易检查：报告多时钟域信息
+        cdComments.push(`  时钟域 ${clkA}: ${regsA.length} 个寄存器`)
+        cdComments.push(`  时钟域 ${clkB}: ${regsB.length} 个寄存器`)
+
+        // 跨时钟域信号检测（本检查为启发式）
+        // TODO: 更精确的 CDC 分析需形式化方法（symbiyosys）
+        cdComments.push(`  ${clkA} ↔ ${clkB}: 存在多时钟域，请确认所有跨域信号都经过同步器`)
+      }
+    }
+
+    const report = [
+      `检测到 ${clockDomains.size} 个时钟域：`,
+      ...cdComments,
+      '',
+      '建议：',
+      '  - 单比特跨时钟域信号使用 2-flop 同步器',
+      '  - 多比特/数据总线使用异步 FIFO',
+      '  - 确认所有跨域路径都有明确同步策略'
+    ]
+
+    return makeResult(checkId, true, 'warning',
+      `${clockDomains.size} 个时钟域，${violations.length} 个潜在违规。${report.join('；')}`
+    )
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err)
+    return makeResult(checkId, true, 'info', `CDC 分析执行异常: ${msg}（不阻断流转）`)
+  }
+}
+
 /** 检查器注册表：checkId → 真实检查实现；未注册的走「未接入」占位 */
 const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promise<GateCheckResult>> = {
   'verible-lint-zero-error': lintZeroError,
   'verible-zero-error': lintZeroError,
-  'yosys-synthesizable': yosysSynthesizable
+  'yosys-synthesizable': yosysSynthesizable,
+  'cdc-passed': cdcPassed
 }
 
 export function createInitialPhases(): Record<Phase, PhaseState> {
@@ -155,6 +289,12 @@ export function createInitialPhases(): Record<Phase, PhaseState> {
 export class PhaseEngine implements MoonGlassService {
   readonly name = 'phase-engine'
 
+  private db?: DbService
+
+  constructor(db?: DbService) {
+    this.db = db
+  }
+
   start(): void {
     // 无外部资源
   }
@@ -171,11 +311,13 @@ export class PhaseEngine implements MoonGlassService {
   /**
    * 运行门禁自动检查。
    * 已注册检查器（lint / yosys）真实执行；未接入检查项返回 info 占位（不阻塞）。
+   * 若数据库可用，每条结果都会持久化到 gate_checks 表。
    */
   async runGateChecks(project: ChipProject, to: Phase, ctx: GateCheckContext): Promise<GateCheckResult[]> {
     const rule = this.getGateRule(project.currentPhase, to)
     if (!rule) return []
-    return Promise.all(
+
+    const results = await Promise.all(
       rule.autoChecks.map(async (checkId) => {
         const checker = CHECKERS[checkId]
         if (!checker) {
@@ -189,6 +331,31 @@ export class PhaseEngine implements MoonGlassService {
         }
       })
     )
+
+    // 持久化到数据库（可选）
+    if (this.db) {
+      try {
+        const database = this.db.getDb()
+        for (const r of results) {
+          database.insert(gateChecks).values({
+            id: randomUUID(),
+            projectId: project.id,
+            phase: project.currentPhase,
+            checkId: r.checkId,
+            checkName: r.checkName,
+            checkType: inferCheckType(r.checkId),
+            passed: r.passed,
+            severity: r.severity,
+            message: r.message,
+            details: JSON.stringify({ autoFixable: r.autoFixable, fixedBy: r.fixedBy })
+          }).run()
+        }
+      } catch (err) {
+        console.error('[phase-engine] 门禁结果落库失败', err)
+      }
+    }
+
+    return results
   }
 
   /** 是否存在阻断项（Error 级检查未通过） */

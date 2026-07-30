@@ -7,11 +7,8 @@
  * runLogicSynthesis 仍为桩（Phase 6 范畴）。
  */
 
-import { execFile } from 'node:child_process'
-import { promisify } from 'node:util'
 import { delimiter, dirname, join } from 'node:path'
-
-const execFileAsync = promisify(execFile)
+import { locateTool, run, toolEnv, YOSYS_CANDIDATES } from './tool-runner'
 
 export interface SynthesisIssue {
   severity: 'error' | 'warning'
@@ -37,68 +34,22 @@ export interface SynthCheckOptions {
   topModule?: string
 }
 
-const EXEC_TIMEOUT_MS = 60_000
-const MAX_BUFFER = 8 * 1024 * 1024
-
 const YOSYS_ERROR = /^ERROR:\s*(.+)$/
 const YOSYS_WARNING = /^Warning:\s*(.+)$/
 // yosys 0.67 stat 表格式："        6 wires" / "        2 cells"
 const STAT_NUMBER = /^\s*(\d+)\s+(wires|cells|memories)\s*$/
 
-/** 在 PATH 中定位工具（Windows 优先 .exe，规避无扩展名脚本无法 CreateProcess 的问题） */
-async function locateTool(names: string[]): Promise<string | null> {
-  const locator = process.platform === 'win32' ? 'where' : 'which'
-  for (const name of names) {
-    try {
-      const { stdout } = await execFileAsync(locator, [name], { timeout: 5000 })
-      const found = stdout.trim().split(/\r?\n/)[0]
-      if (found) return found
-    } catch {
-      // 尝试下一个候选名
-    }
-  }
-  return null
-}
-
-/**
- * 构造工具执行环境：把工具所在 bin 与同级 lib 提到 PATH 最前。
- * oss-cad-suite 的工具依赖自带 DLL（bin/lib），且必须位于 PATH 前端，
- * 否则会被系统中其他 mingw DLL（Strawberry Perl 等）抢占导致加载失败。
- */
-function toolEnv(toolPath: string): NodeJS.ProcessEnv {
-  const bin = dirname(toolPath)
-  return {
-    ...process.env,
-    PATH: `${bin}${delimiter}${join(bin, '..', 'lib')}${delimiter}${process.env.PATH ?? ''}`
-  }
-}
-
 export async function checkSynthesizability(
   options: SynthCheckOptions
 ): Promise<SynthesizabilityResult> {
-  const yosysPath = await locateTool(process.platform === 'win32' ? ['yosys.exe', 'yosys'] : ['yosys'])
+  const yosysPath = await locateTool(YOSYS_CANDIDATES)
   if (!yosysPath) throw new Error('工具未找到: yosys')
 
   const readCmd = `read_verilog -sv ${options.rtlFiles.map((f) => `"${f}"`).join(' ')}`
   const topCmd = options.topModule ? `hierarchy -top ${options.topModule}` : 'hierarchy -auto-top'
   const script = `${readCmd}; ${topCmd}; check; stat`
 
-  const { stdout, stderr, code } = await new Promise<{ stdout: string; stderr: string; code: number | null }>(
-    (resolve, reject) => {
-      execFile(
-        yosysPath,
-        ['-p', script],
-        { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_BUFFER, env: toolEnv(yosysPath) },
-        (err, out, serr) => {
-          if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-            reject(new Error('工具未找到: yosys'))
-            return
-          }
-          resolve({ stdout: out ?? '', stderr: serr ?? '', code: err ? ((err as { code?: number }).code ?? 1) : 0 })
-        }
-      )
-    }
-  )
+  const { stdout, stderr, code } = await run(yosysPath, ['-p', script], toolEnv(yosysPath))
 
   const issues: SynthesisIssue[] = []
   const resourceEstimate: ResourceEstimate = {}
@@ -159,3 +110,4 @@ export async function runLogicSynthesis(
 ): Promise<LogicSynthesisResult> {
   throw new Error('NotImplemented: runLogicSynthesis 将在 Phase 6（EDA 深度集成）实现')
 }
+

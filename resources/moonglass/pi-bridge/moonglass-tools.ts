@@ -2,91 +2,27 @@
  * MoonGlass 芯片专用工具集（Pi 扩展）
  *
  * 以 Pi Coding Agent 扩展形式注册芯片 EDA 工具，让 Agent 可在对话中
- * 调用 lint 检查、可综合性检查等芯片专用能力。
+ * 调用 lint 检查、可综合性检查、仿真运行等芯片专用能力。
  *
  * 加载方式：AgentService spawn pi 时通过 `-e` 加载本文件。
- * 设计原则：自包含——仅依赖 Node 内置模块（child_process / path / fs），
- * 不依赖 @moonglass/eda-bridge 等 workspace 包（pi 子进程无法解析）。
- *
  * 本文件复制到 userData/moonglass/pi-bridge/ 后由 pi 的 jiti 加载。
+ * 共享的 EDA 工具执行层与 Verilator 仿真实现来自同目录下的 `eda-bridge/`，
+ * 由 AgentService 启动时从 packages/eda-bridge/src/ 复制过来。
  */
 
-import { execFile } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs'
-import { delimiter, dirname, join } from 'node:path'
-import { promisify } from 'node:util'
+import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
-
-const execFileAsync = promisify(execFile)
-
-// ============================================================
-// 工具定位与执行
-// ============================================================
-
-const EXEC_TIMEOUT_MS = 60_000
-const MAX_BUFFER = 8 * 1024 * 1024
-
-/** Windows 上 oss-cad-suite 的 verilator 是无扩展名脚本，需回退到 verilator_bin.exe */
-const VERILATOR_CANDIDATES = ['verilator', 'verilator_bin.exe']
-
-/** 在 PATH 中定位可执行文件（支持候选名列表） */
-async function locateTool(names: string[]): Promise<string | null> {
-  const locator = process.platform === 'win32' ? 'where' : 'which'
-  for (const name of names) {
-    try {
-      const { stdout } = await execFileAsync(locator, [name], { timeout: 5000 })
-      const found = stdout.trim().split(/\r?\n/)[0]
-      if (found) return found
-    } catch {
-      // 继续尝试下一个候选
-    }
-  }
-  return null
-}
-
-/** 构造工具执行环境：把工具所在 bin 与同级 lib 提到 PATH 最前（oss-cad-suite DLL 依赖） */
-function toolEnv(toolPath: string): NodeJS.ProcessEnv {
-  const bin = dirname(toolPath)
-  return {
-    ...process.env,
-    PATH: `${bin}${delimiter}${join(bin, '..', 'lib')}${delimiter}${process.env.PATH ?? ''}`
-  }
-}
-
-/** execFile 的宽松封装——非零退出不抛异常，支持 AbortSignal 取消 */
-function run(cmd: string, args: string[], env?: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<{ stdout: string; stderr: string; code: number | null }> {
-  return new Promise((resolve) => {
-    const child = execFile(
-      cmd, args,
-      { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_BUFFER, env, signal },
-      (err, stdout, stderr) => {
-        if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
-          resolve({ stdout: '', stderr: `工具未找到: ${cmd}`, code: null })
-          return
-        }
-        resolve({
-          stdout: stdout ?? '',
-          stderr: stderr ?? '',
-          code: err ? ((err as { code?: number }).code ?? 1) : 0
-        })
-      }
-    )
-  })
-}
-
-/** 尝试多个候选名执行 */
-async function runWithFallback(candidates: string[], args: string[], env?: NodeJS.ProcessEnv, signal?: AbortSignal): Promise<{ stdout: string; stderr: string; code: number | null; cmd: string }> {
-  for (const cmd of candidates) {
-    try {
-      const result = await run(cmd, args, env, signal)
-      return { ...result, cmd }
-    } catch {
-      continue
-    }
-  }
-  return { stdout: '', stderr: `所有候选均不可用: ${candidates.join(', ')}`, code: null, cmd: '' }
-}
+import {
+  locateTool,
+  run,
+  runWithFallback,
+  toolEnv,
+  VERILATOR_CANDIDATES,
+  YOSYS_CANDIDATES
+} from './eda-bridge/tool-runner'
+import { runVerilatorSimulation } from './eda-bridge/simulation'
 
 // ============================================================
 // 工具特定逻辑
@@ -95,9 +31,9 @@ async function runWithFallback(candidates: string[], args: string[], env?: NodeJ
 // ---- Verible/Verilator Lint ----
 
 // verible 输出格式：file:line:col: message [rule-name]
-const VERIBLE_LINE = /^.+?:(\d+):(\d+):\s*(.+?)\s*\[([a-z0-9-]+)\]\s*$/
+const VERIBLE_LINE = /^(.+):(\d+):(\d+):\s*(.+?)\s*\[([a-z0-9-]+)\]\s*$/
 // verilator 输出格式：%Error[-CODE]: file:line:col: message / %Warning-CODE: file:line:col: message
-const VERILATOR_LINE = /^%(Error|Warning)(?:-([A-Z0-9_]+))?:\s*.+?:(\d+):(\d+):\s*(.+)$/
+const VERILATOR_LINE = /^%(Error|Warning)(?:-([A-Z0-9_]+))?:\s*(.+):(\d+):(\d+):\s*(.+)$/
 
 interface LintIssue {
   line: number
@@ -113,11 +49,11 @@ function parseVerible(output: string): LintIssue[] {
     const m = VERIBLE_LINE.exec(line.trim())
     if (!m) continue
     issues.push({
-      line: Number(m[1]),
-      column: Number(m[2]),
+      line: Number(m[2]),
+      column: Number(m[3]),
       severity: 'error',
-      rule: m[4],
-      message: m[3]
+      rule: m[5],
+      message: m[4]
     })
   }
   return issues
@@ -130,11 +66,11 @@ function parseVerilator(output: string): { errors: LintIssue[]; warnings: LintIs
     const m = VERILATOR_LINE.exec(line.trim())
     if (!m) continue
     const issue: LintIssue = {
-      line: Number(m[3]),
-      column: Number(m[4]),
+      line: Number(m[4]),
+      column: Number(m[5]),
       severity: m[1] === 'Error' ? 'error' : 'warning',
       rule: m[2] ?? (m[1] === 'Error' ? 'error' : 'warning'),
-      message: m[5]
+      message: m[6]
     }
     if (issue.severity === 'error') errors.push(issue)
     else warnings.push(issue)
@@ -209,7 +145,7 @@ interface SynthResult {
 }
 
 async function runYosysCheck(rtlFiles: string[], topModule?: string, signal?: AbortSignal): Promise<SynthResult> {
-  const yosysPath = await locateTool(process.platform === 'win32' ? ['yosys.exe', 'yosys'] : ['yosys'])
+  const yosysPath = await locateTool(YOSYS_CANDIDATES)
   if (!yosysPath) throw new Error('Yosys 未安装或不在 PATH 中')
 
   const readCmd = `read_verilog -sv ${rtlFiles.map((f) => `"${f}"`).join(' ')}`
@@ -258,6 +194,8 @@ async function runYosysCheck(rtlFiles: string[], topModule?: string, signal?: Ab
   }
 }
 
+// ---- Verilator 仿真逻辑已下沉到 ./eda-bridge/simulation.ts（runVerilatorSimulation） ----
+
 // ---- RTL 解析（端口/参数提取） ----
 
 interface PortInfo {
@@ -295,7 +233,6 @@ function extractModuleInfo(code: string, filePath: string): ModuleInfo {
     const headerMatch = MODULE_HEADER.exec(line)
     if (headerMatch) {
       moduleName = headerMatch[1]
-      // 检查是否有参数列表
       inPortList = true
       continue
     }
@@ -337,6 +274,10 @@ function extractModuleInfo(code: string, filePath: string): ModuleInfo {
 }
 
 // 递归收集 RTL 文件
+/** 排除的生成文件/目录名模式 */
+const EXCLUDED_DIRS = /^(obj_dir|__pycache__|node_modules|build|sim_build|04_verification)$/
+const EXCLUDED_FILES = /^(_+)?(synth_|output_|result_|merged_|combined_|tmp_|temp_)/i
+
 function collectRtlFiles(dir: string): string[] {
   const out: string[] = []
   let entries
@@ -346,10 +287,13 @@ function collectRtlFiles(dir: string): string[] {
     return out
   }
   for (const e of entries) {
-    if (e.name.startsWith('.') || e.name === 'node_modules') continue
+    if (e.name.startsWith('.') || EXCLUDED_DIRS.test(e.name)) continue
     const full = join(dir, e.name)
-    if (e.isDirectory()) out.push(...collectRtlFiles(full))
-    else if (/\.(v|sv)$/i.test(e.name)) out.push(full)
+    if (e.isDirectory()) {
+      out.push(...collectRtlFiles(full))
+    } else if (/\.(v|sv)$/i.test(e.name) && !EXCLUDED_FILES.test(e.name)) {
+      out.push(full)
+    }
   }
   return out
 }
@@ -608,13 +552,6 @@ export default function (pi: ExtensionAPI): void {
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const dir = (params.directory as string | undefined) ?? ctx.cwd
-      if (!existsSync(dir)) {
-        return {
-          content: [{ type: 'text', text: `错误：目录不存在 — ${dir}` }],
-          isError: true,
-          details: {}
-        }
-      }
 
       const files = collectRtlFiles(dir)
       if (files.length === 0) {
@@ -624,7 +561,7 @@ export default function (pi: ExtensionAPI): void {
         }
       }
 
-      // 尝试提取每个文件的模块名（可选，快速解析不阻塞整体）
+      // 尝试提取每个文件的模块名
       const modules: Array<{ file: string; module: string }> = []
       for (const file of files) {
         try {
@@ -648,6 +585,389 @@ export default function (pi: ExtensionAPI): void {
       return {
         content: [{ type: 'text', text: report.join('\n') }],
         details: { files: modules }
+      }
+    }
+  })
+
+  // ============================================================
+  // 工具 5: generate_tb — 从 RTL 端口生成 Verilator C++ 测试台
+  // ============================================================
+  pi.registerTool({
+    name: 'generate_tb',
+    label: 'Generate Testbench',
+    description: '基于 Verilog/SystemVerilog 模块的端口定义，自动生成 Verilator C++ 测试台框架（.cpp）。支持时钟生成、信号初始化、时序驱动和波形输出。生成的文件内容可被 Agent 后续修改定制。',
+    promptSnippet: 'Generate a Verilator C++ testbench from an RTL module',
+    promptGuidelines: 'Use generate_tb after writing RTL to create a testbench. The generated C++ testbench can be modified for specific test cases.',
+    parameters: Type.Object({
+      rtlFile: Type.String({ description: '目标 RTL 文件路径（用于提取端口定义）' }),
+      outputPath: Type.Optional(Type.String({ description: '输出 .cpp 文件路径（缺省为与 rtlFile 同目录下 sim_main.cpp）' })),
+      clockName: Type.Optional(Type.String({ description: '时钟信号名（缺省自动检测 i_clk / clk）' })),
+      resetName: Type.Optional(Type.String({ description: '复位信号名（缺省自动检测 i_rst_n / rst_n）' })),
+      resetActiveLow: Type.Optional(Type.Boolean({ description: '是否低电平复位（缺省 true）' })),
+      numCycles: Type.Optional(Type.Number({ description: '仿真运行时钟周期数（缺省 100）' })),
+      trace: Type.Optional(Type.Boolean({ description: '是否生成 VCD 波形（缺省 true）' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const rtlFile = params.rtlFile as string
+      if (!existsSync(rtlFile)) {
+        return {
+          content: [{ type: 'text', text: `错误：RTL 文件不存在 — ${rtlFile}` }],
+          isError: true, details: {}
+        }
+      }
+
+      const code = readFileSync(rtlFile, 'utf-8')
+      const info = extractModuleInfo(code, rtlFile)
+
+      // 自动检测时钟和复位信号
+      const clockName = (params.clockName as string | undefined) ??
+        info.ports.find((p) => /^(i_)?clk$/i.test(p.name))?.name ?? 'i_clk'
+      const resetName = (params.resetName as string | undefined) ??
+        info.ports.find((p) => /^(i_)?rst(_n)?$/i.test(p.name))?.name ?? 'i_rst_n'
+      const resetActiveLow = params.resetActiveLow as boolean | undefined ?? true
+      const numCycles = params.numCycles as number | undefined ?? 100
+      const trace = params.trace as boolean | undefined ?? true
+
+      const baseName = info.moduleName
+      const vBase = 'V' + baseName
+      const outPath = (params.outputPath as string | undefined) ??
+        rtlFile.replace(/\.[^.]+$/, '_sim_main.cpp')
+
+      const tbCode = `// ============================================================
+// ${baseName} Verilator Testbench
+// 自动生成时间: ${new Date().toISOString()}
+// 基于: ${rtlFile}
+// ============================================================
+
+#include <verilated.h>
+#include "${vBase}.h"
+
+${trace ? '#include <verilated_vcd_c.h>' : ''}
+
+vluint64_t main_time = 0;
+double sc_time_stamp() { return main_time; }
+
+int main(int argc, char** argv) {
+  Verilated::commandArgs(argc, argv);
+  Verilated::traceEverOn(${trace ? 'true' : 'false'});
+
+  // 实例化 DUT
+  ${vBase}* top = new ${vBase};
+
+${trace ? `  // 波形追踪
+  VerilatedVcdC* tfp = nullptr;
+  tfp = new VerilatedVcdC;
+  top->trace(tfp, 99);
+  tfp->open("${baseName}.vcd");` : ''}
+
+  // 初始化信号
+  top->${clockName} = 0;
+  top->${resetName} = ${resetActiveLow ? '1' : '0'};
+
+  // 释放复位
+  top->${resetName} = ${resetActiveLow ? '0' : '1'};
+  for (int i = 0; i < 5; i++) {
+    top->${clockName} = !top->${clockName};
+    top->eval();
+  }
+  top->${resetName} = ${resetActiveLow ? '1' : '0'};
+
+  // 主仿真循环
+  for (int cycle = 0; cycle < ${numCycles}; cycle++) {
+    // 时钟上升沿
+    top->${clockName} = 1;
+    top->eval();
+${trace ? `    if (tfp) tfp->dump(main_time);\n    main_time++;` : ''}
+
+    // 时钟下降沿
+    top->${clockName} = 0;
+    top->eval();
+${trace ? `    if (tfp) tfp->dump(main_time);\n    main_time++;` : ''}
+
+    if (Verilated::gotFinish()) break;
+  }
+
+  // ====== 在此添加用户测试激励 ======
+  // 示例：写入 DUT 输入
+  // top->i_data = 0xAA;
+  // top->eval();
+  // printf("o_result = 0x%x\\n", top->o_result);
+  // ====== 用户测试逻辑结束 ======
+
+  // 清理
+  top->final();
+${trace ? '  if (tfp) tfp->close();' : ''}
+  delete top;
+  printf("\\n*** ${baseName}: Simulation finished (%d cycles) ***\\n", ${numCycles});
+  return 0;
+}
+`
+
+      // 写出文件
+      writeFileSync(outPath, tbCode, 'utf-8')
+
+      const portTable = [
+        '| 名称 | 方向 | 位宽 |',
+        '|------|------|------|',
+        ...info.ports.map((p) => `| ${p.name} | ${p.direction} | ${p.width} |`)
+      ]
+
+      const report = [
+        `## 测试台已生成 — ${outPath}`,
+        '',
+        `**目标模块**: ${info.moduleName}`,
+        `**时钟信号**: ${clockName}`,
+        `**复位信号**: ${resetName}（${resetActiveLow ? '低电平有效' : '高电平有效'}）`,
+        `**仿真周期**: ${numCycles}`,
+        `**波形输出**: ${trace ? '✅ VCD 已启用' : '❌ 关闭'}`,
+        '',
+        '### 端口映射',
+        ...portTable,
+        '',
+        '### 下一步',
+        '',
+        '1. 编辑测试台文件添加具体测试逻辑（搜索 "用户测试激励"）',
+        '2. 使用 run_simulation 工具运行仿真（需要 verilator 在 PATH 中）',
+        '3. 用 gtkwave 打开 .vcd 波形文件查看结果',
+      ]
+
+      return {
+        content: [{ type: 'text', text: report.join('\n') }],
+        details: {
+          outputPath: outPath,
+          moduleName: info.moduleName,
+          ports: info.ports,
+          clockName,
+          resetName,
+          resetActiveLow,
+          numCycles,
+          trace
+        }
+      }
+    }
+  })
+
+  // ============================================================
+  // 工具 6: run_simulation — Verilator 编译并运行仿真
+  // ============================================================
+  pi.registerTool({
+    name: 'run_simulation',
+    label: 'Run Simulation',
+    description: '使用 Verilator 编译 RTL + C++ 测试台并运行仿真。支持波形输出（VCD）。返回编译日志、运行输出、通过/失败状态和 VCD 文件路径。',
+    promptSnippet: 'Compile and run Verilator simulation with RTL and testbench',
+    promptGuidelines: 'Use run_simulation after writing RTL and generating a testbench. The tool handles verilator --cc --build --exe and runs the simulation binary.',
+    parameters: Type.Object({
+      topModule: Type.String({ description: '顶层模块名（对应 RTL module 名称）' }),
+      rtlFiles: Type.Array(Type.String(), { description: 'RTL 文件路径列表' }),
+      tbCpp: Type.String({ description: 'C++ 测试台文件路径' }),
+      trace: Type.Optional(Type.Boolean({ description: '是否生成 VCD 波形（缺省 true，需测试台和 verilator 均支持）' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const topModule = params.topModule as string
+      const rtlFiles = params.rtlFiles as string[]
+      const tbCpp = params.tbCpp as string
+      const trace = params.trace as boolean | undefined ?? true
+
+      // 验证输入文件
+      const missing: string[] = []
+      if (!existsSync(tbCpp)) missing.push(tbCpp)
+      for (const f of rtlFiles) {
+        if (!existsSync(f)) missing.push(f)
+      }
+      if (missing.length > 0) {
+        return {
+          content: [{ type: 'text', text: `错误：以下文件不存在:\n${missing.map((f) => `  - ${f}`).join('\n')}` }],
+          isError: true,
+          details: {}
+        }
+      }
+
+      // 检查 verilator 可用
+      const verilatorPath = await locateTool(VERILATOR_CANDIDATES)
+      if (!verilatorPath) {
+        return {
+          content: [{ type: 'text', text: 'Verilator 未安装或不在 PATH 中。\n请安装 oss-cad-suite 或系统包管理器安装 verilator。' }],
+          isError: true,
+          details: {}
+        }
+      }
+
+      try {
+        const result = await runVerilatorSimulation({
+          topModule,
+          tbCpp,
+          rtlFiles,
+          trace,
+          signal
+        })
+
+        const report = [
+          `## 仿真结果 — ${topModule}`,
+          '',
+          `**结果**: ${result.passed ? '✅ 通过' : '❌ 失败'}`,
+          `**VCD 波形**: ${result.vcdPath ? `✅ ${result.vcdPath}` : '❌ 未生成'}`,
+          '',
+          '### 输出日志',
+          '```',
+          result.log.slice(0, 3000),
+          '```',
+        ]
+
+        if (result.vcdPath) {
+          report.push('', '### 波形查看', '', `gtkwave ${result.vcdPath}`)
+        }
+
+        if (!result.passed) {
+          report.push('', '### 调试建议', '', '1. 检查 RTL 语法错误', '2. 确认测试台端口连接正确', '3. 查看完整编译日志', '4. 用 read_verilog 确认端口定义')
+        }
+
+        return {
+          content: [{ type: 'text', text: report.join('\n') }],
+          details: {
+            passed: result.passed,
+            logPreview: result.log.slice(0, 1000),
+            vcdPath: result.vcdPath
+          },
+          isError: !result.passed
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `仿真执行失败: ${message}` }],
+          isError: true,
+          details: {}
+        }
+      }
+    }
+  })
+
+  // ============================================================
+  // 工具 7: run_cdc_check — 时钟域交叉（CDC）静态检查
+  // ============================================================
+  pi.registerTool({
+    name: 'run_cdc_check',
+    label: 'Run CDC Check',
+    description: '对工作区 RTL 代码进行时钟域交叉（Clock Domain Crossing）静态分析。检测多时钟域设计、跨域信号路径，并检查是否存在标准同步器（2-flop / async FIFO）。输出 CDC 报告与修复建议。',
+    promptSnippet: 'Run clock domain crossing analysis on the RTL design',
+    promptGuidelines: 'Use run_cdc_check in multi-clock designs to find CDC issues. Always use 2-flop synchronizers for single-bit CDC and async FIFOs for multi-bit CDC.',
+    parameters: Type.Object({
+      directory: Type.Optional(Type.String({ description: '扫描目录（缺省为 cwd）' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const dir = (params.directory as string | undefined) ?? ctx.cwd
+      const files = collectRtlFiles(dir)
+
+      if (files.length === 0) {
+        return {
+          content: [{ type: 'text', text: `工作目录 ${dir} 中未发现 RTL 文件。` }],
+          isError: false, details: { clockDomains: [] }
+        }
+      }
+
+      // ---- CDC 分析 ----
+      const clockSignals = new Set<string>()
+      const resetSignals = new Set<string>()
+      const clockDomains = new Map<string, string[]>()
+      const synchronizers: Array<{ clk: string; sig: string }> = []
+      const potentialViolations: Array<{ fromClk: string; toClk: string; signal: string; line: number }> = []
+
+      for (const file of files) {
+        const code = readFileSync(file, 'utf-8')
+        const lines = code.split(/\r?\n/)
+        let currentClk = ''
+
+        for (let ln = 0; ln < lines.length; ln++) {
+          const t = lines[ln].trim()
+
+          // 检测时钟和复位端口
+          const portMatch = /^\s*(input|output|inout)\s+(wire\s+|reg\s+)?(\[.*?\]\s+)?(i_)?(clk|rst_n?|rst)\b/i.exec(t)
+          if (portMatch) {
+            const fullName = portMatch[4] ? portMatch[4] + portMatch[5] : portMatch[5]
+            if (/clk/i.test(fullName)) clockSignals.add(fullName)
+            if (/rst/i.test(fullName)) resetSignals.add(fullName)
+          }
+
+          // 检测 always @(posedge/negedge clk)
+          const alwaysMatch = /always\s*@\s*\(\s*(posedge|negedge)\s+(\w+)/i.exec(t)
+          if (alwaysMatch) {
+            currentClk = alwaysMatch[2]
+            clockSignals.add(currentClk)
+            if (!clockDomains.has(currentClk)) clockDomains.set(currentClk, [])
+            continue
+          }
+
+          if (currentClk) {
+            // 检测 2-flop 同步器模式：两个 always 块中 r_sync_... <= r_sync_...
+            const syncMatch = /^\s*r_sync_\w+\s*<=\s*r_sync_\w+/i.exec(t)
+            if (syncMatch) {
+              synchronizers.push({ clk: currentClk, sig: syncMatch[0].split('<=')[0].trim() })
+            }
+
+            // 检测寄存器赋值（r_ / o_ 前缀）
+            const regMatch = /^\s*(r_\w+|o_\w+)\s*<=\s*/i.exec(t)
+            if (regMatch) {
+              clockDomains.get(currentClk)!.push(regMatch[1])
+            }
+          }
+        }
+      }
+
+      // ---- 生成报告 ----
+      const clkList = [...clockDomains.keys()]
+      const isMultiClock = clockDomains.size > 1
+
+      const report: string[] = [
+        `## CDC 检查报告`,
+        '',
+        `**分析文件**: ${files.length} 个`,
+        `**时钟域数量**: ${clockDomains.size}`,
+        `**复位信号**: ${[...resetSignals].join(', ') || '无'}`,
+        `**检测到同步器**: ${synchronizers.length} 个`,
+        '',
+      ]
+
+      if (!isMultiClock) {
+        report.push('✅ 单时钟域设计，无需 CDC 处理。')
+      } else {
+        report.push('### 时钟域分布', '')
+        for (const [clk, regs] of clockDomains) {
+          report.push(`- **${clk}**: ${regs.length} 个寄存器`)
+        }
+        report.push('')
+
+        report.push('### 跨时钟域路径', '')
+        for (let i = 0; i < clkList.length; i++) {
+          for (let j = i + 1; j < clkList.length; j++) {
+            const cross = `${clkList[i]} ↔ ${clkList[j]}`
+            report.push(`- ${cross}`)
+          }
+        }
+        report.push('')
+
+        report.push('### CDC 修复建议', '')
+        report.push('1. **单比特信号**: 使用 2-flop 同步器（命名规范 r_sync_*）')
+        report.push('   ```verilog')
+        report.push('   always @(posedge clk_dst) begin')
+        report.push('     r_sync_a <= r_sync_b;')
+        report.push('     r_sync_b <= src_signal;')
+        report.push('     o_synced <= r_sync_a;')
+        report.push('   end')
+        report.push('   ```')
+        report.push('2. **多比特/数据总线**: 使用异步 FIFO')
+        report.push('3. **控制信号**: 使用 handshake 或 pulse synchronizer')
+        report.push('4. **确认所有跨域路径都有明确同步策略**')
+      }
+
+      return {
+        content: [{ type: 'text', text: report.join('\n') }],
+        details: {
+          files: files.length,
+          clockDomains: [...clockDomains.keys()],
+          clockCount: clockDomains.size,
+          synchronizersFound: synchronizers.length,
+          isMultiClock,
+          resets: [...resetSignals]
+        }
       }
     }
   })

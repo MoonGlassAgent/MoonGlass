@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "description": "MoonGlass 芯片项目标准目录结构",
+  "directories": [
+    {
+      "name": "docs",
+      "description": "项目文档：需求规格书（SRS）、模块规格、架构设计文档、接口定义"
+    },
+    {
+      "name": "rtl",
+      "description": "RTL 源代码：Verilog/SystemVerilog 模块文件"
+    },
+    {
+      "name": "rtlqa",
+      "description": "RTL 质量检查：Lint 检查脚本与报告、CDC 检查脚本与报告、综合检查结果"
+    },
+    {
+      "name": "verification",
+      "description": "验证环境：测试台（testbench）、仿真脚本、覆盖率报告、波形文件"
+    },
+    {
+      "name": "imp",
+      "description": "实现工程：综合脚本（Yosys/DC）、SDC 约束、网表、后端工程文件"
+    }
+  ]
+}

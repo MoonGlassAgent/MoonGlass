@@ -1,5 +1,8 @@
 @import 'tailwindcss';
 
+/* Prism.js 语法高亮主题（亮色） */
+@import 'prismjs/themes/prism.css';
+
 :root {
   color-scheme: light;
 }
@@ -12,4 +15,71 @@ body {
     'Microsoft YaHei',
     system-ui,
     sans-serif;
+}
+
+/* 代码查看器样式 */
+pre[class*='language-'] {
+  @apply m-0 rounded border-0 bg-transparent p-0 text-xs leading-relaxed;
+  text-shadow: none;
+}
+
+code[class*='language-'] {
+  @apply text-xs leading-relaxed;
+  text-shadow: none;
+}
+
+/* ---- 日志高亮（prism-log 主题覆盖） ---- */
+
+/* Error 级别：红色 */
+code.language-log .token.error,
+code.language-log .token.important {
+  color: #dc2626 !important;
+  font-weight: 700;
+}
+
+/* Warning 级别：黄色/琥珀色 */
+code.language-log .token.warning {
+  color: #d97706 !important;
+  font-weight: 600;
+}
+
+/* Info/Pass 级别：绿色 */
+code.language-log .token.info,
+code.language-log .token.keyword {
+  color: #059669 !important;
+}
+
+/* Debug 级别：灰色 */
+code.language-log .token.debug {
+  color: #6b7280 !important;
+}
+
+/* 时间戳：灰色弱化 */
+code.language-log .token.number {
+  color: #9ca3af !important;
+}
+
+/* ---- Verilog 高亮增强 ---- */
+
+code.language-verilog .token.keyword {
+  color: #2563eb !important;  /* 关键字蓝色 */
+  font-weight: 600;
+}
+
+code.language-verilog .token.important {
+  color: #7c3aed !important;  /* always/assign 紫色 */
+  font-weight: 700;
+}
+
+code.language-verilog .token.number {
+  color: #059669 !important;  /* 数值绿色 */
+}
+
+code.language-verilog .token.comment {
+  color: #9ca3af !important;  /* 注释灰色 */
+  font-style: italic;
+}
+
+code.language-verilog .token.constant {
+  color: #d97706 !important;  /* `define 棕色 */
 }

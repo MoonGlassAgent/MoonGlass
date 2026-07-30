@@ -30,20 +30,33 @@ export default function (pi: {
   }
 
   for (const p of providers) {
+    // 如果 key 中包含 $，pi 会尝试环境变量插值；用 $$ 转义，确保字面量传递
+    const escapedKey = p.apiKey.replace(/\$/g, '$$$$')
     pi.registerProvider(p.id, {
       name: p.name,
       baseUrl: p.baseUrl,
-      apiKey: p.apiKey,
+      apiKey: escapedKey,
+      authHeader: true, // 明确添加 Authorization: Bearer header
       api: p.protocol === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
-      models: p.models.map((m) => ({
-        id: m,
-        name: m,
-        reasoning: false,
-        input: ['text'],
-        cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-        contextWindow: 128000,
-        maxTokens: 8192
-      }))
+      models: p.models.map((m) => {
+        const isDeepSeekReasoner = p.id === 'deepseek' && m === 'deepseek-reasoner'
+        return {
+          id: m,
+          name: m,
+          reasoning: isDeepSeekReasoner,
+          input: ['text'],
+          cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+          contextWindow: 128000,
+          maxTokens: 8192,
+          ...(isDeepSeekReasoner
+            ? {
+                compat: {
+                  thinkingFormat: 'deepseek'
+                }
+              }
+            : {})
+        }
+      })
     })
   }
 }

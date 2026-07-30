@@ -9,8 +9,9 @@
 
 import { app, safeStorage } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { request } from 'node:https'
 import { join } from 'node:path'
-import type { LlmProviderConfig } from '@shared/types'
+import type { LlmProviderConfig, LlmProviderTestResult } from '@shared/types'
 import { LLM_PROVIDER_PRESETS } from '@shared/llm-provider-presets'
 import type { MoonGlassService } from '../core/lifecycle'
 
@@ -136,9 +137,68 @@ export class LlmProviderService implements MoonGlassService {
     const next: LlmProviderConfig = preset
       ? { ...config, protocol: preset.protocol, builtin: true }
       : { ...config, builtin: false }
+    // 清理 API Key 前后空格，避免复制时带入换行或空白导致认证失败
+    next.apiKey = next.apiKey.trim()
     this.providers.set(next.id, next)
     this.persist()
     return next
+  }
+
+  /** 测试 Provider API Key 是否可用：调用 /models 端点，不消耗 token */
+  test(id: string): Promise<LlmProviderTestResult> {
+    const provider = this.providers.get(id)
+    if (!provider) return Promise.resolve({ ok: false, error: 'Provider 不存在' })
+    if (!provider.enabled) return Promise.resolve({ ok: false, error: 'Provider 未启用' })
+    if (!provider.apiKey) return Promise.resolve({ ok: false, error: 'API Key 为空' })
+
+    const url = new URL('/models', provider.baseUrl)
+    const hostname = url.hostname
+    const port = url.port || (url.protocol === 'https:' ? 443 : 80)
+    const path = url.pathname + url.search
+    const authHeader = `Bearer ${provider.apiKey}`
+
+    return new Promise<LlmProviderTestResult>((resolve) => {
+      const req = request(
+        {
+          hostname,
+          port,
+          path,
+          method: 'GET',
+          headers: {
+            Authorization: authHeader,
+            Accept: 'application/json',
+            'User-Agent': 'MoonGlass/0.3.0'
+          },
+          timeout: 10000
+        },
+        (res) => {
+          let body = ''
+          res.on('data', (chunk: Buffer) => {
+            body += chunk.toString('utf-8')
+          })
+          res.on('end', () => {
+            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+              resolve({ ok: true, status: res.statusCode })
+            } else if (res.statusCode === 401 || res.statusCode === 403) {
+              resolve({ ok: false, status: res.statusCode, error: 'API Key 无效或权限不足' })
+            } else {
+              const msg = body.slice(0, 200).replace(/\s+/g, ' ')
+              resolve({ ok: false, status: res.statusCode, error: `HTTP ${res.statusCode}: ${msg}` })
+            }
+          })
+        }
+      )
+
+      req.on('error', (err) => {
+        resolve({ ok: false, error: `请求失败: ${err.message}` })
+      })
+      req.on('timeout', () => {
+        req.destroy()
+        resolve({ ok: false, error: '请求超时（10s）' })
+      })
+
+      req.end()
+    })
   }
 
   delete(id: string): boolean {
