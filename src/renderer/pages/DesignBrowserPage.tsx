@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import type {
   DesignCell,
@@ -8,6 +8,56 @@ import type {
   DesignSignalTrace
 } from '@moonglass/design-browser-engine'
 import type { ChipProject } from '@shared/types'
+
+const MIN_HIERARCHY_WIDTH = 180
+const MAX_HIERARCHY_WIDTH = 480
+const MIN_INSPECTOR_WIDTH = 280
+const MAX_INSPECTOR_WIDTH = 640
+
+function savedWidth(key: string, fallback: number): number {
+  const value = Number(window.localStorage.getItem(key))
+  return Number.isFinite(value) && value > 0 ? value : fallback
+}
+
+function ColumnResizeHandle({
+  onDrag,
+  label
+}: {
+  onDrag: (deltaX: number) => void
+  label: string
+}): React.JSX.Element {
+  const dragging = useRef(false)
+
+  return (
+    <div
+      role="separator"
+      aria-orientation="vertical"
+      aria-label={label}
+      onMouseDown={(event) => {
+        event.preventDefault()
+        dragging.current = true
+        document.body.style.cursor = 'col-resize'
+        document.body.style.userSelect = 'none'
+        const move = (moveEvent: MouseEvent): void => {
+          if (dragging.current) onDrag(moveEvent.movementX)
+        }
+        const up = (): void => {
+          dragging.current = false
+          document.body.style.cursor = ''
+          document.body.style.userSelect = ''
+          document.removeEventListener('mousemove', move)
+          document.removeEventListener('mouseup', up)
+        }
+        document.addEventListener('mousemove', move)
+        document.addEventListener('mouseup', up)
+      }}
+      className="group relative cursor-col-resize bg-zinc-300 hover:bg-blue-400 active:bg-blue-500"
+    >
+      <div className="absolute inset-y-0 -left-1 -right-1" />
+      <div className="absolute left-1/2 top-1/2 h-10 w-0.5 -translate-x-1/2 -translate-y-1/2 bg-zinc-400 group-hover:bg-white" />
+    </div>
+  )
+}
 
 function HierarchyNode({
   node,
@@ -87,6 +137,19 @@ export function DesignBrowserPage(): React.JSX.Element {
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
+  const [hierarchyWidth, setHierarchyWidth] = useState(() =>
+    savedWidth('moonglass.designBrowser.hierarchyWidth', 260)
+  )
+  const [inspectorWidth, setInspectorWidth] = useState(() =>
+    savedWidth('moonglass.designBrowser.inspectorWidth', 360)
+  )
+
+  useEffect(() => {
+    window.localStorage.setItem('moonglass.designBrowser.hierarchyWidth', String(hierarchyWidth))
+  }, [hierarchyWidth])
+  useEffect(() => {
+    window.localStorage.setItem('moonglass.designBrowser.inspectorWidth', String(inspectorWidth))
+  }, [inspectorWidth])
 
   useEffect(() => {
     void Promise.all([
@@ -232,7 +295,12 @@ export function DesignBrowserPage(): React.JSX.Element {
               : '检测到多个可能的根模块，请选择 Top 后加载'}
         </div>
       ) : (
-        <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(480px,1fr)_360px]">
+        <div
+          className="grid min-h-0 flex-1"
+          style={{
+            gridTemplateColumns: `${hierarchyWidth}px 4px minmax(480px, 1fr) 4px ${inspectorWidth}px`
+          }}
+        >
           <aside className="min-h-0 overflow-auto border-r border-zinc-300 bg-white">
             <div className="sticky top-0 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-semibold text-zinc-600">
               DESIGN HIERARCHY
@@ -249,6 +317,15 @@ export function DesignBrowserPage(): React.JSX.Element {
               </div>
             )}
           </aside>
+
+          <ColumnResizeHandle
+            label="调整设计层次区域宽度"
+            onDrag={(deltaX) =>
+              setHierarchyWidth((width) =>
+                Math.min(MAX_HIERARCHY_WIDTH, Math.max(MIN_HIERARCHY_WIDTH, width + deltaX))
+              )
+            }
+          />
 
           <main className="min-h-0 overflow-auto bg-zinc-100 p-4">
             {selectedModule && (
@@ -358,6 +435,15 @@ export function DesignBrowserPage(): React.JSX.Element {
               </>
             )}
           </main>
+
+          <ColumnResizeHandle
+            label="调整 Inspector 区域宽度"
+            onDrag={(deltaX) =>
+              setInspectorWidth((width) =>
+                Math.min(MAX_INSPECTOR_WIDTH, Math.max(MIN_INSPECTOR_WIDTH, width - deltaX))
+              )
+            }
+          />
 
           <aside className="min-h-0 overflow-auto border-l border-zinc-300 bg-zinc-50">
             <div className="border-b border-zinc-200 bg-white px-3 py-2">
