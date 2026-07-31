@@ -6,9 +6,9 @@
  * 系统提示词经 `.pi/APPEND_SYSTEM.md` 注入（buildSystemPrompt 按阶段组装），
  * Provider 配置经桥接扩展 + MOONGLASS_PROVIDERS_JSON 环境变量注入。
  *
- * 会话模型：项目唯一会话文件 session.jsonl —— 阶段推进/回退、关闭重开都延续
- * 同一份对话历史；阶段切换需秒级重启进程（系统提示词仅启动时读取），但会话
- * 文件不变、对话无缝连续。用户可主动「新会话」（resetSession）放弃继承。
+ * 会话模型：每个项目以 projectId 隔离一个主会话和若干平行会话。阶段推进/回退、
+ * 关闭重开默认延续当前项目的主会话；阶段切换需重启进程以加载新系统提示词。
+ * 平行会话拥有独立历史，可在同一项目内创建和切换。
  *
  * TODO(Phase 4): 芯片工具集以 pi 扩展注册；按阶段限制工具白名单
  *                （当前使用 pi 默认的 read/write/edit/bash 四工具，不做限制）。
@@ -16,8 +16,9 @@
  */
 
 import { app } from 'electron'
+import { randomUUID } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, Phase } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
@@ -505,9 +506,8 @@ argument-hint: "<模块名>"
   }
 
   /**
-   * 创建平行会话（不关闭当前会话）。
-   * 利用 pi RPC 的 new_session 命令创建新会话文件，同一 pi 进程管理多个会话。
-   * 新会话独立于老会话，可通过 switchSession 切换。
+   * 创建平行会话并切换到该会话。旧会话文件保留，可随时切回。
+   * MoonGlass 先持久化合法的空白会话，避免 Pi 在首条消息前不落盘。
    */
   async resetSession(projectId: string, sessionName?: string): Promise<AgentSessionInfo> {
     const session = this.sessions.get(projectId)
@@ -516,33 +516,60 @@ argument-hint: "<模块名>"
       return this.ensureSession(projectId)
     }
 
-    const name = sessionName ?? `review-${Date.now().toString(36)}`
-    const newFile = this.sessionFilePath(projectId, name)
+    const name = sessionName?.trim() || `review-${Date.now().toString(36)}`
+    const safeName = name.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'session'
+    let fileName = `session-${safeName}.jsonl`
+    let newFile = join(this.sessionDir(projectId), fileName)
+    if (existsSync(newFile)) {
+      fileName = `session-${safeName}-${Date.now().toString(36)}.jsonl`
+      newFile = join(this.sessionDir(projectId), fileName)
+    }
+    const now = new Date().toISOString()
+    const headerId = randomUUID()
+    const infoId = randomUUID().slice(0, 8)
+    writeFileSync(
+      newFile,
+      [
+        JSON.stringify({
+          type: 'session',
+          version: 3,
+          id: headerId,
+          timestamp: now,
+          cwd: this.workspaceDir(projectId)
+        }),
+        JSON.stringify({
+          type: 'session_info',
+          id: infoId,
+          parentId: null,
+          timestamp: now,
+          name: `${name} (${session.phase})`
+        })
+      ].join('\n') + '\n',
+      'utf-8'
+    )
 
-    // 利用 pi RPC new_session 创建新会话（不重启进程）
     const result = await session.client
-      .command<{ cancelled?: boolean }>({
-        type: 'new_session',
-        parentSession: session.currentSessionFile
-      })
-      .catch(() => ({ cancelled: false }))
+      .command<{ cancelled?: boolean }>({ type: 'switch_session', sessionPath: newFile })
 
     if (result.cancelled) {
+      rmSync(newFile, { force: true })
       throw new Error('[agent-service] 创建新会话被取消')
     }
 
-    // 更新当前会话记录
-    session.currentSessionFile = newFile
-    session.activeSessionName = name
-
-    // 设置会话展示名
-    await session.client
-      .command({ type: 'set_session_name', name: `${name} (${session.phase})` })
-      .catch(() => undefined)
-
     const state = await session.client
-      .command<{ isStreaming?: boolean }>({ type: 'get_state' })
-      .catch(() => ({ isStreaming: false }))
+      .command<{ isStreaming?: boolean; sessionFile?: string }>({ type: 'get_state' })
+    if (!state.sessionFile) {
+      throw new Error('[agent-service] Pi 未返回新会话文件')
+    }
+    session.currentSessionFile = resolve(state.sessionFile)
+    session.activeSessionName = fileName.slice(0, -'.jsonl'.length)
+    if (session.selectedModel) {
+      await this.setModelInternal(
+        session,
+        session.selectedModel.providerId,
+        session.selectedModel.modelId
+      )
+    }
 
     return {
       projectId,
@@ -570,19 +597,27 @@ argument-hint: "<模块名>"
 
       for (const f of files) {
         if (!f.endsWith('.jsonl') || f.endsWith('.bak.jsonl')) continue
-        const name = f.replace(/^session-?|\.jsonl$/g, '') || 'main'
+        const name = f === 'session.jsonl' ? 'main' : f.slice(0, -'.jsonl'.length)
         const filePath = join(dir, f)
         let messageCount = 0
+        let label = name === 'main' ? '主会话' : name
         try {
           const { readFileSync } = require('node:fs') as typeof import('node:fs')
           const content = readFileSync(filePath, 'utf-8')
-          messageCount = content.trim().split(/\n/).filter(l => l.trim().length > 0).length
+          const lines = content.trim().split(/\n/).filter(l => l.trim().length > 0)
+          for (const line of lines) {
+            try {
+              const entry = JSON.parse(line) as { type?: string; name?: string }
+              if (entry.type === 'session_info' && entry.name) label = entry.name
+              if (entry.type === 'message') messageCount += 1
+            } catch { /* 忽略损坏的单行，保留文件名作为展示名 */ }
+          }
         } catch { /* 忽略 */ }
         summaries.push({
           name,
           file: filePath,
-          label: name === 'main' ? '主会话' : name.replace(/^review-/, '审查 '),
-          messageCount: Math.max(0, messageCount - 1), // 减掉 header 行
+          label,
+          messageCount,
           isActive: active ? active.currentSessionFile === filePath : false
         })
       }
@@ -600,18 +635,19 @@ argument-hint: "<模块名>"
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 进程未建立')
 
-    const targetFile = this.sessionFilePath(projectId, sessionName)
+    const targetFile = sessionName === 'main'
+      ? this.sessionFilePath(projectId)
+      : join(this.sessionDir(projectId), `${sessionName}.jsonl`)
     if (!existsSync(targetFile)) throw new Error(`[agent-service] 会话文件不存在: ${targetFile}`)
 
     const result = await session.client
       .command<{ cancelled?: boolean }>({ type: 'switch_session', sessionPath: targetFile })
-      .catch(() => ({ cancelled: false }))
 
     if (result.cancelled) {
       throw new Error('[agent-service] 切换会话被取消')
     }
 
-    session.currentSessionFile = targetFile
+    session.currentSessionFile = resolve(targetFile)
     session.activeSessionName = sessionName
 
     const state = await session.client

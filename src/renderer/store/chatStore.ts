@@ -20,8 +20,8 @@ interface ChatState {
   send: (text: string) => Promise<void>
   abort: () => Promise<void>
   setModel: (providerId: string, modelId: string) => Promise<void>
-  /** 新会话：不继承原对话历史 */
-  reset: () => Promise<void>
+  createParallel: (name?: string) => Promise<void>
+  switchSession: (name: string) => Promise<void>
 }
 
 let eventSubscribed = false
@@ -46,6 +46,9 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (!eventSubscribed) {
         window.moonglass.agent.onEvent(handleEvent)
         eventSubscribed = true
+      }
+      if (get().projectId !== projectId) {
+        set({ projectId, sessionInfo: null, messages: [], streaming: false, streamTargetId: null })
       }
       let info: AgentSessionInfo
       try {
@@ -116,14 +119,29 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
     },
 
-    reset: async () => {
+    createParallel: async (name) => {
       const { projectId } = get()
       if (!projectId) return
       try {
-        const info = await window.moonglass.agent.resetSession(projectId)
-        set({ sessionInfo: info, messages: [], streaming: false, streamTargetId: null })
+        const info = await window.moonglass.agent.resetSession(projectId, name)
+        const messages = await window.moonglass.agent.getMessages(projectId)
+        set({ sessionInfo: info, messages, streaming: false, streamTargetId: null })
       } catch (err) {
         pushError(set, err)
+        throw err
+      }
+    },
+
+    switchSession: async (name) => {
+      const { projectId } = get()
+      if (!projectId) return
+      try {
+        const info = await window.moonglass.agent.switchSession(projectId, name)
+        const messages = await window.moonglass.agent.getMessages(projectId)
+        set({ sessionInfo: info, messages, streaming: info.isStreaming, streamTargetId: null })
+      } catch (err) {
+        pushError(set, err)
+        throw err
       }
     }
   }
