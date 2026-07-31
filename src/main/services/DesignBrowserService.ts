@@ -29,7 +29,8 @@ function collectRtl(dir: string): string[] {
 
 interface DesignManifest {
   topModule?: string
-  filelist?: string
+  filelist?: string | string[]
+  files?: string[]
   includeDirs?: string[]
   defines?: string[]
 }
@@ -48,28 +49,55 @@ function readManifest(rtlDir: string): DesignManifest {
   }
 }
 
-function parseFilelist(rtlDir: string, manifest: DesignManifest): {
+function resolveDesignPath(workspaceDir: string, rtlDir: string, value: string): string {
+  if (/^(?:[A-Za-z]:[\\/]|\/)/.test(value)) return resolve(value)
+  const normalized = value.replaceAll('\\', '/')
+  return normalized.startsWith('rtl/')
+    ? resolve(workspaceDir, normalized)
+    : resolve(rtlDir, normalized)
+}
+
+function stringList(value: unknown): string[] {
+  if (typeof value === 'string') return [value]
+  if (Array.isArray(value)) return value.flat(Infinity).filter((item): item is string => typeof item === 'string')
+  return []
+}
+
+function parseFilelist(workspaceDir: string, rtlDir: string, manifest: DesignManifest): {
   files: string[]
   includeDirs: string[]
   defines: string[]
 } {
-  const filelistPath = resolve(rtlDir, manifest.filelist ?? 'filelist.f')
+  const manifestFiles = Array.isArray(manifest.filelist)
+    ? stringList(manifest.filelist)
+    : stringList(manifest.files)
+  const includeDirs = stringList(manifest.includeDirs)
+    .map((dir) => resolveDesignPath(workspaceDir, rtlDir, dir))
+  const defines = stringList(manifest.defines)
+  if (manifestFiles.length > 0) {
+    return {
+      files: manifestFiles.map((file) => resolveDesignPath(workspaceDir, rtlDir, file)),
+      includeDirs,
+      defines
+    }
+  }
+
+  const filelistName = typeof manifest.filelist === 'string' ? manifest.filelist : 'filelist.f'
+  const filelistPath = resolveDesignPath(workspaceDir, rtlDir, filelistName)
   if (!existsSync(filelistPath)) {
     return {
       files: collectRtl(rtlDir),
-      includeDirs: (manifest.includeDirs ?? []).map((dir) => resolve(rtlDir, dir)),
-      defines: manifest.defines ?? []
+      includeDirs,
+      defines
     }
   }
   const files: string[] = []
-  const includeDirs = (manifest.includeDirs ?? []).map((dir) => resolve(rtlDir, dir))
-  const defines = [...(manifest.defines ?? [])]
   for (const sourceLine of readFileSync(filelistPath, 'utf-8').split(/\r?\n/)) {
     const line = sourceLine.replace(/\/\/.*$/, '').replace(/#.*$/, '').trim()
     if (!line) continue
-    if (line.startsWith('+incdir+')) includeDirs.push(resolve(rtlDir, line.slice(8)))
+    if (line.startsWith('+incdir+')) includeDirs.push(resolveDesignPath(workspaceDir, rtlDir, line.slice(8)))
     else if (line.startsWith('+define+')) defines.push(line.slice(8))
-    else if (!line.startsWith('+')) files.push(resolve(rtlDir, line))
+    else if (!line.startsWith('+')) files.push(resolveDesignPath(workspaceDir, rtlDir, line))
   }
   return { files: files.length > 0 ? files : collectRtl(rtlDir), includeDirs, defines }
 }
@@ -134,7 +162,7 @@ export class DesignBrowserService implements MoonGlassService {
   async elaborate(projectId: string, workspaceDir: string, topModule: string): Promise<DesignDatabase> {
     const rtlDir = join(workspaceDir, 'rtl')
     const manifest = readManifest(rtlDir)
-    const inputs = parseFilelist(rtlDir, manifest)
+    const inputs = parseFilelist(workspaceDir, rtlDir, manifest)
     const projectCache = join(this.cacheRoot, projectId)
     mkdirSync(projectCache, { recursive: true })
     const rawJson = join(projectCache, `${topModule}.yosys.json`)
