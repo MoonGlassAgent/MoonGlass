@@ -24,9 +24,9 @@ import type { DbService } from './DbService.ts'
 
 /** 阶段跳转门禁规则表（规格书 §3.1） */
 export const GATE_RULES: readonly GateRule[] = [
-  { from: 'REQ', to: 'SPEC', precondition: '需求文档 ≥1 份', autoChecks: ['doc-completeness', 'rtm-exists'] },
-  { from: 'SPEC', to: 'ARCH', precondition: '模块规格书 + 接口定义', autoChecks: ['interface-signals-nonempty', 'module-partition-sane'] },
-  { from: 'ARCH', to: 'RTL', precondition: '架构框图 + 信号清单', autoChecks: ['block-diagram-parsable', 'clock-reset-defined'] },
+  { from: 'REQ', to: 'SPEC', precondition: '需求文档已建立', autoChecks: ['doc-completeness', 'rtm-exists'] },
+  { from: 'SPEC', to: 'ARCH', precondition: '需求定义可用 + RTM 可追溯', autoChecks: ['requirements-usable', 'rtm-complete'] },
+  { from: 'ARCH', to: 'RTL', precondition: '架构、接口、模块划分与时钟复位方案可用', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
   { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
   { from: 'VERIF', to: 'QA', precondition: '覆盖率报告', autoChecks: ['line-coverage-gte-90', 'func-coverage-gte-80', 'sim-passed'] },
   { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed'] }
@@ -43,8 +43,10 @@ function inferCheckType(checkId: string): 'lint' | 'cdc' | 'rdc' | 'synthesis' |
   return 'custom'
 }
 const CHECK_NAMES: Record<string, string> = {
-  'doc-completeness': '文档完整性',
+  'doc-completeness': '需求文档已建立',
   'rtm-exists': '需求追溯矩阵（RTM）存在',
+  'requirements-usable': '需求定义可用于架构设计',
+  'rtm-complete': '需求追溯矩阵（RTM）完备',
   'interface-signals-nonempty': '接口信号清单非空',
   'module-partition-sane': '模块划分合理性',
   'block-diagram-parsable': '架构框图可解析',
@@ -115,29 +117,6 @@ interface DocumentInspection {
   issues: string[]
 }
 
-function findUnresolvedMarkers(content: string): Array<{ line: number; marker: string; text: string }> {
-  const resolvedStatus = /(?:✅|已关闭|已确定|已解决|已完成|已评审|resolved|closed|completed)/i
-  const unresolved: Array<{ line: number; marker: string; text: string }> = []
-  for (const [index, sourceLine] of content.split(/\r?\n/).entries()) {
-    const line = sourceLine.trim()
-    if (!line || resolvedStatus.test(line)) continue
-
-    // TBD-001 是追踪 ID，"TBD ID" 是表头；两者本身不代表内容未完成。
-    const withoutTbdIds = line
-      .replace(/\bTBD-\d+\b/gi, '')
-      .replace(/\bTBD\s+ID\b/gi, '')
-    const marker = /\b(TODO|TBD|PLACEHOLDER)\b/i.exec(withoutTbdIds)?.[1]
-    if (marker) {
-      unresolved.push({
-        line: index + 1,
-        marker: marker.toUpperCase(),
-        text: line.slice(0, 160)
-      })
-    }
-  }
-  return unresolved
-}
-
 function inspectDocument(ctx: GateCheckContext, relativePath: string): DocumentInspection {
   const path = join(ctx.workspaceDir, ...relativePath.split('/'))
   if (!existsSync(path)) {
@@ -151,18 +130,6 @@ function inspectDocument(ctx: GateCheckContext, relativePath: string): DocumentI
   const issues: string[] = []
   if (content.length < 80) {
     issues.push(`有效内容过少（当前 ${content.length} 个字符，至少需要 80 个字符）`)
-  }
-  const unresolvedMarkers = findUnresolvedMarkers(content)
-  if (unresolvedMarkers.length > 0) {
-    issues.push(
-      [
-        `发现 ${unresolvedMarkers.length} 处未闭环标记：`,
-        ...unresolvedMarkers.map(
-          (item) => `第 ${item.line} 行 [${item.marker}] ${item.text}`
-        ),
-        '请完成内容，或在同一行标记“已关闭/已确定/✅”并保留追踪记录'
-      ].join('\n    ')
-    )
   }
   return { path: relativePath, content, issues }
 }
@@ -182,6 +149,78 @@ function requireFiles(paths: string[], severity: GateCheckResult['severity'] = '
       ? makeResult(checkId, true, severity, `通过：${paths.join('、')}`)
       : makeResult(checkId, false, severity, `检查发现 ${failed.length} 个文档问题：\n${details.join('\n')}`)
   }
+}
+
+const REQUIREMENT_ID = /\b(?:REQ(?:-[A-Z]+)?|FR|NFR|PERF|IF|SEC)[-_]?\d+\b/gi
+
+function requirementIds(content: string): Set<string> {
+  return new Set((content.match(REQUIREMENT_ID) ?? []).map((id) => id.toUpperCase().replace('_', '-')))
+}
+
+async function requirementsUsable(
+  ctx: GateCheckContext,
+  checkId: string
+): Promise<GateCheckResult> {
+  const document = inspectDocument(ctx, 'docs/02_requirements/product_requirements.md')
+  if (document.issues.length > 0) {
+    return makeResult(
+      checkId,
+      false,
+      'error',
+      `需求文档不可用于架构设计：\n• ${document.path}\n${document.issues.map((issue) => `  - ${issue}`).join('\n')}`
+    )
+  }
+  const ids = requirementIds(document.content)
+  return makeResult(
+    checkId,
+    true,
+    'error',
+    ids.size > 0
+      ? `通过：需求文档存在有效内容，识别到 ${ids.size} 个稳定需求 ID`
+      : '通过：需求文档存在有效内容；未识别到标准需求 ID，已作为非阻断遗留事项记录'
+  )
+}
+
+async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  const rtm = inspectDocument(ctx, 'docs/02_requirements/requirements_traceability.md')
+  if (rtm.issues.length > 0) {
+    return makeResult(
+      checkId,
+      false,
+      'error',
+      `RTM 不可用：\n• ${rtm.path}\n${rtm.issues.map((issue) => `  - ${issue}`).join('\n')}`
+    )
+  }
+  const tableRows = rtm.content
+    .split(/\r?\n/)
+    .filter((line) => /^\s*\|.*\|\s*$/.test(line))
+    .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()))
+    .filter((cells) => !cells.every((cell) => /^:?-{3,}:?$/.test(cell)))
+    .filter((cells) => !cells.some((cell) => /^(?:需求|requirement)\s*(?:id|编号)?$/i.test(cell)))
+  if (tableRows.length === 0) {
+    return makeResult(checkId, false, 'error', 'RTM 未识别到有效的 Markdown 追溯表行')
+  }
+
+  const requirements = inspectDocument(ctx, 'docs/02_requirements/product_requirements.md')
+  const requiredIds = requirementIds(requirements.content)
+  const tracedIds = requirementIds(rtm.content)
+  const missing = [...requiredIds].filter((id) => !tracedIds.has(id))
+  if (missing.length > 0) {
+    return makeResult(
+      checkId,
+      false,
+      'error',
+      `RTM 缺少 ${missing.length} 个需求 ID 的追溯关系：${missing.slice(0, 12).join('、')}${missing.length > 12 ? '…' : ''}`
+    )
+  }
+  return makeResult(
+    checkId,
+    true,
+    'error',
+    requiredIds.size > 0
+      ? `通过：RTM 表格有效，${requiredIds.size} 个需求 ID 均可追溯`
+      : '通过：RTM 表格存在有效追溯内容；需求文档尚未采用标准 ID，不阻断进入架构阶段'
+  )
 }
 
 async function architectureDiagramParsable(
@@ -422,10 +461,11 @@ async function cdcPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
 /** 检查器注册表：checkId → 真实检查实现；未注册的走「未接入」占位 */
 const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promise<GateCheckResult>> = {
   'doc-completeness': requireFiles([
-    'docs/01_project/project_charter.md',
     'docs/02_requirements/product_requirements.md'
   ], 'warning'),
   'rtm-exists': requireFiles(['docs/02_requirements/requirements_traceability.md'], 'warning'),
+  'requirements-usable': requirementsUsable,
+  'rtm-complete': rtmComplete,
   'interface-signals-nonempty': requireFiles(['docs/03_design/interface_spec.md']),
   'module-partition-sane': requireFiles(['docs/03_design/microarchitecture.md']),
   'block-diagram-parsable': architectureDiagramParsable,
