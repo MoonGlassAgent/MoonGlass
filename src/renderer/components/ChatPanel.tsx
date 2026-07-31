@@ -23,6 +23,139 @@ interface ChatPanelProps {
   phase: Phase
 }
 
+export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Element {
+  const { sessionInfo, createParallel, switchSession } = useChatStore()
+  const [sessions, setSessions] = useState<SessionInfo[]>([])
+  const [showDialog, setShowDialog] = useState(false)
+  const [name, setName] = useState('review')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+
+  const refresh = useCallback(async () => {
+    try {
+      setSessions(await window.moonglass.agent.listSessions(projectId))
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    if (sessionInfo?.projectId === projectId && sessionInfo.providersReady) void refresh()
+  }, [projectId, refresh, sessionInfo])
+
+  const select = async (sessionName: string): Promise<void> => {
+    if (busy || sessions.find((session) => session.name === sessionName)?.isActive) return
+    setBusy(true)
+    setError('')
+    try {
+      await switchSession(sessionName)
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const create = async (): Promise<void> => {
+    if (busy) return
+    setBusy(true)
+    setError('')
+    try {
+      await createParallel(name.trim() || undefined)
+      await refresh()
+      setShowDialog(false)
+      setName('review')
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  return (
+    <>
+      {sessions.map((session) => (
+        <button
+          key={session.name}
+          type="button"
+          disabled={busy}
+          onClick={() => void select(session.name)}
+          title={`${session.label}，${session.messageCount} 条消息`}
+          className={`max-w-44 shrink-0 truncate rounded-t border-x border-t px-3 py-1.5 text-xs disabled:opacity-50 ${
+            session.isActive
+              ? 'border-blue-300 bg-blue-50 font-medium text-blue-700'
+              : 'border-transparent text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800'
+          }`}
+        >
+          {session.name === 'main' ? '主会话' : session.label.replace(/\s*\([^)]*\)$/, '')}
+        </button>
+      ))}
+      <button
+        type="button"
+        onClick={() => {
+          setError('')
+          setShowDialog(true)
+        }}
+        title="新建独立的平行会话"
+        className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-base text-zinc-500 hover:bg-zinc-100 hover:text-blue-700"
+      >
+        +
+      </button>
+      {error && !showDialog && <span className="shrink-0 text-xs text-red-600">{error}</span>}
+
+      {showDialog && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget && !busy) setShowDialog(false)
+          }}
+        >
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="parallel-session-title"
+            className="w-full max-w-sm rounded-md border border-zinc-300 bg-white p-4 shadow-xl"
+          >
+            <h2 id="parallel-session-title" className="text-sm font-semibold text-zinc-900">新建平行会话</h2>
+            <p className="mt-1 text-xs text-zinc-500">新会话属于当前项目，拥有独立的消息历史。</p>
+            <input
+              autoFocus
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void create()
+                if (event.key === 'Escape' && !busy) setShowDialog(false)
+              }}
+              placeholder="会话名称（可留空）"
+              className="mt-3 w-full rounded border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
+            />
+            {error && <p className="mt-2 whitespace-pre-wrap text-xs text-red-600">{error}</p>}
+            <div className="mt-4 flex justify-end gap-2">
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => setShowDialog(false)}
+                className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 disabled:opacity-50"
+              >
+                取消
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                onClick={() => void create()}
+                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              >
+                {busy ? '创建中…' : '创建'}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  )
+}
+
 export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Element {
   const {
     sessionInfo,
@@ -31,26 +164,12 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     ensure,
     send,
     abort,
-    setModel,
-    createParallel,
-    switchSession
+    setModel
   } = useChatStore()
   const [input, setInput] = useState('')
   const [providers, setProviders] = useState<LlmProviderConfig[]>([])
   const [ensuring, setEnsuring] = useState(false)
-  const [showNewSession, setShowNewSession] = useState(false)
-  const [newSessionName, setNewSessionName] = useState('review')
-  const [sessionBusy, setSessionBusy] = useState(false)
-  const [sessionError, setSessionError] = useState('')
-  const [allSessions, setAllSessions] = useState<SessionInfo[]>([])
   const bottomRef = useRef<HTMLDivElement>(null)
-
-  const refreshSessions = useCallback(async () => {
-    try {
-      const list = await window.moonglass.agent.listSessions(projectId)
-      setAllSessions(list)
-    } catch { /* 会话操作错误由聊天状态展示 */ }
-  }, [projectId])
 
   useEffect(() => {
     setEnsuring(true)
@@ -65,30 +184,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
-  useEffect(() => {
-    if (sessionInfo?.providersReady) void refreshSessions()
-  }, [sessionInfo?.providersReady, sessionInfo?.selectedModel, refreshSessions])
 
   const handleSend = (): void => {
     if (!input.trim() || streaming) return
     void send(input)
     setInput('')
-  }
-
-  const handleCreateParallel = async (): Promise<void> => {
-    if (sessionBusy) return
-    setSessionBusy(true)
-    setSessionError('')
-    try {
-      await createParallel(newSessionName.trim() || undefined)
-      await refreshSessions()
-      setShowNewSession(false)
-      setNewSessionName('review')
-    } catch (error) {
-      setSessionError(error instanceof Error ? error.message : String(error))
-    } finally {
-      setSessionBusy(false)
-    }
   }
 
   // 未配置 Provider 的引导
@@ -120,44 +220,9 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           </span>
           {ensuring && <span className="text-xs text-zinc-400">会话启动中…</span>}
 
-          {/* 平行会话切换 */}
-          {allSessions.length > 1 && (
-            <select
-              value={allSessions.find((s) => s.isActive)?.name ?? ''}
-              onChange={async (e) => {
-                const name = e.target.value
-                if (name && name !== allSessions.find((s) => s.isActive)?.name) {
-                  try {
-                    await switchSession(name)
-                    await refreshSessions()
-                  } catch (err) {
-                    console.error('切换会话失败', err)
-                  }
-                }
-              }}
-              className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-600 max-w-32"
-              title="切换会话"
-            >
-              {allSessions.map((s) => (
-                <option key={s.name} value={s.name}>
-                  {s.isActive ? '📌 ' : '🔄 '}{s.label} ({s.messageCount}条)
-                </option>
-              ))}
-            </select>
-          )}
         </div>
 
         <div className="flex items-center gap-2">
-          <button
-            onClick={() => {
-              setSessionError('')
-              setShowNewSession(true)
-            }}
-            title="创建平行会话（不关闭当前会话，新会话独立并行）"
-            className="rounded border border-zinc-300 px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100 whitespace-nowrap"
-          >
-            ＋ 平行会话
-          </button>
           <select
           value={sessionInfo?.selectedModel ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId]) : ''}
           onChange={(e) => {
@@ -181,57 +246,6 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         </select>
         </div>
       </div>
-
-      {showNewSession && (
-        <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget && !sessionBusy) setShowNewSession(false)
-          }}
-        >
-          <div
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="parallel-session-title"
-            className="w-full max-w-sm rounded-md border border-zinc-300 bg-white p-4 shadow-xl"
-          >
-            <h2 id="parallel-session-title" className="text-sm font-semibold text-zinc-900">
-              新建平行会话
-            </h2>
-            <p className="mt-1 text-xs text-zinc-500">新会话属于当前项目，不继承主会话消息。</p>
-            <input
-              autoFocus
-              value={newSessionName}
-              onChange={(event) => setNewSessionName(event.target.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void handleCreateParallel()
-                if (event.key === 'Escape' && !sessionBusy) setShowNewSession(false)
-              }}
-              placeholder="会话名称（可留空）"
-              className="mt-3 w-full rounded border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
-            />
-            {sessionError && <p className="mt-2 whitespace-pre-wrap text-xs text-red-600">{sessionError}</p>}
-            <div className="mt-4 flex justify-end gap-2">
-              <button
-                type="button"
-                disabled={sessionBusy}
-                onClick={() => setShowNewSession(false)}
-                className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 disabled:opacity-50"
-              >
-                取消
-              </button>
-              <button
-                type="button"
-                disabled={sessionBusy}
-                onClick={() => void handleCreateParallel()}
-                className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-              >
-                {sessionBusy ? '创建中…' : '创建'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
 
       {/* 消息列表 */}
       <div className="flex-1 overflow-y-auto p-4">

@@ -84,6 +84,23 @@ code.language-verilog .token.constant {
   color: #d97706 !important;  /* `define 棕色 */
 }
 
+.project-source code[class*='language-'] {
+  display: block;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  text-shadow: none !important;
+}
+
+.project-source .token {
+  background: transparent !important;
+  text-shadow: none !important;
+}
+
 /* RTL Design Browser uses a self-contained dark editor theme. */
 .rtl-source {
   color: #d4d4d8;

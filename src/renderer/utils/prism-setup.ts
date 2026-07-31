@@ -31,4 +31,53 @@ import markup from 'prismjs/components/prism-markup'
 // eslint-disable-next-line @typescript-eslint/no-unused-vars
 import cpp from 'prismjs/components/prism-cpp'
 
+const fallbackVerilog: Prism.Grammar = {
+  comment: [
+    { pattern: /\/\*[\s\S]*?\*\//, greedy: true },
+    { pattern: /\/\/.*/, greedy: true }
+  ],
+  string: { pattern: /"(?:\\.|[^"\\])*"/, greedy: true },
+  keyword:
+    /\b(?:always|always_comb|always_ff|always_latch|assign|begin|case|casex|casez|default|else|end|endcase|endfunction|endmodule|endtask|for|function|generate|if|inout|input|integer|localparam|logic|module|output|parameter|reg|signed|task|wire)\b/,
+  number: /\b(?:\d+'[sS]?[bBoOdDhH][\da-fA-F_xXzZ?]+|\d+(?:\.\d+)?)\b/,
+  operator: /(?:===?|!==?|&&|\|\||<<<?|>>>?|[-+*/%&|^~!]=?|[<>]=?)/,
+  punctuation: /[{}[\];(),.:#@]/
+}
+
+const fallbackPython: Prism.Grammar = {
+  comment: /#.*/,
+  string: { pattern: /(?:'''[\s\S]*?'''|"""[\s\S]*?"""|'(?:\\.|[^'\\])*'|"(?:\\.|[^"\\])*")/, greedy: true },
+  keyword: /\b(?:and|as|assert|async|await|break|class|continue|def|del|elif|else|except|False|finally|for|from|global|if|import|in|is|lambda|None|not|or|pass|raise|return|True|try|while|with|yield)\b/,
+  number: /\b(?:0[xob][\da-f]+|\d+(?:\.\d+)?)\b/i,
+  operator: /(?:\*\*|\/\/|:=|[-+*/%@&|^~<>]=?|==|!=)/,
+  punctuation: /[{}[\];(),.:]/
+}
+
+const fallbackJson: Prism.Grammar = {
+  property: { pattern: /(^|[{,]\s*)"(?:\\.|[^"\\])*"(?=\s*:)/, lookbehind: true, greedy: true },
+  string: { pattern: /"(?:\\.|[^"\\])*"/, greedy: true },
+  comment: /\/\/.*|\/\*[\s\S]*?\*\//,
+  number: /-?\b\d+(?:\.\d+)?(?:e[+-]?\d+)?\b/i,
+  boolean: /\b(?:false|true)\b/,
+  null: { pattern: /\bnull\b/, alias: 'keyword' },
+  punctuation: /[{}[\],]/,
+  operator: /:/
+}
+
+function escapeHtml(value: string): string {
+  return value.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+}
+
+export function highlightCode(code: string, language: string): string {
+  const fallback = language === 'verilog'
+    ? fallbackVerilog
+    : language === 'python'
+      ? fallbackPython
+      : language === 'json'
+        ? fallbackJson
+        : undefined
+  const grammar = Prism.languages[language] ?? fallback
+  return grammar ? Prism.highlight(code, grammar, language) : escapeHtml(code)
+}
+
 export default Prism

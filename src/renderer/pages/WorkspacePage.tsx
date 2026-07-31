@@ -22,9 +22,10 @@ import {
   type Phase
 } from '@shared/types'
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
-import { ChatPanel } from '../components/ChatPanel'
+import { ChatPanel, SessionTabs } from '../components/ChatPanel'
 import { FileTree } from '../components/FileTree'
 import { useChatStore } from '../store/chatStore'
+import { highlightCode } from '../utils/prism-setup'
 
 const BOTTOM_TABS = ['📊 Lint', '🔬 仿真', '⚙ 综合', '📝 日志'] as const
 const MIN_SIDEBAR = 140
@@ -154,7 +155,6 @@ export function WorkspacePage(): React.JSX.Element {
   const [verifLog, setVerifLog] = useState<string[]>([])
   const agentStreaming = useChatStore((s) => s.streaming)
   const sendAgentPrompt = useChatStore((s) => s.send)
-  const fileViewerRef = useRef<HTMLDivElement>(null)
 
   const reload = useCallback(async () => {
     setProject(await window.moonglass.project.get(projectId))
@@ -162,18 +162,6 @@ export function WorkspacePage(): React.JSX.Element {
 
   useEffect(() => { void reload() }, [reload])
   useEffect(() => { if (!agentStreaming) setTreeTick((t) => t + 1) }, [agentStreaming])
-
-  // Prism 语法高亮（使用预配置版本，含 verilog/perl/tcl/python/log 等组件）
-  useEffect(() => {
-    if (mainTab !== 'chat' && fileViewerRef.current) {
-      const timer = setTimeout(() => {
-        import('../utils/prism-setup').then((mod) => {
-          mod.default.highlightAllUnder(fileViewerRef.current!)
-        }).catch(() => {})
-      }, 50)
-      return () => clearTimeout(timer)
-    }
-  }, [mainTab, openFiles])
 
   const openFile = async (relPath: string): Promise<void> => {
     if (/\.(vcd|fst)$/i.test(relPath)) {
@@ -473,6 +461,7 @@ export function WorkspacePage(): React.JSX.Element {
               >
                 💬 对话
               </button>
+              <SessionTabs projectId={project.id} />
               {openFiles.map((f) => (
                 <span
                   key={f.path}
@@ -496,7 +485,7 @@ export function WorkspacePage(): React.JSX.Element {
 
               {/* 文件查看 */}
               {activeFile && (
-                <div className="flex h-full flex-col overflow-hidden p-3" ref={fileViewerRef}>
+                <div className="flex h-full flex-col overflow-hidden p-3">
                   <div className="mb-1 flex shrink-0 items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className={`inline-block rounded px-1.5 py-0.5 font-mono text-[10px] ${
@@ -525,8 +514,13 @@ export function WorkspacePage(): React.JSX.Element {
                       </button>
                     </div>
                   </div>
-                  <pre className={`min-h-0 flex-1 overflow-auto rounded border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs whitespace-pre-wrap language-${extToLang(activeFile.path)}`}>
-                    <code className={`language-${extToLang(activeFile.path)}`}>{activeFile.content}</code>
+                  <pre className={`project-source min-h-0 flex-1 overflow-auto rounded border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs whitespace-pre-wrap language-${extToLang(activeFile.path)}`}>
+                    <code
+                      className={`language-${extToLang(activeFile.path)}`}
+                      dangerouslySetInnerHTML={{
+                        __html: highlightCode(activeFile.content, extToLang(activeFile.path))
+                      }}
+                    />
                   </pre>
                   {activeFile.truncated && (
                     <p className="mt-1 shrink-0 text-xs text-zinc-400">（内容过大，仅显示前 256 KB）</p>
