@@ -3,16 +3,30 @@ import { Link, useParams } from '@tanstack/react-router'
 import type {
   DesignCell,
   DesignDatabase,
+  DesignEndpoint,
   DesignInstance,
   DesignModule,
   DesignSignalTrace
 } from '@moonglass/design-browser-engine'
 import type { ChipProject } from '@shared/types'
+import Prism from '../utils/prism-setup'
 
 const MIN_HIERARCHY_WIDTH = 180
 const MAX_HIERARCHY_WIDTH = 480
 const MIN_INSPECTOR_WIDTH = 280
 const MAX_INSPECTOR_WIDTH = 640
+const verilogGrammar = Prism.languages.verilog ?? {
+  comment: [
+    { pattern: /\/\*[\s\S]*?\*\//, greedy: true },
+    { pattern: /\/\/.*/, greedy: true }
+  ],
+  string: { pattern: /"(?:\\.|[^"\\])*"/, greedy: true },
+  keyword:
+    /\b(?:always|always_comb|always_ff|always_latch|assign|begin|case|casex|casez|default|else|end|endcase|endfunction|endmodule|endtask|for|function|generate|if|inout|input|integer|localparam|logic|module|output|parameter|reg|signed|task|wire)\b/,
+  number: /\b(?:\d+'[sS]?[bBoOdDhH][\da-fA-F_xXzZ?]+|\d+(?:\.\d+)?)\b/,
+  operator: /(?:===?|!==?|&&|\|\||<<<?|>>>?|[-+*/%&|^~!]=?|[<>]=?)/,
+  punctuation: /[{}[\];(),.:#@]/
+}
 
 function savedWidth(key: string, fallback: number): number {
   const value = Number(window.localStorage.getItem(key))
@@ -62,17 +76,23 @@ function ColumnResizeHandle({
 function HierarchyNode({
   node,
   selected,
-  onSelect
+  onSelect,
+  onOpenDefinition
 }: {
   node: DesignInstance
   selected: string
   onSelect: (node: DesignInstance) => void
+  onOpenDefinition: (node: DesignInstance) => void
 }): React.JSX.Element {
   return (
     <div>
       <button
         type="button"
         onClick={() => onSelect(node)}
+        onDoubleClick={(event) => {
+          event.stopPropagation()
+          onOpenDefinition(node)
+        }}
         className={`flex w-full items-center gap-2 px-2 py-1 text-left text-xs ${
           selected === node.path ? 'bg-blue-50 text-blue-700' : 'text-zinc-700 hover:bg-zinc-100'
         }`}
@@ -84,7 +104,13 @@ function HierarchyNode({
       {node.children.length > 0 && (
         <div className="ml-3 border-l border-zinc-200 pl-1">
           {node.children.map((child) => (
-            <HierarchyNode key={child.path} node={child} selected={selected} onSelect={onSelect} />
+            <HierarchyNode
+              key={child.path}
+              node={child}
+              selected={selected}
+              onSelect={onSelect}
+              onOpenDefinition={onOpenDefinition}
+            />
           ))}
         </div>
       )}
@@ -94,10 +120,12 @@ function HierarchyNode({
 
 function EndpointList({
   title,
-  items
+  items,
+  onSelect
 }: {
   title: string
   items: DesignSignalTrace['drivers']
+  onSelect: (endpoint: DesignEndpoint) => void
 }): React.JSX.Element {
   return (
     <div>
@@ -107,9 +135,15 @@ function EndpointList({
       ) : (
         <ul className="space-y-1">
           {items.map((item, index) => (
-            <li key={`${item.kind}-${item.name}-${item.pin}-${index}`} className="rounded border border-zinc-200 bg-white px-2 py-1 text-xs">
-              <span className="font-mono text-zinc-800">{item.name}.{item.pin}</span>
-              <span className="ml-2 text-zinc-400">{item.kind} · {item.direction}</span>
+            <li key={`${item.kind}-${item.name}-${item.pin}-${index}`}>
+              <button
+                type="button"
+                onClick={() => onSelect(item)}
+                className="w-full rounded border border-zinc-200 bg-white px-2 py-1 text-left text-xs hover:border-blue-400 hover:bg-blue-50"
+              >
+                <span className="font-mono text-zinc-800">{item.name}.{item.pin}</span>
+                <span className="ml-2 text-zinc-400">{item.cellType ?? item.kind} · {item.direction}</span>
+              </button>
             </li>
           ))}
         </ul>
@@ -133,6 +167,10 @@ export function DesignBrowserPage(): React.JSX.Element {
   const [selectedModuleName, setSelectedModuleName] = useState('')
   const [selectedTrace, setSelectedTrace] = useState<DesignSignalTrace | null>(null)
   const [selectedCell, setSelectedCell] = useState<DesignCell | null>(null)
+  const [endpointSummary, setEndpointSummary] = useState<{
+    kind: 'Driver' | 'Load'
+    items: DesignEndpoint[]
+  } | null>(null)
   const [source, setSource] = useState<{ file: string; line: number; content: string } | null>(null)
   const [query, setQuery] = useState('')
   const [loading, setLoading] = useState(false)
@@ -210,7 +248,39 @@ export function DesignBrowserPage(): React.JSX.Element {
     setSelectedModuleName(node.module)
     setSelectedTrace(null)
     setSelectedCell(null)
+    setEndpointSummary(null)
     void showSource(node.source)
+  }
+
+  const openInstanceDefinition = (node: DesignInstance): void => {
+    setSelectedPath(node.path)
+    setSelectedModuleName(node.module)
+    setSelectedTrace(null)
+    setSelectedCell(null)
+    setEndpointSummary(null)
+    void showSource(node.definitionSource)
+  }
+
+  const jumpToEndpoint = (endpoint: DesignEndpoint): void => {
+    if (endpoint.kind === 'cell') {
+      setSelectedCell(selectedModule?.cells.find((cell) => cell.name === endpoint.name) ?? null)
+    }
+    void showSource(endpoint.source)
+  }
+
+  const navigateTrace = (kind: 'Driver' | 'Load', trace = selectedTrace): void => {
+    if (!trace) return
+    const items = kind === 'Driver' ? trace.drivers : trace.loads
+    setEndpointSummary({ kind, items })
+    if (items.length === 1) jumpToEndpoint(items[0])
+  }
+
+  const selectSourceSignal = (name: string): void => {
+    const trace = selectedModule?.traces.find((candidate) => candidate.net === name)
+    if (!trace) return
+    setSelectedTrace(trace)
+    setSelectedCell(null)
+    navigateTrace('Driver', trace)
   }
 
   const elaborate = async (): Promise<void> => {
@@ -310,7 +380,12 @@ export function DesignBrowserPage(): React.JSX.Element {
               DESIGN HIERARCHY
             </div>
             <div className="py-1">
-              <HierarchyNode node={database.hierarchy} selected={selectedPath} onSelect={selectInstance} />
+              <HierarchyNode
+                node={database.hierarchy}
+                selected={selectedPath}
+                onSelect={selectInstance}
+                onOpenDefinition={openInstanceDefinition}
+              />
             </div>
             {database.diagnostics.length > 0 && (
               <div className="m-2 border-t border-zinc-200 pt-2">
@@ -460,8 +535,17 @@ export function DesignBrowserPage(): React.JSX.Element {
                   <p className="font-mono text-sm font-semibold">{selectedTrace.net}</p>
                   <p className="text-xs text-zinc-500">{selectedTrace.bits.length} bits</p>
                 </div>
-                <EndpointList title="DRIVERS" items={selectedTrace.drivers} />
-                <EndpointList title="LOADS / FANOUT" items={selectedTrace.loads} />
+                {endpointSummary && (
+                  <div className="border-l-2 border-blue-500 bg-blue-50 px-2 py-1.5 text-xs text-blue-800">
+                    {endpointSummary.items.length === 0
+                      ? `未找到 ${endpointSummary.kind}`
+                      : endpointSummary.items.length === 1
+                        ? `已定位 1 个 ${endpointSummary.kind}`
+                        : `找到 ${endpointSummary.items.length} 个 ${endpointSummary.kind}，请选择目标`}
+                  </div>
+                )}
+                <EndpointList title="DRIVERS" items={selectedTrace.drivers} onSelect={jumpToEndpoint} />
+                <EndpointList title="LOADS / FANOUT" items={selectedTrace.loads} onSelect={jumpToEndpoint} />
               </div>
             )}
             {selectedCell && (
@@ -482,13 +566,33 @@ export function DesignBrowserPage(): React.JSX.Element {
               </div>
             )}
             <div className="flex min-h-0 flex-1 flex-col p-3">
-              <div className="mb-2 flex items-center justify-between">
+              <div className="mb-2 flex items-center gap-1">
                 <h3 className="text-xs font-semibold text-zinc-600">SOURCE</h3>
-                {source && <span className="max-w-56 truncate text-[10px] text-zinc-400">{source.file}:{source.line}</span>}
+                <button
+                  type="button"
+                  disabled={!selectedTrace}
+                  onClick={() => navigateTrace('Driver')}
+                  className="ml-auto rounded border border-zinc-300 bg-white px-2 py-0.5 text-[10px] hover:bg-zinc-100 disabled:opacity-40"
+                >
+                  Driver
+                </button>
+                <button
+                  type="button"
+                  disabled={!selectedTrace}
+                  onClick={() => navigateTrace('Load')}
+                  className="rounded border border-zinc-300 bg-white px-2 py-0.5 text-[10px] hover:bg-zinc-100 disabled:opacity-40"
+                >
+                  Load
+                </button>
               </div>
+              {source && <div className="mb-1 truncate text-[10px] text-zinc-400">{source.file}:{source.line}</div>}
               {source ? (
                 <pre
                   ref={sourcePreRef}
+                  onDoubleClick={() => {
+                    const name = window.getSelection()?.toString().trim() ?? ''
+                    if (/^[A-Za-z_][A-Za-z0-9_$]*$/.test(name)) selectSourceSignal(name)
+                  }}
                   className="min-h-0 flex-1 overflow-auto overscroll-contain border border-zinc-300 bg-zinc-900 p-2 text-[11px] leading-5 text-zinc-200"
                 >
                   {sourceLines.map((line, index) => {
@@ -500,7 +604,14 @@ export function DesignBrowserPage(): React.JSX.Element {
                         className={lineNumber === source.line ? 'bg-amber-900/60 text-amber-100' : ''}
                       >
                         <span className="mr-3 inline-block w-8 select-none text-right text-zinc-500">{lineNumber}</span>
-                        {line || ' '}
+                        <code
+                          className="language-verilog"
+                          dangerouslySetInnerHTML={{
+                            __html: line
+                              ? Prism.highlight(line, verilogGrammar, 'verilog')
+                              : ' '
+                          }}
+                        />
                       </div>
                     )
                   })}

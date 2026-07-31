@@ -17,6 +17,8 @@ export interface DesignEndpoint {
   name: string
   pin: string
   direction: 'input' | 'output' | 'inout' | 'unknown'
+  source?: string
+  cellType?: string
 }
 
 export interface DesignSignalTrace {
@@ -49,6 +51,7 @@ export interface DesignInstance {
   module: string
   parentPath?: string
   source?: string
+  definitionSource?: string
   children: DesignInstance[]
 }
 
@@ -58,7 +61,7 @@ export interface DesignDiagnostic {
 }
 
 export interface DesignDatabase {
-  version: 1
+  version: 2
   topModule: string
   generatedAt: string
   sourceFiles: string[]

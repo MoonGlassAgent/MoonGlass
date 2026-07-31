@@ -94,7 +94,8 @@ function buildModule(
         kind: 'port',
         name: port.name,
         pin: port.name,
-        direction: port.direction
+        direction: port.direction,
+        source: net.source ?? sourceOf(raw.attributes)
       }
       if (port.direction === 'input' || port.direction === 'inout') drivers.push(endpoint)
       if (port.direction === 'output' || port.direction === 'inout') loads.push(endpoint)
@@ -103,7 +104,14 @@ function buildModule(
       for (const [pin, bits] of Object.entries(cell.connections ?? {})) {
         if (!bits.map(bitId).some((bit) => bitSet.has(bit))) continue
         const direction = endpointDirection(cell.port_directions?.[pin])
-        const endpoint: DesignEndpoint = { kind: 'cell', name: cellName, pin, direction }
+        const endpoint: DesignEndpoint = {
+          kind: 'cell',
+          name: cellName,
+          pin,
+          direction,
+          source: sourceOf(cell.attributes),
+          cellType: cell.type
+        }
         if (direction === 'output' || direction === 'inout') drivers.push(endpoint)
         if (direction === 'input' || direction === 'inout' || direction === 'unknown') loads.push(endpoint)
       }
@@ -134,6 +142,7 @@ function buildHierarchy(
     name: instanceName,
     module: moduleName,
     source: module?.source,
+    definitionSource: module?.source,
     children: []
   }
   if (!module || ancestors.has(moduleName)) return node
@@ -193,7 +202,7 @@ export async function elaborateDesign(options: ElaborateOptions): Promise<Design
       }))
   )
   return {
-    version: 1,
+    version: 2,
     topModule: options.topModule,
     generatedAt: new Date().toISOString(),
     sourceFiles: options.rtlFiles.map((file) => resolve(file)),

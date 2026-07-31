@@ -190,6 +190,7 @@ export class DesignBrowserService implements MoonGlassService {
     if (!latest) return null
     try {
       const database = JSON.parse(readFileSync(latest, 'utf-8')) as DesignDatabase
+      if (database.version !== 2) return null
       this.memory.set(projectId, database)
       return database
     } catch {
