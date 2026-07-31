@@ -156,6 +156,8 @@ export class AgentService implements MoonGlassService {
   readonly name = 'agent-service'
 
   private sessions = new Map<string, PiSession>()
+  /** 切走后仍在执行的会话进程，按项目和会话文件保存。 */
+  private backgroundSessions = new Map<string, Map<string, PiSession>>()
   private piBinPath = ''
   private bridgeDir = ''
   private emit: (projectId: string, event: AgentStreamEvent) => void = () => {}
@@ -238,7 +240,27 @@ export class AgentService implements MoonGlassService {
 
   stop(): void {
     for (const session of this.sessions.values()) session.client.dispose()
+    for (const projectSessions of this.backgroundSessions.values()) {
+      for (const session of projectSessions.values()) session.client.dispose()
+    }
     this.sessions.clear()
+    this.backgroundSessions.clear()
+  }
+
+  private backgroundFor(projectId: string): Map<string, PiSession> {
+    let sessions = this.backgroundSessions.get(projectId)
+    if (!sessions) {
+      sessions = new Map<string, PiSession>()
+      this.backgroundSessions.set(projectId, sessions)
+    }
+    return sessions
+  }
+
+  private disposeBackgroundSessions(projectId: string): void {
+    const sessions = this.backgroundSessions.get(projectId)
+    if (!sessions) return
+    for (const session of sessions.values()) session.client.dispose()
+    this.backgroundSessions.delete(projectId)
   }
 
   /** 由主进程入口注入事件推送通道（webContents.send） */
@@ -291,6 +313,22 @@ export class AgentService implements MoonGlassService {
       if (legacy && existsSync(legacy)) copyFileSync(legacy, file)
     }
     return file
+  }
+
+  private storedSessionLabel(sessionFile: string): string | undefined {
+    try {
+      let label: string | undefined
+      for (const line of readFileSync(sessionFile, 'utf-8').split(/\r?\n/)) {
+        if (!line.trim()) continue
+        try {
+          const entry = JSON.parse(line) as { type?: string; name?: string }
+          if (entry.type === 'session_info' && entry.name) label = entry.name
+        } catch { /* 忽略尚未写完的末行 */ }
+      }
+      return label
+    } catch {
+      return undefined
+    }
   }
 
   private writeSystemPrompt(projectId: string, phase: Phase): void {
@@ -363,14 +401,19 @@ argument-hint: "<模块名>"
     writeFileSync(join(promptsDir, 'verify.md'), verifyTemplate, 'utf-8')
   }
 
-  private spawnSession(projectId: string, phase: Phase, projectName: string): PiSession {
+  private spawnSession(
+    projectId: string,
+    phase: Phase,
+    projectName: string,
+    targetSessionFile?: string
+  ): PiSession {
     if (!this.piBinPath) throw new Error('[agent-service] pi-coding-agent 不可用（依赖未安装？）')
     const workspace = this.workspaceDir(projectId)
     mkdirSync(workspace, { recursive: true })
     this.writeSystemPrompt(projectId, phase)
 
     const providers = this.readyProviders()
-    const sessionFile = this.sessionFilePath(projectId)
+    const sessionFile = resolve(targetSessionFile ?? this.sessionFilePath(projectId))
 
     // 隔离 pi 全局配置，并屏蔽所有 provider API key 环境变量，
     // 确保 pi 只使用 MoonGlass UI 中配置的 key（经 MOONGLASS_PROVIDERS_JSON 注入）。
@@ -408,7 +451,9 @@ argument-hint: "<模块名>"
         // 主进程 process.execPath 是 Electron 二进制；缺此变量时子进程不执行脚本直接退出
         ELECTRON_RUN_AS_NODE: '1'
       },
-      onEvent: (event) => this.handlePiEvent(projectId, event),
+      onEvent: (event) => {
+        if (this.sessions.get(projectId) === session) this.handlePiEvent(projectId, event)
+      },
       onExit: (code, stderrTail) => {
         // 防止旧进程异步退出时误删已重建的新会话
         const current = this.sessions.get(projectId)
@@ -418,6 +463,12 @@ argument-hint: "<模块名>"
             type: 'error',
             message: `pi 进程退出 (code=${code})${stderrTail ? `\n${stderrTail.slice(-500)}` : ''}`
           })
+          return
+        }
+        const background = this.backgroundSessions.get(projectId)
+        if (background?.get(resolve(session.currentSessionFile)) === session) {
+          background.delete(resolve(session.currentSessionFile))
+          if (background.size === 0) this.backgroundSessions.delete(projectId)
         }
       }
     })
@@ -467,6 +518,7 @@ argument-hint: "<模块名>"
     if (session && (session.fingerprint !== fingerprint || session.phase !== project.currentPhase)) {
       session.client.dispose()
       this.sessions.delete(projectId)
+      this.disposeBackgroundSessions(projectId)
       session = undefined
     }
 
@@ -548,36 +600,11 @@ argument-hint: "<模块名>"
       'utf-8'
     )
 
-    const result = await session.client
-      .command<{ cancelled?: boolean }>({ type: 'switch_session', sessionPath: newFile })
-
-    if (result.cancelled) {
+    try {
+      return await this.switchSession(projectId, fileName.slice(0, -'.jsonl'.length))
+    } catch (error) {
       rmSync(newFile, { force: true })
-      throw new Error('[agent-service] 创建新会话被取消')
-    }
-
-    const state = await session.client
-      .command<{ isStreaming?: boolean; sessionFile?: string }>({ type: 'get_state' })
-    if (!state.sessionFile) {
-      throw new Error('[agent-service] Pi 未返回新会话文件')
-    }
-    session.currentSessionFile = resolve(state.sessionFile)
-    session.activeSessionName = fileName.slice(0, -'.jsonl'.length)
-    if (session.selectedModel) {
-      await this.setModelInternal(
-        session,
-        session.selectedModel.providerId,
-        session.selectedModel.modelId
-      )
-    }
-
-    return {
-      projectId,
-      phase: session.phase,
-      isStreaming: state.isStreaming ?? false,
-      modelLabel: session.modelLabel,
-      selectedModel: session.selectedModel,
-      providersReady: true
+      throw error
     }
   }
 
@@ -628,27 +655,62 @@ argument-hint: "<模块名>"
     return summaries
   }
 
-  /**
-   * 切换到另一个会话（利用 pi RPC switch_session）
-   */
+  /** 切换活动会话。正在生成的旧会话转入后台，保持其 Agent 进程继续运行。 */
   async switchSession(projectId: string, sessionName: string): Promise<AgentSessionInfo> {
-    const session = this.sessions.get(projectId)
-    if (!session) throw new Error('[agent-service] 进程未建立')
+    const current = this.sessions.get(projectId)
+    if (!current) throw new Error('[agent-service] 进程未建立')
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
 
-    const targetFile = sessionName === 'main'
+    const targetFile = resolve(sessionName === 'main'
       ? this.sessionFilePath(projectId)
-      : join(this.sessionDir(projectId), `${sessionName}.jsonl`)
+      : join(this.sessionDir(projectId), `${sessionName}.jsonl`))
     if (!existsSync(targetFile)) throw new Error(`[agent-service] 会话文件不存在: ${targetFile}`)
-
-    const result = await session.client
-      .command<{ cancelled?: boolean }>({ type: 'switch_session', sessionPath: targetFile })
-
-    if (result.cancelled) {
-      throw new Error('[agent-service] 切换会话被取消')
+    if (resolve(current.currentSessionFile) === targetFile) {
+      const state = await current.client.command<{ isStreaming?: boolean }>({ type: 'get_state' })
+      return {
+        projectId,
+        phase: current.phase,
+        isStreaming: state.isStreaming ?? false,
+        modelLabel: current.modelLabel,
+        selectedModel: current.selectedModel,
+        providersReady: true
+      }
     }
 
-    session.currentSessionFile = resolve(targetFile)
-    session.activeSessionName = sessionName
+    const currentState = await current.client
+      .command<{ isStreaming?: boolean }>({ type: 'get_state' })
+      .catch(() => ({ isStreaming: false }))
+    this.sessions.delete(projectId)
+    if (currentState.isStreaming) {
+      this.backgroundFor(projectId).set(resolve(current.currentSessionFile), current)
+    } else {
+      current.client.dispose()
+    }
+
+    const background = this.backgroundFor(projectId)
+    let session = background.get(targetFile)
+    if (session) {
+      background.delete(targetFile)
+      if (background.size === 0) this.backgroundSessions.delete(projectId)
+      this.sessions.set(projectId, session)
+    } else {
+      const storedLabel = this.storedSessionLabel(targetFile)
+      session = this.spawnSession(projectId, project.currentPhase, project.name, targetFile)
+      await session.client.waitReady()
+
+      const providers = this.readyProviders()
+      const preferred = current.selectedModel ?? this.modelStore.get(projectId)
+      const initial = preferred && providers.some(
+        (provider) => provider.id === preferred.providerId && provider.models.includes(preferred.modelId)
+      )
+        ? preferred
+        : { providerId: providers[0].id, modelId: providers[0].models[0] }
+      await this.setModelInternal(session, initial.providerId, initial.modelId)
+      if (storedLabel) {
+        await session.client.command({ type: 'set_session_name', name: storedLabel })
+      }
+    }
 
     const state = await session.client
       .command<{ isStreaming?: boolean }>({ type: 'get_state' })
@@ -679,6 +741,13 @@ argument-hint: "<模块名>"
     if (resolve(session.currentSessionFile) === targetFile) {
       info = await this.switchSession(projectId, 'main')
     } else {
+      const background = this.backgroundSessions.get(projectId)
+      const backgroundSession = background?.get(targetFile)
+      if (backgroundSession) {
+        backgroundSession.client.dispose()
+        background?.delete(targetFile)
+        if (background?.size === 0) this.backgroundSessions.delete(projectId)
+      }
       info = await this.ensureSession(projectId)
     }
     rmSync(targetFile, { force: true })
