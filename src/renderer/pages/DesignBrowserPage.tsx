@@ -593,7 +593,7 @@ export function DesignBrowserPage(): React.JSX.Element {
                     const name = window.getSelection()?.toString().trim() ?? ''
                     if (/^[A-Za-z_][A-Za-z0-9_$]*$/.test(name)) selectSourceSignal(name)
                   }}
-                  className="min-h-0 flex-1 overflow-auto overscroll-contain border border-zinc-300 bg-zinc-900 p-2 text-[11px] leading-5 text-zinc-200"
+                  className="rtl-source min-h-0 flex-1 overflow-auto overscroll-contain border border-zinc-700 bg-[#18181b] py-2 text-[11px] leading-5"
                 >
                   {sourceLines.map((line, index) => {
                     const lineNumber = index + 1
@@ -601,9 +601,13 @@ export function DesignBrowserPage(): React.JSX.Element {
                       <div
                         key={lineNumber}
                         data-source-line={lineNumber}
-                        className={lineNumber === source.line ? 'bg-amber-900/60 text-amber-100' : ''}
+                        className={`min-w-max border-l-2 px-2 ${
+                          lineNumber === source.line
+                            ? 'border-sky-400 bg-sky-950/50'
+                            : 'border-transparent hover:bg-zinc-800/60'
+                        }`}
                       >
-                        <span className="mr-3 inline-block w-8 select-none text-right text-zinc-500">{lineNumber}</span>
+                        <span className="mr-4 inline-block w-8 select-none text-right text-zinc-600">{lineNumber}</span>
                         <code
                           className="language-verilog"
                           dangerouslySetInnerHTML={{
