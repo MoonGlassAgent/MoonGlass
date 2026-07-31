@@ -1,26 +1,62 @@
 {
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "MoonGlass 芯片项目标准目录结构",
   "directories": [
     {
-      "name": "docs",
-      "description": "项目文档：需求规格书（SRS）、模块规格、架构设计文档、接口定义"
+      "name": "docs/01_project",
+      "description": "项目章程"
+    },
+    {
+      "name": "docs/02_requirements",
+      "description": "产品需求与需求追踪"
+    },
+    {
+      "name": "docs/03_design",
+      "description": "架构、微架构、接口、寄存器与时钟复位设计"
+    },
+    {
+      "name": "docs/04_verification",
+      "description": "验证计划、测试计划与覆盖率计划"
+    },
+    {
+      "name": "docs/05_implementation",
+      "description": "实现说明"
+    },
+    {
+      "name": "docs/06_validation",
+      "description": "验证与签核报告"
+    },
+    {
+      "name": "docs/07_release",
+      "description": "发布记录"
     },
     {
       "name": "rtl",
-      "description": "RTL 源代码：Verilog/SystemVerilog 模块文件"
+      "description": "RTL 源代码"
     },
     {
-      "name": "rtlqa",
-      "description": "RTL 质量检查：Lint 检查脚本与报告、CDC 检查脚本与报告、综合检查结果"
+      "name": "rtlqa/lint",
+      "description": "Lint 报告"
     },
     {
-      "name": "verification",
-      "description": "验证环境：测试台（testbench）、仿真脚本、覆盖率报告、波形文件"
+      "name": "rtlqa/cdc",
+      "description": "CDC 报告"
     },
     {
-      "name": "imp",
-      "description": "实现工程：综合脚本（Yosys/DC）、SDC 约束、网表、后端工程文件"
+      "name": "verification/results",
+      "description": "仿真日志、结果、覆盖率与波形"
+    },
+    {
+      "name": "imp/constraints",
+      "description": "SDC 约束"
+    },
+    {
+      "name": "imp/synthesis",
+      "description": "综合脚本、网表、时序与面积报告"
+    },
+    {
+      "name": "scripts",
+      "description": "项目自动化脚本"
     }
   ]
 }

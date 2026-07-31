@@ -39,7 +39,7 @@ export const PHASE_LABELS: Record<Phase, string> = {
 
 // ==================== 项目与阶段状态 ====================
 
-export type PhaseStatus = 'locked' | 'active' | 'completed' | 'blocked'
+export type PhaseStatus = 'locked' | 'active' | 'completed' | 'blocked' | 'skipped'
 
 export type DeliverableType = 'doc' | 'code' | 'script' | 'report' | 'diagram' | 'constraint'
 
@@ -81,6 +81,8 @@ export interface PhaseState {
   gateCheckResults: GateCheckResult[]
   startedAt?: string
   completedAt?: string
+  skippedAt?: string
+  skipReason?: string
 }
 
 export interface ChipProject {
@@ -170,6 +172,12 @@ export interface ToolDetection {
   version?: string
 }
 
+export interface WaveformOpenResult {
+  ok: boolean
+  viewer?: string
+  error?: string
+}
+
 // ==================== Python 执行 ====================
 
 export interface PythonRunRequest {
@@ -208,12 +216,24 @@ export interface LlmProviderConfig {
 }
 
 /** Provider 连接测试结果 */
+export interface LlmModelTestResult {
+  model: string
+  status: 'pass' | 'fail' | 'unknown'
+  message: string
+}
+
 export interface LlmProviderTestResult {
   ok: boolean
   /** 状态码或错误码 */
   status?: number
   /** 错误信息 */
   error?: string
+  /** 实际探测的模型列表端点 */
+  endpoint?: string
+  /** Provider 返回的可用模型数量 */
+  availableModelCount?: number
+  /** 用户配置的每个模型是否存在于 Provider 返回列表 */
+  models: LlmModelTestResult[]
 }
 
 // ==================== Agent 对话（Phase 2：Pi Coding Agent RPC 嵌入） ====================

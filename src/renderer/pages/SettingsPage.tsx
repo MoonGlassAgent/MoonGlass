@@ -8,7 +8,11 @@
  */
 
 import { useEffect, useState } from 'react'
-import type { LlmProviderConfig, ToolDetection } from '@shared/types'
+import type {
+  LlmProviderConfig,
+  LlmProviderTestResult,
+  ToolDetection
+} from '@shared/types'
 
 export function SettingsPage(): React.JSX.Element {
   return (
@@ -34,7 +38,7 @@ function LlmProviderSection(): React.JSX.Element {
   const [savedTip, setSavedTip] = useState('')
   const [showKey, setShowKey] = useState(false)
   const [newModel, setNewModel] = useState('')
-  const [testResult, setTestResult] = useState<{ ok: boolean; message: string } | null>(null)
+  const [testResult, setTestResult] = useState<LlmProviderTestResult | null>(null)
   const [testing, setTesting] = useState(false)
 
   useEffect(() => {
@@ -61,19 +65,17 @@ function LlmProviderSection(): React.JSX.Element {
     setTesting(true)
     setTestResult(null)
     try {
-      const result = await window.moonglass.llm.test(draft.id)
-      if (result.ok) {
-        setTestResult({ ok: true, message: `连接成功（HTTP ${result.status ?? 200}）` })
-      } else {
-        setTestResult({
-          ok: false,
-          message: result.status
-            ? `连接失败：${result.error ?? `HTTP ${result.status}`}`
-            : `连接失败：${result.error ?? '未知错误'}`
-        })
-      }
+      setTestResult(await window.moonglass.llm.test(draft))
     } catch (err) {
-      setTestResult({ ok: false, message: `测试异常：${err instanceof Error ? err.message : String(err)}` })
+      setTestResult({
+        ok: false,
+        error: `测试异常：${err instanceof Error ? err.message : String(err)}`,
+        models: draft.models.map((model) => ({
+          model,
+          status: 'unknown',
+          message: '测试异常，模型未测试'
+        }))
+      })
     } finally {
       setTesting(false)
     }
@@ -81,6 +83,7 @@ function LlmProviderSection(): React.JSX.Element {
 
   const patch = (partial: Partial<LlmProviderConfig>): void => {
     setDraft((d) => (d ? { ...d, ...partial } : d))
+    setTestResult(null)
   }
 
   const save = async (): Promise<void> => {
@@ -299,14 +302,77 @@ function LlmProviderSection(): React.JSX.Element {
                   </button>
                 )}
                 {savedTip && <span className="text-sm text-emerald-600">{savedTip}</span>}
-                {testResult && (
-                  <span
-                    className={`text-sm ${testResult.ok ? 'text-emerald-600' : 'text-red-600'}`}
-                  >
-                    {testResult.message}
-                  </span>
-                )}
               </div>
+
+              {testResult && (
+                <div className="border-t border-zinc-200 pt-3">
+                  <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
+                    <span className="text-xs font-medium text-zinc-500">Provider 连接</span>
+                    <span
+                      className={`text-sm font-semibold ${
+                        testResult.ok ? 'text-emerald-700' : 'text-red-700'
+                      }`}
+                    >
+                      {testResult.ok ? 'PASS' : 'FAIL'}
+                    </span>
+                    <span className="text-xs text-zinc-500">
+                      {testResult.ok
+                        ? `HTTP ${testResult.status ?? 200}，发现 ${testResult.availableModelCount ?? 0} 个模型`
+                        : testResult.error ?? '未知连接错误'}
+                    </span>
+                  </div>
+
+                  {testResult.endpoint && (
+                    <p className="mb-3 truncate font-mono text-xs text-zinc-400" title={testResult.endpoint}>
+                      {testResult.endpoint}
+                    </p>
+                  )}
+
+                  <div className="overflow-x-auto">
+                    <table className="w-full text-left text-xs">
+                      <thead>
+                        <tr className="border-b border-zinc-200 text-zinc-500">
+                          <th className="py-1.5 pr-3 font-medium">模型 ID</th>
+                          <th className="w-24 py-1.5 pr-3 font-medium">状态</th>
+                          <th className="py-1.5 font-medium">说明</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {testResult.models.map((model) => (
+                          <tr key={model.model} className="border-b border-zinc-100 last:border-0">
+                            <td className="py-1.5 pr-3 font-mono text-zinc-700">{model.model}</td>
+                            <td className="py-1.5 pr-3">
+                              <span
+                                className={
+                                  model.status === 'pass'
+                                    ? 'font-semibold text-emerald-700'
+                                    : model.status === 'fail'
+                                      ? 'font-semibold text-red-700'
+                                      : 'font-medium text-amber-700'
+                                }
+                              >
+                                {model.status === 'pass'
+                                  ? 'PASS'
+                                  : model.status === 'fail'
+                                    ? 'FAIL'
+                                    : '未测试'}
+                              </span>
+                            </td>
+                            <td className="py-1.5 text-zinc-500">{model.message}</td>
+                          </tr>
+                        ))}
+                        {testResult.models.length === 0 && (
+                          <tr>
+                            <td colSpan={3} className="py-2 text-zinc-400">
+                              当前未配置模型 ID；Provider 连接结果仍然有效。
+                            </td>
+                          </tr>
+                        )}
+                      </tbody>
+                    </table>
+                  </div>
+                </div>
+              )}
             </div>
           )}
         </div>

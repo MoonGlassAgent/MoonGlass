@@ -18,7 +18,7 @@ for (const f of ['moonglass-providers.ts', 'moonglass-tools.ts']) {
 // Phase 4：同时复制 eda-bridge 共享实现到 pi-bridge 目录，供 moonglass-tools.ts 相对导入
 const edaBridgeDir = join(bridgeDir, 'eda-bridge')
 mkdirSync(edaBridgeDir, { recursive: true })
-for (const f of ['tool-runner.ts', 'simulation.ts']) {
+for (const f of ['tool-runner.ts', 'simulation.ts', 'synthesis.ts']) {
   writeFileSync(
     join(edaBridgeDir, f),
     (await import('node:fs')).readFileSync(join(process.cwd(), 'packages', 'eda-bridge', 'src', f), 'utf-8')

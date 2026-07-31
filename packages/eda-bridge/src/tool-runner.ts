@@ -18,7 +18,9 @@ export const EXEC_TIMEOUT_MS = 60_000
 export const MAX_BUFFER = 8 * 1024 * 1024
 
 /** Windows 上 oss-cad-suite 的 verilator 是无扩展名脚本，需回退到 verilator_bin.exe */
-export const VERILATOR_CANDIDATES = ['verilator', 'verilator_bin.exe']
+export const VERILATOR_CANDIDATES = process.platform === 'win32'
+  ? ['verilator_bin.exe', 'verilator.exe', 'verilator']
+  : ['verilator']
 
 /** Yosys 可执行文件候选名 */
 export const YOSYS_CANDIDATES = process.platform === 'win32' ? ['yosys.exe', 'yosys'] : ['yosys']
@@ -54,10 +56,15 @@ export async function locateTool(names: string[]): Promise<string | null> {
  */
 export function toolEnv(toolPath: string): NodeJS.ProcessEnv {
   const bin = dirname(toolPath)
-  return {
+  const env: NodeJS.ProcessEnv = {
     ...process.env,
     PATH: `${bin}${delimiter}${join(bin, '..', 'lib')}${delimiter}${process.env.PATH ?? ''}`
   }
+  if (/verilator(?:_bin)?(?:\.exe)?$/i.test(toolPath)) {
+    // Verilator 会把该值写入 Makefile；Windows 反斜杠会被 make 当作转义符吞掉。
+    env.VERILATOR_ROOT = join(bin, '..', 'share', 'verilator').replace(/\\/g, '/')
+  }
+  return env
 }
 
 /** execFile 的宽松封装——ENOENT 时 reject（供 runWithFallback 候选回退），其余非零退出 resolve */
@@ -65,13 +72,14 @@ export function run(
   cmd: string,
   args: string[],
   env?: NodeJS.ProcessEnv,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  cwd?: string
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       cmd,
       args,
-      { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_BUFFER, env, signal },
+      { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_BUFFER, env, signal, cwd },
       (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           reject(new Error(`工具未找到: ${cmd}`))

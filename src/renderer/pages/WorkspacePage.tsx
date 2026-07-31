@@ -20,7 +20,7 @@ import { ChatPanel } from '../components/ChatPanel'
 import { FileTree } from '../components/FileTree'
 import { useChatStore } from '../store/chatStore'
 
-const BOTTOM_TABS = ['📊 Lint', '🔬 仿真', '📝 日志'] as const
+const BOTTOM_TABS = ['📊 Lint', '🔬 仿真', '⚙ 综合', '📝 日志'] as const
 const MIN_SIDEBAR = 140
 const MAX_SIDEBAR = 400
 const MIN_BOTTOM = 80
@@ -135,6 +135,7 @@ export function WorkspacePage(): React.JSX.Element {
   const { projectId } = useParams({ from: '/workspace/$projectId' })
   const [project, setProject] = useState<ChipProject | null>(null)
   const [gate, setGate] = useState<GatePanelData | null>(null)
+  const [generatingDashboard, setGeneratingDashboard] = useState(false)
 
   // 分栏布局状态（px）
   const [sidebarW, setSidebarW] = useState(200)
@@ -169,6 +170,15 @@ export function WorkspacePage(): React.JSX.Element {
   }, [mainTab, openFiles])
 
   const openFile = async (relPath: string): Promise<void> => {
+    if (/\.(vcd|fst)$/i.test(relPath)) {
+      const result = await window.moonglass.eda.openWaveform(projectId, relPath)
+      appendLog(
+        result.ok
+          ? `波形已用 GTKWave 打开: ${relPath}`
+          : `波形打开失败: ${result.error ?? relPath}`
+      )
+      if (result.ok) return
+    }
     if (shouldOpenExternally(relPath)) {
       const opened = await window.moonglass.fs.openExternal(relPath)
       if (!opened) appendLog(`⚠️ ${relPath} 无法在外部打开`)
@@ -240,10 +250,61 @@ export function WorkspacePage(): React.JSX.Element {
   const handleRunRegression = async (): Promise<void> => {
     appendLog('🚀 开始完整验证回归...')
     try {
-      await sendAgentPrompt('请对工作区所有 RTL 模块完成完整验证闭环：\n1. collect_rtl_files 扫描\n2. 对每个 RTL 运行 run_verible_lint\n3. 运行 check_synthesizability\n4. 生成测试台到 verification/\n5. 运行 run_simulation\n6. 输出验证报告')
+      await sendAgentPrompt('请对工作区所有 RTL 模块完成规范验证闭环：\n1. 使用 verification-planning 技能校验 docs/04_verification/ 三份计划\n2. collect_rtl_files 扫描，并运行 run_verible_lint、check_synthesizability\n3. 使用 cocotb-verification 技能创建 verification/<module>_tb/ 标准环境\n4. 运行 run_simulation\n5. 确认 verification/results/<module>/ 中有日志、result.json、覆盖率和波形\n6. 更新需求追踪与 docs/06_validation/ 验证报告')
       appendLog('✅ 验证回归指令已发送')
     } catch (err) {
       appendLog(`❌ 指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleFastTrackSynthesis = async (): Promise<void> => {
+    const confirmed = window.confirm(
+      '将跳过验证检查和 QA 质量检查，直接进入综合实现。\n\n' +
+      '该路径仅用于快速评估面积，综合结果不能视为功能验证、质量签核或发布依据。确认继续？'
+    )
+    if (!confirmed) return
+    const updated = await window.moonglass.phase.fastTrackSynthesis(projectId)
+    if (!updated) return
+    setProject(updated)
+    setGate(null)
+  }
+
+  const handleCompleteProject = async (): Promise<void> => {
+    if (!window.confirm('确认综合实现已完成，并将项目标记为完成？')) return
+    const updated = await window.moonglass.phase.completeProject(projectId)
+    if (updated) setProject(updated)
+  }
+
+  const handleGenerateDashboard = async (): Promise<void> => {
+    setGeneratingDashboard(true)
+    try {
+      const result = await window.moonglass.project.generateDashboard(projectId)
+      appendLog(`总体报告已生成: ${result.path}`)
+      if (!result.opened) appendLog('总体报告未能自动打开，请从文件树打开 docs/07_release/project_dashboard.html')
+      setTreeTick((tick) => tick + 1)
+    } catch (error) {
+      appendLog(`总体报告生成失败: ${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setGeneratingDashboard(false)
+    }
+  }
+
+  const handleRunSynthesis = async (): Promise<void> => {
+    appendLog('⚙ 开始逻辑综合流程...')
+    setActiveTab('⚙ 综合')
+    try {
+      await sendAgentPrompt(
+        '请完成当前工程的逻辑综合闭环：\n' +
+        '1. collect_rtl_files 扫描 RTL，并确认顶层模块\n' +
+        '2. 检查 docs/ 中的时钟与 I/O 约束；如果关键约束缺失，先向我确认，不要猜测\n' +
+        '3. 使用 generate_sdc 生成 imp/constraints/design.sdc\n' +
+        '4. 使用 run_logic_synthesis 输出到 imp/synthesis/\n' +
+        '5. 汇总网表、单元数量、面积、时序估算、警告和报告路径\n' +
+        '注意区分通用单元统计、Liberty 映射估算与正式 STA 签核结果'
+      )
+      appendLog('✅ 综合指令已发送')
+    } catch (err) {
+      appendLog(`❌ 综合指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -261,13 +322,28 @@ export function WorkspacePage(): React.JSX.Element {
     <div className="flex h-full flex-col">
       {/* ======== 顶部：项目信息 + 阶段看板 ======== */}
       <header className="shrink-0 border-b border-zinc-200 bg-white px-6 py-4">
-        <div className="mb-3 flex items-baseline gap-3">
+        <div className="mb-3 flex items-center gap-3">
           <h1 className="text-lg font-bold text-zinc-900">{project.name}</h1>
           <span className="text-sm text-zinc-500">
             当前阶段：{project.currentPhase} · {PHASE_LABELS[project.currentPhase]}
           </span>
+          <button
+            type="button"
+            onClick={() => void handleGenerateDashboard()}
+            disabled={generatingDashboard}
+            className="ml-auto rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+          >
+            {generatingDashboard ? '正在生成…' : '生成总体报告'}
+          </button>
         </div>
-        <PhaseBoard project={project} onAdvance={handleAdvance} onRollback={handleRollback} gate={gate} />
+        <PhaseBoard
+          project={project}
+          onAdvance={handleAdvance}
+          onRollback={handleRollback}
+          onFastTrackSynthesis={() => void handleFastTrackSynthesis()}
+          onCompleteProject={() => void handleCompleteProject()}
+          gate={gate}
+        />
 
         {/* 门禁检查结果区：显示 gate 结果 + 重新检查按钮 */}
         {gate && (
@@ -303,6 +379,20 @@ export function WorkspacePage(): React.JSX.Element {
               className="rounded border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
             >
               🚀 完成验证回归
+            </button>
+            {agentStreaming && <span className="text-xs text-amber-600">Agent 运行中…</span>}
+          </div>
+        )}
+
+        {project.currentPhase === 'SYNTH' && (
+          <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">
+            <span className="text-xs font-medium text-zinc-500">综合操作：</span>
+            <button
+              onClick={() => void handleRunSynthesis()}
+              disabled={agentStreaming}
+              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
+            >
+              ⚙ 生成 SDC 并运行综合
             </button>
             {agentStreaming && <span className="text-xs text-amber-600">Agent 运行中…</span>}
           </div>
@@ -427,8 +517,10 @@ export function WorkspacePage(): React.JSX.Element {
       {/* 状态栏 */}
       <footer className="shrink-0 flex items-center gap-4 border-t border-zinc-200 bg-white px-4 py-1.5 text-xs text-zinc-500">
         <span>工具链: {project.edaToolchain}</span>
-        <span>阶段完成: {PHASE_ORDER.filter((p) => project.phases[p].status === 'completed').length}/{PHASE_ORDER.length}</span>
-        <span className="ml-auto">MoonGlass v0.3 · Phase 4 · 拖拽分隔条调整面板大小</span>
+        <span>
+          阶段处理: {PHASE_ORDER.filter((p) => ['completed', 'skipped'].includes(project.phases[p].status)).length}/{PHASE_ORDER.length}
+        </span>
+        <span className="ml-auto">MoonGlass v0.3 · Phase 6 综合链</span>
       </footer>
     </div>
   )
@@ -460,6 +552,22 @@ interface BottomPanelProps {
 
 function BottomPanel({ tab, projectId, verifLog, agentStreaming }: BottomPanelProps): React.JSX.Element {
   const [output, setOutput] = useState('')
+  const [waveforms, setWaveforms] = useState<string[]>([])
+  const [waveformStatus, setWaveformStatus] = useState('')
+
+  useEffect(() => {
+    if (tab !== '🔬 仿真') return
+    let active = true
+    window.moonglass.fs.tree(projectId)
+      .then((tree) => {
+        if (!active) return
+        setWaveforms(flattenFiles(tree).filter((file) => /\.(vcd|fst)$/i.test(file)))
+      })
+      .catch((err) => {
+        if (active) setWaveformStatus(`扫描波形失败: ${err instanceof Error ? err.message : String(err)}`)
+      })
+    return () => { active = false }
+  }, [projectId, tab, agentStreaming])
 
   if (tab === '📊 Lint') {
     return (
@@ -491,10 +599,46 @@ function BottomPanel({ tab, projectId, verifLog, agentStreaming }: BottomPanelPr
   if (tab === '🔬 仿真') {
     return (
       <div className="flex h-full flex-col gap-2">
+        <div className="flex items-center justify-between">
+          <p className="text-xs text-zinc-500">波形文件</p>
+          <span className="text-xs text-zinc-400">{waveforms.length} 个</span>
+        </div>
+        {waveforms.length === 0 ? (
+          <p className="text-xs text-zinc-400">暂无 VCD/FST。运行仿真后波形会出现在 verification/results/。</p>
+        ) : (
+          <div className="space-y-1 overflow-y-auto">
+            {waveforms.map((file) => (
+              <div key={file} className="flex items-center gap-2 rounded border border-zinc-200 bg-zinc-50 px-2 py-1">
+                <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-600">{file}</span>
+                <button
+                  onClick={async () => {
+                    setWaveformStatus(`正在打开 ${file}...`)
+                    const result = await window.moonglass.eda.openWaveform(projectId, file)
+                    setWaveformStatus(result.ok ? `已用 GTKWave 打开 ${file}` : `打开失败: ${result.error}`)
+                  }}
+                  className="shrink-0 rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-700 hover:bg-blue-100"
+                  title="使用 GTKWave 打开波形"
+                >
+                  打开波形
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+        {waveformStatus && <p className="text-xs text-zinc-500">{waveformStatus}</p>}
+      </div>
+    )
+  }
+
+  if (tab === '⚙ 综合') {
+    return (
+      <div className="flex h-full flex-col gap-2">
         <p className="text-xs text-zinc-500 shrink-0">
-          仿真输出区。用 generate_tb + run_simulation 运行后结果在此。
+          综合产物默认写入 imp/constraints/ 与 imp/synthesis/，可在左侧文件树查看 SDC、门级网表、日志和报告。
         </p>
-        <p className="text-xs text-zinc-400">提示：「对 counter 模块运行仿真验证」</p>
+        <p className="text-xs text-zinc-400">
+          无 Liberty 工艺库时仅提供通用单元统计；提供 .lib 后可生成映射面积和 ABC 延迟估算。
+        </p>
       </div>
     )
   }

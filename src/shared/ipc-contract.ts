@@ -16,7 +16,8 @@ import type {
   PhaseAdvanceResult,
   PythonRunRequest,
   PythonRunResult,
-  ToolDetection
+  ToolDetection,
+  WaveformOpenResult
 } from './types/moonglass'
 
 export const IPC = {
@@ -25,15 +26,19 @@ export const IPC = {
     Create: 'project:create',
     Get: 'project:get',
     Update: 'project:update',
-    Delete: 'project:delete'
+    Delete: 'project:delete',
+    GenerateDashboard: 'project:generate-dashboard'
   },
   Phase: {
     Advance: 'phase:advance',
     Rollback: 'phase:rollback',
-    GateCheck: 'phase:gate-check'
+    GateCheck: 'phase:gate-check',
+    FastTrackSynthesis: 'phase:fast-track-synthesis',
+    CompleteProject: 'phase:complete-project'
   },
   Eda: {
-    DetectTools: 'eda:detect-tools'
+    DetectTools: 'eda:detect-tools',
+    OpenWaveform: 'eda:open-waveform'
   },
   Python: {
     Run: 'python:run'
@@ -71,6 +76,7 @@ export interface MoonGlassApi {
     get(id: string): Promise<ChipProject | null>
     update(id: string, patch: Partial<Pick<ChipProject, 'name' | 'description'>>): Promise<ChipProject | null>
     delete(id: string): Promise<boolean>
+    generateDashboard(id: string): Promise<{ path: string; generatedAt: string; opened: boolean }>
   }
   phase: {
     /** 推进阶段（先跑门禁检查，Error 级失败则阻断并返回未推进的原状态） */
@@ -78,9 +84,15 @@ export interface MoonGlassApi {
     rollback(projectId: string, to: Phase): Promise<ChipProject | null>
     /** 仅运行门禁检查，不推进阶段。用于修复问题后重新验证 */
     gateCheck(projectId: string, to: Phase): Promise<GateCheckResult[] | null>
+    /** 用户明确跳过 VERIF/QA，直接进入仅用于快速面积评估的综合阶段 */
+    fastTrackSynthesis(projectId: string): Promise<ChipProject | null>
+    /** 完成最终综合阶段并将项目标记为完成 */
+    completeProject(projectId: string): Promise<ChipProject | null>
   }
   eda: {
     detectTools(): Promise<ToolDetection[]>
+    /** 使用 GTKWave 打开项目内的 VCD/FST 波形文件 */
+    openWaveform(projectId: string, relPath: string): Promise<WaveformOpenResult>
   }
   python: {
     run(req: PythonRunRequest): Promise<PythonRunResult>
@@ -91,7 +103,8 @@ export interface MoonGlassApi {
     /** 预置 Provider 不可删除，返回 false */
     delete(id: string): Promise<boolean>
     /** 测试 Provider 的 API Key 是否可用（调用 /models 端点，不消耗 token） */
-    test(id: string): Promise<import('./types/moonglass').LlmProviderTestResult>
+    /** 测试当前表单配置，不要求预先保存 */
+    test(config: LlmProviderConfig): Promise<import('./types/moonglass').LlmProviderTestResult>
   }
   agent: {
     /** 确保项目的 Agent 会话就绪（惰性启动 pi 进程；阶段变化时重置会话） */

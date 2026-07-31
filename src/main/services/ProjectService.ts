@@ -8,7 +8,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdirSync, readFileSync, writeFileSync, existsSync, renameSync } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { eq, desc, sql } from 'drizzle-orm'
 import type { ChipProject } from '@shared/types'
@@ -80,6 +80,7 @@ export class ProjectService implements MoonGlassService {
     this.legacyPath = join(dir, 'projects.json.legacy')
 
     this.migrateFromLegacyIfNeeded()
+    for (const project of this.list()) this.initWorkspace(project.id)
   }
 
   stop(): void {
@@ -143,13 +144,28 @@ export class ProjectService implements MoonGlassService {
     return row ? rowToProject(row) : null
   }
 
-  /** 项目标准目录结构 */
-  private static readonly DIR_TEMPLATE: Array<{ name: string; readme: string }> = [
-    { name: 'docs', readme: '# 文档\n\n需求规格书（SRS）、模块规格、架构设计文档、接口定义文档。\n' },
-    { name: 'rtl', readme: '# RTL 源码\n\nVerilog/SystemVerilog 模块文件。遵循命名规范：模块名 snake_case、输入 i_、输出 o_。\n' },
-    { name: 'rtlqa', readme: '# RTL 质量检查\n\nLint 检查脚本与报告、CDC 检查脚本与报告、综合检查结果。\n' },
-    { name: 'verification', readme: '# 验证环境\n\n测试台（testbench）、仿真脚本、覆盖率报告、VCD 波形文件。\n' },
-    { name: 'imp', readme: '# 实现工程\n\n综合脚本（Yosys/DC）、SDC 约束文件、网表、后端工程文件。\n' }
+  /** MoonGlass 项目规范目录。模块级 `<module>_tb` 在生成验证环境时创建。 */
+  private static readonly DIR_TEMPLATE = [
+    'docs/01_project',
+    'docs/02_requirements',
+    'docs/03_design',
+    'docs/04_verification',
+    'docs/05_implementation',
+    'docs/06_validation',
+    'docs/07_release',
+    'rtl',
+    'rtlqa/lint',
+    'rtlqa/cdc',
+    'verification/results',
+    'imp/constraints',
+    'imp/synthesis',
+    'scripts'
+  ]
+
+  private static readonly LEGACY_DOC_MAP: Array<{ pattern: RegExp; target: string }> = [
+    { pattern: /_srs\.md$/i, target: 'docs/02_requirements/product_requirements.md' },
+    { pattern: /_rtm\.md$/i, target: 'docs/02_requirements/requirements_traceability.md' },
+    { pattern: /_arch\.md$/i, target: 'docs/03_design/architecture.md' }
   ]
 
   /** 初始化项目工作目录结构 */
@@ -157,12 +173,39 @@ export class ProjectService implements MoonGlassService {
     const root = projectWorkspaceDir(projectId, this.dataDir)
     mkdirSync(root, { recursive: true })
     for (const dir of ProjectService.DIR_TEMPLATE) {
-      const dirPath = join(root, dir.name)
-      mkdirSync(dirPath, { recursive: true })
-      const readmePath = join(dirPath, 'README.md')
-      if (!existsSync(readmePath)) {
-        writeFileSync(readmePath, dir.readme, 'utf-8')
+      mkdirSync(join(root, dir), { recursive: true })
+    }
+
+    const docsDir = join(root, 'docs')
+    if (existsSync(docsDir)) {
+      for (const file of readdirSync(docsDir, { withFileTypes: true })) {
+        if (!file.isFile()) continue
+        const mapping = ProjectService.LEGACY_DOC_MAP.find((item) => item.pattern.test(file.name))
+        if (!mapping) continue
+        const target = join(root, mapping.target)
+        if (!existsSync(target)) {
+          copyFileSync(join(docsDir, file.name), target)
+          console.log(`[project-service] 保留旧文档并复制到规范路径: ${file.name} -> ${mapping.target}`)
+        }
       }
+    }
+
+    const readme = join(root, 'README.md')
+    if (!existsSync(readme)) {
+      writeFileSync(
+        readme,
+        '# MoonGlass ASIC Project\n\n按 `docs -> rtl -> verification -> rtlqa -> imp` 阶段推进；所有生成物应保存在对应规范目录。\n',
+        'utf-8'
+      )
+    }
+
+    const gitignore = join(root, '.gitignore')
+    if (!existsSync(gitignore)) {
+      writeFileSync(
+        gitignore,
+        'node_modules/\n__pycache__/\n*.pyc\nverification/*_tb/build/\nverification/*_tb/obj_dir/\n',
+        'utf-8'
+      )
     }
   }
 
@@ -227,4 +270,3 @@ export class ProjectService implements MoonGlassService {
     return (after?.count ?? 0) < (before?.count ?? 0)
   }
 }
-

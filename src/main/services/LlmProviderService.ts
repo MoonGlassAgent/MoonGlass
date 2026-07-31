@@ -9,9 +9,14 @@
 
 import { app, safeStorage } from 'electron'
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { request } from 'node:https'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
 import { join } from 'node:path'
-import type { LlmProviderConfig, LlmProviderTestResult } from '@shared/types'
+import type {
+  LlmModelTestResult,
+  LlmProviderConfig,
+  LlmProviderTestResult
+} from '@shared/types'
 import { LLM_PROVIDER_PRESETS } from '@shared/llm-provider-presets'
 import type { MoonGlassService } from '../core/lifecycle'
 
@@ -144,18 +149,54 @@ export class LlmProviderService implements MoonGlassService {
     return next
   }
 
-  /** 测试 Provider API Key 是否可用：调用 /models 端点，不消耗 token */
-  test(id: string): Promise<LlmProviderTestResult> {
-    const provider = this.providers.get(id)
-    if (!provider) return Promise.resolve({ ok: false, error: 'Provider 不存在' })
-    if (!provider.enabled) return Promise.resolve({ ok: false, error: 'Provider 未启用' })
-    if (!provider.apiKey) return Promise.resolve({ ok: false, error: 'API Key 为空' })
+  /** 测试 Provider 连接并对照 /models 返回值检查每个配置模型，不产生推理 token。 */
+  test(input: LlmProviderConfig): Promise<LlmProviderTestResult> {
+    const provider = { ...input, apiKey: input.apiKey.trim(), baseUrl: input.baseUrl.trim() }
+    const unknownModels = (message: string): LlmModelTestResult[] =>
+      provider.models.map((model) => ({ model, status: 'unknown', message }))
 
-    const url = new URL('/models', provider.baseUrl)
+    if (!provider.apiKey) {
+      return Promise.resolve({
+        ok: false,
+        error: 'API Key 为空',
+        models: unknownModels('Provider 配置未通过，模型未测试')
+      })
+    }
+    if (!provider.baseUrl) {
+      return Promise.resolve({
+        ok: false,
+        error: 'Base URL 为空',
+        models: unknownModels('Provider 配置未通过，模型未测试')
+      })
+    }
+
+    let url: URL
+    try {
+      const base = provider.baseUrl.replace(/\/+$/, '')
+      // Anthropic 默认 Base URL 不含 /v1；OpenAI-compatible 通常已含 /v1。
+      url = new URL(`${base}${provider.protocol === 'anthropic' && !/\/v\d+$/i.test(base) ? '/v1' : ''}/models`)
+    } catch {
+      return Promise.resolve({
+        ok: false,
+        error: 'Base URL 格式无效',
+        models: unknownModels('Provider 配置未通过，模型未测试')
+      })
+    }
+
     const hostname = url.hostname
     const port = url.port || (url.protocol === 'https:' ? 443 : 80)
     const path = url.pathname + url.search
-    const authHeader = `Bearer ${provider.apiKey}`
+    const headers: Record<string, string> = {
+      Accept: 'application/json',
+      'User-Agent': 'MoonGlass/0.3.0'
+    }
+    if (provider.protocol === 'anthropic') {
+      headers['x-api-key'] = provider.apiKey
+      headers['anthropic-version'] = '2023-06-01'
+    } else {
+      headers.Authorization = `Bearer ${provider.apiKey}`
+    }
+    const request = url.protocol === 'http:' ? httpRequest : httpsRequest
 
     return new Promise<LlmProviderTestResult>((resolve) => {
       const req = request(
@@ -164,11 +205,7 @@ export class LlmProviderService implements MoonGlassService {
           port,
           path,
           method: 'GET',
-          headers: {
-            Authorization: authHeader,
-            Accept: 'application/json',
-            'User-Agent': 'MoonGlass/0.3.0'
-          },
+          headers,
           timeout: 10000
         },
         (res) => {
@@ -178,23 +215,78 @@ export class LlmProviderService implements MoonGlassService {
           })
           res.on('end', () => {
             if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-              resolve({ ok: true, status: res.statusCode })
+              let ids: string[] = []
+              try {
+                const payload = JSON.parse(body) as {
+                  data?: Array<{ id?: unknown }>
+                  models?: Array<{ id?: unknown } | string>
+                }
+                const entries = payload.data ?? payload.models ?? []
+                ids = entries
+                  .map((entry) => typeof entry === 'string' ? entry : entry.id)
+                  .filter((id): id is string => typeof id === 'string' && id.length > 0)
+              } catch {
+                // 连接成功但响应不是标准模型列表，模型状态保持 unknown。
+              }
+
+              const available = new Set(ids)
+              const models: LlmModelTestResult[] = provider.models.map((model) => {
+                if (ids.length === 0) {
+                  return {
+                    model,
+                    status: 'unknown',
+                    message: 'Provider 连接成功，但未返回可识别的模型列表'
+                  }
+                }
+                return available.has(model)
+                  ? { model, status: 'pass', message: '模型 ID 存在于 Provider 可用列表' }
+                  : { model, status: 'fail', message: 'Provider 可用列表中未找到该模型 ID' }
+              })
+              resolve({
+                ok: true,
+                status: res.statusCode,
+                endpoint: url.toString(),
+                availableModelCount: ids.length,
+                models
+              })
             } else if (res.statusCode === 401 || res.statusCode === 403) {
-              resolve({ ok: false, status: res.statusCode, error: 'API Key 无效或权限不足' })
+              resolve({
+                ok: false,
+                status: res.statusCode,
+                endpoint: url.toString(),
+                error: 'API Key 无效或权限不足',
+                models: unknownModels('认证失败，模型未测试')
+              })
             } else {
               const msg = body.slice(0, 200).replace(/\s+/g, ' ')
-              resolve({ ok: false, status: res.statusCode, error: `HTTP ${res.statusCode}: ${msg}` })
+              resolve({
+                ok: false,
+                status: res.statusCode,
+                endpoint: url.toString(),
+                error: `HTTP ${res.statusCode}: ${msg}`,
+                models: unknownModels('Provider 端点失败，模型未测试')
+              })
             }
           })
         }
       )
 
       req.on('error', (err) => {
-        resolve({ ok: false, error: `请求失败: ${err.message}` })
+        resolve({
+          ok: false,
+          endpoint: url.toString(),
+          error: `请求失败: ${err.message}`,
+          models: unknownModels('Provider 无法连接，模型未测试')
+        })
       })
       req.on('timeout', () => {
         req.destroy()
-        resolve({ ok: false, error: '请求超时（10s）' })
+        resolve({
+          ok: false,
+          endpoint: url.toString(),
+          error: '请求超时（10s）',
+          models: unknownModels('Provider 请求超时，模型未测试')
+        })
       })
 
       req.end()

@@ -16,7 +16,7 @@
  */
 
 import { app } from 'electron'
-import { copyFileSync, existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, Phase } from '@shared/types'
@@ -199,12 +199,40 @@ export class AgentService implements MoonGlassService {
     const edaBridgeDir = join(this.bridgeDir, 'eda-bridge')
     mkdirSync(edaBridgeDir, { recursive: true })
     const copyEda = (name: string): void => {
-      const src = join(resourcesDir, 'pi-bridge', 'eda-bridge', name)
+      const src = app.isPackaged
+        ? join(resourcesDir, 'pi-bridge', 'eda-bridge', name)
+        : join(resourcesDir, 'packages', 'eda-bridge', 'src', name)
       if (existsSync(src)) copyFileSync(src, join(edaBridgeDir, name))
       else console.error(`[agent-service] 未找到 EDA 桥接源文件: ${src}`)
     }
     copyEda('tool-runner.ts')
     copyEda('simulation.ts')
+    copyEda('synthesis.ts')
+
+    // MoonGlass 使用隔离的 Pi 目录；内置技能必须复制并显式写入该目录的设置。
+    const piAgentDir = this.piAgentDir()
+    const skillsDir = join(piAgentDir, 'skills')
+    const skillsSource = app.isPackaged
+      ? join(resourcesDir, 'skills')
+      : join(resourcesDir, 'resources', 'moonglass', 'skills')
+    mkdirSync(piAgentDir, { recursive: true })
+    if (existsSync(skillsSource)) {
+      cpSync(skillsSource, skillsDir, { recursive: true, force: true })
+      const settingsPath = join(piAgentDir, 'settings.json')
+      let settings: Record<string, unknown> = {}
+      if (existsSync(settingsPath)) {
+        try {
+          settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
+        } catch (error) {
+          console.error('[agent-service] Pi settings.json 无法解析，保留原文件', error)
+          return
+        }
+      }
+      settings.skills = [skillsDir.replaceAll('\\', '/')]
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+    } else {
+      console.error(`[agent-service] 未找到内置技能目录: ${skillsSource}`)
+    }
   }
 
   stop(): void {
@@ -269,29 +297,47 @@ export class AgentService implements MoonGlassService {
     mkdirSync(dotPi, { recursive: true })
     // TODO(Phase 3 后续): 传入项目级约束与用户自定义提示词
     const basePrompt = buildSystemPrompt(phase)
+    const project = this.projects.get(projectId)
+    const fastTrackNotice =
+      phase === 'SYNTH' &&
+      (project?.phases.VERIF.status === 'skipped' || project?.phases.QA.status === 'skipped')
+        ? `
+
+## 快速面积评估模式
+
+用户已明确跳过 VERIF 和 QA。本阶段仅用于快速获得综合面积估算：
+- 优先完成可综合性检查、SDC 生成、Yosys 综合和面积报告。
+- 报告必须醒目标注“未经过验证与 QA，不可作为签核或发布依据”。
+- 不得宣称功能正确、验证通过或质量检查通过。
+`
+        : ''
 
     // Phase 4：追加项目目录结构约定
     const dirGuide = `
 
-## 项目目录结构
+## 强制项目目录与技能规则
 
-工作区使用以下标准目录结构存放各阶段产出：
+\`\`\`text
+docs/{01_project,02_requirements,03_design,04_verification,05_implementation,06_validation,07_release}/
+rtl/
+rtlqa/{lint,cdc}/
+verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/
+verification/results/<module>/
+imp/{constraints,synthesis}/
+scripts/
+\`\`\`
 
-| 目录 | 用途 |
-|------|------|
-| \`docs/\` | 需求规格书、模块规格、架构设计文档、接口定义 |
-| \`rtl/\` | RTL 源代码（Verilog/SystemVerilog 模块文件） |
-| \`rtlqa/\` | Lint 检查脚本与报告、CDC 检查结果、可综合性报告 |
-| \`verification/\` | 测试台（testbench）、仿真脚本、覆盖率报告、VCD 波形 |
-| \`imp/\` | 综合脚本、SDC 约束文件、网表、后端工程 |
-
-请按各阶段将生成的文件放入对应目录。例如：
-- **RTL 阶段**：代码写入 \`rtl/\`
-- **验证阶段**：测试台写入 \`verification/\`，检查报告写入 \`rtlqa/\`
-- **综合阶段**：约束与网表写入 \`imp/\`
+- 文档工作必须使用 \`doc-repository\` 技能并写入对应规范文件。
+- 进入验证实现前必须先使用 \`verification-planning\`，随后使用 \`cocotb-verification\`。
+- RTL 只写入 \`rtl/\`；Lint/CDC 报告分别写入 \`rtlqa/lint/\` 和 \`rtlqa/cdc/\`。
+- Agent 新生成的 RTL 默认符合 Verilog-2001 并使用 \`.v\`；生成的验证断言可使用 SystemVerilog/SVA。此生成约束不得用于拒绝或改写用户导入的较新标准代码。
+- 仿真日志、机器可读结果、覆盖率与波形必须写入 \`verification/results/<module>/\`。
+- SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
+- 综合默认使用本机 Nangate45 / FreePDK45 typical 开源 Liberty；用户未指定其他库时不要省略默认库。
+- 不得在根目录或旧式平铺目录创建阶段产出；不得虚构工具结果。
 `
 
-    writeFileSync(join(dotPi, 'APPEND_SYSTEM.md'), basePrompt + dirGuide, 'utf-8')
+    writeFileSync(join(dotPi, 'APPEND_SYSTEM.md'), basePrompt + dirGuide + fastTrackNotice, 'utf-8')
 
     // Phase 4: 创建 prompt templates 目录和常用模板
     const promptsDir = join(dotPi, 'prompts')
@@ -299,37 +345,18 @@ export class AgentService implements MoonGlassService {
 
     // verify 模板：用户敲 /verify <模块名> 一键触发验证闭环
     const verifyTemplate = `---
-description: 对指定模块完成完整验证闭环（lint → 可综合性 → 测试台生成 → 仿真）
+description: 对指定模块完成规范化验证闭环
 argument-hint: "<模块名>"
 ---
-请对模块 **$1** 完成完整的验证闭环流程，按以下步骤执行：
+请对模块 **$1** 完成完整验证闭环：
 
-## 步骤 1：收集 RTL 文件
-使用 collect_rtl_files 扫描工作区，找到 $1 相关的所有 RTL 文件。
-
-## 步骤 2：Lint 检查
-对每个 RTL 文件运行 run_verible_lint，记录所有的 Error 和 Warning。
-如果有 Error，先修复再继续。
-
-## 步骤 3：可综合性检查
-使用 check_synthesizability 对 RTL 文件进行 Yosys 可综合性检查。
-如果有不可综合的代码，修复后再继续。
-
-## 步骤 4：生成测试台
-使用 generate_tb 基于 RTL 端口生成 Verilator C++ 测试台。
-把测试台文件放到 verification/ 目录下。
-
-## 步骤 5：运行仿真
-使用 run_simulation 编译并运行仿真。
-如果仿真失败，分析日志并修复问题后重试。
-
-## 步骤 6：输出验证报告
-汇总以下信息：
-- ✅ Lint 结果（Error/Warning 数量）
-- ✅ 可综合性结果（cells/wires）
-- ✅ 仿真结果（通过/失败，VCD 路径）
-- ✅ 报告文件放入 rtlqa/ 目录
-- ❌ 发现的问题与修复建议
+1. 使用 verification-planning 技能维护 docs/04_verification/ 三份计划。
+2. 使用 collect_rtl_files、read_verilog、run_verible_lint 和 check_synthesizability。
+3. 使用 cocotb-verification 技能在 verification/$1_tb/ 创建规范环境。
+4. 使用 generate_tb 或环境脚本完善测试，使用 run_simulation 实际运行。
+5. 确认 verification/results/$1/ 中存在编译日志、仿真日志、result.json 和波形。
+6. 更新需求到测试的追踪、覆盖率结果和 docs/06_validation/ 验证报告。
+7. 工具失败时分析日志、修复并重跑；不得以文字结论代替实际工具结果。
 `
     writeFileSync(join(promptsDir, 'verify.md'), verifyTemplate, 'utf-8')
   }

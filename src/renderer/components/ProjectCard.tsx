@@ -13,16 +13,23 @@ interface ProjectCardProps {
 }
 
 export function ProjectCard({ project, onDelete }: ProjectCardProps): React.JSX.Element {
-  const completedCount = PHASE_ORDER.filter((p) => project.phases[p].status === 'completed').length
-  const progress = Math.round((completedCount / PHASE_ORDER.length) * 100)
+  const resolvedCount = PHASE_ORDER.filter((p) =>
+    ['completed', 'skipped'].includes(project.phases[p].status)
+  ).length
+  const projectCompleted = project.phases.SYNTH.status === 'completed'
+  const progress = Math.round((resolvedCount / PHASE_ORDER.length) * 100)
 
   return (
     <div className="group relative rounded-lg border border-zinc-200 bg-white p-4 transition-colors hover:border-zinc-400">
       <Link to="/workspace/$projectId" params={{ projectId: project.id }} className="block">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="font-semibold text-zinc-900">{project.name}</h3>
-          <span className="rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-700">
-            {project.currentPhase} · {PHASE_LABELS[project.currentPhase]}
+          <span className={`rounded border px-2 py-0.5 text-xs ${
+            projectCompleted
+              ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
+              : 'border-blue-200 bg-blue-50 text-blue-700'
+          }`}>
+            {projectCompleted ? '项目完成' : `${project.currentPhase} · ${PHASE_LABELS[project.currentPhase]}`}
           </span>
         </div>
         {project.description && (
@@ -32,7 +39,7 @@ export function ProjectCard({ project, onDelete }: ProjectCardProps): React.JSX.
           <div className="h-full rounded-full bg-emerald-500" style={{ width: `${progress}%` }} />
         </div>
         <div className="flex justify-between text-xs text-zinc-500">
-          <span>进度 {completedCount}/{PHASE_ORDER.length}（{progress}%）</span>
+          <span>进度 {resolvedCount}/{PHASE_ORDER.length}（{progress}%）</span>
           <span>更新于 {new Date(project.updatedAt).toLocaleString()}</span>
         </div>
       </Link>

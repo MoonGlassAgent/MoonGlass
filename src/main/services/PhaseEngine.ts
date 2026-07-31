@@ -7,7 +7,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { readFileSync, readdirSync } from 'node:fs'
+import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { runLint, checkSynthesizability } from '@moonglass/eda-bridge'
 import {
@@ -94,6 +94,12 @@ function collectRtlFiles(dir: string): string[] {
   return out
 }
 
+/** 门禁只检查设计源；verification 中的 DUT 镜像和测试辅助模块不能进入综合。 */
+function collectDesignRtlFiles(workspaceDir: string): string[] {
+  const canonicalRtlDir = join(workspaceDir, 'rtl')
+  return collectRtlFiles(existsSync(canonicalRtlDir) ? canonicalRtlDir : workspaceDir)
+}
+
 function makeResult(
   checkId: string,
   passed: boolean,
@@ -103,9 +109,158 @@ function makeResult(
   return { checkId, checkName: CHECK_NAMES[checkId] ?? checkId, passed, severity, message, autoFixable: false }
 }
 
+interface DocumentInspection {
+  path: string
+  content: string
+  issues: string[]
+}
+
+function findUnresolvedMarkers(content: string): Array<{ line: number; marker: string; text: string }> {
+  const resolvedStatus = /(?:✅|已关闭|已确定|已解决|已完成|已评审|resolved|closed|completed)/i
+  const unresolved: Array<{ line: number; marker: string; text: string }> = []
+  for (const [index, sourceLine] of content.split(/\r?\n/).entries()) {
+    const line = sourceLine.trim()
+    if (!line || resolvedStatus.test(line)) continue
+
+    // TBD-001 是追踪 ID，"TBD ID" 是表头；两者本身不代表内容未完成。
+    const withoutTbdIds = line
+      .replace(/\bTBD-\d+\b/gi, '')
+      .replace(/\bTBD\s+ID\b/gi, '')
+    const marker = /\b(TODO|TBD|PLACEHOLDER)\b/i.exec(withoutTbdIds)?.[1]
+    if (marker) {
+      unresolved.push({
+        line: index + 1,
+        marker: marker.toUpperCase(),
+        text: line.slice(0, 160)
+      })
+    }
+  }
+  return unresolved
+}
+
+function inspectDocument(ctx: GateCheckContext, relativePath: string): DocumentInspection {
+  const path = join(ctx.workspaceDir, ...relativePath.split('/'))
+  if (!existsSync(path)) {
+    return {
+      path: relativePath,
+      content: '',
+      issues: ['文件不存在；请创建该文件并补充本阶段要求的内容']
+    }
+  }
+  const content = readFileSync(path, 'utf-8').trim()
+  const issues: string[] = []
+  if (content.length < 80) {
+    issues.push(`有效内容过少（当前 ${content.length} 个字符，至少需要 80 个字符）`)
+  }
+  const unresolvedMarkers = findUnresolvedMarkers(content)
+  if (unresolvedMarkers.length > 0) {
+    issues.push(
+      [
+        `发现 ${unresolvedMarkers.length} 处未闭环标记：`,
+        ...unresolvedMarkers.map(
+          (item) => `第 ${item.line} 行 [${item.marker}] ${item.text}`
+        ),
+        '请完成内容，或在同一行标记“已关闭/已确定/✅”并保留追踪记录'
+      ].join('\n    ')
+    )
+  }
+  return { path: relativePath, content, issues }
+}
+
+function meaningfulFile(ctx: GateCheckContext, relativePath: string): boolean {
+  return inspectDocument(ctx, relativePath).issues.length === 0
+}
+
+function requireFiles(paths: string[], severity: GateCheckResult['severity'] = 'error') {
+  return async (ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> => {
+    const failed = paths.map((path) => inspectDocument(ctx, path)).filter((item) => item.issues.length > 0)
+    const details = failed.flatMap((item) => [
+      `• ${item.path}`,
+      ...item.issues.map((issue) => `  - ${issue}`)
+    ])
+    return failed.length === 0
+      ? makeResult(checkId, true, severity, `通过：${paths.join('、')}`)
+      : makeResult(checkId, false, severity, `检查发现 ${failed.length} 个文档问题：\n${details.join('\n')}`)
+  }
+}
+
+async function architectureDiagramParsable(
+  ctx: GateCheckContext,
+  checkId: string
+): Promise<GateCheckResult> {
+  const document = inspectDocument(ctx, 'docs/03_design/architecture.md')
+  if (document.issues.length === 0) {
+    const hasMermaid = /```mermaid[\s\S]*?\b(flowchart|graph|architecture-beta|block-beta)\b/i.test(document.content)
+    const hasAsciiDiagram =
+      /(?:\+[-=]{2,}\+|┌[─━]{2,}┐)/.test(document.content) &&
+      /(?:--?>|==?>|→|←|↔)/.test(document.content)
+    if (!hasMermaid && !hasAsciiDiagram) {
+      document.issues.push(
+        '未识别到可解析的架构框图；请添加 Mermaid flowchart/graph/block-beta 代码块，或包含方框和连接箭头的 ASCII 框图'
+      )
+    }
+  }
+  if (document.issues.length === 0) {
+    return makeResult(checkId, true, 'error', '通过：architecture.md 内容完整，并识别到架构框图')
+  }
+  return makeResult(
+    checkId,
+    false,
+    'error',
+    [
+      '架构文档未达到推进条件：',
+      '• docs/03_design/architecture.md',
+      ...document.issues.map((issue) => `  - ${issue}`),
+      '修复后在阶段看板点击“重新检查”。'
+    ].join('\n')
+  )
+}
+
+function collectJsonFiles(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  const files: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) files.push(...collectJsonFiles(full))
+    else if (entry.name.endsWith('.json')) files.push(full)
+  }
+  return files
+}
+
+async function simPassed(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  const resultFiles = collectJsonFiles(join(ctx.workspaceDir, 'verification', 'results'))
+    .filter((file) => file.endsWith('result.json'))
+  if (resultFiles.length === 0) {
+    return makeResult(checkId, false, 'error', 'verification/results/<module>/result.json 不存在')
+  }
+  const failed = resultFiles.filter((file) => {
+    try { return JSON.parse(readFileSync(file, 'utf-8')).passed !== true } catch { return true }
+  })
+  return failed.length === 0
+    ? makeResult(checkId, true, 'error', `${resultFiles.length} 个仿真结果均通过`)
+    : makeResult(checkId, false, 'error', `${failed.length} 个仿真结果失败或无法解析`)
+}
+
+function coverageAtLeast(keys: string[], threshold: number) {
+  return async (ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> => {
+    const values: number[] = []
+    for (const file of collectJsonFiles(join(ctx.workspaceDir, 'verification', 'results'))) {
+      try {
+        const data = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>
+        for (const key of keys) if (typeof data[key] === 'number') values.push(data[key] as number)
+        const coverage = data.coverage as Record<string, unknown> | undefined
+        if (coverage) for (const key of keys) if (typeof coverage[key] === 'number') values.push(coverage[key] as number)
+      } catch { /* 其他 JSON 不影响覆盖率扫描 */ }
+    }
+    if (values.length === 0) return makeResult(checkId, false, 'error', `未找到覆盖率字段：${keys.join('/')}`)
+    const minimum = Math.min(...values)
+    return makeResult(checkId, minimum >= threshold, 'error', `最低覆盖率 ${minimum}%（要求 ≥${threshold}%）`)
+  }
+}
+
 /** Lint 零 Error：逐文件 runLint（verible 优先，verilator 回退），任一 Error 即失败 */
 async function lintZeroError(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
-  const files = collectRtlFiles(ctx.workspaceDir)
+  const files = collectDesignRtlFiles(ctx.workspaceDir)
   if (files.length === 0) {
     return makeResult(checkId, false, 'error', '工作区暂无 RTL 文件（*.v/*.sv），无法执行 Lint')
   }
@@ -133,7 +288,7 @@ async function lintZeroError(ctx: GateCheckContext, checkId: string): Promise<Ga
 
 /** Yosys 可综合性：全部 RTL 文件一次检查 */
 async function yosysSynthesizable(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
-  const files = collectRtlFiles(ctx.workspaceDir)
+  const files = collectDesignRtlFiles(ctx.workspaceDir)
   if (files.length === 0) {
     return makeResult(checkId, false, 'error', '工作区暂无 RTL 文件（*.v/*.sv），无法执行综合检查')
   }
@@ -156,7 +311,7 @@ async function yosysSynthesizable(ctx: GateCheckContext, checkId: string): Promi
  * 解析时钟域并检测跨时钟域信号是否经过了同步器。
  */
 async function cdcPassed(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
-  const files = collectRtlFiles(ctx.workspaceDir)
+  const files = collectDesignRtlFiles(ctx.workspaceDir)
   if (files.length === 0) {
     return makeResult(checkId, true, 'info', '工作区暂无 RTL 文件，跳过 CDC 检查')
   }
@@ -266,6 +421,19 @@ async function cdcPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
 
 /** 检查器注册表：checkId → 真实检查实现；未注册的走「未接入」占位 */
 const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promise<GateCheckResult>> = {
+  'doc-completeness': requireFiles([
+    'docs/01_project/project_charter.md',
+    'docs/02_requirements/product_requirements.md'
+  ], 'warning'),
+  'rtm-exists': requireFiles(['docs/02_requirements/requirements_traceability.md'], 'warning'),
+  'interface-signals-nonempty': requireFiles(['docs/03_design/interface_spec.md']),
+  'module-partition-sane': requireFiles(['docs/03_design/microarchitecture.md']),
+  'block-diagram-parsable': architectureDiagramParsable,
+  'clock-reset-defined': requireFiles(['docs/03_design/clock_reset.md']),
+  'port-consistency': requireFiles(['docs/03_design/interface_spec.md']),
+  'line-coverage-gte-90': coverageAtLeast(['lineCoverage', 'line_coverage'], 90),
+  'func-coverage-gte-80': coverageAtLeast(['functionalCoverage', 'functional_coverage', 'funcCoverage'], 80),
+  'sim-passed': simPassed,
   'verible-lint-zero-error': lintZeroError,
   'verible-zero-error': lintZeroError,
   'yosys-synthesizable': yosysSynthesizable,
@@ -384,6 +552,42 @@ export class PhaseEngine implements MoonGlassService {
     return project
   }
 
+  /** 用户显式选择快速面积评估：从 RTL 跳过 VERIF/QA，直接进入 SYNTH。 */
+  fastTrackSynthesis(project: ChipProject): ChipProject {
+    if (project.currentPhase !== 'RTL') {
+      throw new Error(`[phase-engine] 快速面积评估只能从 RTL 阶段发起，当前为 ${project.currentPhase}`)
+    }
+    const now = new Date().toISOString()
+    const reason = '用户选择跳过验证检查和 QA 质量检查，仅进行快速面积评估；结果不得视为验证或质量签核。'
+    project.phases.RTL.status = 'completed'
+    project.phases.RTL.completedAt = now
+    for (const phase of ['VERIF', 'QA'] as const) {
+      project.phases[phase].status = 'skipped'
+      project.phases[phase].skippedAt = now
+      project.phases[phase].skipReason = reason
+      project.phases[phase].gateCheckResults = [
+        makeResult(`fast-track-${phase.toLowerCase()}`, false, 'warning', reason)
+      ]
+    }
+    project.currentPhase = 'SYNTH'
+    project.phases.SYNTH.status = 'active'
+    project.phases.SYNTH.startedAt = now
+    project.updatedAt = now
+    return project
+  }
+
+  /** 最终阶段收口：SYNTH 由 active 变为 completed，项目由此可判定完成。 */
+  completeProject(project: ChipProject): ChipProject {
+    if (project.currentPhase !== 'SYNTH' || project.phases.SYNTH.status !== 'active') {
+      throw new Error('[phase-engine] 只有进行中的 SYNTH 阶段可以完成项目')
+    }
+    const now = new Date().toISOString()
+    project.phases.SYNTH.status = 'completed'
+    project.phases.SYNTH.completedAt = now
+    project.updatedAt = now
+    return project
+  }
+
   /** 回退到之前的任一阶段（后续阶段产出标记为废弃的语义由调用方处理） */
   rollback(project: ChipProject, to: Phase): ChipProject {
     const cur = PHASE_ORDER.indexOf(project.currentPhase)
@@ -396,10 +600,14 @@ export class PhaseEngine implements MoonGlassService {
       const p = PHASE_ORDER[i]
       project.phases[p].status = 'locked'
       project.phases[p].completedAt = undefined
+      project.phases[p].skippedAt = undefined
+      project.phases[p].skipReason = undefined
     }
     project.currentPhase = to
     project.phases[to].status = 'active'
     project.phases[to].completedAt = undefined
+    project.phases[to].skippedAt = undefined
+    project.phases[to].skipReason = undefined
     project.updatedAt = now
     return project
   }

@@ -22,6 +22,8 @@ extraResources:
     to: ip-library
   - from: resources/moonglass/rules
     to: rules
+  - from: resources/moonglass/skills
+    to: skills
 win:
   target:
     - target: nsis

@@ -5,7 +5,7 @@
  * VCS / Xcelium 为预留类型，当前仅 Verilator 有真实现。
  */
 
-import { existsSync } from 'node:fs'
+import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
   locateTool,
@@ -37,6 +37,9 @@ export interface SimulationResult {
   coverage?: CoverageSummary
   waveformPath?: string
   executablePath?: string
+  compileLogPath?: string
+  simulationLogPath?: string
+  resultPath?: string
 }
 
 export interface VerilatorSimOptions {
@@ -45,12 +48,17 @@ export interface VerilatorSimOptions {
   rtlFiles: string[]
   trace?: boolean
   signal?: AbortSignal
+  buildDir?: string
+  resultDir?: string
 }
 
 export interface VerilatorSimResult {
   passed: boolean
   log: string
   vcdPath: string | null
+  compileLogPath: string
+  simulationLogPath: string
+  resultPath: string
 }
 
 /**
@@ -68,9 +76,14 @@ export async function runVerilatorSimulation(
   const verilatorPath = await locateTool(VERILATOR_CANDIDATES)
   if (!verilatorPath) throw new Error('工具未找到: verilator')
 
-  const objDir = join(dirname(tbCpp), 'obj_dir')
+  const objDir = options.buildDir ?? join(dirname(tbCpp), 'obj_dir')
   const binPath = join(objDir, `V${topModule}`)
   const binExe = process.platform === 'win32' ? `${binPath}.exe` : binPath
+  const resultDir = options.resultDir ?? join(dirname(tbCpp), 'results', topModule)
+  const compileLogPath = join(resultDir, 'compile.log')
+  const simulationLogPath = join(resultDir, 'simulation.log')
+  const resultPath = join(resultDir, 'result.json')
+  mkdirSync(resultDir, { recursive: true })
 
   // Step 1: verilator --cc (编译 RTL 到 C++)
   const ccArgs = [
@@ -91,33 +104,94 @@ export async function runVerilatorSimulation(
     toolEnv(verilatorPath),
     signal
   )
+  writeFileSync(
+    compileLogPath,
+    [`[command] ${verilatorPath} ${ccArgs.join(' ')}`, '', ccOut, ccErr].join('\n'),
+    'utf-8'
+  )
 
   if (ccCode !== null && ccCode !== 0) {
+    const failed = {
+      passed: false,
+      topModule,
+      compileExitCode: ccCode,
+      runExitCode: null,
+      waveformPath: null,
+      compileLogPath,
+      simulationLogPath,
+      finishedAt: new Date().toISOString()
+    }
+    writeFileSync(simulationLogPath, '仿真未运行：Verilator 编译失败\n', 'utf-8')
+    writeFileSync(resultPath, JSON.stringify(failed, null, 2), 'utf-8')
     return {
       passed: false,
       log: `Verilator 编译失败 (code=${ccCode}):\n${ccErr.slice(0, 2000)}`,
-      vcdPath: null
+      vcdPath: null,
+      compileLogPath,
+      simulationLogPath,
+      resultPath
     }
   }
 
   // Step 2: 运行仿真
   if (!existsSync(binExe)) {
+    writeFileSync(simulationLogPath, `仿真可执行文件未找到: ${binExe}\n`, 'utf-8')
+    writeFileSync(resultPath, JSON.stringify({
+      passed: false,
+      topModule,
+      compileExitCode: ccCode,
+      runExitCode: null,
+      waveformPath: null,
+      compileLogPath,
+      simulationLogPath,
+      finishedAt: new Date().toISOString()
+    }, null, 2), 'utf-8')
     return {
       passed: false,
       log: `仿真可执行文件未找到: ${binExe}\n编译日志:\n${ccOut.slice(0, 1000)}`,
-      vcdPath: null
+      vcdPath: null,
+      compileLogPath,
+      simulationLogPath,
+      resultPath
     }
   }
 
-  const { stdout: runOut, stderr: runErr, code: runCode } = await run(binExe, [], undefined, signal)
+  // 测试台通常用相对路径创建 VCD；必须在结果目录运行，确保波形位置稳定。
+  const { stdout: runOut, stderr: runErr, code: runCode } = await run(
+    binExe,
+    [],
+    undefined,
+    signal,
+    resultDir
+  )
 
   const log = [runOut, runErr].filter(Boolean).join('\n')
-  const vcdPath = trace ? join(dirname(tbCpp), `${topModule}.vcd`) : null
+  writeFileSync(
+    simulationLogPath,
+    [`[executable] ${binExe}`, `[exitCode] ${runCode}`, '', runOut, runErr].join('\n'),
+    'utf-8'
+  )
+  const vcdPath = trace ? join(resultDir, `${topModule}.vcd`) : null
+  const resolvedVcd = vcdPath && existsSync(vcdPath) ? vcdPath : null
+  const passed = runCode === 0 || runCode === null
+  writeFileSync(resultPath, JSON.stringify({
+    passed,
+    topModule,
+    compileExitCode: ccCode,
+    runExitCode: runCode,
+    waveformPath: resolvedVcd,
+    compileLogPath,
+    simulationLogPath,
+    finishedAt: new Date().toISOString()
+  }, null, 2), 'utf-8')
 
   return {
-    passed: runCode === 0 || runCode === null,
+    passed,
     log: log.slice(0, 4000) || '(无输出)',
-    vcdPath: vcdPath && existsSync(vcdPath) ? vcdPath : null
+    vcdPath: resolvedVcd,
+    compileLogPath,
+    simulationLogPath,
+    resultPath
   }
 }
 
@@ -141,6 +215,9 @@ export async function runSimulation(options: SimulationOptions): Promise<Simulat
     passed: result.passed,
     log: result.log,
     waveformPath: result.vcdPath ?? undefined,
-    executablePath: join(dirname(options.testbench), 'obj_dir', `V${options.topModule}`)
+    executablePath: join(dirname(options.testbench), 'obj_dir', `V${options.topModule}`),
+    compileLogPath: result.compileLogPath,
+    simulationLogPath: result.simulationLogPath,
+    resultPath: result.resultPath
   }
 }

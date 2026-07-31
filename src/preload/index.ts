@@ -13,15 +13,20 @@ const api: MoonGlassApi = {
     create: (input) => ipcRenderer.invoke(IPC.Project.Create, input),
     get: (id) => ipcRenderer.invoke(IPC.Project.Get, id),
     update: (id, patch) => ipcRenderer.invoke(IPC.Project.Update, id, patch),
-    delete: (id) => ipcRenderer.invoke(IPC.Project.Delete, id)
+    delete: (id) => ipcRenderer.invoke(IPC.Project.Delete, id),
+    generateDashboard: (id) => ipcRenderer.invoke(IPC.Project.GenerateDashboard, id)
   },
   phase: {
     advance: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Advance, projectId, to),
     rollback: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Rollback, projectId, to),
-    gateCheck: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.GateCheck, projectId, to)
+    gateCheck: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.GateCheck, projectId, to),
+    fastTrackSynthesis: (projectId: string) => ipcRenderer.invoke(IPC.Phase.FastTrackSynthesis, projectId),
+    completeProject: (projectId: string) => ipcRenderer.invoke(IPC.Phase.CompleteProject, projectId)
   },
   eda: {
-    detectTools: () => ipcRenderer.invoke(IPC.Eda.DetectTools)
+    detectTools: () => ipcRenderer.invoke(IPC.Eda.DetectTools),
+    openWaveform: (projectId: string, relPath: string) =>
+      ipcRenderer.invoke(IPC.Eda.OpenWaveform, projectId, relPath)
   },
   python: {
     run: (req: PythonRunRequest) => ipcRenderer.invoke(IPC.Python.Run, req)
@@ -30,7 +35,7 @@ const api: MoonGlassApi = {
     list: () => ipcRenderer.invoke(IPC.Llm.List),
     upsert: (config: LlmProviderConfig) => ipcRenderer.invoke(IPC.Llm.Upsert, config),
     delete: (id: string) => ipcRenderer.invoke(IPC.Llm.Delete, id),
-    test: (id: string) => ipcRenderer.invoke(IPC.Llm.Test, id)
+    test: (config: LlmProviderConfig) => ipcRenderer.invoke(IPC.Llm.Test, config)
   },
   agent: {
     ensureSession: (projectId: string) => ipcRenderer.invoke(IPC.Agent.EnsureSession, projectId),

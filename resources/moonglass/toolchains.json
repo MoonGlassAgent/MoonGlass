@@ -10,7 +10,15 @@
       "synthesis": {
         "type": "yosys",
         "path": "yosys",
-        "libraries": []
+        "libraries": [
+          {
+            "id": "nangate45-typical",
+            "name": "Nangate45 Open Cell Library (Typical)",
+            "process": "45nm",
+            "path": "D:/Projects/rtl_lib/Library/OpenROAD-flow-scripts/flow/platforms/nangate45/lib/NangateOpenCellLibrary_typical.lib",
+            "default": true
+          }
+        ]
       },
       "lint": {
         "type": "verible",

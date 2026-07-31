@@ -10,8 +10,8 @@
  * 由 AgentService 启动时从 packages/eda-bridge/src/ 复制过来。
  */
 
-import { existsSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { dirname, join, resolve } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import {
@@ -23,6 +23,7 @@ import {
   YOSYS_CANDIDATES
 } from './eda-bridge/tool-runner'
 import { runVerilatorSimulation } from './eda-bridge/simulation'
+import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 
 // ============================================================
 // 工具特定逻辑
@@ -119,7 +120,12 @@ async function tryVerilatorLint(filePath: string, signal?: AbortSignal): Promise
   warnings: LintIssue[]
   fixedCode: null
 }> {
-  const { stdout, stderr } = await runWithFallback(VERILATOR_CANDIDATES, ['--lint-only', '-Wno-fatal', filePath], undefined, signal)
+  const { stdout, stderr } = await runWithFallback(
+    VERILATOR_CANDIDATES,
+    ['--lint-only', '-Wno-fatal', filePath],
+    undefined,
+    signal
+  )
   const { errors, warnings } = parseVerilator(stdout + '\n' + stderr)
   return { engine: 'verilator', errors, warnings, fixedCode: null }
 }
@@ -544,14 +550,14 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'collect_rtl_files',
     label: 'Collect RTL Files',
-    description: '递归扫描工作目录，收集所有 Verilog/SystemVerilog 文件（*.v/*.sv），返回文件路径列表及每个文件的顶层模块名。',
+    description: '递归扫描设计 RTL 目录，收集 Verilog/SystemVerilog 文件（*.v/*.sv），返回文件路径列表及模块名。缺省只扫描 rtl/，避免把验证环境中的 DUT 镜像送入综合。',
     promptSnippet: 'Scan project directory for RTL source files',
     promptGuidelines: 'Use collect_rtl_files to discover all RTL files in the workspace before running lint or synthesizability checks.',
     parameters: Type.Object({
-      directory: Type.Optional(Type.String({ description: '扫描目录（缺省为 cwd）' }))
+      directory: Type.Optional(Type.String({ description: '扫描目录（缺省为工作区 rtl/）' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const dir = (params.directory as string | undefined) ?? ctx.cwd
+      const dir = resolve(ctx.cwd, (params.directory as string | undefined) ?? 'rtl')
 
       const files = collectRtlFiles(dir)
       if (files.length === 0) {
@@ -600,7 +606,7 @@ export default function (pi: ExtensionAPI): void {
     promptGuidelines: 'Use generate_tb after writing RTL to create a testbench. The generated C++ testbench can be modified for specific test cases.',
     parameters: Type.Object({
       rtlFile: Type.String({ description: '目标 RTL 文件路径（用于提取端口定义）' }),
-      outputPath: Type.Optional(Type.String({ description: '输出 .cpp 文件路径（缺省为与 rtlFile 同目录下 sim_main.cpp）' })),
+      outputPath: Type.Optional(Type.String({ description: '输出 .cpp 文件路径（缺省为 verification/<module>_tb/sim/sim_main.cpp）' })),
       clockName: Type.Optional(Type.String({ description: '时钟信号名（缺省自动检测 i_clk / clk）' })),
       resetName: Type.Optional(Type.String({ description: '复位信号名（缺省自动检测 i_rst_n / rst_n）' })),
       resetActiveLow: Type.Optional(Type.Boolean({ description: '是否低电平复位（缺省 true）' })),
@@ -630,8 +636,11 @@ export default function (pi: ExtensionAPI): void {
 
       const baseName = info.moduleName
       const vBase = 'V' + baseName
-      const outPath = (params.outputPath as string | undefined) ??
-        rtlFile.replace(/\.[^.]+$/, '_sim_main.cpp')
+      const outPath = resolve(
+        ctx.cwd,
+        (params.outputPath as string | undefined) ??
+          join('verification', `${baseName}_tb`, 'sim', 'sim_main.cpp')
+      )
 
       const tbCode = `// ============================================================
 // ${baseName} Verilator Testbench
@@ -704,6 +713,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
 `
 
       // 写出文件
+      mkdirSync(dirname(outPath), { recursive: true })
       writeFileSync(outPath, tbCode, 'utf-8')
 
       const portTable = [
@@ -798,7 +808,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           tbCpp,
           rtlFiles,
           trace,
-          signal
+          signal,
+          buildDir: resolve(ctx.cwd, 'verification', `${topModule}_tb`, 'build'),
+          resultDir: resolve(ctx.cwd, 'verification', 'results', topModule)
         })
 
         const report = [
@@ -806,6 +818,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           '',
           `**结果**: ${result.passed ? '✅ 通过' : '❌ 失败'}`,
           `**VCD 波形**: ${result.vcdPath ? `✅ ${result.vcdPath}` : '❌ 未生成'}`,
+          `**编译日志**: ${result.compileLogPath}`,
+          `**仿真日志**: ${result.simulationLogPath}`,
+          `**结构化结果**: ${result.resultPath}`,
           '',
           '### 输出日志',
           '```',
@@ -826,7 +841,10 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           details: {
             passed: result.passed,
             logPreview: result.log.slice(0, 1000),
-            vcdPath: result.vcdPath
+            vcdPath: result.vcdPath,
+            compileLogPath: result.compileLogPath,
+            simulationLogPath: result.simulationLogPath,
+            resultPath: result.resultPath
           },
           isError: !result.passed
         }
@@ -842,7 +860,146 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   })
 
   // ============================================================
-  // 工具 7: run_cdc_check — 时钟域交叉（CDC）静态检查
+  // 工具 7: generate_sdc — 生成基础时钟与 I/O 约束
+  // ============================================================
+  pi.registerTool({
+    name: 'generate_sdc',
+    label: 'Generate SDC',
+    description: '根据时钟、时钟不确定度和 I/O delay 生成 SDC 约束文件。输出到工程目录，供逻辑综合和后续 STA 使用。',
+    promptSnippet: 'Generate an SDC constraints file for synthesis',
+    promptGuidelines: 'Use generate_sdc before run_logic_synthesis. Confirm clock periods and I/O delays with the user when they are not specified in project requirements.',
+    parameters: Type.Object({
+      clocks: Type.Array(Type.Object({
+        name: Type.String({ description: '时钟名称，例如 core_clk' }),
+        port: Type.String({ description: '顶层时钟端口，例如 i_clk' }),
+        periodNs: Type.Number({ description: '时钟周期，单位 ns' }),
+        dutyCycle: Type.Optional(Type.Number({ description: '占空比，0 到 1，默认 0.5' })),
+        uncertaintyNs: Type.Optional(Type.Number({ description: '时钟不确定度，单位 ns' }))
+      }), { minItems: 1 }),
+      ioDelays: Type.Optional(Type.Array(Type.Object({
+        direction: Type.Union([Type.Literal('input'), Type.Literal('output')]),
+        ports: Type.Array(Type.String(), { minItems: 1 }),
+        delayNs: Type.Number({ description: 'I/O delay，单位 ns' }),
+        clockName: Type.String({ description: '关联的时钟名称' })
+      }))),
+      outputPath: Type.Optional(Type.String({ description: '输出路径，缺省为 imp/constraints/design.sdc' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const outputPath = resolve(ctx.cwd, (params.outputPath as string | undefined) ?? 'imp/constraints/design.sdc')
+      try {
+        const result = generateSdc({
+          clocks: params.clocks as Array<{
+            name: string
+            port: string
+            periodNs: number
+            dutyCycle?: number
+            uncertaintyNs?: number
+          }>,
+          ioDelays: params.ioDelays as Array<{
+            direction: 'input' | 'output'
+            ports: string[]
+            delayNs: number
+            clockName: string
+          }> | undefined,
+          outputPath
+        })
+        return {
+          content: [{
+            type: 'text',
+            text: [
+              '## SDC 生成完成',
+              '',
+              `**文件**: ${result.filePath}`,
+              `**时钟数量**: ${(params.clocks as unknown[]).length}`,
+              ...(result.warnings.length > 0 ? ['', '### 提示', ...result.warnings.map((w) => `- ${w}`)] : [])
+            ].join('\n')
+          }],
+          details: result
+        }
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `SDC 生成失败：${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+          details: {}
+        }
+      }
+    }
+  })
+
+  // ============================================================
+  // 工具 8: run_logic_synthesis — Yosys 网表、面积和时序估算
+  // ============================================================
+  pi.registerTool({
+    name: 'run_logic_synthesis',
+    label: 'Run Logic Synthesis',
+    description: '调用 Yosys 完成逻辑综合，输出门级 Verilog 网表、JSON 网表、日志和 Markdown 报告。无 Liberty 时报告通用单元数；提供 Liberty 时执行工艺映射并尝试解析面积和 ABC 延迟。',
+    promptSnippet: 'Run Yosys logic synthesis and generate netlist and reports',
+    promptGuidelines: 'Use run_logic_synthesis in the SYNTH phase after lint and synthesizability checks pass. Never present generic cell counts as physical area or an ABC delay estimate as signoff STA.',
+    parameters: Type.Object({
+      rtlFiles: Type.Optional(Type.Array(Type.String(), { description: 'RTL 文件列表；缺省时扫描工作区' })),
+      topModule: Type.String({ description: '顶层模块名称' }),
+      sdcFile: Type.Optional(Type.String({ description: 'SDC 文件路径' })),
+      targetLibrary: Type.Optional(Type.String({ description: 'Liberty .lib 工艺库路径；缺省使用本机 Nangate45 typical 开源库' })),
+      outputDir: Type.Optional(Type.String({ description: '输出目录，缺省为 imp/synthesis' })),
+      outputName: Type.Optional(Type.String({ description: '输出文件名前缀，缺省为顶层模块名' })),
+      effort: Type.Optional(Type.Union([
+        Type.Literal('low'),
+        Type.Literal('medium'),
+        Type.Literal('high')
+      ]))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const requestedFiles = params.rtlFiles as string[] | undefined
+      const rtlFiles = (requestedFiles?.length ? requestedFiles : collectRtlFiles(resolve(ctx.cwd, 'rtl')))
+        .map((file) => resolve(ctx.cwd, file))
+      if (rtlFiles.length === 0) {
+        return {
+          content: [{ type: 'text', text: '综合失败：工作区中没有找到 RTL 文件' }],
+          isError: true,
+          details: {}
+        }
+      }
+
+      try {
+        const result = await runLogicSynthesis({
+          rtlFiles,
+          topModule: params.topModule as string,
+          outputDir: resolve(ctx.cwd, (params.outputDir as string | undefined) ?? 'imp/synthesis'),
+          outputName: params.outputName as string | undefined,
+          sdcFile: params.sdcFile ? resolve(ctx.cwd, params.sdcFile as string) : undefined,
+          targetLibrary: params.targetLibrary ? resolve(ctx.cwd, params.targetLibrary as string) : undefined,
+          effort: params.effort as 'low' | 'medium' | 'high' | undefined
+        })
+        return {
+          content: [{
+            type: 'text',
+            text: [
+              '## 逻辑综合完成',
+              '',
+              `**顶层模块**: ${result.topModule}`,
+              `**目标库**: ${result.targetLibrary ?? '未使用（默认库不可用）'}`,
+              `**门级网表**: ${result.netlistPath}`,
+              `**综合报告**: ${result.reportPath}`,
+              `**单元数量**: ${result.area.cells}`,
+              `**面积**: ${result.area.value ?? '不可用'}（${result.area.message}）`,
+              `**时序**: ${result.timing.delayNs !== undefined ? `${result.timing.delayNs} ns` : '不可用'}（${result.timing.message}）`,
+              `**警告**: ${result.warnings.length}`
+            ].join('\n')
+          }],
+          details: result
+        }
+      } catch (err) {
+        return {
+          content: [{ type: 'text', text: `逻辑综合失败：${err instanceof Error ? err.message : String(err)}` }],
+          isError: true,
+          details: {}
+        }
+      }
+    }
+  })
+
+  // ============================================================
+  // 工具 9: run_cdc_check — 时钟域交叉（CDC）静态检查
   // ============================================================
   pi.registerTool({
     name: 'run_cdc_check',
@@ -851,10 +1008,10 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     promptSnippet: 'Run clock domain crossing analysis on the RTL design',
     promptGuidelines: 'Use run_cdc_check in multi-clock designs to find CDC issues. Always use 2-flop synchronizers for single-bit CDC and async FIFOs for multi-bit CDC.',
     parameters: Type.Object({
-      directory: Type.Optional(Type.String({ description: '扫描目录（缺省为 cwd）' }))
+      directory: Type.Optional(Type.String({ description: '扫描目录（缺省为工作区 rtl/）' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const dir = (params.directory as string | undefined) ?? ctx.cwd
+      const dir = resolve(ctx.cwd, (params.directory as string | undefined) ?? 'rtl')
       const files = collectRtlFiles(dir)
 
       if (files.length === 0) {

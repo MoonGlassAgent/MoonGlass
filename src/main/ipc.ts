@@ -9,6 +9,7 @@ import { IPC } from '@shared/ipc-contract'
 import type { LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
 import { projectWorkspaceDir } from './core/paths'
+import { generateProjectDashboard } from './services/ProjectDashboardService'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
   const { projects, phaseEngine, python, eda, llm, agent, files } = services
@@ -31,6 +32,14 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(IPC.Project.Delete, (_e, id: string) => projects.delete(id))
 
+  ipcMain.handle(IPC.Project.GenerateDashboard, async (_e, id: string) => {
+    const project = projects.get(id)
+    if (!project) throw new Error(`项目不存在: ${id}`)
+    const result = generateProjectDashboard(project, projectWorkspaceDir(id))
+    const openError = await shell.openPath(result.path)
+    return { ...result, opened: openError === '' }
+  })
+
   // ==================== 阶段流转 ====================
   ipcMain.handle(IPC.Phase.Advance, async (_e, projectId: string, to: Phase) => {
     const project = projects.get(projectId)
@@ -52,6 +61,18 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     return projects.save(phaseEngine.rollback(project, to))
   })
 
+  ipcMain.handle(IPC.Phase.FastTrackSynthesis, (_e, projectId: string) => {
+    const project = projects.get(projectId)
+    if (!project) return null
+    return projects.save(phaseEngine.fastTrackSynthesis(project))
+  })
+
+  ipcMain.handle(IPC.Phase.CompleteProject, (_e, projectId: string) => {
+    const project = projects.get(projectId)
+    if (!project) return null
+    return projects.save(phaseEngine.completeProject(project))
+  })
+
   // 仅运行门禁检查（不推进阶段），供「重新检查」按钮使用
   ipcMain.handle(IPC.Phase.GateCheck, async (_e, projectId: string, to: Phase) => {
     const project = projects.get(projectId)
@@ -67,6 +88,9 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   // ==================== EDA ====================
   ipcMain.handle(IPC.Eda.DetectTools, () => eda.detectTools())
+  ipcMain.handle(IPC.Eda.OpenWaveform, (_e, projectId: string, relPath: string) =>
+    eda.openWaveform(projectId, relPath)
+  )
 
   // ==================== Python ====================
   ipcMain.handle(IPC.Python.Run, (_e, req: PythonRunRequest) => python.run(req))
@@ -78,7 +102,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(IPC.Llm.Delete, (_e, id: string) => llm.delete(id))
 
-  ipcMain.handle(IPC.Llm.Test, (_e, id: string) => llm.test(id))
+  ipcMain.handle(IPC.Llm.Test, (_e, config: LlmProviderConfig) => llm.test(config))
 
   // ==================== Agent 对话 ====================
   ipcMain.handle(IPC.Agent.EnsureSession, (_e, projectId: string) => agent.ensureSession(projectId))

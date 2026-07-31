@@ -187,13 +187,13 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
             value={input}
             onChange={(e) => setInput(e.target.value)}
             onKeyDown={(e) => {
-              if (e.key === 'Enter' && !e.shiftKey) {
+              if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
                 e.preventDefault()
                 handleSend()
               }
             }}
             rows={2}
-            placeholder={streaming ? 'Agent 回复中…' : '输入消息，Enter 发送，Shift+Enter 换行'}
+            placeholder={streaming ? 'Agent 回复中…' : '输入消息，Enter 发送，Ctrl/Alt/Shift+Enter 换行'}
             disabled={streaming}
             className="flex-1 resize-none rounded border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-blue-500 disabled:opacity-60"
           />
