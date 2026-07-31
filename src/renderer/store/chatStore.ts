@@ -22,6 +22,7 @@ interface ChatState {
   setModel: (providerId: string, modelId: string) => Promise<void>
   createParallel: (name?: string) => Promise<void>
   switchSession: (name: string) => Promise<void>
+  closeSession: (name: string) => Promise<void>
 }
 
 let eventSubscribed = false
@@ -137,6 +138,19 @@ export const useChatStore = create<ChatState>((set, get) => {
       if (!projectId) return
       try {
         const info = await window.moonglass.agent.switchSession(projectId, name)
+        const messages = await window.moonglass.agent.getMessages(projectId)
+        set({ sessionInfo: info, messages, streaming: info.isStreaming, streamTargetId: null })
+      } catch (err) {
+        pushError(set, err)
+        throw err
+      }
+    },
+
+    closeSession: async (name) => {
+      const { projectId } = get()
+      if (!projectId) return
+      try {
+        const info = await window.moonglass.agent.closeSession(projectId, name)
         const messages = await window.moonglass.agent.getMessages(projectId)
         set({ sessionInfo: info, messages, streaming: info.isStreaming, streamTargetId: null })
       } catch (err) {

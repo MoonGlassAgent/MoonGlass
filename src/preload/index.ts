@@ -48,6 +48,7 @@ const api: MoonGlassApi = {
     resetSession: (projectId: string, sessionName?: string) => ipcRenderer.invoke(IPC.Agent.ResetSession, projectId, sessionName),
     listSessions: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ListSessions, projectId),
     switchSession: (projectId: string, sessionName: string) => ipcRenderer.invoke(IPC.Agent.SwitchSession, projectId, sessionName),
+    closeSession: (projectId: string, sessionName: string) => ipcRenderer.invoke(IPC.Agent.CloseSession, projectId, sessionName),
     onEvent: (cb: (payload: AgentEventPayload) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, payload: AgentEventPayload): void =>
         cb(payload)

@@ -60,7 +60,8 @@ export const IPC = {
     /** 主进程 → 渲染进程的事件推送通道（send，非 invoke） */
     Event: 'agent:event',
     ListSessions: 'agent:list-sessions',
-    SwitchSession: 'agent:switch-session'
+    SwitchSession: 'agent:switch-session',
+    CloseSession: 'agent:close-session'
   },
   Fs: {
     Tree: 'fs:tree',
@@ -126,6 +127,8 @@ export interface MoonGlassApi {
     listSessions(projectId: string): Promise<Array<{ name: string; file: string; label: string; messageCount: number; isActive: boolean }>>
     /** 切换到指定会话 */
     switchSession(projectId: string, sessionName: string): Promise<AgentSessionInfo>
+    /** 关闭并删除平行会话；主会话不可关闭 */
+    closeSession(projectId: string, sessionName: string): Promise<AgentSessionInfo>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
   }

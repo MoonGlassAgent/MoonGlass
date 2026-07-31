@@ -664,6 +664,27 @@ argument-hint: "<模块名>"
     }
   }
 
+  async closeSession(projectId: string, sessionName: string): Promise<AgentSessionInfo> {
+    if (sessionName === 'main') throw new Error('主会话不可关闭')
+    if (!sessionName || /[\\/]/.test(sessionName)) throw new Error('无效的会话名称')
+
+    const session = this.sessions.get(projectId)
+    if (!session) throw new Error('[agent-service] 进程未建立')
+    const dir = resolve(this.sessionDir(projectId))
+    const targetFile = resolve(dir, `${sessionName}.jsonl`)
+    if (dirname(targetFile) !== dir) throw new Error('会话路径越界')
+    if (!existsSync(targetFile)) throw new Error(`会话文件不存在: ${targetFile}`)
+
+    let info: AgentSessionInfo
+    if (resolve(session.currentSessionFile) === targetFile) {
+      info = await this.switchSession(projectId, 'main')
+    } else {
+      info = await this.ensureSession(projectId)
+    }
+    rmSync(targetFile, { force: true })
+    return info
+  }
+
   async abort(projectId: string): Promise<void> {
     const session = this.sessions.get(projectId)
     if (!session) return

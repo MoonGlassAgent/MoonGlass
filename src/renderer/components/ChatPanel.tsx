@@ -24,7 +24,7 @@ interface ChatPanelProps {
 }
 
 export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Element {
-  const { sessionInfo, createParallel, switchSession } = useChatStore()
+  const { sessionInfo, createParallel, switchSession, closeSession } = useChatStore()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [showDialog, setShowDialog] = useState(false)
   const [name, setName] = useState('review')
@@ -73,23 +73,54 @@ export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Ele
     }
   }
 
+  const close = async (session: SessionInfo): Promise<void> => {
+    if (busy || session.name === 'main') return
+    if (!window.confirm(`确认关闭平行会话“${session.label}”？\n\n该会话的聊天历史将被删除。`)) return
+    setBusy(true)
+    setError('')
+    try {
+      await closeSession(session.name)
+      await refresh()
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   return (
     <>
       {sessions.map((session) => (
-        <button
+        <span
           key={session.name}
-          type="button"
-          disabled={busy}
-          onClick={() => void select(session.name)}
           title={`${session.label}，${session.messageCount} 条消息`}
-          className={`max-w-44 shrink-0 truncate rounded-t border-x border-t px-3 py-1.5 text-xs disabled:opacity-50 ${
+          className={`flex max-w-48 shrink-0 items-center rounded-t border-x border-t text-xs ${
             session.isActive
               ? 'border-blue-300 bg-blue-50 font-medium text-blue-700'
               : 'border-transparent text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800'
           }`}
         >
-          {session.name === 'main' ? '主会话' : session.label.replace(/\s*\([^)]*\)$/, '')}
-        </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => void select(session.name)}
+            className="min-w-0 truncate px-3 py-1.5 disabled:opacity-50"
+          >
+            {session.name === 'main' ? '主会话' : session.label.replace(/\s*\([^)]*\)$/, '')}
+          </button>
+          {session.name !== 'main' && (
+            <button
+              type="button"
+              disabled={busy}
+              onClick={() => void close(session)}
+              aria-label={`关闭会话 ${session.label}`}
+              title="关闭会话"
+              className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-100 hover:text-red-600 disabled:opacity-50"
+            >
+              ×
+            </button>
+          )}
+        </span>
       ))}
       <button
         type="button"

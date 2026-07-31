@@ -130,6 +130,9 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Agent.SwitchSession, (_e, projectId: string, sessionName: string) =>
     agent.switchSession(projectId, sessionName)
   )
+  ipcMain.handle(IPC.Agent.CloseSession, (_e, projectId: string, sessionName: string) =>
+    agent.closeSession(projectId, sessionName)
+  )
 
   // ==================== 项目文件 ====================
   ipcMain.handle(IPC.Fs.Tree, (_e, projectId: string) => files.tree(projectId))
