@@ -138,6 +138,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 4. 实现异步复位同步释放电路
 5. RTL 只写入 rtl/，完成后调用 collect_rtl_files、read_verilog、run_verible_lint、check_synthesizability
 6. Lint 报告写入 rtlqa/lint/
+7. 维护 rtl/design.json（topModule、filelist、includeDirs、defines）与 rtl/filelist.f，使 Design Browser 和综合工具可无交互加载正确设计
 
 编码规范：
 - 本约束仅适用于 Agent 新生成的 RTL，不限制用户导入或已有代码采用更新的 Verilog/SystemVerilog 标准

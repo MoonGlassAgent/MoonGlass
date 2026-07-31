@@ -71,7 +71,12 @@ function EndpointList({
 export function DesignBrowserPage(): React.JSX.Element {
   const { projectId } = useParams({ from: '/design-browser/$projectId' })
   const [project, setProject] = useState<ChipProject | null>(null)
-  const [tops, setTops] = useState<Array<{ name: string; file: string }>>([])
+  const [tops, setTops] = useState<Array<{
+    name: string
+    file: string
+    recommended: boolean
+    reason: 'manifest' | 'root-module' | 'candidate'
+  }>>([])
   const [top, setTop] = useState('')
   const [database, setDatabase] = useState<DesignDatabase | null>(null)
   const [selectedPath, setSelectedPath] = useState('')
@@ -91,9 +96,21 @@ export function DesignBrowserPage(): React.JSX.Element {
     ]).then(([projectData, candidates, cached]) => {
       setProject(projectData)
       setTops(candidates)
-      const initialTop = cached?.topModule ?? candidates[0]?.name ?? ''
+      const preferred = candidates.find((candidate) => candidate.recommended)
+      const initialTop = preferred?.name ?? cached?.topModule ?? candidates[0]?.name ?? ''
       setTop(initialTop)
-      if (cached) {
+      if (preferred) {
+        setLoading(true)
+        void window.moonglass.designBrowser.elaborate(projectId, preferred.name)
+          .then((result) => {
+            setDatabase(result)
+            setSelectedPath(result.hierarchy.path)
+            setSelectedModuleName(result.topModule)
+            void showSource(result.hierarchy.source)
+          })
+          .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
+          .finally(() => setLoading(false))
+      } else if (cached) {
         setDatabase(cached)
         setSelectedPath(cached.hierarchy.path)
         setSelectedModuleName(cached.topModule)
@@ -105,6 +122,7 @@ export function DesignBrowserPage(): React.JSX.Element {
     () => database?.modules.find((module) => module.name === selectedModuleName) ?? null,
     [database, selectedModuleName]
   )
+  const hasRecommendedTop = tops.some((candidate) => candidate.recommended)
   const filteredTraces = useMemo(() => {
     const traces = selectedModule?.traces ?? []
     const needle = query.trim().toLowerCase()
@@ -165,25 +183,32 @@ export function DesignBrowserPage(): React.JSX.Element {
           <h1 className="text-sm font-semibold text-zinc-900">RTL Design Browser</h1>
           <p className="text-[11px] text-zinc-400">{project?.name ?? projectId}</p>
         </div>
-        <label className="ml-4 text-xs text-zinc-500">Top</label>
-        <select
-          value={top}
-          onChange={(event) => setTop(event.target.value)}
-          className="min-w-48 rounded border border-zinc-300 bg-white px-2 py-1.5 text-xs"
-        >
-          {tops.map((candidate) => (
-            <option key={`${candidate.name}-${candidate.file}`} value={candidate.name}>
-              {candidate.name} · {candidate.file}
-            </option>
-          ))}
-        </select>
+        <span className="ml-4 text-xs text-zinc-500">Top</span>
+        {hasRecommendedTop ? (
+          <span className="rounded border border-zinc-200 bg-zinc-50 px-2 py-1 text-xs font-mono text-zinc-700">
+            {top}
+          </span>
+        ) : (
+          <select
+            value={top}
+            onChange={(event) => setTop(event.target.value)}
+            className="min-w-48 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs"
+            title="检测到多个根模块，请选择设计顶层"
+          >
+            {tops.map((candidate) => (
+              <option key={`${candidate.name}-${candidate.file}`} value={candidate.name}>
+                {candidate.name} · {candidate.file}
+              </option>
+            ))}
+          </select>
+        )}
         <button
           type="button"
           onClick={() => void elaborate()}
           disabled={!top || loading}
           className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
         >
-          {loading ? 'Elaborating…' : 'Elaborate Design'}
+          {loading ? 'Elaborating…' : database ? '重新解析' : hasRecommendedTop ? '自动解析' : '使用所选 Top'}
         </button>
         {database && (
           <span className="ml-auto text-xs text-zinc-500">
@@ -200,7 +225,11 @@ export function DesignBrowserPage(): React.JSX.Element {
 
       {!database ? (
         <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
-          选择顶层模块并执行 Elaborate Design
+          {loading
+            ? `正在自动加载 ${top || 'design'}…`
+            : hasRecommendedTop
+              ? '正在准备设计数据库…'
+              : '检测到多个可能的根模块，请选择 Top 后加载'}
         </div>
       ) : (
         <div className="grid min-h-0 flex-1 grid-cols-[260px_minmax(480px,1fr)_360px]">

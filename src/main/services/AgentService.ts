@@ -330,6 +330,7 @@ scripts/
 - 文档工作必须使用 \`doc-repository\` 技能并写入对应规范文件。
 - 进入验证实现前必须先使用 \`verification-planning\`，随后使用 \`cocotb-verification\`。
 - RTL 只写入 \`rtl/\`；Lint/CDC 报告分别写入 \`rtlqa/lint/\` 和 \`rtlqa/cdc/\`。
+- RTL 阶段必须维护 \`rtl/design.json\` 和 \`rtl/filelist.f\`，明确 topModule、源文件顺序、includeDirs 与 defines，供 Design Browser 自动加载。
 - Agent 新生成的 RTL 默认符合 Verilog-2001 并使用 \`.v\`；生成的验证断言可使用 SystemVerilog/SVA。此生成约束不得用于拒绝或改写用户导入的较新标准代码。
 - 仿真日志、机器可读结果、覆盖率与波形必须写入 \`verification/results/<module>/\`。
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。

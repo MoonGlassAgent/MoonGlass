@@ -138,7 +138,12 @@ export interface MoonGlassApi {
     openExternal(filePath: string): Promise<boolean>
   }
   designBrowser: {
-    listTops(projectId: string): Promise<Array<{ name: string; file: string }>>
+    listTops(projectId: string): Promise<Array<{
+      name: string
+      file: string
+      recommended: boolean
+      reason: 'manifest' | 'root-module' | 'candidate'
+    }>>
     elaborate(projectId: string, topModule: string): Promise<DesignDatabase>
     getCached(projectId: string): Promise<DesignDatabase | null>
     readSource(projectId: string, source: string): Promise<{ file: string; line: number; content: string }>
