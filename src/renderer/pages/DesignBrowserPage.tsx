@@ -143,6 +143,7 @@ export function DesignBrowserPage(): React.JSX.Element {
   const [inspectorWidth, setInspectorWidth] = useState(() =>
     savedWidth('moonglass.designBrowser.inspectorWidth', 360)
   )
+  const sourcePreRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
     window.localStorage.setItem('moonglass.designBrowser.hierarchyWidth', String(hierarchyWidth))
@@ -232,8 +233,11 @@ export function DesignBrowserPage(): React.JSX.Element {
   }
 
   const sourceLines = source?.content.split(/\r?\n/) ?? []
-  const sourceStart = Math.max(0, (source?.line ?? 1) - 12)
-  const sourceEnd = Math.min(sourceLines.length, (source?.line ?? 1) + 18)
+  useEffect(() => {
+    if (!source || !sourcePreRef.current) return
+    const target = sourcePreRef.current.querySelector<HTMLElement>(`[data-source-line="${source.line}"]`)
+    target?.scrollIntoView({ block: 'center' })
+  }, [source])
 
   return (
     <div className="flex h-full flex-col bg-zinc-100">
@@ -445,12 +449,12 @@ export function DesignBrowserPage(): React.JSX.Element {
             }
           />
 
-          <aside className="min-h-0 overflow-auto border-l border-zinc-300 bg-zinc-50">
-            <div className="border-b border-zinc-200 bg-white px-3 py-2">
+          <aside className="flex min-h-0 flex-col overflow-hidden border-l border-zinc-300 bg-zinc-50">
+            <div className="shrink-0 border-b border-zinc-200 bg-white px-3 py-2">
               <h3 className="text-xs font-semibold text-zinc-600">INSPECTOR</h3>
             </div>
             {selectedTrace && (
-              <div className="space-y-4 border-b border-zinc-200 p-3">
+              <div className="max-h-[38%] shrink-0 space-y-4 overflow-auto border-b border-zinc-200 p-3">
                 <div>
                   <p className="text-xs text-zinc-400">Signal</p>
                   <p className="font-mono text-sm font-semibold">{selectedTrace.net}</p>
@@ -461,7 +465,7 @@ export function DesignBrowserPage(): React.JSX.Element {
               </div>
             )}
             {selectedCell && (
-              <div className="border-b border-zinc-200 p-3 text-xs">
+              <div className="max-h-[38%] shrink-0 overflow-auto border-b border-zinc-200 p-3 text-xs">
                 <p className="text-zinc-400">Cell / Instance</p>
                 <p className="font-mono font-semibold text-zinc-900">{selectedCell.name}</p>
                 <p className="font-mono text-zinc-500">{selectedCell.type}</p>
@@ -477,17 +481,24 @@ export function DesignBrowserPage(): React.JSX.Element {
                 </table>
               </div>
             )}
-            <div className="p-3">
+            <div className="flex min-h-0 flex-1 flex-col p-3">
               <div className="mb-2 flex items-center justify-between">
                 <h3 className="text-xs font-semibold text-zinc-600">SOURCE</h3>
                 {source && <span className="max-w-56 truncate text-[10px] text-zinc-400">{source.file}:{source.line}</span>}
               </div>
               {source ? (
-                <pre className="overflow-auto border border-zinc-300 bg-zinc-900 p-2 text-[11px] leading-5 text-zinc-200">
-                  {sourceLines.slice(sourceStart, sourceEnd).map((line, index) => {
-                    const lineNumber = sourceStart + index + 1
+                <pre
+                  ref={sourcePreRef}
+                  className="min-h-0 flex-1 overflow-auto overscroll-contain border border-zinc-300 bg-zinc-900 p-2 text-[11px] leading-5 text-zinc-200"
+                >
+                  {sourceLines.map((line, index) => {
+                    const lineNumber = index + 1
                     return (
-                      <div key={lineNumber} className={lineNumber === source.line ? 'bg-amber-900/60 text-amber-100' : ''}>
+                      <div
+                        key={lineNumber}
+                        data-source-line={lineNumber}
+                        className={lineNumber === source.line ? 'bg-amber-900/60 text-amber-100' : ''}
+                      >
                         <span className="mr-3 inline-block w-8 select-none text-right text-zinc-500">{lineNumber}</span>
                         {line || ' '}
                       </div>

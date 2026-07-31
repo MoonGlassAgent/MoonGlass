@@ -198,15 +198,24 @@ export class DesignBrowserService implements MoonGlassService {
   }
 
   readSource(workspaceDir: string, source: string): DesignSourceContent {
-    const match = /^(.*?):(\d+)(?:\.\d+)?(?:-\d+(?:\.\d+)?)?$/.exec(source)
-    const sourcePath = match?.[1] ?? source
-    const line = Number(match?.[2] ?? 1)
-    const absolute = resolve(sourcePath)
     const workspace = resolve(workspaceDir)
-    if (absolute !== workspace && !absolute.startsWith(`${workspace}\\`) && !absolute.startsWith(`${workspace}/`)) {
-      throw new Error('源码路径越出项目工作区')
+    const candidates = source.split('|').map((item) => item.trim()).filter(Boolean)
+    const missing: string[] = []
+    for (const candidate of candidates) {
+      const match = /^(.*?):(\d+)(?:\.\d+)?(?:-\d+(?:\.\d+)?)?$/.exec(candidate)
+      const sourcePath = match?.[1] ?? candidate
+      const line = Number(match?.[2] ?? 1)
+      const absolute = resolve(sourcePath)
+      if (absolute !== workspace && !absolute.startsWith(`${workspace}\\`) && !absolute.startsWith(`${workspace}/`)) {
+        continue
+      }
+      if (!existsSync(absolute)) {
+        missing.push(sourcePath)
+        continue
+      }
+      return { file: relative(workspace, absolute), line, content: readFileSync(absolute, 'utf-8') }
     }
-    if (!existsSync(absolute)) throw new Error(`源码文件不存在: ${sourcePath}`)
-    return { file: relative(workspace, absolute), line, content: readFileSync(absolute, 'utf-8') }
+    if (missing.length > 0) throw new Error(`源码文件不存在: ${missing.join('、')}`)
+    throw new Error(`没有可读取的项目内源码位置: ${source}`)
   }
 }
