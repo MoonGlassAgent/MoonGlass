@@ -60,6 +60,14 @@ const api: MoonGlassApi = {
     readFile: (projectId: string, relPath: string) =>
       ipcRenderer.invoke(IPC.Fs.ReadFile, projectId, relPath),
     openExternal: (filePath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, filePath)
+  },
+  designBrowser: {
+    listTops: (projectId: string) => ipcRenderer.invoke(IPC.DesignBrowser.ListTops, projectId),
+    elaborate: (projectId: string, topModule: string) =>
+      ipcRenderer.invoke(IPC.DesignBrowser.Elaborate, projectId, topModule),
+    getCached: (projectId: string) => ipcRenderer.invoke(IPC.DesignBrowser.GetCached, projectId),
+    readSource: (projectId: string, source: string) =>
+      ipcRenderer.invoke(IPC.DesignBrowser.ReadSource, projectId, source)
   }
 }
 

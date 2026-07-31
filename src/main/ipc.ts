@@ -12,7 +12,7 @@ import { projectWorkspaceDir } from './core/paths'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
-  const { projects, phaseEngine, python, eda, llm, agent, files } = services
+  const { projects, phaseEngine, python, eda, llm, agent, files, designBrowser } = services
 
   // ==================== 项目 ====================
   ipcMain.handle(IPC.Project.List, () => projects.list())
@@ -146,4 +146,18 @@ export function registerIpcHandlers(services: ApplicationServices): void {
       return false
     }
   })
+
+  // ==================== RTL Design Browser ====================
+  ipcMain.handle(IPC.DesignBrowser.ListTops, (_e, projectId: string) =>
+    designBrowser.listTopModules(projectWorkspaceDir(projectId))
+  )
+  ipcMain.handle(IPC.DesignBrowser.Elaborate, (_e, projectId: string, topModule: string) =>
+    designBrowser.elaborate(projectId, projectWorkspaceDir(projectId), topModule)
+  )
+  ipcMain.handle(IPC.DesignBrowser.GetCached, (_e, projectId: string) =>
+    designBrowser.getCached(projectId)
+  )
+  ipcMain.handle(IPC.DesignBrowser.ReadSource, (_e, projectId: string, source: string) =>
+    designBrowser.readSource(projectWorkspaceDir(projectId), source)
+  )
 }

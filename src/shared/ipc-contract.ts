@@ -19,6 +19,7 @@ import type {
   ToolDetection,
   WaveformOpenResult
 } from './types/moonglass'
+import type { DesignDatabase } from '@moonglass/design-browser-engine'
 
 export const IPC = {
   Project: {
@@ -65,6 +66,12 @@ export const IPC = {
     Tree: 'fs:tree',
     ReadFile: 'fs:read-file',
     OpenExternal: 'fs:open-external'
+  },
+  DesignBrowser: {
+    ListTops: 'design-browser:list-tops',
+    Elaborate: 'design-browser:elaborate',
+    GetCached: 'design-browser:get-cached',
+    ReadSource: 'design-browser:read-source'
   }
 } as const
 
@@ -129,6 +136,12 @@ export interface MoonGlassApi {
     readFile(projectId: string, relPath: string): Promise<FileContentResult | null>
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
     openExternal(filePath: string): Promise<boolean>
+  }
+  designBrowser: {
+    listTops(projectId: string): Promise<Array<{ name: string; file: string }>>
+    elaborate(projectId: string, topModule: string): Promise<DesignDatabase>
+    getCached(projectId: string): Promise<DesignDatabase | null>
+    readSource(projectId: string, source: string): Promise<{ file: string; line: number; content: string }>
   }
 }
 

@@ -34,6 +34,7 @@
     "@earendil-works/pi-coding-agent": "^0.82.1",
     "@electron-toolkit/utils": "^4.0.0",
     "@moonglass/eda-bridge": "workspace:*",
+    "@moonglass/design-browser-engine": "workspace:*",
     "@moonglass/prompts": "workspace:*",
     "@moonglass/rtl-engine": "workspace:*",
     "@tailwindcss/vite": "^4.1.0",

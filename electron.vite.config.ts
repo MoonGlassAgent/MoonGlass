@@ -6,7 +6,7 @@ import { resolve } from 'node:path'
 export default defineConfig({
   main: {
     // workspace 包以 TS 源码导出，必须随主进程一起打包，不可外置
-    plugins: [externalizeDepsPlugin({ exclude: ['@moonglass/eda-bridge', '@moonglass/prompts', '@moonglass/rtl-engine'] })],
+    plugins: [externalizeDepsPlugin({ exclude: ['@moonglass/eda-bridge', '@moonglass/prompts', '@moonglass/rtl-engine', '@moonglass/design-browser-engine'] })],
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/main/index.ts') }

@@ -14,6 +14,9 @@ importers:
       '@electron-toolkit/utils':
         specifier: ^4.0.0
         version: 4.0.0(electron@41.10.3(supports-color@7.2.0))
+      '@moonglass/design-browser-engine':
+        specifier: workspace:*
+        version: link:packages/design-browser-engine
       '@moonglass/eda-bridge':
         specifier: workspace:*
         version: link:packages/eda-bridge
@@ -90,6 +93,19 @@ importers:
       vite:
         specifier: ^7.0.0
         version: 7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0)
+
+  packages/design-browser-engine:
+    dependencies:
+      '@moonglass/eda-bridge':
+        specifier: workspace:*
+        version: link:../eda-bridge
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
 
   packages/eda-bridge:
     devDependencies:
