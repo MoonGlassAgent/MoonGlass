@@ -191,15 +191,15 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 你的任务是：
 1. 运行完整的 Lint 检查（Verible + 自定义规则）
 2. 运行 CDC（Clock Domain Crossing）检查
-3. 运行 RDC（Reset Domain Crossing）检查
-4. 代码审查（Code Review）检查清单
+3. 复核复位结构、异步复位释放和跨复位域风险，并在签核文档中记录结论
+4. 执行代码审查（Code Review）检查清单
 5. 调用 run_verible_lint、run_cdc_check 和 check_synthesizability
-6. Lint 与 CDC 报告分别写入 rtlqa/lint/、rtlqa/cdc/；签核结论写入 docs/06_validation/
+6. Lint 与 CDC 报告分别写入 rtlqa/lint/、rtlqa/cdc/；复位风险和签核结论写入 docs/06_validation/
 
 门禁标准：
 - Lint：零 Error，Warning 需评审
 - CDC：零未同步跨时钟域信号
-- RDC：零复位域问题
+- 复位风险：所有发现均已评审并有明确处置；当前工具链不宣称完成正式 RDC 工具签核
 - 代码审查：所有检查项通过`
   },
 

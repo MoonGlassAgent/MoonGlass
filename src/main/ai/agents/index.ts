@@ -27,19 +27,19 @@ const PHASE_AGENT_META: Record<Phase, { displayName: string; tools: string[] }> 
   ARCH: { displayName: 'Architect', tools: ['extract_interface', 'query_ip_library', 'execute_python'] },
   RTL: {
     displayName: 'RTL Engineer',
-    tools: ['read_verilog', 'generate_rtl_template', 'run_verible_lint', 'check_synthesizability', 'query_ip_library', 'query_company_rules', 'execute_python']
+    tools: ['collect_rtl_files', 'read_verilog', 'generate_rtl_template', 'run_verible_lint', 'check_synthesizability', 'query_ip_library', 'query_company_rules', 'execute_python']
   },
   VERIF: {
     displayName: 'Verification Engineer',
-    tools: ['generate_uvm_tb', 'run_simulation', 'parse_coverage', 'read_verilog', 'execute_python']
+    tools: ['collect_rtl_files', 'read_verilog', 'run_verible_lint', 'check_synthesizability', 'generate_tb', 'run_simulation', 'execute_python']
   },
   QA: {
     displayName: 'QA Engineer',
-    tools: ['run_verible_lint', 'check_synthesizability', 'query_company_rules', 'execute_python']
+    tools: ['collect_rtl_files', 'run_verible_lint', 'run_cdc_check', 'check_synthesizability', 'query_company_rules', 'execute_python']
   },
   SYNTH: {
     displayName: 'Synthesis Engineer',
-    tools: ['generate_sdc', 'run_logic_synthesis', 'execute_python']
+    tools: ['collect_rtl_files', 'check_synthesizability', 'generate_sdc', 'run_logic_synthesis', 'execute_python']
   }
 }
 

@@ -14,7 +14,13 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
-import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase } from '@shared/types'
+import {
+  PHASE_LABELS,
+  PHASE_ORDER,
+  type ChipProject,
+  type GateCheckResult,
+  type Phase
+} from '@shared/types'
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
 import { ChatPanel } from '../components/ChatPanel'
 import { FileTree } from '../components/FileTree'
@@ -236,11 +242,44 @@ export function WorkspacePage(): React.JSX.Element {
     setVerifLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`])
   }
 
+  const handleFixGateIssues = async (
+    phase: Phase,
+    results: GateCheckResult[]
+  ): Promise<void> => {
+    if (results.length === 0) return
+    setMainTab('chat')
+    const details = results
+      .map((result, index) => `${index + 1}. [${result.checkName}] ${result.message}`)
+      .join('\n')
+    appendLog(`已将 ${results.length} 项门禁问题发送到 Agent 会话`)
+    try {
+      await sendAgentPrompt(
+        `请修复以下 ${PHASE_LABELS[phase]} 阶段门禁问题：\n\n${details}\n\n` +
+        '要求：\n' +
+        '1. 先读取相关规范文档和现有文件，不要覆盖用户已有的有效内容\n' +
+        '2. 按 MoonGlass 规范目录和当前阶段技能规则修改实际工作区文件\n' +
+        '3. 对占位内容补充可评审的具体内容；对误报标记采用语义判断，不要简单删除已关闭的历史记录\n' +
+        '4. 运行相应技能校验脚本或 EDA 工具验证修复结果\n' +
+        '5. 在会话中逐项说明修改文件、验证结果和仍需用户决定的事项\n' +
+        '完成后提醒我点击“重新检查门禁”。'
+      )
+    } catch (error) {
+      appendLog(`门禁修复指令发送失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   // ---- 验证操作 ----
   const handleSetupEnv = async (): Promise<void> => {
     appendLog('🔧 开始搭建验证环境...')
     try {
-      await sendAgentPrompt('请扫描工作区所有 RTL 文件，为每个模块生成 Verilator C++ 测试台。把测试台放到 verification/ 目录下。完成后汇总生成的测试台文件列表。')
+      await sendAgentPrompt(
+        '请按 MoonGlass 验证目录规范搭建环境：\n' +
+        '1. 先使用 verification-planning 技能检查并补齐 docs/04_verification/ 三份计划\n' +
+        '2. 使用 collect_rtl_files 读取 rtl/design.json 与 rtl/filelist.f，确认 DUT 和 topModule\n' +
+        '3. 使用 cocotb-verification 技能为各 DUT 创建 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/\n' +
+        '4. 使用技能校验脚本验证环境结构；不要把测试代码或构建产物写入 rtl/\n' +
+        '5. 完成后汇总创建的环境、待实现测试和发现的规格缺口'
+      )
       appendLog('✅ 验证环境搭建指令已发送')
     } catch (err) {
       appendLog(`❌ 指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
@@ -349,6 +388,7 @@ export function WorkspacePage(): React.JSX.Element {
           onRollback={handleRollback}
           onFastTrackSynthesis={() => void handleFastTrackSynthesis()}
           onCompleteProject={() => void handleCompleteProject()}
+          onFixGateIssues={(phase, results) => void handleFixGateIssues(phase, results)}
           gate={gate}
         />
 

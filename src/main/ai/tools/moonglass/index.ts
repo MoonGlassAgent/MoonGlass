@@ -11,7 +11,9 @@
  *   - check_synthesizability（yosys check + stat 解析）
  *   - read_verilog（端口/参数提取）
  *   - collect_rtl_files（工作区 RTL 扫描）
- * 其余工具待后续 Phase 逐步实现。
+ *   - generate_tb / run_simulation（旧式 Verilator C++ 验证链）
+ *   - generate_sdc / run_logic_synthesis（约束与综合）
+ *   - run_cdc_check（CDC 静态检查）
  */
 
 export type ToolCategory = 'rtl' | 'verification' | 'synthesis' | 'python' | 'knowledge'
@@ -43,6 +45,12 @@ function def(
 
 export const MOONGLASS_TOOLS: readonly MoonglassToolDef[] = [
   // ==================== RTL 工具 ====================
+  def('collect_rtl_files', 'rtl', '按 rtl/design.json 与 rtl/filelist.f 收集有序设计源文件', {
+    type: 'object',
+    properties: {
+      includeTestbench: { type: 'boolean', default: false }
+    }
+  }),
   def('read_verilog', 'rtl', '解析 Verilog/SystemVerilog 文件，提取端口、参数、层次结构、实例化关系', {
     type: 'object',
     properties: {
@@ -88,7 +96,7 @@ export const MOONGLASS_TOOLS: readonly MoonglassToolDef[] = [
   }),
 
   // ==================== 验证工具 ====================
-  def('generate_uvm_tb', 'verification', '基于 RTL 端口自动生成 UVM testbench 框架', {
+  def('generate_tb', 'verification', '基于 RTL 端口生成旧式 Verilator C++ testbench；规范 Cocotb 项目应使用 cocotb-verification 技能', {
     type: 'object',
     properties: {
       rtlFile: { type: 'string' },
@@ -107,13 +115,12 @@ export const MOONGLASS_TOOLS: readonly MoonglassToolDef[] = [
     },
     required: ['topModule', 'testbench']
   }),
-  def('parse_coverage', 'verification', '解析覆盖率报告，生成可视化摘要', {
+  def('run_cdc_check', 'rtl', '检查设计中的跨时钟域路径并输出 rtlqa/cdc 报告', {
     type: 'object',
     properties: {
-      coverageFile: { type: 'string' },
-      format: { type: 'string', enum: ['verilator', 'vcs', 'urg'] }
-    },
-    required: ['coverageFile', 'format']
+      rtlFiles: { type: 'array', items: { type: 'string' } },
+      topModule: { type: 'string' }
+    }
   }),
 
   // ==================== 综合工具 ====================

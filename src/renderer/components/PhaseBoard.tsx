@@ -42,6 +42,7 @@ interface PhaseBoardProps {
   onRollback?: (to: Phase) => void
   onFastTrackSynthesis?: () => void
   onCompleteProject?: () => void
+  onFixGateIssues?: (phase: Phase, results: GateCheckResult[]) => void
   /** 最近一次推进尝试的门禁结果（含被阻断的情况） */
   gate?: GatePanelData | null
 }
@@ -52,6 +53,7 @@ export function PhaseBoard({
   onRollback,
   onFastTrackSynthesis,
   onCompleteProject,
+  onFixGateIssues,
   gate
 }: PhaseBoardProps): React.JSX.Element {
   const currentIdx = PHASE_ORDER.indexOf(project.currentPhase)
@@ -107,6 +109,15 @@ export function PhaseBoard({
                         <span className="mt-2 block border-t border-zinc-100 pt-2 text-zinc-400">
                           浮层内文字可选择；点击感叹号可保持显示。
                         </span>
+                        {onFixGateIssues && (
+                          <button
+                            type="button"
+                            onClick={() => onFixGateIssues(phase, unresolved)}
+                            className="mt-2 rounded border border-red-300 bg-red-50 px-2 py-1 font-medium text-red-700 hover:bg-red-100"
+                          >
+                            在会话中修复
+                          </button>
+                        )}
                       </span>
                     </span>
                   </span>
@@ -193,6 +204,20 @@ export function PhaseBoard({
               </li>
             ))}
           </ul>
+          {gate.results.some((result) => !result.passed) && onFixGateIssues && (
+            <button
+              type="button"
+              onClick={() =>
+                onFixGateIssues(
+                  project.currentPhase,
+                  gate.results.filter((result) => !result.passed)
+                )
+              }
+              className="mt-2 rounded border border-red-300 bg-white px-2 py-1 font-medium text-red-700 hover:bg-red-100"
+            >
+              在会话中修复
+            </button>
+          )}
         </div>
       )}
     </div>
