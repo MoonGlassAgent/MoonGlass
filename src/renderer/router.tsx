@@ -6,17 +6,19 @@ import {
   createRootRoute,
   createRoute,
   createRouter,
+  lazyRouteComponent,
   redirect
 } from '@tanstack/react-router'
 import { AppLayout } from './layouts/AppLayout'
 import { ProjectsPage } from './pages/ProjectsPage'
-import { WorkspacePage } from './pages/WorkspacePage'
-import { IpLibraryPage } from './pages/IpLibraryPage'
-import { ScriptsPage } from './pages/ScriptsPage'
-import { KnowledgePage } from './pages/KnowledgePage'
-import { SettingsPage } from './pages/SettingsPage'
-import { DesignBrowserPage } from './pages/DesignBrowserPage'
-import { ProcessLibrariesPage } from './pages/ProcessLibrariesPage'
+
+const WorkspacePage = lazyRouteComponent(() => import('./pages/WorkspacePage'), 'WorkspacePage')
+const DesignBrowserPage = lazyRouteComponent(() => import('./pages/DesignBrowserPage'), 'DesignBrowserPage')
+const IpLibraryPage = lazyRouteComponent(() => import('./pages/IpLibraryPage'), 'IpLibraryPage')
+const ProcessLibrariesPage = lazyRouteComponent(() => import('./pages/ProcessLibrariesPage'), 'ProcessLibrariesPage')
+const ScriptsPage = lazyRouteComponent(() => import('./pages/ScriptsPage'), 'ScriptsPage')
+const KnowledgePage = lazyRouteComponent(() => import('./pages/KnowledgePage'), 'KnowledgePage')
+const SettingsPage = lazyRouteComponent(() => import('./pages/SettingsPage'), 'SettingsPage')
 
 const rootRoute = createRootRoute({
   component: AppLayout
