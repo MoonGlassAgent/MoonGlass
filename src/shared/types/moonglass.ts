@@ -285,6 +285,30 @@ export interface LlmProviderTestResult {
 
 // ==================== Agent 对话（Phase 2：Pi Coding Agent RPC 嵌入） ====================
 
+export interface AgentDecisionOption {
+  id: string
+  label: string
+  description?: string
+  recommended?: boolean
+}
+
+export interface AgentDecisionRequest {
+  id: string
+  title: string
+  prompt?: string
+  mode: 'single' | 'multiple'
+  options: AgentDecisionOption[]
+  allowCustom: boolean
+  customLabel?: string
+  required: boolean
+}
+
+export interface AgentDecisionResponse {
+  requestId: string
+  selectedIds: string[]
+  customText?: string
+}
+
 /** 渲染端展示用的消息（由 pi 的 AgentMessage 映射简化而来） */
 export interface AgentUiMessage {
   id: string
@@ -295,6 +319,8 @@ export interface AgentUiMessage {
   timestamp: number
   /** 模型的思考过程（reasoning content） */
   thinking?: string
+  decisionRequest?: AgentDecisionRequest
+  decisionResponse?: AgentDecisionResponse
 }
 
 /** 主进程推送给渲染端的流式事件（pi 原始事件的简化映射） */
@@ -302,7 +328,7 @@ export type AgentStreamEvent =
   | { type: 'text-delta'; delta: string }
   | { type: 'thinking-delta'; delta: string }
   | { type: 'tool-start'; toolName: string; toolCallId: string }
-  | { type: 'tool-end'; toolName: string; toolCallId: string; isError: boolean; output: string }
+  | { type: 'tool-end'; toolName: string; toolCallId: string; isError: boolean; output: string; decisionRequest?: AgentDecisionRequest }
   | { type: 'agent-start' }
   | { type: 'agent-settled' }
   | { type: 'error'; message: string }

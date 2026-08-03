@@ -7,7 +7,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link } from '@tanstack/react-router'
-import { PHASE_LABELS, type LlmProviderConfig, type Phase } from '@shared/types'
+import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
+import { DECISION_RESPONSE_PREFIX, serializeDecisionResponse } from '@shared/agent-interaction'
 import { useChatStore } from '../store/chatStore'
 
 interface SessionInfo {
@@ -222,6 +223,12 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     setInput('')
   }
 
+  const decisionResponses = new Map(
+    messages
+      .filter((message): message is AgentUiMessage & { decisionResponse: AgentDecisionResponse } => Boolean(message.decisionResponse))
+      .map((message) => [message.decisionResponse.requestId, message.decisionResponse])
+  )
+
   // 未配置 Provider 的引导
   if (sessionInfo && !sessionInfo.providersReady) {
     return (
@@ -287,7 +294,15 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         )}
         <div className="flex flex-col gap-3">
           {messages.map((m) => (
-            <MessageBubble key={m.id} msg={m} />
+            <MessageBubble
+              key={m.id}
+              msg={m}
+              decisionResponse={m.decisionRequest ? decisionResponses.get(m.decisionRequest.id) : undefined}
+              decisionDisabled={streaming}
+              onDecision={(request, selectedIds, customText) => {
+                void send(serializeDecisionResponse(request, selectedIds, customText))
+              }}
+            />
           ))}
           {streaming && messages.at(-1)?.role !== 'assistant' && (
             <div className="text-sm text-zinc-400">Agent 思考中…</div>
@@ -336,16 +351,15 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
 }
 
 function MessageBubble({
-  msg
+  msg,
+  decisionResponse,
+  decisionDisabled,
+  onDecision
 }: {
-  msg: {
-    id: string
-    role: 'user' | 'assistant' | 'tool'
-    text: string
-    toolName?: string
-    isError?: boolean
-    thinking?: string
-  }
+  msg: AgentUiMessage
+  decisionResponse?: AgentDecisionResponse
+  decisionDisabled: boolean
+  onDecision: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
 }): React.JSX.Element {
   const thinkingRef = useRef<HTMLDetailsElement>(null)
   const [thinkingOpen, setThinkingOpen] = useState(false)
@@ -365,14 +379,27 @@ function MessageBubble({
   }, [msg.role, msg.thinking, msg.id])
 
   if (msg.role === 'user') {
+    const displayText = msg.decisionResponse
+      ? msg.text.split(/\r?\n/).filter((line) => !line.startsWith(DECISION_RESPONSE_PREFIX)).join('\n')
+      : msg.text
     return (
       <div className="message-user self-end rounded-lg bg-blue-600 px-3 py-2 text-sm whitespace-pre-wrap text-white">
-        {msg.text}
+        {displayText}
       </div>
     )
   }
 
   if (msg.role === 'tool') {
+    if (msg.decisionRequest) {
+      return (
+        <DecisionCard
+          request={msg.decisionRequest}
+          response={decisionResponse}
+          disabled={decisionDisabled}
+          onSubmit={onDecision}
+        />
+      )
+    }
     return (
       <details className="message-tool rounded border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs">
         <summary className="cursor-pointer text-zinc-500">
@@ -417,5 +444,116 @@ function MessageBubble({
         </details>
       )}
     </div>
+  )
+}
+
+function DecisionCard({
+  request,
+  response,
+  disabled,
+  onSubmit
+}: {
+  request: AgentDecisionRequest
+  response?: AgentDecisionResponse
+  disabled: boolean
+  onSubmit: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
+}): React.JSX.Element {
+  const [selectedIds, setSelectedIds] = useState<string[]>(response?.selectedIds ?? [])
+  const [customText, setCustomText] = useState(response?.customText ?? '')
+  const [error, setError] = useState('')
+  const locked = Boolean(response)
+
+  const toggle = (id: string): void => {
+    if (locked || disabled) return
+    setError('')
+    setSelectedIds((current) => request.mode === 'single'
+      ? [id]
+      : current.includes(id) ? current.filter((item) => item !== id) : [...current, id])
+  }
+
+  const submit = (): void => {
+    if (request.required && selectedIds.length === 0 && !customText.trim()) {
+      setError('请选择至少一个方案，或填写自己的要求。')
+      return
+    }
+    onSubmit(request, selectedIds, customText)
+  }
+
+  return (
+    <section className="decision-card w-full max-w-2xl self-start overflow-hidden rounded-md border border-zinc-300 bg-white shadow-sm">
+      <header className="border-b border-zinc-200 bg-zinc-50 px-4 py-3">
+        <div className="flex items-center justify-between gap-3">
+          <h3 className="text-sm font-semibold text-zinc-900">{request.title}</h3>
+          <span className="shrink-0 text-xs text-zinc-500">{request.mode === 'single' ? '单选' : '多选'}</span>
+        </div>
+        {request.prompt && <p className="mt-1 text-xs leading-5 text-zinc-600">{request.prompt}</p>}
+      </header>
+
+      <div className="space-y-2 p-3">
+        {request.options.map((option) => {
+          const selected = selectedIds.includes(option.id)
+          return (
+            <label
+              key={option.id}
+              className={`flex cursor-pointer items-start gap-3 rounded border px-3 py-2.5 transition-colors ${
+                selected ? 'border-blue-500 bg-blue-50' : 'border-zinc-200 hover:border-zinc-300 hover:bg-zinc-50'
+              } ${locked || disabled ? 'cursor-default' : ''}`}
+            >
+              <input
+                type={request.mode === 'single' ? 'radio' : 'checkbox'}
+                name={`decision-${request.id}`}
+                checked={selected}
+                disabled={locked || disabled}
+                onChange={() => toggle(option.id)}
+                className="mt-0.5 h-4 w-4 accent-blue-600"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="flex flex-wrap items-center gap-2 text-sm font-medium text-zinc-800">
+                  {option.label}
+                  {option.recommended && (
+                    <span className="rounded-sm border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-normal text-emerald-700">推荐</span>
+                  )}
+                </span>
+                {option.description && <span className="mt-0.5 block text-xs leading-5 text-zinc-500">{option.description}</span>}
+              </span>
+            </label>
+          )
+        })}
+
+        {request.allowCustom && (
+          <label className="block pt-1">
+            <span className="mb-1.5 block text-xs font-medium text-zinc-600">{request.customLabel ?? '补充你的要求（可选）'}</span>
+            <textarea
+              rows={3}
+              value={customText}
+              disabled={locked || disabled}
+              onChange={(event) => {
+                setCustomText(event.target.value)
+                setError('')
+              }}
+              placeholder="可以补充预设选项之外的方案、限制条件或偏好"
+              className="w-full resize-y rounded border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-blue-500 disabled:bg-zinc-50 disabled:text-zinc-600"
+            />
+          </label>
+        )}
+
+        {error && <p className="text-xs text-red-600">{error}</p>}
+        <div className="flex items-center justify-between gap-3 pt-1">
+          <span className="text-xs text-zinc-500">
+            {locked ? '该决策已提交并记录到当前会话' : disabled ? '等待 Agent 完成本轮回复' : '选择结果将继续发送给当前 Agent'}
+          </span>
+          {!locked && (
+            <button
+              type="button"
+              disabled={disabled}
+              onClick={submit}
+              className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+            >
+              确认选择
+            </button>
+          )}
+        </div>
+      </div>
+    </section>
   )
 }

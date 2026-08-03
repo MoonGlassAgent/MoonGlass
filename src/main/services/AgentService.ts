@@ -21,6 +21,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync,
 import { dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, Phase } from '@shared/types'
+import { parseDecisionRequest, parseDecisionResponse } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import type { ProjectService } from './ProjectService.ts'
 import type { LlmProviderService } from './LlmProviderService.ts'
@@ -398,6 +399,7 @@ scripts/
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
 - 综合优先使用 MoonGlass 工艺库索引选定的默认 Liberty；若没有配置默认库，允许通用综合，但须明确提示面积和时序不具备工艺意义。
 - MoonGlass 工艺库统一索引路径：${processLibraryIndex.replace(/\\/g, '/')}。涉及工艺选择、综合、时序或物理视图前，先读取该索引并核对 Liberty/LEF/GDS/Verilog 等可用文件；不得只凭目录名猜测文件。用户新增或下载工艺库后，以该索引为准。
+- 当需求、规格、架构或约束存在两种以上合理选项并需要用户决定时，必须调用 \`request_user_decision\`，不要只在普通文本中列出编号让用户手工回复。单选和多选默认允许用户补充自己的要求；选项应说明关键面积、性能、功耗、验证或交付影响，并且最多标记一个推荐项。调用后停止继续决策，等待用户回答。
 - 不得在根目录或旧式平铺目录创建阶段产出；不得虚构工具结果。
 `
 
@@ -869,7 +871,8 @@ argument-hint: "<模块名>"
           toolName: String(event.toolName ?? ''),
           toolCallId: String(event.toolCallId ?? ''),
           isError: Boolean(event.isError),
-          output: output.length > TOOL_OUTPUT_MAX ? output.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : output
+          output: output.length > TOOL_OUTPUT_MAX ? output.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : output,
+          decisionRequest: parseDecisionRequest(output)
         })
         break
       }
@@ -897,7 +900,7 @@ argument-hint: "<模块名>"
               .filter((b) => b.type === 'text')
               .map((b) => b.text ?? '')
               .join('\n')
-      return text ? [{ id, role: 'user', text, timestamp: ts }] : []
+      return text ? [{ id, role: 'user', text, timestamp: ts, decisionResponse: parseDecisionResponse(text) }] : []
     }
 
     if (m.role === 'assistant') {
@@ -932,7 +935,8 @@ argument-hint: "<模块名>"
           toolName: m.toolName,
           isError: m.isError,
           text: text.length > TOOL_OUTPUT_MAX ? text.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : text,
-          timestamp: ts
+          timestamp: ts,
+          decisionRequest: parseDecisionRequest(text)
         }
       ]
     }

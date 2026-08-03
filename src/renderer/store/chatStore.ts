@@ -7,6 +7,7 @@
 
 import { create } from 'zustand'
 import type { AgentEventPayload, AgentSessionInfo, AgentStreamEvent, AgentUiMessage } from '@shared/types'
+import { parseDecisionResponse } from '@shared/agent-interaction'
 
 interface ChatState {
   projectId: string | null
@@ -91,7 +92,8 @@ export const useChatStore = create<ChatState>((set, get) => {
         id: nextId(),
         role: 'user',
         text: text.trim(),
-        timestamp: Date.now()
+        timestamp: Date.now(),
+        decisionResponse: parseDecisionResponse(text)
       }
       set((s) => ({ messages: [...s.messages, userMsg], streaming: true, streamTargetId: null }))
       try {
@@ -261,7 +263,8 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
                 toolName: event.toolName,
                 text: output,
                 isError: event.isError,
-                timestamp: Date.now()
+                timestamp: Date.now(),
+                decisionRequest: event.decisionRequest
               }
             ]
           }
@@ -271,7 +274,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
         return {
           messages: [
             ...s.messages.slice(0, realIdx),
-            { ...target, text: output, isError: event.isError },
+            { ...target, text: output, isError: event.isError, decisionRequest: event.decisionRequest },
             ...s.messages.slice(realIdx + 1)
           ]
         }

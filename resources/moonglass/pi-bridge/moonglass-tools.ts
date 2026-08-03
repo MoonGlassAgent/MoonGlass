@@ -304,6 +304,48 @@ function formatIssues(issues: LintIssue[] | SynthIssue[]): string {
 }
 
 export default function (pi: ExtensionAPI): void {
+  pi.registerTool({
+    name: 'request_user_decision',
+    label: 'Request User Decision',
+    description: '在 MoonGlass 对话中展示结构化单选或多选决策卡。适用于需求、规格、架构和约束等需要用户明确选择的场景。',
+    promptSnippet: 'Ask the user to choose among structured engineering options in the MoonGlass UI',
+    promptGuidelines: 'Use this instead of writing numbered choices in plain text. Provide concise trade-offs, mark at most one recommended option, allow custom requirements unless inappropriate, and stop your response after calling the tool until the user answers.',
+    parameters: Type.Object({
+      id: Type.String({ description: '稳定且语义化的决策 ID，例如 spec.data_width' }),
+      title: Type.String({ description: '简短决策标题' }),
+      prompt: Type.Optional(Type.String({ description: '决策背景或需要用户回答的问题' })),
+      mode: Type.Union([Type.Literal('single'), Type.Literal('multiple')]),
+      options: Type.Array(Type.Object({
+        id: Type.String(),
+        label: Type.String(),
+        description: Type.Optional(Type.String()),
+        recommended: Type.Optional(Type.Boolean())
+      }), { minItems: 2, maxItems: 12 }),
+      allowCustom: Type.Optional(Type.Boolean({ description: '是否允许用户补充自己的要求，默认 true' })),
+      customLabel: Type.Optional(Type.String({ description: '自定义输入框标签' })),
+      required: Type.Optional(Type.Boolean({ description: '是否必须选择预设项或填写自定义要求，默认 true' }))
+    }),
+    async execute(_toolCallId, params) {
+      const request = {
+        id: String(params.id),
+        title: String(params.title),
+        prompt: params.prompt ? String(params.prompt) : undefined,
+        mode: params.mode as 'single' | 'multiple',
+        options: params.options,
+        allowCustom: params.allowCustom !== false,
+        customLabel: params.customLabel ? String(params.customLabel) : '补充你的要求（可选）',
+        required: params.required !== false
+      }
+      return {
+        content: [{
+          type: 'text',
+          text: `MOONGLASS_DECISION_REQUEST:${JSON.stringify(request)}\n等待用户在 MoonGlass 决策卡中回答。不要自行替用户选择。`
+        }],
+        details: request
+      }
+    }
+  })
+
   // ============================================================
   // 工具 1: run_verible_lint — Verilog/SystemVerilog Lint 检查
   // ============================================================

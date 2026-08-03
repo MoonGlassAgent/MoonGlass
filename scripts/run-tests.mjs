@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process'
 const suites = {
   core: [
     'scripts/rtl-engine-smoke.mjs',
+    'scripts/agent-interaction-smoke.mjs',
     'scripts/pi-tools-smoke.mjs'
   ],
   integration: [
