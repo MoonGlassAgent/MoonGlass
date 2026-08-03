@@ -15,8 +15,8 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.openai.com/v1',
     apiKey: '',
-    models: ['gpt-4o', 'gpt-4o-mini'],
-    enabled: true,
+    models: ['gpt-5.2', 'gpt-5-mini', 'gpt-4.1'],
+    enabled: false,
     builtin: true
   },
   {
@@ -25,7 +25,67 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'anthropic',
     baseUrl: 'https://api.anthropic.com',
     apiKey: '',
-    models: ['claude-sonnet-4-5', 'claude-opus-4-1'],
+    models: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
+    enabled: false,
+    builtin: true
+  },
+  {
+    id: 'google-gemini',
+    name: 'Google Gemini',
+    protocol: 'openai-compatible',
+    baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
+    apiKey: '',
+    models: ['gemini-3.6-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro'],
+    enabled: false,
+    builtin: true
+  },
+  {
+    id: 'xai',
+    name: 'xAI',
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.x.ai/v1',
+    apiKey: '',
+    models: ['grok-4', 'grok-4-fast'],
+    enabled: false,
+    builtin: true
+  },
+  {
+    id: 'mistral',
+    name: 'Mistral AI',
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.mistral.ai/v1',
+    apiKey: '',
+    models: ['mistral-large-latest', 'codestral-latest', 'ministral-8b-latest'],
+    enabled: false,
+    builtin: true
+  },
+  {
+    id: 'openrouter',
+    name: 'OpenRouter',
+    protocol: 'openai-compatible',
+    baseUrl: 'https://openrouter.ai/api/v1',
+    apiKey: '',
+    models: ['openai/gpt-5.2', 'anthropic/claude-sonnet-4.5', 'google/gemini-3.1-pro-preview'],
+    enabled: false,
+    builtin: true
+  },
+  {
+    id: 'groq',
+    name: 'Groq',
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.groq.com/openai/v1',
+    apiKey: '',
+    models: ['openai/gpt-oss-120b', 'llama-3.3-70b-versatile'],
+    enabled: false,
+    builtin: true
+  },
+  {
+    id: 'together',
+    name: 'Together AI',
+    protocol: 'openai-compatible',
+    baseUrl: 'https://api.together.xyz/v1',
+    apiKey: '',
+    models: ['openai/gpt-oss-120b', 'deepseek-ai/DeepSeek-V3.1', 'moonshotai/Kimi-K2-Instruct'],
     enabled: false,
     builtin: true
   },
@@ -35,7 +95,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.deepseek.com',
     apiKey: '',
-    models: ['deepseek-chat', 'deepseek-reasoner'],
+    models: [],
     enabled: false,
     builtin: true
   },
@@ -96,7 +156,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     baseUrl: 'https://api.siliconflow.cn/v1',
     apiKey: '',
     models: ['Pro/deepseek-ai/DeepSeek-V3', 'deepseek-ai/DeepSeek-V2.5', 'Qwen/Qwen2.5-72B-Instruct', 'THUDM/glm-4-9b-chat'],
-    enabled: true,
+    enabled: false,
     builtin: true
   }
 ]

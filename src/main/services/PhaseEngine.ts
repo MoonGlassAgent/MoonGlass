@@ -8,7 +8,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { isAbsolute, join, resolve } from 'node:path'
 import { runLint, checkSynthesizability } from '@moonglass/eda-bridge'
 import {
   PHASE_ORDER,
@@ -99,7 +99,42 @@ function collectRtlFiles(dir: string): string[] {
 /** 门禁只检查设计源；verification 中的 DUT 镜像和测试辅助模块不能进入综合。 */
 function collectDesignRtlFiles(workspaceDir: string): string[] {
   const canonicalRtlDir = join(workspaceDir, 'rtl')
-  return collectRtlFiles(existsSync(canonicalRtlDir) ? canonicalRtlDir : workspaceDir)
+  const manifestPath = join(canonicalRtlDir, 'design.json')
+  if (existsSync(manifestPath)) {
+    try {
+      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>
+      let entries = Array.isArray(manifest.files) ? manifest.files.filter((item): item is string => typeof item === 'string') : []
+      const filelist = typeof manifest.filelist === 'string' ? manifest.filelist : 'filelist.f'
+      const filelistPath = resolveRtlPath(workspaceDir, canonicalRtlDir, filelist)
+      if (entries.length === 0 && existsSync(filelistPath)) {
+        entries = readFileSync(filelistPath, 'utf-8').split(/\r?\n/)
+          .map((line) => line.trim()).filter((line) => line.length > 0 && !/^(#|\/\/|\+|-)/.test(line))
+      }
+      if (entries.length > 0) return [...new Set(entries.map((entry) => resolveRtlPath(workspaceDir, canonicalRtlDir, entry)))]
+    } catch { /* 无效 manifest 由后续 RTL 检查给出文件级错误 */ }
+  }
+  const macroView = /(?:^|[\\/])macros[\\/]|_(?:behavioral|blackbox|phy_template)\.v$/i
+  return collectRtlFiles(existsSync(canonicalRtlDir) ? canonicalRtlDir : workspaceDir).filter((file) => !macroView.test(file))
+}
+
+function resolveRtlPath(workspaceDir: string, rtlDir: string, entry: string): string {
+  if (isAbsolute(entry)) return resolve(entry)
+  return resolve(entry.replace(/\\/g, '/').startsWith('rtl/') ? workspaceDir : rtlDir, entry)
+}
+
+function collectLibraryRtlFiles(workspaceDir: string): string[] {
+  const rtlDir = join(workspaceDir, 'rtl')
+  const manifestPath = join(rtlDir, 'design.json')
+  if (!existsSync(manifestPath)) return []
+  try {
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>
+    const entries = Array.isArray(manifest.libraryFiles)
+      ? manifest.libraryFiles.filter((item): item is string => typeof item === 'string')
+      : []
+    return [...new Set(entries.map((entry) => resolveRtlPath(workspaceDir, rtlDir, entry)))]
+  } catch {
+    return []
+  }
 }
 
 function makeResult(
@@ -332,7 +367,8 @@ async function yosysSynthesizable(ctx: GateCheckContext, checkId: string): Promi
     return makeResult(checkId, false, 'error', '工作区暂无 RTL 文件（*.v/*.sv），无法执行综合检查')
   }
 
-  const result = await checkSynthesizability({ rtlFiles: files })
+  const libraryFiles = collectLibraryRtlFiles(ctx.workspaceDir)
+  const result = await checkSynthesizability({ rtlFiles: files, libraryFiles })
   if (!result.synthesizable) {
     const errs = result.issues.filter((i) => i.severity === 'error')
     const shown = errs.slice(0, MAX_ISSUES_IN_MESSAGE).map((e) => e.message).join('；')
@@ -341,7 +377,7 @@ async function yosysSynthesizable(ctx: GateCheckContext, checkId: string): Promi
   }
   const est = result.resourceEstimate
   const estText = est.cells !== undefined ? `，约 ${est.cells} cells / ${est.wires} wires` : ''
-  return makeResult(checkId, true, 'error', `可综合（${files.length} 个文件${estText}）`)
+  return makeResult(checkId, true, 'error', `可综合（${files.length} 个设计文件，${libraryFiles.length} 个 blackbox 宏视图${estText}）`)
 }
 
 /** Yosys CDC 检查：检测多时钟域间的信号交叉

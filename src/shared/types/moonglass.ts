@@ -170,12 +170,57 @@ export interface ToolDetection {
   found: boolean
   path?: string
   version?: string
+  category?: 'runtime' | 'build' | 'eda' | 'verification' | 'physical'
+  importance?: 'required' | 'recommended' | 'optional'
+  description?: string
+  installId?: string
+  installUrl?: string
+}
+
+export interface ToolInstallResult {
+  ok: boolean
+  message: string
+  path?: string
 }
 
 export interface WaveformOpenResult {
   ok: boolean
   viewer?: string
   error?: string
+}
+
+// ==================== 工艺库管理 ====================
+
+export type ProcessLibraryFileKind = 'liberty' | 'lef' | 'gds' | 'verilog' | 'spice' | 'tech' | 'mapping' | 'other'
+
+export interface ProcessLibraryFileSummary {
+  kind: ProcessLibraryFileKind
+  count: number
+  examples: string[]
+}
+
+export interface ProcessLibraryRecord {
+  id: string
+  name: string
+  path: string
+  source: 'local' | 'downloaded'
+  catalogId?: string
+  status: 'ready' | 'missing' | 'indexing' | 'error'
+  indexedAt?: string
+  fileCount: number
+  files: ProcessLibraryFileSummary[]
+  error?: string
+}
+
+export interface OpenProcessLibrary {
+  id: string
+  name: string
+  node: string
+  description: string
+  license: string
+  repository: string
+  maturity: 'reference' | 'experimental' | 'research'
+  installed: boolean
 }
 
 // ==================== Python 执行 ====================

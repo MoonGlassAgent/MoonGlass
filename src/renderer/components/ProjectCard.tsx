@@ -5,6 +5,7 @@
  */
 
 import { Link } from '@tanstack/react-router'
+import { Trash2 } from 'lucide-react'
 import { PHASE_LABELS, PHASE_ORDER, type ChipProject } from '@shared/types'
 
 interface ProjectCardProps {
@@ -20,7 +21,7 @@ export function ProjectCard({ project, onDelete }: ProjectCardProps): React.JSX.
   const progress = Math.round((resolvedCount / PHASE_ORDER.length) * 100)
 
   return (
-    <div className="group relative rounded-lg border border-zinc-200 bg-white p-4 transition-colors hover:border-zinc-400">
+    <div className="project-card group relative rounded-lg border border-zinc-200 bg-white p-4 hover:border-zinc-400">
       <Link to="/workspace/$projectId" params={{ projectId: project.id }} className="block">
         <div className="mb-2 flex items-center justify-between">
           <h3 className="font-semibold text-zinc-900">{project.name}</h3>
@@ -49,10 +50,10 @@ export function ProjectCard({ project, onDelete }: ProjectCardProps): React.JSX.
             e.preventDefault()
             if (window.confirm(`确认删除项目「${project.name}」？`)) onDelete(project.id)
           }}
-          className="absolute right-2 top-2 hidden rounded px-1.5 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-red-600 group-hover:block"
+          className="absolute right-2 top-2 hidden size-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-red-600 group-hover:flex"
           title="删除项目"
         >
-          ✕
+          <Trash2 size={14} />
         </button>
       )}
     </div>

@@ -114,6 +114,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 4. 规划存储层次与数据流
 5. 使用 doc-repository 技能输出 docs/03_design/architecture.md、microarchitecture.md、clock_reset.md
 6. 使用 verification-planning 技能建立 docs/04_verification/ 下的验证、测试和覆盖率计划
+7. 识别 SRAM/ROM/寄存器堆等存储需求；若依赖未指定的 memory compiler 或厂商宏，必须在 architecture.md 中记录宏组织、容量、端口、时序假设、面积/功耗估算口径和待替换物理宏
 
 约束：
 - 必须基于 SPEC 阶段的接口定义
@@ -139,6 +140,15 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 5. RTL 只写入 rtl/，完成后调用 collect_rtl_files、read_verilog、run_verible_lint、check_synthesizability
 6. Lint 报告写入 rtlqa/lint/
 7. 维护 rtl/design.json（topModule、filelist、includeDirs、defines）与 rtl/filelist.f；design.json 的 filelist 使用字符串 "filelist.f"，具体 RTL 顺序逐行写入 filelist.f
+8. 写 RTL 前先检查 architecture.md 的 memory macro 声明；默认没有可用 SRAM 宏，除非用户明确指定工艺库、memory compiler 或宏模型
+
+存储宏规则：
+- 不得把大容量 reg 阵列直接留在控制器中用于面积综合；将存储体从控制逻辑剥离为参数化 bank 级宏接口模块
+- 在 rtl/macros/ 为同一逻辑宏提供三种互斥视图：sram_behavioral.v（仅仿真）、sram_blackbox.v（仅综合）、sram_phy_template.v（物理宏例化与端口映射交付模板）
+- behavioral 视图保持完整容量和行为；blackbox 视图只声明端口，不得包含 reg 阵列或行为实现
+- rtl/design.json 分别使用 simulationFiles、libraryFiles、physicalFiles 登记三类视图；普通 filelist.f 不得同时包含这些互斥视图
+- 仿真加入 simulationFiles；Yosys 用 read_verilog -lib 读取 libraryFiles；physicalFiles 不进入 RTL 仿真、Lint 或逻辑综合
+- SRAM 宏面积/功耗依据架构文档或宏数据手册单独估算，并与 Yosys 标准单元面积分项报告
 
 编码规范：
 - 本约束仅适用于 Agent 新生成的 RTL，不限制用户导入或已有代码采用更新的 Verilog/SystemVerilog 标准
@@ -167,7 +177,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 你的任务是：
 1. 先使用 verification-planning 技能校验 docs/04_verification/ 三份计划
 2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
-3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability、run_simulation
+3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；仿真必须调用 run_simulation(mode="cocotb", testModule=..., testDir=...)，Windows 缺省使用 simulator="icarus"，不得另写临时 runner 绕过工具
 4. 将 compile.log、simulation.log、result.json、覆盖率和 VCD/FST 写入 verification/results/<module>/
 5. 分析覆盖率报告，补充测试用例直至达标，并更新需求追踪
 
@@ -221,6 +231,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 6. SDC 写入 imp/constraints/；Yosys 网表、日志、时序与面积报告写入 imp/synthesis/
 7. 实现说明写入 docs/05_implementation/，发布签核材料写入 docs/07_release/
 8. run_logic_synthesis 缺省使用 MoonGlass 配置的 Nangate45 / FreePDK45 typical 开源 Liberty；只有用户明确指定时才改用其他工艺库
+9. 若 rtl/design.json 声明 libraryFiles，必须作为 blackbox/library Verilog 传给 run_logic_synthesis；不得综合 simulationFiles 中的 behavioral 存储阵列。宏面积/功耗按 architecture.md 或数据手册单列
 
 约束：
 - 必须基于 QA 通过的结果

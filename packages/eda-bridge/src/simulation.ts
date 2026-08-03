@@ -5,8 +5,8 @@
  * VCS / Xcelium 为预留类型，当前仅 Verilator 有真实现。
  */
 
-import { existsSync, mkdirSync, writeFileSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { delimiter, dirname, join, resolve } from 'node:path'
 import {
   locateTool,
   run,
@@ -14,7 +14,7 @@ import {
   VERILATOR_CANDIDATES
 } from './tool-runner'
 
-export type SimulatorKind = 'verilator' | 'vcs' | 'xcelium'
+export type SimulatorKind = 'verilator' | 'icarus' | 'vcs' | 'xcelium'
 
 export interface SimulationOptions {
   topModule: string
@@ -59,6 +59,117 @@ export interface VerilatorSimResult {
   compileLogPath: string
   simulationLogPath: string
   resultPath: string
+}
+
+export interface CocotbSimOptions {
+  topModule: string
+  rtlFiles: string[]
+  testModule: string
+  testDir: string
+  simulator?: 'icarus' | 'verilator'
+  testcase?: string
+  waves?: boolean
+  signal?: AbortSignal
+  buildDir: string
+  resultDir: string
+  timeoutSec?: number
+  pythonExecutable?: string
+}
+
+function findWaveform(dir: string): string | null {
+  if (!existsSync(dir)) return null
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) {
+      const nested = findWaveform(full)
+      if (nested) return nested
+    } else if (/\.(vcd|fst)$/i.test(entry.name)) return full
+  }
+  return null
+}
+
+/** 使用 cocotb 2.x Python Runner 运行测试，并统一归档日志、JUnit、结果和波形。 */
+export async function runCocotbSimulation(options: CocotbSimOptions): Promise<VerilatorSimResult> {
+  const simulator = options.simulator ?? 'icarus'
+  const python = options.pythonExecutable ?? await locateTool(process.platform === 'win32' ? ['python.exe', 'python'] : ['python3', 'python'])
+  if (!python) throw new Error('未找到 Python；Cocotb 仿真需要 Python 3')
+  const simulatorPath = await locateTool(simulator === 'icarus'
+    ? (process.platform === 'win32' ? ['iverilog.exe', 'iverilog'] : ['iverilog'])
+    : VERILATOR_CANDIDATES)
+  if (!simulatorPath) throw new Error(`未找到 ${simulator === 'icarus' ? 'Icarus Verilog' : 'Verilator'}`)
+  for (const file of options.rtlFiles) if (!existsSync(file)) throw new Error(`RTL 文件不存在: ${file}`)
+  if (!existsSync(options.testDir)) throw new Error(`Cocotb 测试目录不存在: ${options.testDir}`)
+
+  mkdirSync(options.buildDir, { recursive: true })
+  mkdirSync(options.resultDir, { recursive: true })
+  const runnerPath = join(options.buildDir, 'moonglass_cocotb_runner.py')
+  const compileLogPath = join(options.resultDir, 'compile.log')
+  const simulationLogPath = join(options.resultDir, 'simulation.log')
+  const resultPath = join(options.resultDir, 'result.json')
+  const resultsXml = join(options.resultDir, 'results.xml')
+  const script = [
+    'from cocotb_tools.runner import get_runner',
+    `runner = get_runner(${JSON.stringify(simulator)})`,
+    `runner.build(sources=${JSON.stringify(options.rtlFiles)}, hdl_toplevel=${JSON.stringify(options.topModule)}, build_dir=${JSON.stringify(options.buildDir)}, always=True, waves=${options.waves !== false ? 'True' : 'False'}, timescale=('1ns', '1ps'))`,
+    'print("__MOONGLASS_BUILD_DONE__", flush=True)',
+    `runner.test(hdl_toplevel=${JSON.stringify(options.topModule)}, test_module=${JSON.stringify(options.testModule)}, testcase=${options.testcase ? JSON.stringify(options.testcase) : 'None'}, build_dir=${JSON.stringify(options.buildDir)}, test_dir=${JSON.stringify(options.resultDir)}, results_xml=${JSON.stringify(resultsXml)}, waves=${options.waves !== false ? 'True' : 'False'})`
+  ].join('\n')
+  writeFileSync(runnerPath, script, 'utf-8')
+
+  const env = toolEnv(simulatorPath)
+  env.PYTHONPATH = `${resolve(options.testDir)}${delimiter}${env.PYTHONPATH ?? ''}`
+  env.COCOTB_RESULTS_FILE = resultsXml
+  const execution = await run(
+    python,
+    [runnerPath],
+    env,
+    options.signal,
+    resolve(options.testDir),
+    Math.max(30, options.timeoutSec ?? 300) * 1000
+  )
+  const output = [execution.stdout, execution.stderr].filter(Boolean).join('\n')
+  const marker = output.indexOf('__MOONGLASS_BUILD_DONE__')
+  writeFileSync(compileLogPath, marker >= 0 ? output.slice(0, marker) : output, 'utf-8')
+  writeFileSync(simulationLogPath, marker >= 0 ? output.slice(marker + '__MOONGLASS_BUILD_DONE__'.length) : output, 'utf-8')
+
+  const sourceWaveform = findWaveform(options.buildDir) ?? findWaveform(options.resultDir)
+  let waveformPath: string | null = null
+  if (sourceWaveform) {
+    waveformPath = join(options.resultDir, `${options.topModule}${sourceWaveform.toLowerCase().endsWith('.fst') ? '.fst' : '.vcd'}`)
+    if (resolve(sourceWaveform) !== resolve(waveformPath)) copyFileSync(sourceWaveform, waveformPath)
+  }
+  const xml = existsSync(resultsXml) ? readFileSync(resultsXml, 'utf-8') : ''
+  const testsTotal = (xml.match(/<testcase\b/g) ?? []).length
+  const testsFailed = (xml.match(/<(?:failure|error)\b/g) ?? []).length
+  const testsSkipped = (xml.match(/<skipped\b/g) ?? []).length
+  const testsPassed = Math.max(0, testsTotal - testsFailed - testsSkipped)
+  const passed = execution.code === 0 && testsPassed > 0 && testsFailed === 0
+  writeFileSync(resultPath, JSON.stringify({
+    passed,
+    framework: 'cocotb',
+    simulator,
+    topModule: options.topModule,
+    testModule: options.testModule,
+    testcase: options.testcase ?? null,
+    runExitCode: execution.code,
+    testsTotal,
+    testsPassed,
+    testsFailed,
+    testsSkipped,
+    waveformPath,
+    compileLogPath,
+    simulationLogPath,
+    resultsXml: existsSync(resultsXml) ? resultsXml : null,
+    finishedAt: new Date().toISOString()
+  }, null, 2), 'utf-8')
+  return {
+    passed,
+    log: output.slice(-6000) || '(无输出)',
+    vcdPath: waveformPath,
+    compileLogPath,
+    simulationLogPath,
+    resultPath
+  }
 }
 
 /**

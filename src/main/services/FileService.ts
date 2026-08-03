@@ -57,10 +57,8 @@ export class FileService implements MoonGlassService {
 
   /** 读取文件内容（限制在工作目录内；二进制/超限做截断处理） */
   readFile(projectId: string, relPath: string): FileContentResult | null {
-    const root = resolve(projectWorkspaceDir(projectId))
-    const full = resolve(root, relPath)
-    // 防目录穿越
-    if (full !== root && !full.startsWith(root + sep)) return null
+    const full = this.resolveProjectFile(projectId, relPath)
+    if (!full) return null
     if (!existsSync(full) || !statSync(full).isFile()) return null
 
     const buf = readFileSync(full)
@@ -70,5 +68,14 @@ export class FileService implements MoonGlassService {
     }
     const truncated = buf.length > READ_MAX_BYTES
     return { content: buf.subarray(0, READ_MAX_BYTES).toString('utf-8'), truncated }
+  }
+
+  /** 将项目相对路径安全解析为绝对文件路径，拒绝目录穿越与不存在的文件。 */
+  resolveProjectFile(projectId: string, relPath: string): string | null {
+    const root = resolve(projectWorkspaceDir(projectId))
+    const full = resolve(root, relPath)
+    if (full !== root && !full.startsWith(root + sep)) return null
+    if (!existsSync(full) || !statSync(full).isFile()) return null
+    return full
   }
 }

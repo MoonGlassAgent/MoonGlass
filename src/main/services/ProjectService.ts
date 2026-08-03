@@ -154,6 +154,7 @@ export class ProjectService implements MoonGlassService {
     'docs/06_validation',
     'docs/07_release',
     'rtl',
+    'rtl/macros',
     'rtlqa/lint',
     'rtlqa/cdc',
     'verification/results',

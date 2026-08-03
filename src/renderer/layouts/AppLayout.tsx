@@ -7,7 +7,7 @@ import { Sidebar } from '../components/Sidebar'
 
 export function AppLayout(): React.JSX.Element {
   return (
-    <div className="flex h-screen w-screen overflow-hidden">
+    <div className="app-shell flex h-screen w-screen overflow-hidden">
       <Sidebar />
       <main className="flex-1 overflow-hidden">
         <Outlet />

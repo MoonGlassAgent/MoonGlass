@@ -32,6 +32,17 @@ interface LlmProviderStoreFile {
 }
 
 const STORAGE_VERSION = 1
+const PREFERRED_PROVIDER_ORDER = [
+  'openai',
+  'deepseek',
+  'moonshot',
+  'kimi-code',
+  'siliconflow',
+  'bailian'
+] as const
+const RETIRED_PRESET_MODELS: Readonly<Record<string, readonly string[]>> = {
+  deepseek: ['deepseek-chat', 'deepseek-reasoner']
+}
 
 export class LlmProviderService implements MoonGlassService {
   readonly name = 'llm-provider-service'
@@ -103,9 +114,18 @@ export class LlmProviderService implements MoonGlassService {
     }
     // 合并新增预置项（用户已有配置优先，预置只补缺不覆盖）
     for (const preset of LLM_PROVIDER_PRESETS) {
-      if (!this.providers.has(preset.id)) {
+      const existing = this.providers.get(preset.id)
+      if (!existing) {
         this.providers.set(preset.id, { ...preset })
         dirty = true
+      } else if (existing.builtin) {
+        // 预置更新只补充推荐模型；用户的 Key、URL、启用状态和自定义模型均保留。
+        const retired = new Set(RETIRED_PRESET_MODELS[existing.id] ?? [])
+        const models = [...new Set([...existing.models, ...preset.models])].filter((model) => !retired.has(model))
+        if (models.length !== existing.models.length || models.some((model, index) => model !== existing.models[index])) {
+          this.providers.set(existing.id, { ...existing, models })
+          dirty = true
+        }
       }
     }
     if (dirty) this.persist()
@@ -128,7 +148,13 @@ export class LlmProviderService implements MoonGlassService {
 
   /** 预置项在前，其余按名称排序 */
   list(): LlmProviderConfig[] {
-    const presetOrder = new Map(LLM_PROVIDER_PRESETS.map((p, i) => [p.id, i]))
+    const orderedIds = [
+      ...PREFERRED_PROVIDER_ORDER,
+      ...LLM_PROVIDER_PRESETS.map((provider) => provider.id).filter(
+        (id) => !PREFERRED_PROVIDER_ORDER.includes(id as (typeof PREFERRED_PROVIDER_ORDER)[number])
+      )
+    ]
+    const presetOrder = new Map(orderedIds.map((id, index) => [id, index]))
     return [...this.providers.values()].sort((a, b) => {
       const ia = presetOrder.get(a.id) ?? Number.MAX_SAFE_INTEGER
       const ib = presetOrder.get(b.id) ?? Number.MAX_SAFE_INTEGER

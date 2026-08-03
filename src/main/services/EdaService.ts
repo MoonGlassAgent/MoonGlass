@@ -6,18 +6,27 @@
  */
 
 import { spawn } from 'node:child_process'
-import { existsSync, statSync } from 'node:fs'
-import { dirname, extname, resolve, sep } from 'node:path'
+import { createWriteStream, existsSync, statSync } from 'node:fs'
+import { mkdir, rm } from 'node:fs/promises'
+import { delimiter, dirname, extname, join, resolve, sep } from 'node:path'
+import { Readable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import { detectToolchain, locateTool } from '@moonglass/eda-bridge'
-import type { ToolDetection, WaveformOpenResult } from '@shared/types'
+import type { ToolDetection, ToolInstallResult, WaveformOpenResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
 import { projectWorkspaceDir } from '../core/paths'
 
 export class EdaService implements MoonGlassService {
   readonly name = 'eda-service'
+  private readonly toolchainRoot: string
 
-  start(): void {
-    // 无常驻资源
+  constructor(userDataDir: string) {
+    this.toolchainRoot = join(userDataDir, 'moonglass', 'toolchains')
+  }
+
+  async start(): Promise<void> {
+    await mkdir(this.toolchainRoot, { recursive: true })
+    this.activateManagedTools()
   }
 
   stop(): void {
@@ -25,10 +34,57 @@ export class EdaService implements MoonGlassService {
   }
 
   detectTools(): Promise<ToolDetection[]> {
+    this.activateManagedTools()
     return detectToolchain()
   }
 
+  async installBundle(id: string): Promise<ToolInstallResult> {
+    if (id === 'python-cocotb') return this.installCocotb()
+    if (id !== 'oss-cad-suite') return { ok: false, message: `未知工具包: ${id}` }
+    if (process.platform !== 'win32' || process.arch !== 'x64') {
+      return { ok: false, message: '当前一键安装暂时仅支持 Windows x64' }
+    }
+
+    const suiteDir = join(this.toolchainRoot, 'oss-cad-suite')
+    const archivePath = join(this.toolchainRoot, 'oss-cad-suite-windows-x64.tgz')
+    try {
+      const releaseResponse = await fetch('https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases/latest', {
+        headers: { 'User-Agent': 'MoonGlass' }
+      })
+      if (!releaseResponse.ok) throw new Error(`GitHub Release 查询失败: HTTP ${releaseResponse.status}`)
+      const release = await releaseResponse.json() as { assets?: Array<{ name: string; browser_download_url: string }> }
+      const asset = release.assets?.find((item) => /^oss-cad-suite-windows-x64-.*\.tgz$/i.test(item.name))
+      if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
+
+      await rm(suiteDir, { recursive: true, force: true })
+      const download = await fetch(asset.browser_download_url, { headers: { 'User-Agent': 'MoonGlass' } })
+      if (!download.ok || !download.body) throw new Error(`工具包下载失败: HTTP ${download.status}`)
+      await pipeline(Readable.fromWeb(download.body as never), createWriteStream(archivePath))
+      await this.runProcess('tar', ['-xzf', archivePath, '-C', this.toolchainRoot])
+      await rm(archivePath, { force: true })
+      if (!existsSync(join(suiteDir, 'bin'))) throw new Error('工具包解压完成，但未找到 bin 目录')
+      this.activateManagedTools()
+      return { ok: true, message: 'OSS CAD Suite 安装完成', path: suiteDir }
+    } catch (error) {
+      await rm(archivePath, { force: true }).catch(() => {})
+      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+    }
+  }
+
+  private async installCocotb(): Promise<ToolInstallResult> {
+    const python = await locateTool(process.platform === 'win32' ? ['python.exe', 'python', 'python3.exe'] : ['python3', 'python'])
+    if (!python) return { ok: false, message: '未找到可用的 Python，请先安装 Python 3' }
+    try {
+      await this.runProcess(python, ['-m', 'pip', 'install', '--user', '--upgrade', 'cocotb', 'cocotb-bus', 'cocotb-coverage'])
+      const check = await this.runProcess(python, ['-c', 'import cocotb; print(cocotb.__version__)'], true)
+      return { ok: true, message: `Cocotb 安装完成，版本 ${check.trim()}`, path: python }
+    } catch (error) {
+      return { ok: false, message: `Cocotb 安装失败：${error instanceof Error ? error.message : String(error)}` }
+    }
+  }
+
   async openWaveform(projectId: string, relPath: string): Promise<WaveformOpenResult> {
+    this.activateManagedTools()
     const root = resolve(projectWorkspaceDir(projectId))
     const filePath = resolve(root, relPath)
     if (filePath !== root && !filePath.startsWith(root + sep)) {
@@ -60,5 +116,30 @@ export class EdaService implements MoonGlassService {
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
     }
+  }
+
+  private activateManagedTools(): void {
+    const bin = join(this.toolchainRoot, 'oss-cad-suite', 'bin')
+    if (!existsSync(bin)) return
+    const current = process.env.PATH ?? ''
+    if (!current.toLowerCase().split(delimiter).includes(bin.toLowerCase())) {
+      process.env.PATH = `${bin}${delimiter}${current}`
+    }
+  }
+
+  private runProcess(command: string, args: string[], captureOutput?: false): Promise<void>
+  private runProcess(command: string, args: string[], captureOutput: true): Promise<string>
+  private runProcess(command: string, args: string[], captureOutput = false): Promise<void | string> {
+    return new Promise((resolvePromise, reject) => {
+      const child = spawn(command, args, { windowsHide: true })
+      let stdout = ''
+      let stderr = ''
+      child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-8000) })
+      child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-8000) })
+      child.on('error', reject)
+      child.on('close', (code) => code === 0
+        ? resolvePromise(captureOutput ? stdout : undefined)
+        : reject(new Error(`${command} 执行失败 (code=${code}): ${stderr.trim()}`)))
+    })
   }
 }

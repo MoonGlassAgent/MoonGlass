@@ -25,8 +25,19 @@ const api: MoonGlassApi = {
   },
   eda: {
     detectTools: () => ipcRenderer.invoke(IPC.Eda.DetectTools),
+    installBundle: (id: string) => ipcRenderer.invoke(IPC.Eda.InstallBundle, id),
+    openInstallPage: (url: string) => ipcRenderer.invoke(IPC.Eda.OpenInstallPage, url),
     openWaveform: (projectId: string, relPath: string) =>
       ipcRenderer.invoke(IPC.Eda.OpenWaveform, projectId, relPath)
+  },
+  processLibrary: {
+    list: () => ipcRenderer.invoke(IPC.ProcessLibrary.List),
+    catalog: () => ipcRenderer.invoke(IPC.ProcessLibrary.Catalog),
+    chooseAndAdd: () => ipcRenderer.invoke(IPC.ProcessLibrary.ChooseAndAdd),
+    download: (catalogId: string) => ipcRenderer.invoke(IPC.ProcessLibrary.Download, catalogId),
+    reindex: (id: string) => ipcRenderer.invoke(IPC.ProcessLibrary.Reindex, id),
+    remove: (id: string) => ipcRenderer.invoke(IPC.ProcessLibrary.Remove, id),
+    openFolder: (id: string) => ipcRenderer.invoke(IPC.ProcessLibrary.OpenFolder, id)
   },
   python: {
     run: (req: PythonRunRequest) => ipcRenderer.invoke(IPC.Python.Run, req)
@@ -60,7 +71,7 @@ const api: MoonGlassApi = {
     tree: (projectId: string) => ipcRenderer.invoke(IPC.Fs.Tree, projectId),
     readFile: (projectId: string, relPath: string) =>
       ipcRenderer.invoke(IPC.Fs.ReadFile, projectId, relPath),
-    openExternal: (filePath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, filePath)
+    openExternal: (projectId: string, relPath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, projectId, relPath)
   },
   designBrowser: {
     listTops: (projectId: string) => ipcRenderer.invoke(IPC.DesignBrowser.ListTops, projectId),

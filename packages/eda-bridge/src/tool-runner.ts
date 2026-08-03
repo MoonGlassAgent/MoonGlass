@@ -9,7 +9,7 @@
 
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { delimiter, dirname, join } from 'node:path'
+import { delimiter, dirname, extname, join } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -46,6 +46,26 @@ export async function locateTool(names: string[]): Promise<string | null> {
       // 继续尝试下一个候选
     }
   }
+  if (process.platform === 'win32') {
+    const home = process.env.USERPROFILE ?? ''
+    const localAppData = process.env.LOCALAPPDATA ?? ''
+    const searchDirs = [
+      ...((process.env.PATH ?? '').split(delimiter)),
+      join(home, 'oss-cad-suite', 'oss-cad-suite', 'bin'),
+      join(home, 'scoop', 'shims'),
+      join(localAppData, 'Programs', 'GTKWave', 'bin'),
+      join(localAppData, 'Programs', 'gtkwave', 'bin')
+    ].filter(Boolean)
+    for (const name of names) {
+      const variants = extname(name) ? [name] : [`${name}.exe`, `${name}.cmd`, name]
+      for (const dir of searchDirs) {
+        for (const variant of variants) {
+          const candidate = join(dir, variant)
+          if (existsSync(candidate)) return candidate
+        }
+      }
+    }
+  }
   return null
 }
 
@@ -73,13 +93,14 @@ export function run(
   args: string[],
   env?: NodeJS.ProcessEnv,
   signal?: AbortSignal,
-  cwd?: string
+  cwd?: string,
+  timeoutMs: number = EXEC_TIMEOUT_MS
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = execFile(
       cmd,
       args,
-      { timeout: EXEC_TIMEOUT_MS, maxBuffer: MAX_BUFFER, env, signal, cwd },
+      { timeout: timeoutMs, maxBuffer: MAX_BUFFER, env, signal, cwd },
       (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           reject(new Error(`工具未找到: ${cmd}`))

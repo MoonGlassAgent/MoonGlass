@@ -17,8 +17,10 @@ import type {
   PythonRunRequest,
   PythonRunResult,
   ToolDetection,
+  ToolInstallResult,
   WaveformOpenResult
 } from './types/moonglass'
+import type { OpenProcessLibrary, ProcessLibraryRecord } from './types/moonglass'
 import type { DesignDatabase } from '@moonglass/design-browser-engine'
 
 export const IPC = {
@@ -39,6 +41,8 @@ export const IPC = {
   },
   Eda: {
     DetectTools: 'eda:detect-tools',
+    InstallBundle: 'eda:install-bundle',
+    OpenInstallPage: 'eda:open-install-page',
     OpenWaveform: 'eda:open-waveform'
   },
   Python: {
@@ -67,6 +71,15 @@ export const IPC = {
     Tree: 'fs:tree',
     ReadFile: 'fs:read-file',
     OpenExternal: 'fs:open-external'
+  },
+  ProcessLibrary: {
+    List: 'process-library:list',
+    Catalog: 'process-library:catalog',
+    ChooseAndAdd: 'process-library:choose-and-add',
+    Download: 'process-library:download',
+    Reindex: 'process-library:reindex',
+    Remove: 'process-library:remove',
+    OpenFolder: 'process-library:open-folder'
   },
   DesignBrowser: {
     ListTops: 'design-browser:list-tops',
@@ -99,6 +112,8 @@ export interface MoonGlassApi {
   }
   eda: {
     detectTools(): Promise<ToolDetection[]>
+    installBundle(id: string): Promise<ToolInstallResult>
+    openInstallPage(url: string): Promise<boolean>
     /** 使用 GTKWave 打开项目内的 VCD/FST 波形文件 */
     openWaveform(projectId: string, relPath: string): Promise<WaveformOpenResult>
   }
@@ -138,7 +153,17 @@ export interface MoonGlassApi {
     /** 读取文件内容（相对路径，超限截断；二进制/越界返回 null 或提示） */
     readFile(projectId: string, relPath: string): Promise<FileContentResult | null>
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
-    openExternal(filePath: string): Promise<boolean>
+    /** 在系统浏览器/默认程序中打开项目文件；路径必须相对项目工作区。 */
+    openExternal(projectId: string, relPath: string): Promise<boolean>
+  }
+  processLibrary: {
+    list(): Promise<ProcessLibraryRecord[]>
+    catalog(): Promise<OpenProcessLibrary[]>
+    chooseAndAdd(): Promise<ProcessLibraryRecord | null>
+    download(catalogId: string): Promise<ProcessLibraryRecord>
+    reindex(id: string): Promise<ProcessLibraryRecord>
+    remove(id: string): Promise<boolean>
+    openFolder(id: string): Promise<boolean>
   }
   designBrowser: {
     listTops(projectId: string): Promise<Array<{

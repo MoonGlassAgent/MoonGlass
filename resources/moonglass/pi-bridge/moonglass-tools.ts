@@ -22,7 +22,7 @@ import {
   VERILATOR_CANDIDATES,
   YOSYS_CANDIDATES
 } from './eda-bridge/tool-runner'
-import { runVerilatorSimulation } from './eda-bridge/simulation'
+import { runCocotbSimulation, runVerilatorSimulation } from './eda-bridge/simulation'
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 
 // ============================================================
@@ -150,13 +150,16 @@ interface SynthResult {
   wires: number | undefined
 }
 
-async function runYosysCheck(rtlFiles: string[], topModule?: string, signal?: AbortSignal): Promise<SynthResult> {
+async function runYosysCheck(rtlFiles: string[], libraryFiles: string[], topModule?: string, signal?: AbortSignal): Promise<SynthResult> {
   const yosysPath = await locateTool(YOSYS_CANDIDATES)
   if (!yosysPath) throw new Error('Yosys 未安装或不在 PATH 中')
 
   const readCmd = `read_verilog -sv ${rtlFiles.map((f) => `"${f}"`).join(' ')}`
+  const libraryCmd = libraryFiles.length > 0
+    ? `read_verilog -sv -lib ${libraryFiles.map((f) => `"${f}"`).join(' ')}; `
+    : ''
   const hierarchyCmd = topModule ? `hierarchy -top ${topModule}` : 'hierarchy -auto-top'
-  const script = `${readCmd}; ${hierarchyCmd}; check; stat`
+  const script = `${libraryCmd}${readCmd}; ${hierarchyCmd}; check; stat`
 
   const { stdout, stderr, code } = await run(yosysPath, ['-p', script], toolEnv(yosysPath), signal)
 
@@ -304,6 +307,48 @@ function collectRtlFiles(dir: string): string[] {
   return out
 }
 
+interface RtlInputSet {
+  designFiles: string[]
+  simulationFiles: string[]
+  libraryFiles: string[]
+  physicalFiles: string[]
+  manifestPath?: string
+}
+
+function resolveRtlEntry(cwd: string, rtlDir: string, entry: string): string {
+  if (/^[A-Za-z]:[\\/]/.test(entry)) return resolve(entry)
+  return resolve(entry.replace(/\\/g, '/').startsWith('rtl/') ? cwd : rtlDir, entry)
+}
+
+function readRtlInputs(cwd: string): RtlInputSet {
+  const rtlDir = resolve(cwd, 'rtl')
+  const manifestPath = join(rtlDir, 'design.json')
+  if (!existsSync(manifestPath)) {
+    const macroView = /(?:^|[\\/])macros[\\/]|_(?:behavioral|blackbox|phy_template)\.v$/i
+    return { designFiles: collectRtlFiles(rtlDir).filter((file) => !macroView.test(file)), simulationFiles: [], libraryFiles: [], physicalFiles: [] }
+  }
+  const data = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>
+  const entries = (key: string): string[] => Array.isArray(data[key])
+    ? (data[key] as unknown[]).filter((item): item is string => typeof item === 'string')
+    : []
+  let designEntries = entries('files')
+  const filelistName = typeof data.filelist === 'string' ? data.filelist : 'filelist.f'
+  const filelistPath = resolveRtlEntry(cwd, rtlDir, filelistName)
+  if (designEntries.length === 0 && existsSync(filelistPath)) {
+    designEntries = readFileSync(filelistPath, 'utf-8').split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0 && !/^(#|\/\/|\+|-)/.test(line))
+  }
+  const resolveEntries = (items: string[]) => [...new Set(items.map((item) => resolveRtlEntry(cwd, rtlDir, item)))]
+  return {
+    designFiles: resolveEntries(designEntries),
+    simulationFiles: resolveEntries(entries('simulationFiles')),
+    libraryFiles: resolveEntries(entries('libraryFiles')),
+    physicalFiles: resolveEntries(entries('physicalFiles')),
+    manifestPath
+  }
+}
+
 // ============================================================
 // Pi 扩展注册
 // ============================================================
@@ -410,17 +455,19 @@ export default function (pi: ExtensionAPI): void {
     label: 'Check Synthesizability',
     description: '使用 Yosys 对 RTL 文件进行可综合性检查，包括语法解析、层次化检查和逻辑综合可行性。返回是否可综合、问题列表和资源估算（cells/wires）。',
     promptSnippet: 'Check if RTL code is synthesizable using Yosys',
-    promptGuidelines: 'Use check_synthesizability after lint passes to verify the RTL can be synthesized. Fix all errors before proceeding to next phase.',
+    promptGuidelines: 'After lint, pass design files as rtlFiles and SRAM blackbox views as libraryFiles. Never pass behavioral or physical macro views to Yosys synthesis.',
     parameters: Type.Object({
       rtlFiles: Type.Array(Type.String(), { description: '需要检查的 RTL 文件路径列表' }),
+      libraryFiles: Type.Optional(Type.Array(Type.String(), { description: '宏/库 blackbox Verilog；使用 read_verilog -lib' })),
       topModule: Type.Optional(Type.String({ description: '顶层模块名称（可选，缺省自动识别）' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const rtlFiles = params.rtlFiles as string[]
+      const rtlFiles = (params.rtlFiles as string[]).map((file) => resolve(ctx.cwd, file))
+      const libraryFiles = ((params.libraryFiles as string[] | undefined) ?? []).map((file) => resolve(ctx.cwd, file))
       const topModule = params.topModule as string | undefined
 
       // 验证所有文件存在
-      const missing = rtlFiles.filter((f) => !existsSync(f))
+      const missing = [...rtlFiles, ...libraryFiles].filter((f) => !existsSync(f))
       if (missing.length > 0) {
         return {
           content: [{ type: 'text', text: `错误：以下文件不存在:\n${missing.map((f) => `  - ${f}`).join('\n')}` }],
@@ -430,7 +477,7 @@ export default function (pi: ExtensionAPI): void {
       }
 
       try {
-        const result = await runYosysCheck(rtlFiles, topModule, signal)
+        const result = await runYosysCheck(rtlFiles, libraryFiles, topModule, signal)
 
         const errorCount = result.issues.filter((i) => i.severity === 'error').length
         const warningCount = result.issues.filter((i) => i.severity === 'warning').length
@@ -439,6 +486,7 @@ export default function (pi: ExtensionAPI): void {
           `## Synthesizability Check`,
           `**文件**: ${rtlFiles.join(', ')}`,
           `**顶层**: ${topModule ?? '自动识别'}`,
+          `**Blackbox 宏视图**: ${libraryFiles.length} 个`,
           `**结果**: ${result.synthesizable ? '✅ 可综合' : '❌ 不可综合'}`,
           '',
         ]
@@ -550,20 +598,21 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'collect_rtl_files',
     label: 'Collect RTL Files',
-    description: '递归扫描设计 RTL 目录，收集 Verilog/SystemVerilog 文件（*.v/*.sv），返回文件路径列表及模块名。缺省只扫描 rtl/，避免把验证环境中的 DUT 镜像送入综合。',
+    description: '按 rtl/design.json 与 filelist.f 收集设计源，并分离仿真、blackbox 和物理宏视图。',
     promptSnippet: 'Scan project directory for RTL source files',
-    promptGuidelines: 'Use collect_rtl_files to discover all RTL files in the workspace before running lint or synthesizability checks.',
+    promptGuidelines: 'Use designFiles for RTL, simulationFiles only for simulation, libraryFiles only with Yosys -lib, and never compile physicalFiles.',
     parameters: Type.Object({
       directory: Type.Optional(Type.String({ description: '扫描目录（缺省为工作区 rtl/）' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const dir = resolve(ctx.cwd, (params.directory as string | undefined) ?? 'rtl')
 
-      const files = collectRtlFiles(dir)
+      const inputs = params.directory ? null : readRtlInputs(ctx.cwd)
+      const files = inputs?.designFiles ?? collectRtlFiles(dir)
       if (files.length === 0) {
         return {
           content: [{ type: 'text', text: `工作目录 ${dir} 中未发现 RTL 文件（*.v/*.sv）。` }],
-          details: { files: [] }
+          details: { files: [], designFiles: [], simulationFiles: [], libraryFiles: [], physicalFiles: [] }
         }
       }
 
@@ -590,7 +639,14 @@ export default function (pi: ExtensionAPI): void {
 
       return {
         content: [{ type: 'text', text: report.join('\n') }],
-        details: { files: modules }
+        details: {
+          files: modules,
+          designFiles: files,
+          simulationFiles: inputs?.simulationFiles ?? [],
+          libraryFiles: inputs?.libraryFiles ?? [],
+          physicalFiles: inputs?.physicalFiles ?? [],
+          manifestPath: inputs?.manifestPath
+        }
       }
     }
   })
@@ -758,29 +814,44 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   })
 
   // ============================================================
-  // 工具 6: run_simulation — Verilator 编译并运行仿真
+  // 工具 6: run_simulation — Cocotb（推荐）或旧式 Verilator C++ 仿真
   // ============================================================
   pi.registerTool({
     name: 'run_simulation',
     label: 'Run Simulation',
-    description: '使用 Verilator 编译 RTL + C++ 测试台并运行仿真。支持波形输出（VCD）。返回编译日志、运行输出、通过/失败状态和 VCD 文件路径。',
-    promptSnippet: 'Compile and run Verilator simulation with RTL and testbench',
-    promptGuidelines: 'Use run_simulation after writing RTL and generating a testbench. The tool handles verilator --cc --build --exe and runs the simulation binary.',
+    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。',
+    promptSnippet: 'Run Cocotb or legacy C++ RTL simulation and collect artifacts',
+    promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench.',
     parameters: Type.Object({
+      mode: Type.Optional(Type.Union([Type.Literal('cocotb'), Type.Literal('cpp')], { description: '缺省 cocotb；cpp 仅兼容旧项目' })),
       topModule: Type.String({ description: '顶层模块名（对应 RTL module 名称）' }),
       rtlFiles: Type.Array(Type.String(), { description: 'RTL 文件路径列表' }),
-      tbCpp: Type.String({ description: 'C++ 测试台文件路径' }),
-      trace: Type.Optional(Type.Boolean({ description: '是否生成 VCD 波形（缺省 true，需测试台和 verilator 均支持）' }))
+      testModule: Type.Optional(Type.String({ description: 'Cocotb Python 模块名，例如 tests.test_uart（不要带 .py）' })),
+      testDir: Type.Optional(Type.String({ description: 'Cocotb 环境根目录，加入 PYTHONPATH' })),
+      testcase: Type.Optional(Type.String({ description: '仅运行指定 @cocotb.test 测试，可选' })),
+      simulator: Type.Optional(Type.Union([Type.Literal('icarus'), Type.Literal('verilator')], { description: 'Cocotb 后端；Windows 缺省 icarus' })),
+      tbCpp: Type.Optional(Type.String({ description: 'mode=cpp 时的 C++ 测试台路径' })),
+      trace: Type.Optional(Type.Boolean({ description: '是否生成波形，缺省 true' })),
+      timeoutSec: Type.Optional(Type.Number({ description: '编译和仿真总超时秒数，缺省 300' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const topModule = params.topModule as string
-      const rtlFiles = params.rtlFiles as string[]
-      const tbCpp = params.tbCpp as string
+      const rtlFiles = (params.rtlFiles as string[]).map((file) => resolve(ctx.cwd, file))
+      const mode = (params.mode as 'cocotb' | 'cpp' | undefined) ?? 'cocotb'
+      const tbCpp = params.tbCpp ? resolve(ctx.cwd, params.tbCpp as string) : undefined
       const trace = params.trace as boolean | undefined ?? true
+
+      if (mode === 'cocotb' && !(params.testModule as string | undefined)?.trim()) {
+        return {
+          content: [{ type: 'text', text: '错误：mode=cocotb 时必须提供 testModule（Python 模块名，不带 .py）' }],
+          isError: true,
+          details: {}
+        }
+      }
 
       // 验证输入文件
       const missing: string[] = []
-      if (!existsSync(tbCpp)) missing.push(tbCpp)
+      if (mode === 'cpp' && (!tbCpp || !existsSync(tbCpp))) missing.push(tbCpp ?? 'tbCpp（未提供）')
       for (const f of rtlFiles) {
         if (!existsSync(f)) missing.push(f)
       }
@@ -792,31 +863,37 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         }
       }
 
-      // 检查 verilator 可用
-      const verilatorPath = await locateTool(VERILATOR_CANDIDATES)
-      if (!verilatorPath) {
-        return {
-          content: [{ type: 'text', text: 'Verilator 未安装或不在 PATH 中。\n请安装 oss-cad-suite 或系统包管理器安装 verilator。' }],
-          isError: true,
-          details: {}
-        }
-      }
-
       try {
-        const result = await runVerilatorSimulation({
-          topModule,
-          tbCpp,
-          rtlFiles,
-          trace,
-          signal,
-          buildDir: resolve(ctx.cwd, 'verification', `${topModule}_tb`, 'build'),
-          resultDir: resolve(ctx.cwd, 'verification', 'results', topModule)
-        })
+        const resultDir = resolve(ctx.cwd, 'verification', 'results', topModule)
+        const result = mode === 'cocotb'
+          ? await runCocotbSimulation({
+              topModule,
+              rtlFiles,
+              testModule: params.testModule as string,
+              testDir: resolve(ctx.cwd, (params.testDir as string | undefined) ?? `verification/${topModule}_tb`),
+              testcase: params.testcase as string | undefined,
+              simulator: params.simulator as 'icarus' | 'verilator' | undefined,
+              waves: trace,
+              signal,
+              timeoutSec: params.timeoutSec as number | undefined,
+              buildDir: resolve(ctx.cwd, 'verification', `${topModule}_tb`, 'sim', 'sim_build'),
+              resultDir
+            })
+          : await runVerilatorSimulation({
+              topModule,
+              tbCpp: tbCpp!,
+              rtlFiles,
+              trace,
+              signal,
+              buildDir: resolve(ctx.cwd, 'verification', `${topModule}_tb`, 'sim', 'obj_dir'),
+              resultDir
+            })
 
         const report = [
           `## 仿真结果 — ${topModule}`,
           '',
           `**结果**: ${result.passed ? '✅ 通过' : '❌ 失败'}`,
+          `**模式**: ${mode === 'cocotb' ? `Cocotb / ${(params.simulator as string | undefined) ?? 'icarus'}` : 'Verilator C++'}`,
           `**VCD 波形**: ${result.vcdPath ? `✅ ${result.vcdPath}` : '❌ 未生成'}`,
           `**编译日志**: ${result.compileLogPath}`,
           `**仿真日志**: ${result.simulationLogPath}`,
@@ -934,9 +1011,10 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     label: 'Run Logic Synthesis',
     description: '调用 Yosys 完成逻辑综合，输出门级 Verilog 网表、JSON 网表、日志和 Markdown 报告。无 Liberty 时报告通用单元数；提供 Liberty 时执行工艺映射并尝试解析面积和 ABC 延迟。',
     promptSnippet: 'Run Yosys logic synthesis and generate netlist and reports',
-    promptGuidelines: 'Use run_logic_synthesis in the SYNTH phase after lint and synthesizability checks pass. Never present generic cell counts as physical area or an ABC delay estimate as signoff STA.',
+    promptGuidelines: 'Pass SRAM blackbox views in libraryFiles, never behavioral/physical views. Report macro PPA separately from Yosys standard-cell area.',
     parameters: Type.Object({
       rtlFiles: Type.Optional(Type.Array(Type.String(), { description: 'RTL 文件列表；缺省时扫描工作区' })),
+      libraryFiles: Type.Optional(Type.Array(Type.String(), { description: '宏/库 blackbox Verilog；使用 read_verilog -lib' })),
       topModule: Type.String({ description: '顶层模块名称' }),
       sdcFile: Type.Optional(Type.String({ description: 'SDC 文件路径' })),
       targetLibrary: Type.Optional(Type.String({ description: 'Liberty .lib 工艺库路径；缺省使用本机 Nangate45 typical 开源库' })),
@@ -949,9 +1027,12 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       ]))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const inputs = readRtlInputs(ctx.cwd)
       const requestedFiles = params.rtlFiles as string[] | undefined
-      const rtlFiles = (requestedFiles?.length ? requestedFiles : collectRtlFiles(resolve(ctx.cwd, 'rtl')))
+      const rtlFiles = (requestedFiles?.length ? requestedFiles : inputs.designFiles)
         .map((file) => resolve(ctx.cwd, file))
+      const requestedLibraries = params.libraryFiles as string[] | undefined
+      const libraryFiles = (requestedLibraries ?? inputs.libraryFiles).map((file) => resolve(ctx.cwd, file))
       if (rtlFiles.length === 0) {
         return {
           content: [{ type: 'text', text: '综合失败：工作区中没有找到 RTL 文件' }],
@@ -963,6 +1044,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       try {
         const result = await runLogicSynthesis({
           rtlFiles,
+          libraryFiles,
           topModule: params.topModule as string,
           outputDir: resolve(ctx.cwd, (params.outputDir as string | undefined) ?? 'imp/synthesis'),
           outputName: params.outputName as string | undefined,

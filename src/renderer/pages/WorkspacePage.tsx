@@ -15,6 +15,18 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import {
+  AlertTriangle,
+  Box,
+  ChevronDown,
+  ChevronUp,
+  FileOutput,
+  FlaskConical,
+  Maximize2,
+  Play,
+  RotateCw,
+  TerminalSquare
+} from 'lucide-react'
+import {
   PHASE_LABELS,
   PHASE_ORDER,
   type ChipProject,
@@ -27,7 +39,14 @@ import { FileTree } from '../components/FileTree'
 import { useChatStore } from '../store/chatStore'
 import { highlightCode } from '../utils/prism-setup'
 
-const BOTTOM_TABS = ['📊 Lint', '🔬 仿真', '⚙ 综合', '📝 日志'] as const
+const BOTTOM_TABS = [
+  { id: 'problems', label: '问题', icon: AlertTriangle },
+  { id: 'runs', label: '运行', icon: Play },
+  { id: 'verification', label: '验证', icon: FlaskConical },
+  { id: 'synthesis', label: '综合', icon: Box },
+  { id: 'artifacts', label: '产物', icon: FileOutput }
+] as const
+type BottomTab = (typeof BOTTOM_TABS)[number]['id']
 const MIN_SIDEBAR = 140
 const MAX_SIDEBAR = 400
 const MIN_BOTTOM = 80
@@ -59,7 +78,7 @@ function HResizeHandle({ onDrag }: { onDrag: (dx: number) => void }): React.JSX.
         document.addEventListener('mousemove', onMove)
         document.addEventListener('mouseup', onUp)
       }}
-      className="w-1 cursor-col-resize bg-zinc-200 hover:bg-blue-400 active:bg-blue-500 transition-colors shrink-0"
+      className="resize-rail resize-rail-x w-1 cursor-col-resize shrink-0"
     />
   )
 }
@@ -86,7 +105,7 @@ function VResizeHandle({ onDrag }: { onDrag: (dy: number) => void }): React.JSX.
         document.addEventListener('mousemove', onMove)
         document.addEventListener('mouseup', onUp)
       }}
-      className="h-1 cursor-row-resize bg-zinc-200 hover:bg-blue-400 active:bg-blue-500 transition-colors shrink-0"
+      className="resize-rail resize-rail-y h-1 cursor-row-resize shrink-0"
     />
   )
 }
@@ -146,9 +165,10 @@ export function WorkspacePage(): React.JSX.Element {
 
   // 分栏布局状态（px）
   const [sidebarW, setSidebarW] = useState(200)
-  const [bottomH, setBottomH] = useState(160)
+  const [bottomH, setBottomH] = useState(() => Number(localStorage.getItem(`moonglass:bottom-height:${projectId}`)) || 190)
+  const [bottomCollapsed, setBottomCollapsed] = useState(false)
 
-  const [activeTab, setActiveTab] = useState<(typeof BOTTOM_TABS)[number]>(BOTTOM_TABS[0])
+  const [activeTab, setActiveTab] = useState<BottomTab>('problems')
   const [mainTab, setMainTab] = useState<MainTab>('chat')
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
   const [treeTick, setTreeTick] = useState(0)
@@ -162,6 +182,9 @@ export function WorkspacePage(): React.JSX.Element {
 
   useEffect(() => { void reload() }, [reload])
   useEffect(() => { if (!agentStreaming) setTreeTick((t) => t + 1) }, [agentStreaming])
+  useEffect(() => {
+    localStorage.setItem(`moonglass:bottom-height:${projectId}`, String(bottomH))
+  }, [bottomH, projectId])
 
   const openFile = async (relPath: string): Promise<void> => {
     if (/\.(vcd|fst)$/i.test(relPath)) {
@@ -174,7 +197,7 @@ export function WorkspacePage(): React.JSX.Element {
       if (result.ok) return
     }
     if (shouldOpenExternally(relPath)) {
-      const opened = await window.moonglass.fs.openExternal(relPath)
+      const opened = await window.moonglass.fs.openExternal(projectId, relPath)
       if (!opened) appendLog(`⚠️ ${relPath} 无法在外部打开`)
       else { appendLog(`🌐 已打开: ${relPath}`); return }
     }
@@ -277,7 +300,7 @@ export function WorkspacePage(): React.JSX.Element {
   const handleRunRegression = async (): Promise<void> => {
     appendLog('🚀 开始完整验证回归...')
     try {
-      await sendAgentPrompt('请对工作区所有 RTL 模块完成规范验证闭环：\n1. 使用 verification-planning 技能校验 docs/04_verification/ 三份计划\n2. collect_rtl_files 扫描，并运行 run_verible_lint、check_synthesizability\n3. 使用 cocotb-verification 技能创建 verification/<module>_tb/ 标准环境\n4. 运行 run_simulation\n5. 确认 verification/results/<module>/ 中有日志、result.json、覆盖率和波形\n6. 更新需求追踪与 docs/06_validation/ 验证报告')
+      await sendAgentPrompt('请对工作区所有 RTL 模块完成规范验证闭环：\n1. 使用 verification-planning 技能校验 docs/04_verification/ 三份计划\n2. collect_rtl_files 扫描，并运行 run_verible_lint、check_synthesizability\n3. 使用 cocotb-verification 技能创建 verification/<module>_tb/ 标准环境\n4. 对每个 DUT 调用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus", trace=true)，不要自行编写临时 runner 绕过工具\n5. 确认 verification/results/<module>/ 中有 compile.log、simulation.log、results.xml、result.json 和波形\n6. 更新需求追踪与 docs/06_validation/ 验证报告')
       appendLog('✅ 验证回归指令已发送')
     } catch (err) {
       appendLog(`❌ 指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
@@ -318,15 +341,16 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handleRunSynthesis = async (): Promise<void> => {
     appendLog('⚙ 开始逻辑综合流程...')
-    setActiveTab('⚙ 综合')
+    setActiveTab('synthesis')
     try {
       await sendAgentPrompt(
         '请完成当前工程的逻辑综合闭环：\n' +
-        '1. collect_rtl_files 扫描 RTL，并确认顶层模块\n' +
+        '1. collect_rtl_files 读取 rtl/design.json/filelist.f，确认顶层模块，并区分 designFiles、libraryFiles、simulationFiles、physicalFiles\n' +
         '2. 检查 docs/ 中的时钟与 I/O 约束；如果关键约束缺失，先向我确认，不要猜测\n' +
         '3. 使用 generate_sdc 生成 imp/constraints/design.sdc\n' +
-        '4. 使用 run_logic_synthesis 输出到 imp/synthesis/\n' +
-        '5. 汇总网表、单元数量、面积、时序估算、警告和报告路径\n' +
+        '4. 使用 run_logic_synthesis 输出到 imp/synthesis/；SRAM blackbox 通过 libraryFiles 传入，禁止综合 behavioral/physical 视图\n' +
+        '5. SRAM/ROM 宏面积与功耗按架构估算或宏数据手册单独汇总，不得计入 Yosys 标准单元面积\n' +
+        '6. 汇总网表、单元数量、面积、时序估算、警告和报告路径\n' +
         '注意区分通用单元统计、Liberty 映射估算与正式 STA 签核结果'
       )
       appendLog('✅ 综合指令已发送')
@@ -346,9 +370,9 @@ export function WorkspacePage(): React.JSX.Element {
   const activeFile = openFiles.find((f) => f.path === mainTab)
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="workspace-shell flex h-full flex-col">
       {/* ======== 顶部：项目信息 + 阶段看板 ======== */}
-      <header className="shrink-0 border-b border-zinc-200 bg-white px-6 py-4">
+      <header className="workspace-header shrink-0 border-b border-zinc-200 bg-white px-6 py-4">
         <div className="mb-3 flex items-center gap-3">
           <h1 className="text-lg font-bold text-zinc-900">{project.name}</h1>
           <span className="text-sm text-zinc-500">
@@ -438,7 +462,7 @@ export function WorkspacePage(): React.JSX.Element {
       <div className="flex min-h-0 flex-1">
         {/* 左侧：文件树 */}
         <aside
-          className="overflow-hidden bg-white p-3 text-sm text-zinc-500 shrink-0"
+          className="workspace-tree overflow-hidden bg-white p-3 text-sm text-zinc-500 shrink-0"
           style={{ width: sidebarW }}
         >
           <FileTree projectId={project.id} onOpenFile={(p) => void openFile(p)} refreshTick={treeTick} />
@@ -452,7 +476,7 @@ export function WorkspacePage(): React.JSX.Element {
           {/* ---- 主区 ---- */}
           <div className="flex min-h-0 flex-col" style={{ height: `calc(100% - ${bottomH}px - 0.25rem)` }}>
             {/* 选项卡条 */}
-            <div className="flex items-center gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-2 pt-1.5 shrink-0">
+            <div className="workspace-tabs flex items-center gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-2 pt-1.5 shrink-0">
               <button
                 onClick={() => setMainTab('chat')}
                 className={`shrink-0 rounded-t px-3 py-1.5 text-xs ${
@@ -478,14 +502,14 @@ export function WorkspacePage(): React.JSX.Element {
             </div>
 
             {/* 内容区 */}
-            <div className="flex-1 min-h-0">
+            <div className="workspace-content flex-1 min-h-0">
               <div className={mainTab === 'chat' ? 'h-full' : 'hidden'}>
                 <ChatPanel projectId={project.id} phase={project.currentPhase} />
               </div>
 
               {/* 文件查看 */}
               {activeFile && (
-                <div className="flex h-full flex-col overflow-hidden p-3">
+                <div className="source-surface flex h-full flex-col overflow-hidden p-3">
                   <div className="mb-1 flex shrink-0 items-center justify-between">
                     <div className="flex items-center gap-2">
                       <span className={`inline-block rounded px-1.5 py-0.5 font-mono text-[10px] ${
@@ -500,7 +524,7 @@ export function WorkspacePage(): React.JSX.Element {
                     <div className="flex gap-1">
                       {shouldOpenExternally(activeFile.path) && (
                         <button
-                          onClick={() => window.moonglass.fs.openExternal(activeFile.path).catch(() => {})}
+                          onClick={() => window.moonglass.fs.openExternal(projectId, activeFile.path).catch(() => {})}
                           className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-100"
                         >
                           🌐 外部打开
@@ -531,32 +555,64 @@ export function WorkspacePage(): React.JSX.Element {
           </div>
 
           {/* ---- 垂直分隔条 ---- */}
-          <VResizeHandle onDrag={(dy) => setBottomH((h) => Math.max(MIN_BOTTOM, Math.min(MAX_BOTTOM, h - dy)))} />
+          {!bottomCollapsed && (
+            <VResizeHandle onDrag={(dy) => setBottomH((h) => Math.max(MIN_BOTTOM, Math.min(MAX_BOTTOM, h - dy)))} />
+          )}
 
           {/* ---- 底部面板 ---- */}
-          <div className="border-t border-zinc-200 bg-white shrink-0" style={{ height: bottomH }}>
-            <div className="flex gap-1 border-b border-zinc-200 px-3 pt-2 shrink-0">
+          <div
+            className="workspace-bottom border-t border-zinc-200 bg-white shrink-0"
+            style={{ height: bottomCollapsed ? 38 : bottomH }}
+          >
+            <div className="engineering-console-tabs flex items-center gap-1 border-b border-zinc-200 px-3 pt-1.5 shrink-0">
               {BOTTOM_TABS.map((tab) => (
                 <button
-                  key={tab}
-                  onClick={() => setActiveTab(tab)}
-                  className={`rounded-t px-3 py-1.5 text-xs ${
-                    activeTab === tab ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
+                  key={tab.id}
+                  onClick={() => { setActiveTab(tab.id); setBottomCollapsed(false) }}
+                  className={`flex items-center gap-1.5 rounded-t px-3 py-1.5 text-xs ${
+                    activeTab === tab.id ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
                   }`}
                 >
-                  {tab}
+                  <tab.icon size={13} />
+                  {tab.label}
                 </button>
               ))}
+              <span className="ml-auto text-[11px] text-zinc-400">工程控制台</span>
+              <button
+                onClick={() => { setBottomCollapsed(false); setBottomH(MAX_BOTTOM) }}
+                className="console-icon-button"
+                title="最大化控制台"
+              >
+                <Maximize2 size={13} />
+              </button>
+              <button
+                onClick={() => setBottomCollapsed((value) => !value)}
+                className="console-icon-button"
+                title={bottomCollapsed ? '展开控制台' : '收起控制台'}
+              >
+                {bottomCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+              </button>
             </div>
-            <div className="h-[calc(100%-2rem)] overflow-y-auto p-3 text-sm text-zinc-500">
-              <BottomPanel tab={activeTab} projectId={project.id} verifLog={verifLog} agentStreaming={agentStreaming} onAppendLog={appendLog} />
-            </div>
+            {!bottomCollapsed && (
+              <div className="h-[calc(100%-2.25rem)] overflow-y-auto p-3 text-sm text-zinc-500">
+                <BottomPanel
+                  tab={activeTab}
+                  projectId={project.id}
+                  verifLog={verifLog}
+                  gate={gate}
+                  agentStreaming={agentStreaming}
+                  onOpenFile={(path) => void openFile(path)}
+                  onRefresh={() => setTreeTick((tick) => tick + 1)}
+                  onAskAgent={(prompt) => { setMainTab('chat'); void sendAgentPrompt(prompt) }}
+                />
+              </div>
+            )}
           </div>
         </div>
       </div>
 
       {/* 状态栏 */}
-      <footer className="shrink-0 flex items-center gap-4 border-t border-zinc-200 bg-white px-4 py-1.5 text-xs text-zinc-500">
+      <footer className="workspace-status shrink-0 flex items-center gap-4 border-t border-zinc-200 bg-white px-4 py-1.5 text-xs text-zinc-500">
         <span>工具链: {project.edaToolchain}</span>
         <span>
           阶段处理: {PHASE_ORDER.filter((p) => ['completed', 'skipped'].includes(project.phases[p].status)).length}/{PHASE_ORDER.length}
@@ -584,72 +640,157 @@ interface OpenFile {
 // ============================================================
 
 interface BottomPanelProps {
-  tab: string
+  tab: BottomTab
   projectId: string
   verifLog: string[]
+  gate: GatePanelData | null
   agentStreaming: boolean
-  onAppendLog: (msg: string) => void
+  onOpenFile: (path: string) => void
+  onRefresh: () => void
+  onAskAgent: (prompt: string) => void
 }
 
-function BottomPanel({ tab, projectId, verifLog, agentStreaming }: BottomPanelProps): React.JSX.Element {
-  const [output, setOutput] = useState('')
-  const [waveforms, setWaveforms] = useState<string[]>([])
+interface ProjectInventory {
+  rtl: string[]
+  logs: string[]
+  waveforms: string[]
+  verification: string[]
+  synthesis: string[]
+  artifacts: string[]
+}
+
+const EMPTY_INVENTORY: ProjectInventory = {
+  rtl: [], logs: [], waveforms: [], verification: [], synthesis: [], artifacts: []
+}
+
+function BottomPanel({
+  tab,
+  projectId,
+  verifLog,
+  gate,
+  agentStreaming,
+  onOpenFile,
+  onRefresh,
+  onAskAgent
+}: BottomPanelProps): React.JSX.Element {
+  const [inventory, setInventory] = useState<ProjectInventory>(EMPTY_INVENTORY)
+  const [loading, setLoading] = useState(false)
   const [waveformStatus, setWaveformStatus] = useState('')
 
-  useEffect(() => {
-    if (tab !== '🔬 仿真') return
-    let active = true
-    window.moonglass.fs.tree(projectId)
-      .then((tree) => {
-        if (!active) return
-        setWaveforms(flattenFiles(tree).filter((file) => /\.(vcd|fst)$/i.test(file)))
+  const refreshInventory = useCallback(async () => {
+    setLoading(true)
+    try {
+      const files = flattenFiles(await window.moonglass.fs.tree(projectId))
+      const verification = files.filter((file) => /(^|\/)verification\//i.test(file))
+      const synthesis = files.filter((file) => /(^|\/)imp\/(constraints|synthesis)\//i.test(file))
+      setInventory({
+        rtl: files.filter((file) => /(^|\/)rtl\/.*\.(v|sv)$/i.test(file)),
+        logs: files.filter((file) => /\.(log|out)$/i.test(file)),
+        waveforms: files.filter((file) => /\.(vcd|fst)$/i.test(file)),
+        verification,
+        synthesis,
+        artifacts: files.filter((file) => /\.(log|out|rpt|json|xml|vcd|fst|sdc|v|html)$/i.test(file))
       })
-      .catch((err) => {
-        if (active) setWaveformStatus(`扫描波形失败: ${err instanceof Error ? err.message : String(err)}`)
-      })
-    return () => { active = false }
-  }, [projectId, tab, agentStreaming])
+    } finally {
+      setLoading(false)
+    }
+  }, [projectId])
 
-  if (tab === '📊 Lint') {
+  useEffect(() => {
+    let active = true
+    if (active) void refreshInventory()
+    return () => { active = false }
+  }, [projectId, agentStreaming, refreshInventory])
+
+  const failedGates = gate?.results.filter((result) => !result.passed) ?? []
+  const errorLogs = verifLog.filter((entry) => /失败|错误|error|fail|❌/i.test(entry))
+  const warningLogs = verifLog.filter((entry) => /警告|warning|⚠/i.test(entry))
+
+  const toolbar = (
+    <div className="mb-2 flex items-center gap-2">
+      <button
+        onClick={() => { void refreshInventory(); onRefresh() }}
+        disabled={loading}
+        className="console-action"
+      >
+        <RotateCw size={13} className={loading ? 'animate-spin' : ''} />
+        刷新
+      </button>
+      <span className="text-[11px] text-zinc-400">{inventory.artifacts.length} 个可追踪产物</span>
+    </div>
+  )
+
+  if (tab === 'problems') {
     return (
-      <div className="flex h-full flex-col gap-2">
-        <div className="flex items-center gap-2 shrink-0">
+      <div className="flex h-full flex-col">
+        {toolbar}
+        <div className="mb-2 flex items-center gap-3 text-xs">
+          <span className="problem-count problem-count-error">{failedGates.length + errorLogs.length} 错误</span>
+          <span className="problem-count problem-count-warning">{warningLogs.length} 警告</span>
           <button
-            onClick={async () => {
-              try {
-                const tree = await window.moonglass.fs.tree(projectId)
-                const rtlFiles = flattenFiles(tree).filter((f) => /\.(v|sv)$/i.test(f))
-                if (rtlFiles.length === 0) { setOutput('工作区暂无 RTL 文件'); return }
-                setOutput(`发现 ${rtlFiles.length} 个 RTL 文件:\n${rtlFiles.map((f) => `  ${f}`).join('\n')}\n\n在对话中用 run_verible_lint 检查`)
-              } catch (err) {
-                setOutput(`错误: ${err instanceof Error ? err.message : String(err)}`)
-              }
-            }}
+            onClick={() => onAskAgent('请检查工程控制台中的门禁失败、Lint、仿真和综合问题，定位根因，修改对应文件并重新运行相关工具验证。')}
             disabled={agentStreaming}
-            className="w-fit rounded border border-zinc-300 bg-zinc-100 px-2 py-1 text-xs text-zinc-700 hover:bg-zinc-200 disabled:opacity-50"
+            className="console-action ml-auto"
           >
-            🔍 扫描 RTL 文件
+            交给 Agent 修复
           </button>
-          <span className="text-xs text-zinc-400">共 {verifLog.filter(l => l.includes('Lint')).length} 次 Lint 操作</span>
         </div>
-        {output && <pre className="flex-1 overflow-auto rounded bg-zinc-100 p-2 text-xs text-zinc-700 whitespace-pre-wrap">{output}</pre>}
+        <div className="console-list flex-1 overflow-auto">
+          {failedGates.map((result) => (
+            <div key={result.checkId} className="console-row">
+              <AlertTriangle size={14} className="shrink-0 text-red-500" />
+              <strong className="shrink-0 text-xs text-zinc-700">{result.checkName}</strong>
+              <span className="truncate text-xs text-zinc-500" title={result.message}>{result.message}</span>
+              <span className="ml-auto shrink-0 text-[10px] text-zinc-400">门禁</span>
+            </div>
+          ))}
+          {[...errorLogs, ...warningLogs].map((entry, index) => (
+            <div key={`${entry}-${index}`} className="console-row">
+              <TerminalSquare size={14} className="shrink-0 text-amber-500" />
+              <span className="truncate font-mono text-xs text-zinc-600" title={entry}>{entry}</span>
+            </div>
+          ))}
+          {failedGates.length + errorLogs.length + warningLogs.length === 0 && (
+            <div className="console-empty">当前没有已知问题。运行 Lint、验证或综合后，诊断信息会集中显示在这里。</div>
+          )}
+        </div>
       </div>
     )
   }
 
-  if (tab === '🔬 仿真') {
+  if (tab === 'runs') {
     return (
-      <div className="flex h-full flex-col gap-2">
-        <div className="flex items-center justify-between">
-          <p className="text-xs text-zinc-500">波形文件</p>
-          <span className="text-xs text-zinc-400">{waveforms.length} 个</span>
+      <div className="flex h-full flex-col">
+        {toolbar}
+        {verifLog.length > 0 && (
+          <div className="console-list mb-2 max-h-24 overflow-auto">
+            {verifLog.map((entry, index) => (
+              <div key={index} className="console-row font-mono text-xs text-zinc-600">{entry}</div>
+            ))}
+          </div>
+        )}
+        <FileRows
+          files={inventory.logs}
+          empty="尚无运行记录。工具启动后，实时状态显示在这里，落盘日志也会自动汇总。"
+          onOpenFile={onOpenFile}
+        />
+      </div>
+    )
+  }
+
+  if (tab === 'verification') {
+    return (
+      <div className="flex h-full flex-col">
+        {toolbar}
+        <div className="mb-2 grid grid-cols-3 gap-2">
+          <ConsoleMetric label="验证产物" value={inventory.verification.length} />
+          <ConsoleMetric label="波形" value={inventory.waveforms.length} />
+          <ConsoleMetric label="RTL 文件" value={inventory.rtl.length} />
         </div>
-        {waveforms.length === 0 ? (
-          <p className="text-xs text-zinc-400">暂无 VCD/FST。运行仿真后波形会出现在 verification/results/。</p>
-        ) : (
-          <div className="space-y-1 overflow-y-auto">
-            {waveforms.map((file) => (
-              <div key={file} className="flex items-center gap-2 rounded border border-zinc-200 bg-zinc-50 px-2 py-1">
+        {inventory.waveforms.length > 0 && (
+          <div className="console-list mb-2 max-h-24 overflow-y-auto">
+            {inventory.waveforms.map((file) => (
+              <div key={file} className="console-row">
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-600">{file}</span>
                 <button
                   onClick={async () => {
@@ -657,7 +798,7 @@ function BottomPanel({ tab, projectId, verifLog, agentStreaming }: BottomPanelPr
                     const result = await window.moonglass.eda.openWaveform(projectId, file)
                     setWaveformStatus(result.ok ? `已用 GTKWave 打开 ${file}` : `打开失败: ${result.error}`)
                   }}
-                  className="shrink-0 rounded border border-blue-200 bg-blue-50 px-2 py-0.5 text-xs text-blue-700 hover:bg-blue-100"
+                  className="console-action shrink-0"
                   title="使用 GTKWave 打开波形"
                 >
                   打开波形
@@ -667,38 +808,57 @@ function BottomPanel({ tab, projectId, verifLog, agentStreaming }: BottomPanelPr
           </div>
         )}
         {waveformStatus && <p className="text-xs text-zinc-500">{waveformStatus}</p>}
+        <FileRows
+          files={inventory.verification.filter((file) => !/\.(vcd|fst)$/i.test(file))}
+          empty="暂无验证结果。运行仿真后，result.json、JUnit、覆盖率、日志和波形会出现在 verification/results/。"
+          onOpenFile={onOpenFile}
+        />
       </div>
     )
   }
 
-  if (tab === '⚙ 综合') {
+  if (tab === 'synthesis') {
     return (
-      <div className="flex h-full flex-col gap-2">
-        <p className="text-xs text-zinc-500 shrink-0">
-          综合产物默认写入 imp/constraints/ 与 imp/synthesis/，可在左侧文件树查看 SDC、门级网表、日志和报告。
-        </p>
-        <p className="text-xs text-zinc-400">
-          无 Liberty 工艺库时仅提供通用单元统计；提供 .lib 后可生成映射面积和 ABC 延迟估算。
-        </p>
+      <div className="flex h-full flex-col">
+        {toolbar}
+        <div className="mb-2 grid grid-cols-3 gap-2">
+          <ConsoleMetric label="综合产物" value={inventory.synthesis.length} />
+          <ConsoleMetric label="约束文件" value={inventory.synthesis.filter((file) => /\.sdc$/i.test(file)).length} />
+          <ConsoleMetric label="报告" value={inventory.synthesis.filter((file) => /\.(rpt|json|log)$/i.test(file)).length} />
+        </div>
+        <FileRows files={inventory.synthesis} empty="尚未发现综合产物。运行综合后，这里会汇总 SDC、网表、面积和时序报告。" onOpenFile={onOpenFile} />
       </div>
     )
   }
 
-  if (tab === '📝 日志') {
-    return (
-      <div className="flex h-full flex-col gap-1">
-        {verifLog.length === 0 ? (
-          <p className="text-xs text-zinc-400">暂无验证操作日志。</p>
-        ) : (
-          <div className="space-y-0.5 flex-1 overflow-auto">
-            {verifLog.map((entry, i) => (
-              <div key={i} className="font-mono text-xs text-zinc-600">{entry}</div>
-            ))}
-          </div>
-        )}
-      </div>
-    )
-  }
+  return (
+    <div className="flex h-full flex-col">
+      {toolbar}
+      <FileRows files={inventory.artifacts} empty="暂无可追踪产物。工具输出的日志、报告、波形、网表和结果文件会汇总在这里。" onOpenFile={onOpenFile} />
+    </div>
+  )
+}
 
-  return <></>
+function ConsoleMetric({ label, value }: { label: string; value: number }): React.JSX.Element {
+  return (
+    <div className="console-metric">
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  )
+}
+
+function FileRows({ files, empty, onOpenFile }: { files: string[]; empty: string; onOpenFile: (path: string) => void }): React.JSX.Element {
+  if (files.length === 0) return <div className="console-empty">{empty}</div>
+  return (
+    <div className="console-list flex-1 overflow-auto">
+      {files.map((file) => (
+        <button key={file} onDoubleClick={() => onOpenFile(file)} className="console-row w-full text-left" title="双击打开">
+          <FileOutput size={14} className="shrink-0 text-sky-600" />
+          <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-600">{file}</span>
+          <span className="shrink-0 text-[10px] uppercase text-zinc-400">{file.split('.').pop()}</span>
+        </button>
+      ))}
+    </div>
+  )
 }

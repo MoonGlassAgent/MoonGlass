@@ -8,16 +8,19 @@
  */
 
 import { useEffect, useState } from 'react'
+import { CheckCircle2, Download, ExternalLink, RefreshCw, XCircle } from 'lucide-react'
 import type {
   LlmProviderConfig,
   LlmProviderTestResult,
   ToolDetection
 } from '@shared/types'
+import { ThemePicker } from '../components/ThemePicker'
 
 export function SettingsPage(): React.JSX.Element {
   return (
     <div className="h-full overflow-y-auto p-6">
       <h1 className="mb-6 text-xl font-bold text-zinc-900">设置</h1>
+      <AppearanceSection />
       <LlmProviderSection />
       <EdaDetectSection />
       <section className="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">
@@ -25,6 +28,18 @@ export function SettingsPage(): React.JSX.Element {
         工具链路径配置（resources/moonglass/toolchains.json）· 公司编码规则管理 · 外观设置
       </section>
     </div>
+  )
+}
+
+function AppearanceSection(): React.JSX.Element {
+  return (
+    <section className="surface-panel mb-5 rounded-lg border border-zinc-200 bg-white p-4">
+      <div className="mb-3">
+        <h2 className="font-semibold text-zinc-800">外观</h2>
+        <p className="mt-0.5 text-xs text-zinc-500">选择适合当前工作环境的强调色，设置会自动保存。</p>
+      </div>
+      <ThemePicker />
+    </section>
   )
 }
 
@@ -84,6 +99,26 @@ function LlmProviderSection(): React.JSX.Element {
   const patch = (partial: Partial<LlmProviderConfig>): void => {
     setDraft((d) => (d ? { ...d, ...partial } : d))
     setTestResult(null)
+  }
+
+  const setProviderEnabled = async (enabled: boolean): Promise<void> => {
+    if (!draft) return
+    const next = { ...draft, enabled }
+    setDraft(next)
+    setSaving(true)
+    setSavedTip('')
+    try {
+      const saved = await window.moonglass.llm.upsert(next)
+      setProviders((current) => current?.map((provider) => provider.id === saved.id ? saved : provider) ?? null)
+      setDraft({ ...saved, models: [...saved.models] })
+      setSavedTip(enabled ? '已启用' : '已停用')
+      setTimeout(() => setSavedTip(''), 1600)
+    } catch (error) {
+      setDraft(draft)
+      setSavedTip(`保存失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      setSaving(false)
+    }
   }
 
   const save = async (): Promise<void> => {
@@ -190,7 +225,8 @@ function LlmProviderSection(): React.JSX.Element {
                   <input
                     type="checkbox"
                     checked={draft.enabled}
-                    onChange={(e) => patch({ enabled: e.target.checked })}
+                    onChange={(e) => void setProviderEnabled(e.target.checked)}
+                    disabled={saving}
                     className="accent-blue-600"
                   />
                   启用该 Provider
@@ -386,64 +422,153 @@ function LlmProviderSection(): React.JSX.Element {
 function EdaDetectSection(): React.JSX.Element {
   const [tools, setTools] = useState<ToolDetection[] | null>(null)
   const [detecting, setDetecting] = useState(false)
+  const [detectError, setDetectError] = useState('')
+  const [installing, setInstalling] = useState<string | null>(null)
+  const [installMessage, setInstallMessage] = useState('')
 
   const detect = async (): Promise<void> => {
     setDetecting(true)
+    setDetectError('')
     try {
-      setTools(await window.moonglass.eda.detectTools())
+      const detected = await window.moonglass.eda.detectTools()
+      setTools(detected)
+      if (detected.length === 0) setDetectError('主进程未返回任何环境检测项，请重启 MoonGlass 后重试。')
+    } catch (error) {
+      setTools([])
+      setDetectError(`环境检测失败：${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setDetecting(false)
     }
   }
 
+  useEffect(() => { void detect() }, [])
+
+  const installBundle = async (id: string): Promise<void> => {
+    const prompt = id === 'python-cocotb'
+      ? '将使用当前 Python 的 pip 安装或升级 Cocotb、cocotb-bus 和 cocotb-coverage，是否继续？'
+      : '将从官方 GitHub Release 下载 OSS CAD Suite。文件较大，是否继续？'
+    if (!window.confirm(prompt)) return
+    setInstalling(id)
+    setInstallMessage(id === 'python-cocotb' ? '正在通过 pip 安装 Cocotb…' : '正在下载并解压工具包，请保持网络连接…')
+    try {
+      const result = await window.moonglass.eda.installBundle(id)
+      setInstallMessage(result.message)
+      if (result.ok) await detect()
+    } finally {
+      setInstalling(null)
+    }
+  }
+
+  const categories: Array<{ id: NonNullable<ToolDetection['category']>; label: string; detail: string }> = [
+    { id: 'runtime', label: '基础运行环境', detail: 'Agent、技能脚本和依赖管理' },
+    { id: 'build', label: '构建环境', detail: '版本管理与本地编译' },
+    { id: 'eda', label: 'RTL 与综合', detail: 'Lint、仿真与逻辑综合' },
+    { id: 'verification', label: '验证工具', detail: 'Cocotb、仿真器和波形查看' },
+    { id: 'physical', label: '时序与物理实现', detail: 'STA 和物理感知优化' }
+  ]
+
+  const inferLegacyCategory = (tool: ToolDetection): NonNullable<ToolDetection['category']> => {
+    const name = tool.tool.toLowerCase()
+    if (/node|npm|pnpm|python|pip/.test(name)) return 'runtime'
+    if (/git|make|gcc|clang|compiler/.test(name)) return 'build'
+    if (/opensta|openroad|\bsta\b/.test(name)) return 'physical'
+    if (/iverilog|cocotb|gtkwave|verible/.test(name)) return 'verification'
+    return 'eda'
+  }
+  const normalizedTools = (tools ?? []).map((tool) => ({
+    ...tool,
+    category: tool.category ?? inferLegacyCategory(tool),
+    importance: tool.importance ?? 'recommended' as const,
+    description: tool.description ?? '由旧版主进程返回的工具检测项'
+  }))
+
   return (
-    <section className="mb-8 rounded-lg border border-zinc-200 bg-white p-4">
+    <section className="surface-panel mb-8 rounded-lg border border-zinc-200 bg-white p-4">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h2 className="font-semibold text-zinc-800">EDA 工具链探测</h2>
+          <h2 className="font-semibold text-zinc-800">开发环境与 EDA 工具链</h2>
           <p className="mt-1 text-sm text-zinc-500">
-            扫描系统 PATH 中的 EDA 工具（@moonglass/eda-bridge）
+            检查 MoonGlass 完整工作流所需的运行时、构建、验证、综合与时序工具。
           </p>
         </div>
         <button
           onClick={() => void detect()}
           disabled={detecting}
-          className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
+          className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
         >
-          {detecting ? '探测中…' : '开始探测'}
+          <RefreshCw size={14} className={detecting ? 'animate-spin' : ''} />
+          {detecting ? '检测中…' : '重新检测'}
         </button>
       </div>
 
-      {tools && (
-        <table className="w-full text-sm">
-          <thead>
-            <tr className="border-b border-zinc-200 text-left text-zinc-500">
-              <th className="py-2 pr-4 font-medium">工具</th>
-              <th className="py-2 pr-4 font-medium">状态</th>
-              <th className="py-2 pr-4 font-medium">路径</th>
-              <th className="py-2 font-medium">版本</th>
-            </tr>
-          </thead>
-          <tbody>
-            {tools.map((t) => (
-              <tr key={t.tool} className="border-b border-zinc-200/60">
-                <td className="py-2 pr-4 font-mono text-zinc-700">{t.tool}</td>
-                <td className="py-2 pr-4">
-                  {t.found ? (
-                    <span className="text-emerald-600">✓ 已安装</span>
-                  ) : (
-                    <span className="text-zinc-400">未找到</span>
-                  )}
-                </td>
-                <td className="max-w-64 truncate py-2 pr-4 font-mono text-xs text-zinc-500">
-                  {t.path ?? '—'}
-                </td>
-                <td className="py-2 text-xs text-zinc-500">{t.version ?? '—'}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
+      {installMessage && (
+        <div className="mb-3 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">{installMessage}</div>
       )}
+
+      {detecting && tools === null && (
+        <div className="environment-feedback">
+          <RefreshCw size={15} className="animate-spin" />
+          正在逐项检查环境、版本与可执行文件路径…
+        </div>
+      )}
+      {detectError && (
+        <div className="environment-feedback environment-feedback-error">
+          <XCircle size={15} />
+          {detectError}
+        </div>
+      )}
+
+      {tools && categories.map((category) => {
+        const entries = normalizedTools.filter((tool) => tool.category === category.id)
+        const readyCount = entries.filter((tool) => tool.found).length
+        return (
+          <div key={category.id} className="environment-group">
+            <div className="environment-group-title">
+              <strong>{category.label}</strong>
+              <span>{category.detail}</span>
+              <span className="ml-auto">{readyCount}/{entries.length} 就绪</span>
+            </div>
+            <div className="environment-list">
+              {entries.length === 0 && (
+                <div className="environment-row text-xs text-zinc-400">
+                  此分组没有收到检测项。请重启 MoonGlass，使主进程与界面版本保持一致。
+                </div>
+              )}
+              {entries.map((tool) => (
+                <div key={tool.tool} className="environment-row">
+                  {tool.found ? (
+                    <CheckCircle2 size={16} className="shrink-0 text-emerald-600" />
+                  ) : (
+                    <XCircle size={16} className="shrink-0 text-zinc-400" />
+                  )}
+                  <div className="min-w-0 flex-1">
+                    <div className="flex items-center gap-2">
+                      <strong className="text-sm text-zinc-700">{tool.tool}</strong>
+                      <span className={`environment-importance importance-${tool.importance}`}>{tool.importance === 'required' ? '必要' : tool.importance === 'recommended' ? '推荐' : '可选'}</span>
+                      <span className={tool.found ? 'text-xs text-emerald-700' : 'text-xs text-zinc-400'}>{tool.found ? '已就绪' : '未找到'}</span>
+                    </div>
+                    <p className="mt-0.5 text-xs text-zinc-500">{tool.description}</p>
+                    {tool.found && (
+                      <p className="mt-0.5 truncate font-mono text-[10px] text-zinc-400" title={tool.path}>{tool.version ?? tool.path}</p>
+                    )}
+                  </div>
+                  {!tool.found && tool.installId && (
+                    <button onClick={() => void installBundle(tool.installId!)} disabled={installing !== null} className="environment-install-button">
+                      <Download size={13} />
+                      {installing === tool.installId ? '安装中…' : tool.installId === 'python-cocotb' ? '安装 Cocotb' : '安装工具包'}
+                    </button>
+                  )}
+                  {!tool.found && !tool.installId && tool.installUrl && (
+                    <button onClick={() => void window.moonglass.eda.openInstallPage(tool.installUrl!)} className="environment-link-button" title="打开官方下载页面">
+                      <ExternalLink size={14} />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          </div>
+        )
+      })}
     </section>
   )
 }

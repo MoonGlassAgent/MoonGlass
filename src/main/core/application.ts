@@ -16,6 +16,7 @@ import { AgentModelStore } from '../services/AgentModelStore'
 import { AgentService } from '../services/AgentService'
 import { FileService } from '../services/FileService'
 import { DesignBrowserService } from '../services/DesignBrowserService'
+import { ProcessLibraryService } from '../services/ProcessLibraryService'
 
 export interface ApplicationServices {
   lifecycle: LifecycleManager
@@ -29,6 +30,7 @@ export interface ApplicationServices {
   agent: AgentService
   files: FileService
   designBrowser: DesignBrowserService
+  processLibraries: ProcessLibraryService
 }
 
 export function createApplication(): ApplicationServices {
@@ -39,12 +41,13 @@ export function createApplication(): ApplicationServices {
   const projects = new ProjectService(db, userDataDir)
   const phaseEngine = new PhaseEngine(db)
   const python = new PythonService()
-  const eda = new EdaService()
+  const eda = new EdaService(userDataDir)
   const llm = new LlmProviderService()
   const modelStore = new AgentModelStore()
   const agent = new AgentService(projects, llm, modelStore)
   const files = new FileService()
   const designBrowser = new DesignBrowserService(userDataDir)
+  const processLibraries = new ProcessLibraryService(userDataDir)
 
   // 注册顺序即启动顺序；db 必须在 projects 之前启动
   lifecycle
@@ -58,6 +61,7 @@ export function createApplication(): ApplicationServices {
     .register(agent)
     .register(files)
     .register(designBrowser)
+    .register(processLibraries)
 
-  return { lifecycle, db, projects, phaseEngine, python, eda, llm, modelStore, agent, files, designBrowser }
+  return { lifecycle, db, projects, phaseEngine, python, eda, llm, modelStore, agent, files, designBrowser, processLibraries }
 }

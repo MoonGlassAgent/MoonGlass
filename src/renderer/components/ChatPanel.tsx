@@ -242,9 +242,9 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   }
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="chat-surface flex h-full flex-col">
       {/* 头部：阶段 Agent + 会话选择 + 模型选择 */}
-      <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2">
+      <div className="chat-toolbar flex items-center justify-between border-b border-zinc-200 px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-zinc-700">
             🤖 {PHASE_LABELS[phase]}阶段 Agent
@@ -279,7 +279,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
       </div>
 
       {/* 消息列表 */}
-      <div className="flex-1 overflow-y-auto p-4">
+      <div className="chat-messages flex-1 overflow-y-auto p-4">
         {messages.length === 0 && !streaming && (
           <p className="mt-8 text-center text-sm text-zinc-400">
             向 {PHASE_LABELS[phase]}阶段 Agent 提问，开始本阶段的工作
@@ -297,7 +297,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
       </div>
 
       {/* 输入区 */}
-      <div className="border-t border-zinc-200 p-3">
+      <div className="chat-composer border-t border-zinc-200 p-3">
         <div className="mx-auto flex max-w-3xl items-end gap-2">
           <textarea
             value={input}
@@ -349,7 +349,7 @@ function MessageBubble({
 }): React.JSX.Element {
   if (msg.role === 'user') {
     return (
-      <div className="self-end rounded-lg bg-blue-600 px-3 py-2 text-sm whitespace-pre-wrap text-white">
+      <div className="message-user self-end rounded-lg bg-blue-600 px-3 py-2 text-sm whitespace-pre-wrap text-white">
         {msg.text}
       </div>
     )
@@ -357,7 +357,7 @@ function MessageBubble({
 
   if (msg.role === 'tool') {
     return (
-      <details className="rounded border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs">
+      <details className="message-tool rounded border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs">
         <summary className="cursor-pointer text-zinc-500">
           🔧 工具调用：<span className="font-mono">{msg.toolName ?? 'tool'}</span>
           {msg.isError ? (
@@ -394,7 +394,7 @@ function MessageBubble({
 
   return (
     <div
-      className={`self-start rounded-lg border px-3 py-2 text-sm whitespace-pre-wrap ${
+      className={`message-assistant self-start rounded-lg border px-3 py-2 text-sm whitespace-pre-wrap ${
         msg.isError
           ? 'border-red-200 bg-red-50 text-red-700'
           : 'border-zinc-200 bg-white text-zinc-800'

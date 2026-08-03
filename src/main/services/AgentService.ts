@@ -336,6 +336,7 @@ export class AgentService implements MoonGlassService {
     mkdirSync(dotPi, { recursive: true })
     // TODO(Phase 3 后续): 传入项目级约束与用户自定义提示词
     const basePrompt = buildSystemPrompt(phase)
+    const processLibraryIndex = join(app.getPath('userData'), 'moonglass', 'process-libraries', 'index.json')
     const project = this.projects.get(projectId)
     const fastTrackNotice =
       phase === 'SYNTH' &&
@@ -359,6 +360,7 @@ export class AgentService implements MoonGlassService {
 \`\`\`text
 docs/{01_project,02_requirements,03_design,04_verification,05_implementation,06_validation,07_release}/
 rtl/
+rtl/macros/
 rtlqa/{lint,cdc}/
 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/
 verification/results/<module>/
@@ -370,10 +372,15 @@ scripts/
 - 进入验证实现前必须先使用 \`verification-planning\`，随后使用 \`cocotb-verification\`。
 - RTL 只写入 \`rtl/\`；Lint/CDC 报告分别写入 \`rtlqa/lint/\` 和 \`rtlqa/cdc/\`。
 - RTL 阶段必须维护 \`rtl/design.json\` 和 \`rtl/filelist.f\`：design.json 的 filelist 写字符串 \`"filelist.f"\`，源文件顺序逐行写入 filelist.f，并明确 topModule、includeDirs 与 defines。
+- 默认假设没有可用 SRAM/ROM 宏。若架构需要存储宏，先在 \`docs/03_design/architecture.md\` 记录组织、端口、时序、面积/功耗估算和替换责任，再把存储体从控制器剥离为参数化 bank 级宏接口。
+- 存储宏三视图写入 \`rtl/macros/\`：\`sram_behavioral.v\` 仅仿真，\`sram_blackbox.v\` 仅综合并用 \`read_verilog -lib\`，\`sram_phy_template.v\` 仅作物理宏例化/端口映射交付物。三者不得在同一次工具调用中作为普通 RTL 同时读入。
+- \`rtl/design.json\` 用 \`simulationFiles\`、\`libraryFiles\`、\`physicalFiles\` 分别登记三类视图；\`filelist.f\` 仅放控制逻辑和其他普通设计源。宏面积/功耗按架构或数据手册单独报告，不得伪装成 Yosys 标准单元面积。
 - Agent 新生成的 RTL 默认符合 Verilog-2001 并使用 \`.v\`；生成的验证断言可使用 SystemVerilog/SVA。此生成约束不得用于拒绝或改写用户导入的较新标准代码。
 - 仿真日志、机器可读结果、覆盖率与波形必须写入 \`verification/results/<module>/\`。
+- Cocotb 是默认验证执行方式：调用 \`run_simulation\` 时使用 \`mode="cocotb"\`、Python 模块名 \`testModule\` 和环境根目录 \`testDir\`；Windows 默认选 \`simulator="icarus"\`。除非兼容已有 C++ testbench，不得使用 cpp 模式或自行生成临时 runner 绕过工具。
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
 - 综合默认使用本机 Nangate45 / FreePDK45 typical 开源 Liberty；用户未指定其他库时不要省略默认库。
+- MoonGlass 工艺库统一索引路径：${processLibraryIndex.replace(/\\/g, '/')}。涉及工艺选择、综合、时序或物理视图前，先读取该索引并核对 Liberty/LEF/GDS/Verilog 等可用文件；不得只凭目录名猜测文件。用户新增或下载工艺库后，以该索引为准。
 - 不得在根目录或旧式平铺目录创建阶段产出；不得虚构工具结果。
 `
 
@@ -393,7 +400,7 @@ argument-hint: "<模块名>"
 1. 使用 verification-planning 技能维护 docs/04_verification/ 三份计划。
 2. 使用 collect_rtl_files、read_verilog、run_verible_lint 和 check_synthesizability。
 3. 使用 cocotb-verification 技能在 verification/$1_tb/ 创建规范环境。
-4. 使用 generate_tb 或环境脚本完善测试，使用 run_simulation 实际运行。
+4. 完善 Cocotb 测试后，使用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus") 实际运行。
 5. 确认 verification/results/$1/ 中存在编译日志、仿真日志、result.json 和波形。
 6. 更新需求到测试的追踪、覆盖率结果和 docs/06_validation/ 验证报告。
 7. 工具失败时分析日志、修复并重跑；不得以文字结论代替实际工具结果。

@@ -16,6 +16,7 @@ import { ScriptsPage } from './pages/ScriptsPage'
 import { KnowledgePage } from './pages/KnowledgePage'
 import { SettingsPage } from './pages/SettingsPage'
 import { DesignBrowserPage } from './pages/DesignBrowserPage'
+import { ProcessLibrariesPage } from './pages/ProcessLibrariesPage'
 
 const rootRoute = createRootRoute({
   component: AppLayout
@@ -54,6 +55,12 @@ const ipLibraryRoute = createRoute({
   component: IpLibraryPage
 })
 
+const processLibrariesRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/process-libraries',
+  component: ProcessLibrariesPage
+})
+
 const scriptsRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/scripts',
@@ -78,6 +85,7 @@ const routeTree = rootRoute.addChildren([
   workspaceRoute,
   designBrowserRoute,
   ipLibraryRoute,
+  processLibrariesRoute,
   scriptsRoute,
   knowledgeRoute,
   settingsRoute

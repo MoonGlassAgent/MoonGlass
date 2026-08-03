@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
+import { ChevronDown, ChevronRight, FileCode2, Folder, FolderOpen, RefreshCw } from 'lucide-react'
 import type { FileTreeNode } from '@shared/types'
 
 interface FileTreeProps {
@@ -34,15 +35,15 @@ export function FileTree({ projectId, onOpenFile, refreshTick = 0 }: FileTreePro
   }, [reload, refreshTick])
 
   return (
-    <div className="flex h-full flex-col">
+    <div className="file-tree flex h-full flex-col">
       <div className="mb-2 flex items-center justify-between">
         <span className="font-medium text-zinc-700">项目文件</span>
         <button
           onClick={() => void reload()}
           title="刷新文件树"
-          className="rounded px-1.5 text-xs text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+          className="file-tree-refresh flex h-7 w-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
         >
-          {loading ? '…' : '⟳'}
+          <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
         </button>
       </div>
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -84,8 +85,17 @@ function TreeNode({
           className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left text-zinc-600 hover:bg-zinc-100"
           style={indent}
         >
-          <span className="w-3 shrink-0 text-zinc-400">{open ? '▾' : '▸'}</span>
-          <span className="truncate">📁 {node.name}</span>
+          {open ? (
+            <ChevronDown size={13} className="shrink-0 text-zinc-400" />
+          ) : (
+            <ChevronRight size={13} className="shrink-0 text-zinc-400" />
+          )}
+          {open ? (
+            <FolderOpen size={14} className="shrink-0 text-amber-600" />
+          ) : (
+            <Folder size={14} className="shrink-0 text-amber-600" />
+          )}
+          <span className="truncate">{node.name}</span>
         </button>
         {open && node.children && node.children.length > 0 && (
           <ul className="space-y-0.5">
@@ -106,8 +116,9 @@ function TreeNode({
         className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left font-mono text-zinc-600 hover:bg-zinc-100"
         style={indent}
       >
-        <span className="w-3 shrink-0" />
-        <span className="truncate">📄 {node.name}</span>
+        <span className="w-[13px] shrink-0" />
+        <FileCode2 size={14} className="shrink-0 text-sky-600" />
+        <span className="truncate">{node.name}</span>
       </button>
     </li>
   )

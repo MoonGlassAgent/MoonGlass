@@ -33,6 +33,8 @@ export interface SynthesizabilityResult {
 
 export interface SynthCheckOptions {
   rtlFiles: string[]
+  /** 仅声明端口的宏/库 Verilog，以 read_verilog -lib 读入。 */
+  libraryFiles?: string[]
   /** 预留：指定顶层模块；缺省时 hierarchy -auto-top 自动识别 */
   topModule?: string
 }
@@ -48,9 +50,12 @@ export async function checkSynthesizability(
   const yosysPath = await locateTool(YOSYS_CANDIDATES)
   if (!yosysPath) throw new Error('工具未找到: yosys')
 
+  const libraryCmd = options.libraryFiles?.length
+    ? `read_verilog -sv -lib ${options.libraryFiles.map((f) => `"${f}"`).join(' ')}; `
+    : ''
   const readCmd = `read_verilog -sv ${options.rtlFiles.map((f) => `"${f}"`).join(' ')}`
   const topCmd = options.topModule ? `hierarchy -top ${options.topModule}` : 'hierarchy -auto-top'
-  const script = `${readCmd}; ${topCmd}; check; stat`
+  const script = `${libraryCmd}${readCmd}; ${topCmd}; check; stat`
 
   const { stdout, stderr, code } = await run(yosysPath, ['-p', script], toolEnv(yosysPath))
 
@@ -96,6 +101,8 @@ export async function checkSynthesizability(
 
 export interface LogicSynthesisOptions {
   rtlFiles: string[]
+  /** SRAM/ROM 等 blackbox 声明文件，不展开为逻辑。 */
+  libraryFiles?: string[]
   topModule: string
   outputDir: string
   sdcFile?: string
@@ -305,6 +312,9 @@ export async function runLogicSynthesis(
   for (const file of options.rtlFiles) {
     if (!existsSync(file)) throw new Error(`RTL 文件不存在: ${file}`)
   }
+  for (const file of options.libraryFiles ?? []) {
+    if (!existsSync(file)) throw new Error(`宏/库 Verilog 文件不存在: ${file}`)
+  }
   if (options.sdcFile && !existsSync(options.sdcFile)) throw new Error(`SDC 文件不存在: ${options.sdcFile}`)
   const targetLibrary = selectTargetLibrary(options.targetLibrary)
   if (options.targetLibrary && !targetLibrary) {
@@ -324,6 +334,9 @@ export async function runLogicSynthesis(
   const clockPeriodNs = parseClockPeriod(options.sdcFile)
 
   const commands = [
+    ...(options.libraryFiles?.length
+      ? [`read_verilog -sv -lib ${options.libraryFiles.map(yosysQuote).join(' ')}`]
+      : []),
     `read_verilog -sv ${options.rtlFiles.map(yosysQuote).join(' ')}`,
     `hierarchy -check -top ${options.topModule}`,
     'proc',
@@ -397,6 +410,7 @@ export async function runLogicSynthesis(
     '',
     `- 顶层模块：\`${options.topModule}\``,
     `- RTL 文件：${options.rtlFiles.length} 个`,
+    `- Blackbox 宏视图：${options.libraryFiles?.length ?? 0} 个`,
     `- SDC：${options.sdcFile ? `\`${resolve(options.sdcFile)}\`` : '未提供'}`,
     `- Liberty：${targetLibrary ? `\`${targetLibrary}\`` : '未提供（默认 Nangate45 库不可用）'}`,
     `- 网表：\`${netlistPath}\``,
@@ -406,6 +420,7 @@ export async function runLogicSynthesis(
     `- 单元数量：${area.cells}`,
     `- 映射面积：${area.value ?? '不可用'}`,
     `- 说明：${area.message}`,
+    '- SRAM/ROM 宏面积与功耗：不包含在上述 Yosys 标准单元结果中，须按架构估算或宏数据手册分项合并',
     '',
     '## 时序',
     '',

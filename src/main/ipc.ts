@@ -4,15 +4,16 @@
  * 依据 shared/ipc-contract.ts 的通道契约注册全部 handler。
  */
 
-import { ipcMain, shell } from 'electron'
+import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-contract'
 import type { LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
 import { projectWorkspaceDir } from './core/paths'
+import { pathToFileURL } from 'node:url'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
-  const { projects, phaseEngine, python, eda, llm, agent, files, designBrowser } = services
+  const { projects, phaseEngine, python, eda, llm, agent, files, designBrowser, processLibraries } = services
 
   // ==================== 项目 ====================
   ipcMain.handle(IPC.Project.List, () => projects.list())
@@ -88,9 +89,33 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   // ==================== EDA ====================
   ipcMain.handle(IPC.Eda.DetectTools, () => eda.detectTools())
+  ipcMain.handle(IPC.Eda.InstallBundle, (_e, id: string) => eda.installBundle(id))
+  ipcMain.handle(IPC.Eda.OpenInstallPage, async (_e, url: string) => {
+    if (!/^https:\/\//i.test(url)) return false
+    await shell.openExternal(url)
+    return true
+  })
   ipcMain.handle(IPC.Eda.OpenWaveform, (_e, projectId: string, relPath: string) =>
     eda.openWaveform(projectId, relPath)
   )
+
+  // ==================== 工艺库 ====================
+  ipcMain.handle(IPC.ProcessLibrary.List, () => processLibraries.list())
+  ipcMain.handle(IPC.ProcessLibrary.Catalog, () => processLibraries.catalog())
+  ipcMain.handle(IPC.ProcessLibrary.ChooseAndAdd, async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender)
+    const result = owner
+      ? await dialog.showOpenDialog(owner, { title: '选择工艺库目录', properties: ['openDirectory'] })
+      : await dialog.showOpenDialog({ title: '选择工艺库目录', properties: ['openDirectory'] })
+    return result.canceled || result.filePaths.length === 0 ? null : processLibraries.addLocal(result.filePaths[0])
+  })
+  ipcMain.handle(IPC.ProcessLibrary.Download, (_e, catalogId: string) => processLibraries.download(catalogId))
+  ipcMain.handle(IPC.ProcessLibrary.Reindex, (_e, id: string) => processLibraries.reindex(id))
+  ipcMain.handle(IPC.ProcessLibrary.Remove, (_e, id: string) => processLibraries.remove(id))
+  ipcMain.handle(IPC.ProcessLibrary.OpenFolder, async (_e, id: string) => {
+    const record = processLibraries.get(id)
+    return record ? (await shell.openPath(record.path)) === '' : false
+  })
 
   // ==================== Python ====================
   ipcMain.handle(IPC.Python.Run, (_e, req: PythonRunRequest) => python.run(req))
@@ -141,10 +166,15 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     files.readFile(projectId, relPath)
   )
 
-  ipcMain.handle(IPC.Fs.OpenExternal, async (_e, filePath: string) => {
+  ipcMain.handle(IPC.Fs.OpenExternal, async (_e, projectId: string, relPath: string) => {
+    const filePath = files.resolveProjectFile(projectId, relPath)
+    if (!filePath) return false
     try {
-      await shell.openPath(filePath)
-      return true
+      if (/\.html?$/i.test(filePath)) {
+        await shell.openExternal(pathToFileURL(filePath).href)
+        return true
+      }
+      return (await shell.openPath(filePath)) === ''
     } catch {
       return false
     }

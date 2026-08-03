@@ -90,6 +90,7 @@ export const MOONGLASS_TOOLS: readonly MoonglassToolDef[] = [
     type: 'object',
     properties: {
       rtlFiles: { type: 'array', items: { type: 'string' } },
+      libraryFiles: { type: 'array', items: { type: 'string' } },
       topModule: { type: 'string' }
     },
     required: ['rtlFiles', 'topModule']
@@ -105,15 +106,21 @@ export const MOONGLASS_TOOLS: readonly MoonglassToolDef[] = [
     },
     required: ['rtlFile']
   }),
-  def('run_simulation', 'verification', '调用仿真器运行测试，支持 Verilator/VCS', {
+  def('run_simulation', 'verification', '运行 Cocotb（推荐）或兼容旧式 Verilator C++ 测试', {
     type: 'object',
     properties: {
+      mode: { type: 'string', enum: ['cocotb', 'cpp'], default: 'cocotb' },
       topModule: { type: 'string' },
-      testbench: { type: 'string' },
-      simulator: { type: 'string', enum: ['verilator', 'vcs', 'xcelium'], default: 'verilator' },
+      rtlFiles: { type: 'array', items: { type: 'string' } },
+      testModule: { type: 'string' },
+      testDir: { type: 'string' },
+      testcase: { type: 'string' },
+      tbCpp: { type: 'string' },
+      simulator: { type: 'string', enum: ['icarus', 'verilator'], default: 'icarus' },
+      trace: { type: 'boolean', default: true },
       timeout: { type: 'number', default: 300 }
     },
-    required: ['topModule', 'testbench']
+    required: ['topModule', 'rtlFiles']
   }),
   def('run_cdc_check', 'rtl', '检查设计中的跨时钟域路径并输出 rtlqa/cdc 报告', {
     type: 'object',
@@ -136,6 +143,7 @@ export const MOONGLASS_TOOLS: readonly MoonglassToolDef[] = [
     type: 'object',
     properties: {
       rtlFiles: { type: 'array', items: { type: 'string' } },
+      libraryFiles: { type: 'array', items: { type: 'string' } },
       sdcFile: { type: 'string' },
       targetLibrary: { type: 'string' },
       effort: { type: 'string', enum: ['low', 'medium', 'high'], default: 'medium' }

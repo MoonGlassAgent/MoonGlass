@@ -3,6 +3,7 @@
  */
 
 import { useEffect, useState } from 'react'
+import { Cpu, Plus } from 'lucide-react'
 import { ProjectCard } from '../components/ProjectCard'
 import { useAppStore } from '../store/appStore'
 
@@ -41,9 +42,9 @@ export function ProjectsPage(): React.JSX.Element {
         </div>
         <button
           onClick={() => setCreating(true)}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+          className="inline-flex items-center gap-2 rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
         >
-          + 新建项目
+          <Plus size={16} /> 新建项目
         </button>
       </div>
 
@@ -81,7 +82,7 @@ export function ProjectsPage(): React.JSX.Element {
 
       {projects.length === 0 ? (
         <div className="mt-20 text-center text-zinc-400">
-          <div className="mb-2 text-4xl">🌙</div>
+          <Cpu className="mx-auto mb-3" size={38} strokeWidth={1.3} />
           <p>暂无项目，点击「新建项目」开始芯片设计流程</p>
         </div>
       ) : (
