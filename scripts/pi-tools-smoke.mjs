@@ -29,6 +29,8 @@ mkdirSync(join(work, '.pi'), { recursive: true })
 writeFileSync(join(work, '.pi', 'APPEND_SYSTEM.md'), 'test', 'utf-8')
 
 const providers = [{ id: 'deepseek', name: 'DeepSeek', protocol: 'openai-compatible', baseUrl: 'https://api.deepseek.com', apiKey: 'sk-dummy', models: ['deepseek-chat'] }]
+const providerFile = join(work, 'providers.json')
+writeFileSync(providerFile, JSON.stringify(providers), { mode: 0o600 })
 
 const child = spawn(process.execPath, [
   bin, '--mode', 'rpc', '-a', '--no-session',
@@ -36,7 +38,7 @@ const child = spawn(process.execPath, [
   '-e', join(bridgeDir, 'moonglass-tools.ts')
 ], {
   cwd: work,
-  env: { ...process.env, MOONGLASS_PROVIDERS_JSON: JSON.stringify(providers), PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0' },
+  env: { ...process.env, MOONGLASS_PROVIDERS_FILE: providerFile, PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0' },
   stdio: ['pipe', 'pipe', 'pipe']
 })
 

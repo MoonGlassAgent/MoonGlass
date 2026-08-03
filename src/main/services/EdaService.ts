@@ -19,6 +19,8 @@ import { projectWorkspaceDir } from '../core/paths'
 export class EdaService implements MoonGlassService {
   readonly name = 'eda-service'
   private readonly toolchainRoot: string
+  private static readonly REQUEST_TIMEOUT_MS = 30_000
+  private static readonly DOWNLOAD_TIMEOUT_MS = 30 * 60_000
 
   constructor(userDataDir: string) {
     this.toolchainRoot = join(userDataDir, 'moonglass', 'toolchains')
@@ -49,7 +51,8 @@ export class EdaService implements MoonGlassService {
     const archivePath = join(this.toolchainRoot, 'oss-cad-suite-windows-x64.tgz')
     try {
       const releaseResponse = await fetch('https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases/latest', {
-        headers: { 'User-Agent': 'MoonGlass' }
+        headers: { 'User-Agent': 'MoonGlass' },
+        signal: AbortSignal.timeout(EdaService.REQUEST_TIMEOUT_MS)
       })
       if (!releaseResponse.ok) throw new Error(`GitHub Release 查询失败: HTTP ${releaseResponse.status}`)
       const release = await releaseResponse.json() as { assets?: Array<{ name: string; browser_download_url: string }> }
@@ -57,7 +60,10 @@ export class EdaService implements MoonGlassService {
       if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
 
       await rm(suiteDir, { recursive: true, force: true })
-      const download = await fetch(asset.browser_download_url, { headers: { 'User-Agent': 'MoonGlass' } })
+      const download = await fetch(asset.browser_download_url, {
+        headers: { 'User-Agent': 'MoonGlass' },
+        signal: AbortSignal.timeout(EdaService.DOWNLOAD_TIMEOUT_MS)
+      })
       if (!download.ok || !download.body) throw new Error(`工具包下载失败: HTTP ${download.status}`)
       await pipeline(Readable.fromWeb(download.body as never), createWriteStream(archivePath))
       await this.runProcess('tar', ['-xzf', archivePath, '-C', this.toolchainRoot])
@@ -67,7 +73,8 @@ export class EdaService implements MoonGlassService {
       return { ok: true, message: 'OSS CAD Suite 安装完成', path: suiteDir }
     } catch (error) {
       await rm(archivePath, { force: true }).catch(() => {})
-      return { ok: false, message: error instanceof Error ? error.message : String(error) }
+      const message = error instanceof Error ? error.message : String(error)
+      return { ok: false, message: /abort|timeout/i.test(message) ? '工具包下载超时，请检查网络或代理后重试' : message }
     }
   }
 

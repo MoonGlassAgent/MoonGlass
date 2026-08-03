@@ -347,6 +347,23 @@ function MessageBubble({
     thinking?: string
   }
 }): React.JSX.Element {
+  const thinkingRef = useRef<HTMLDetailsElement>(null)
+  const [thinkingOpen, setThinkingOpen] = useState(false)
+
+  useEffect(() => {
+    const el = thinkingRef.current
+    if (!el || msg.role !== 'assistant' || !msg.thinking) return
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        if (!entry.isIntersecting || entry.intersectionRatio < 0.3) setThinkingOpen(false)
+      },
+      { threshold: [0, 0.3] }
+    )
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [msg.role, msg.thinking, msg.id])
+
   if (msg.role === 'user') {
     return (
       <div className="message-user self-end rounded-lg bg-blue-600 px-3 py-2 text-sm whitespace-pre-wrap text-white">
@@ -370,27 +387,6 @@ function MessageBubble({
       </details>
     )
   }
-
-  const thinkingRef = useRef<HTMLDetailsElement>(null)
-  const [thinkingOpen, setThinkingOpen] = useState(false)
-
-  // 智能折叠：当思考过程被新内容推至视口外时自动折叠
-  useEffect(() => {
-    const el = thinkingRef.current
-    if (!el || !msg.thinking) return
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        // 被推出视口时自动折叠（不自动展开，留给用户手动点击）
-        if (!entry.isIntersecting || entry.intersectionRatio < 0.3) {
-          setThinkingOpen(false)
-        }
-      },
-      { threshold: [0, 0.3] }
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [msg.thinking, msg.id])
 
   return (
     <div

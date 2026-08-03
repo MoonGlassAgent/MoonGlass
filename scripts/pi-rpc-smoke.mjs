@@ -19,6 +19,8 @@ const providers = [{
   id: 'deepseek', name: 'DeepSeek', protocol: 'openai-compatible',
   baseUrl: 'https://api.deepseek.com', apiKey: 'sk-dummy-smoke-test', models: ['deepseek-chat']
 }]
+const providerFile = join(work, 'providers.json')
+writeFileSync(providerFile, JSON.stringify(providers), { mode: 0o600 })
 
 const child = spawn(execPath, [
   bin, '--mode', 'rpc', '-a',
@@ -27,7 +29,7 @@ const child = spawn(execPath, [
   '-e', bridge
 ], {
   cwd: work,
-  env: { ...process.env, MOONGLASS_PROVIDERS_JSON: JSON.stringify(providers), PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0' },
+  env: { ...process.env, MOONGLASS_PROVIDERS_FILE: providerFile, PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0' },
   stdio: ['pipe', 'pipe', 'pipe']
 })
 

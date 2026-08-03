@@ -8,6 +8,7 @@
  */
 
 import { spawn } from 'node:child_process'
+import { locateTool } from '@moonglass/eda-bridge'
 import type { PythonRunRequest, PythonRunResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
 
@@ -24,12 +25,16 @@ export class PythonService implements MoonGlassService {
     // 骨架阶段无常驻进程
   }
 
-  run(req: PythonRunRequest): Promise<PythonRunResult> {
+  async run(req: PythonRunRequest): Promise<PythonRunResult> {
     const timeoutMs = req.timeoutMs ?? DEFAULT_TIMEOUT_MS
     const startedAt = Date.now()
 
+    const python = await locateTool(process.platform === 'win32' ? ['python.exe', 'python', 'python3.exe'] : ['python3', 'python'])
+    if (!python) {
+      return { stdout: '', stderr: '[python-service] 未找到 Python 3', exitCode: null, timedOut: false, durationMs: Date.now() - startedAt }
+    }
     return new Promise((resolve) => {
-      const child = spawn('python', ['-c', req.code], {
+      const child = spawn(python, ['-c', req.code], {
         cwd: req.cwd,
         stdio: ['ignore', 'pipe', 'pipe']
       })

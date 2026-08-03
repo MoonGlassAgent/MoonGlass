@@ -1,10 +1,11 @@
 /**
  * MoonGlass Provider 桥接扩展（由 pi 子进程加载，非本项目编译产物）
  *
- * AgentService 启动 pi 时通过 `-e` 加载本文件，
- * 从环境变量 MOONGLASS_PROVIDERS_JSON 读取 MoonGlass 设置页配置的
- * Provider 列表并注册到 pi（apiKey 为字面量注入，不写 pi 全局配置）。
+ * AgentService 启动 pi 时通过 `-e` 加载本文件，从权限受限的一次性文件
+ * 读取 Provider 列表；读取后立即删除，避免 API Key 长期出现在环境变量中。
  */
+
+import { readFileSync, rmSync } from 'node:fs'
 
 interface MoonGlassProvider {
   id: string
@@ -18,15 +19,19 @@ interface MoonGlassProvider {
 export default function (pi: {
   registerProvider: (id: string, config: Record<string, unknown>) => void
 }): void {
-  const raw = process.env.MOONGLASS_PROVIDERS_JSON
-  if (!raw) return
+  const providerFile = process.env.MOONGLASS_PROVIDERS_FILE
+  if (!providerFile) return
 
   let providers: MoonGlassProvider[]
   try {
+    const raw = readFileSync(providerFile, 'utf-8')
     providers = JSON.parse(raw) as MoonGlassProvider[]
   } catch (err) {
-    console.error('[moonglass-bridge] MOONGLASS_PROVIDERS_JSON 解析失败', err)
+    console.error('[moonglass-bridge] Provider 配置读取失败', err)
     return
+  } finally {
+    rmSync(providerFile, { force: true })
+    delete process.env.MOONGLASS_PROVIDERS_FILE
   }
 
   for (const p of providers) {

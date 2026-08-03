@@ -58,7 +58,7 @@ const CHECK_NAMES: Record<string, string> = {
   'sim-passed': '仿真通过',
   'verible-zero-error': 'Lint 零 Error',
   'yosys-synthesizable': 'Yosys 可综合性',
-  'cdc-passed': 'CDC 检查通过'
+  'cdc-passed': 'CDC 启发式风险扫描（非签核）'
 }
 
 /** 门禁检查执行上下文（由调用方注入，避免本模块依赖 Electron） */
@@ -447,9 +447,9 @@ async function cdcPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
 
     // 多时钟域检测
     if (clockDomains.size <= 1) {
-      return makeResult(checkId, true, 'error',
+      return makeResult(checkId, true, 'info',
         `单时钟域设计（${files.length} 个文件，时钟: ${[...clockSignals].join(', ') || '无'}` +
-        `），无需 CDC 检查`
+        `）；启发式扫描未发现多时钟域，本结果不构成 CDC 签核`
       )
     }
 
@@ -486,7 +486,7 @@ async function cdcPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
     ]
 
     return makeResult(checkId, true, 'warning',
-      `${clockDomains.size} 个时钟域，${violations.length} 个潜在违规。${report.join('；')}`
+      `启发式风险提示，不纳入门禁且不构成 CDC 签核：${clockDomains.size} 个时钟域。${report.join('；')}`
     )
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err)

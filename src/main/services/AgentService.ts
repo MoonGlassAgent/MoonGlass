@@ -4,7 +4,7 @@
  * 以 RPC 模式嵌入真实 Pi Coding Agent（@earendil-works/pi-coding-agent）：
  * 每个项目一个 pi 子进程（`pi --mode rpc`），cwd 为项目工作目录，
  * 系统提示词经 `.pi/APPEND_SYSTEM.md` 注入（buildSystemPrompt 按阶段组装），
- * Provider 配置经桥接扩展 + MOONGLASS_PROVIDERS_JSON 环境变量注入。
+ * Provider 配置经权限受限的一次性文件注入桥接扩展。
  *
  * 会话模型：每个项目以 projectId 隔离一个主会话和若干平行会话。阶段推进/回退、
  * 关闭重开默认延续当前项目的主会话；阶段切换需重启进程以加载新系统提示词。
@@ -45,7 +45,7 @@ export interface SessionSummary {
 /**
  * pi 内置 provider 会从环境变量 / auth.json 读取 API key。
  * 为避免用户环境变量中已有的 key 覆盖 MoonGlass UI 中的配置，
- * 启动 pi 子进程时屏蔽这些变量，强制走 MOONGLASS_PROVIDERS_JSON。
+ * 启动 pi 子进程时屏蔽这些变量，强制走一次性 Provider 配置文件。
  */
 const PROVIDER_API_KEY_ENV_VARS = [
   'ANTHROPIC_API_KEY',
@@ -93,6 +93,22 @@ const PROVIDER_API_KEY_ENV_VARS = [
   'AZURE_OPENAI_API_VERSION',
   'AZURE_OPENAI_DEPLOYMENT_NAME_MAP'
 ]
+
+const CHILD_ENV_ALLOWLIST = [
+  'PATH', 'Path', 'PATHEXT', 'SystemRoot', 'WINDIR', 'COMSPEC', 'SystemDrive',
+  'HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'TEMP', 'TMP',
+  'LANG', 'LC_ALL', 'TERM', 'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY',
+  'http_proxy', 'https_proxy', 'no_proxy', 'NODE_EXTRA_CA_CERTS', 'SSL_CERT_FILE'
+] as const
+
+function buildChildEnvironment(): Record<string, string | undefined> {
+  const env: Record<string, string | undefined> = {}
+  for (const key of CHILD_ENV_ALLOWLIST) {
+    if (process.env[key] !== undefined) env[key] = process.env[key]
+  }
+  for (const key of PROVIDER_API_KEY_ENV_VARS) delete env[key]
+  return env
+}
 
 /** 从 __dirname 向上探测 node_modules 中 pi 的 cli.js（开发模式）。 */
 function resolvePiBinFromNodeModules(): string {
@@ -423,13 +439,12 @@ argument-hint: "<模块名>"
     const sessionFile = resolve(targetSessionFile ?? this.sessionFilePath(projectId))
 
     // 隔离 pi 全局配置，并屏蔽所有 provider API key 环境变量，
-    // 确保 pi 只使用 MoonGlass UI 中配置的 key（经 MOONGLASS_PROVIDERS_JSON 注入）。
+    // 确保 pi 只使用 MoonGlass UI 中配置的 key（经一次性文件注入）。
     const piAgentDir = this.piAgentDir()
     mkdirSync(piAgentDir, { recursive: true })
-    const cleanEnv: Record<string, string | undefined> = { ...process.env }
-    for (const key of PROVIDER_API_KEY_ENV_VARS) {
-      delete cleanEnv[key]
-    }
+    const cleanEnv = buildChildEnvironment()
+    const providerFile = join(piAgentDir, `providers-${randomUUID()}.json`)
+    writeFileSync(providerFile, JSON.stringify(providers), { encoding: 'utf-8', mode: 0o600 })
 
     // 调试用：打印已注册 provider 与 key 末尾 4 位（不打印完整 key）
     for (const p of providers) {
@@ -450,7 +465,8 @@ argument-hint: "<模块名>"
       cwd: workspace,
       env: {
         ...cleanEnv,
-        MOONGLASS_PROVIDERS_JSON: JSON.stringify(providers),
+        MOONGLASS_PROVIDERS_FILE: providerFile,
+        MOONGLASS_DEFAULT_LIBERTY: process.env.MOONGLASS_DEFAULT_LIBERTY,
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
         PI_CODING_AGENT_DIR: piAgentDir,
@@ -480,6 +496,8 @@ argument-hint: "<模块名>"
       }
     })
     client.start()
+    // 扩展正常加载后会立即删除；启动失败时也限制敏感文件最多保留一分钟。
+    setTimeout(() => rmSync(providerFile, { force: true }), 60_000)
 
     // 从文件名提取会话名
     const sessionName = sessionFile.endsWith('.jsonl')

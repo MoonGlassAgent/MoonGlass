@@ -173,9 +173,6 @@ export interface LogicSynthesisResult {
   warnings: string[]
 }
 
-export const DEFAULT_NANGATE45_LIBERTY =
-  'D:/Projects/rtl_lib/Library/OpenROAD-flow-scripts/flow/platforms/nangate45/lib/NangateOpenCellLibrary_typical.lib'
-
 function selectTargetLibrary(explicit?: string): string | undefined {
   if (explicit) {
     const selected = resolve(explicit)
@@ -183,7 +180,7 @@ function selectTargetLibrary(explicit?: string): string | undefined {
   }
   const configured = process.env.MOONGLASS_DEFAULT_LIBERTY?.trim()
   if (configured && existsSync(configured)) return resolve(configured)
-  return existsSync(DEFAULT_NANGATE45_LIBERTY) ? resolve(DEFAULT_NANGATE45_LIBERTY) : undefined
+  return undefined
 }
 
 function sdcNumber(value: number, label: string): string {
@@ -320,6 +317,9 @@ export async function runLogicSynthesis(
   if (options.targetLibrary && !targetLibrary) {
     throw new Error(`Liberty 工艺库不存在: ${options.targetLibrary}`)
   }
+  const libraryWarnings = targetLibrary
+    ? []
+    : ['未从工艺库索引解析到默认 Liberty；本次仅输出通用单元统计，不代表 45nm 工艺面积或时序']
 
   const yosysPath = await locateTool(YOSYS_CANDIDATES)
   if (!yosysPath) throw new Error('工具未找到: yosys')
@@ -437,7 +437,9 @@ export async function runLogicSynthesis(
     '',
     '## 警告',
     '',
-    ...(stats.warnings.length > 0 ? stats.warnings.map((warning) => `- ${warning}`) : ['- 无']),
+    ...([...libraryWarnings, ...stats.warnings].length > 0
+      ? [...libraryWarnings, ...stats.warnings].map((warning) => `- ${warning}`)
+      : ['- 无']),
     ''
   ].join('\n')
   writeFileSync(reportPath, report, 'utf-8')
@@ -452,6 +454,6 @@ export async function runLogicSynthesis(
     targetLibrary,
     area,
     timing,
-    warnings: stats.warnings
+    warnings: [...libraryWarnings, ...stats.warnings]
   }
 }

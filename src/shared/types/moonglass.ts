@@ -209,6 +209,8 @@ export interface ProcessLibraryRecord {
   indexedAt?: string
   fileCount: number
   files: ProcessLibraryFileSummary[]
+  /** 综合默认使用的 Liberty，由索引器按 typical/工艺库优先级选出。 */
+  defaultLibertyPath?: string
   error?: string
 }
 

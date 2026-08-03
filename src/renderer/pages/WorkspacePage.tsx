@@ -219,10 +219,15 @@ export function WorkspacePage(): React.JSX.Element {
   }
 
   const handleAdvance = async (to: Phase): Promise<void> => {
-    const result = await window.moonglass.phase.advance(projectId, to)
-    if (!result) return
-    setProject(result.project)
-    setGate(result.gate)
+    try {
+      const result = await window.moonglass.phase.advance(projectId, to)
+      if (!result) return
+      setProject(result.project)
+      setGate(result.gate)
+    } catch (error) {
+      appendLog(`阶段推进失败: ${error instanceof Error ? error.message : String(error)}`)
+      setGate({ blocked: true, results: [] })
+    }
   }
 
   const handleRollback = async (to: Phase): Promise<void> => {

@@ -38,12 +38,8 @@ export interface VeribleLintOptions {
   autofix?: boolean
 }
 
-let veribleAvailable: boolean | null = null
-
 async function hasVerible(): Promise<boolean> {
-  if (veribleAvailable !== null) return veribleAvailable
-  veribleAvailable = (await locateTool(VERIBLE_CANDIDATES)) !== null
-  return veribleAvailable
+  return (await locateTool(VERIBLE_CANDIDATES)) !== null
 }
 
 // verible 输出：file:line:col: message [rule-name]

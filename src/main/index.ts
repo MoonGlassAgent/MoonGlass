@@ -28,7 +28,7 @@ function createMainWindow(): BrowserWindow {
     backgroundColor: '#f4f4f5',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
-      sandbox: false,
+      sandbox: true,
       contextIsolation: true,
       nodeIntegration: false
     }
@@ -43,7 +43,12 @@ function createMainWindow(): BrowserWindow {
   win.on('ready-to-show', () => win.show())
 
   win.webContents.setWindowOpenHandler((details) => {
-    shell.openExternal(details.url)
+    try {
+      const url = new URL(details.url)
+      if (url.protocol === 'https:' || url.protocol === 'http:') void shell.openExternal(url.toString())
+    } catch {
+      // 非法或非网络 URL 一律拒绝。
+    }
     return { action: 'deny' }
   })
 

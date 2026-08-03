@@ -63,6 +63,11 @@ export class ProcessLibraryService implements MoonGlassService {
   async start(): Promise<void> {
     await mkdir(this.root, { recursive: true })
     try { this.records = JSON.parse(await readFile(this.storePath, 'utf-8')) as ProcessLibraryRecord[] } catch { this.records = [] }
+    for (const record of this.records) {
+      if (record.catalogId === 'nangate45' && !record.defaultLibertyPath && existsSync(record.path)) {
+        await this.reindex(record.id)
+      }
+    }
     await this.persist()
   }
 
@@ -126,6 +131,7 @@ export class ProcessLibraryService implements MoonGlassService {
     await this.persist()
     try {
       const counts = new Map<ProcessLibraryFileKind, { count: number; examples: string[] }>()
+      const libertyCandidates: string[] = []
       let fileCount = 0
       const walk = async (dir: string): Promise<void> => {
         if (fileCount >= MAX_INDEX_FILES) return
@@ -136,6 +142,7 @@ export class ProcessLibraryService implements MoonGlassService {
           else {
             fileCount += 1
             const kind = KIND_BY_EXT[extname(entry.name).toLowerCase()] ?? 'other'
+            if (kind === 'liberty') libertyCandidates.push(full)
             const group = counts.get(kind) ?? { count: 0, examples: [] }
             group.count += 1
             if (group.examples.length < 5) group.examples.push(relative(record.path, full).replace(/\\/g, '/'))
@@ -147,6 +154,10 @@ export class ProcessLibraryService implements MoonGlassService {
       await walk(record.path)
       record.fileCount = fileCount
       record.files = [...counts.entries()].map(([kind, value]) => ({ kind, ...value })).sort((a, b) => b.count - a.count)
+      record.defaultLibertyPath = libertyCandidates.sort((a, b) => {
+        const score = (value: string): number => /NangateOpenCellLibrary_typical\.lib$/i.test(value) ? 0 : /typical/i.test(value) ? 1 : 2
+        return score(a) - score(b) || a.localeCompare(b)
+      })[0]
       record.indexedAt = new Date().toISOString()
       record.status = 'ready'
     } catch (error) {
@@ -169,8 +180,12 @@ export class ProcessLibraryService implements MoonGlassService {
 
   private async persist(): Promise<void> {
     await mkdir(this.root, { recursive: true })
+    const defaultLiberty = this.records.find((record) => record.catalogId === 'nangate45' && record.defaultLibertyPath)?.defaultLibertyPath
+      ?? this.records.find((record) => record.defaultLibertyPath)?.defaultLibertyPath
+    if (defaultLiberty && existsSync(defaultLiberty)) process.env.MOONGLASS_DEFAULT_LIBERTY = defaultLiberty
+    else delete process.env.MOONGLASS_DEFAULT_LIBERTY
     await writeFile(this.storePath, JSON.stringify(this.records, null, 2), 'utf-8')
-    await writeFile(this.indexPath, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), libraries: this.records }, null, 2), 'utf-8')
+    await writeFile(this.indexPath, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), defaultLiberty: defaultLiberty ?? null, libraries: this.records }, null, 2), 'utf-8')
   }
 
   private runGit(args: string[]): Promise<void> {
