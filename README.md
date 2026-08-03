@@ -22,7 +22,7 @@ MoonGlass 在**架构思想**上借鉴了 [Cherry Studio](https://github.com/Che
 | Python 脚本引擎（spawn + 超时） | ✅ 最小可用 |
 | Agent 芯片专用工具集（lint / 综合 / 仿真 / CDC / 测试台生成） | ✅ 7 个工具已注册 |
 | RTL 解析与模板生成（`@moonglass/rtl-engine`） | ✅ Phase 4 已实现 |
-| 逻辑综合网表生成（`runLogicSynthesis`） | 🚧 桩（Phase 6） |
+| 逻辑综合网表生成（`runLogicSynthesis`） | ✅ 已实现（Yosys，支持目标 Liberty 与通用综合） |
 | IP 模板库内容 | 🚧 占位（Phase 5） |
 | 知识库（sqlite-vec RAG） | 🚧 占位（Phase 5） |
 | better-sqlite3 + drizzle 数据库接线 | ✅ 已实现（ProjectService + 门禁历史） |

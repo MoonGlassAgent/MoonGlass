@@ -230,7 +230,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 5. 调用 generate_sdc 与 run_logic_synthesis
 6. SDC 写入 imp/constraints/；Yosys 网表、日志、时序与面积报告写入 imp/synthesis/
 7. 实现说明写入 docs/05_implementation/，发布签核材料写入 docs/07_release/
-8. run_logic_synthesis 缺省使用 MoonGlass 配置的 Nangate45 / FreePDK45 typical 开源 Liberty；只有用户明确指定时才改用其他工艺库
+8. run_logic_synthesis 优先使用 MoonGlass 工艺库索引中明确选定的默认 Liberty；未配置时允许通用综合，但必须向用户说明面积和时序不具备工艺意义
 9. 若 rtl/design.json 声明 libraryFiles，必须作为 blackbox/library Verilog 传给 run_logic_synthesis；不得综合 simulationFiles 中的 behavioral 存储阵列。宏面积/功耗按 architecture.md 或数据手册单列
 
 约束：

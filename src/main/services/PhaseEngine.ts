@@ -7,9 +7,10 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
-import { runLint, checkSynthesizability } from '@moonglass/eda-bridge'
+import { join } from 'node:path'
+import { runLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
 import {
   PHASE_ORDER,
   type ChipProject,
@@ -71,70 +72,13 @@ type GateChecker = (ctx: GateCheckContext) => Promise<GateCheckResult>
 
 const MAX_ISSUES_IN_MESSAGE = 3
 
-/** 递归收集工作区 RTL 文件（跳过 .pi 等隐藏目录与 node_modules） */
-/** 排除的生成文件/目录名模式 */
-const EXCLUDED_DIRS = /^(obj_dir|__pycache__|node_modules|build|sim_build|04_verification)$/
-const EXCLUDED_FILES = /^(_+)?(synth_|output_|result_|merged_|combined_|tmp_|temp_)/i
-
-function collectRtlFiles(dir: string): string[] {
-  const out: string[] = []
-  let entries
-  try {
-    entries = readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return out
-  }
-  for (const e of entries) {
-    if (e.name.startsWith('.') || EXCLUDED_DIRS.test(e.name)) continue
-    const full = join(dir, e.name)
-    if (e.isDirectory()) {
-      out.push(...collectRtlFiles(full))
-    } else if (/\.(v|sv)$/i.test(e.name) && !EXCLUDED_FILES.test(e.name)) {
-      out.push(full)
-    }
-  }
-  return out
-}
-
 /** 门禁只检查设计源；verification 中的 DUT 镜像和测试辅助模块不能进入综合。 */
 function collectDesignRtlFiles(workspaceDir: string): string[] {
-  const canonicalRtlDir = join(workspaceDir, 'rtl')
-  const manifestPath = join(canonicalRtlDir, 'design.json')
-  if (existsSync(manifestPath)) {
-    try {
-      const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>
-      let entries = Array.isArray(manifest.files) ? manifest.files.filter((item): item is string => typeof item === 'string') : []
-      const filelist = typeof manifest.filelist === 'string' ? manifest.filelist : 'filelist.f'
-      const filelistPath = resolveRtlPath(workspaceDir, canonicalRtlDir, filelist)
-      if (entries.length === 0 && existsSync(filelistPath)) {
-        entries = readFileSync(filelistPath, 'utf-8').split(/\r?\n/)
-          .map((line) => line.trim()).filter((line) => line.length > 0 && !/^(#|\/\/|\+|-)/.test(line))
-      }
-      if (entries.length > 0) return [...new Set(entries.map((entry) => resolveRtlPath(workspaceDir, canonicalRtlDir, entry)))]
-    } catch { /* 无效 manifest 由后续 RTL 检查给出文件级错误 */ }
-  }
-  const macroView = /(?:^|[\\/])macros[\\/]|_(?:behavioral|blackbox|phy_template)\.v$/i
-  return collectRtlFiles(existsSync(canonicalRtlDir) ? canonicalRtlDir : workspaceDir).filter((file) => !macroView.test(file))
-}
-
-function resolveRtlPath(workspaceDir: string, rtlDir: string, entry: string): string {
-  if (isAbsolute(entry)) return resolve(entry)
-  return resolve(entry.replace(/\\/g, '/').startsWith('rtl/') ? workspaceDir : rtlDir, entry)
+  return readRtlInputs(workspaceDir).designFiles
 }
 
 function collectLibraryRtlFiles(workspaceDir: string): string[] {
-  const rtlDir = join(workspaceDir, 'rtl')
-  const manifestPath = join(rtlDir, 'design.json')
-  if (!existsSync(manifestPath)) return []
-  try {
-    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>
-    const entries = Array.isArray(manifest.libraryFiles)
-      ? manifest.libraryFiles.filter((item): item is string => typeof item === 'string')
-      : []
-    return [...new Set(entries.map((entry) => resolveRtlPath(workspaceDir, rtlDir, entry)))]
-  } catch {
-    return []
-  }
+  return readRtlInputs(workspaceDir).libraryFiles
 }
 
 function makeResult(
@@ -580,6 +524,11 @@ export class PhaseEngine implements MoonGlassService {
     if (this.db) {
       try {
         const database = this.db.getDb()
+        // UI 和推进逻辑只消费最近一次结果；同项目同阶段旧记录直接替换，避免无限增长。
+        database.delete(gateChecks).where(and(
+          eq(gateChecks.projectId, project.id),
+          eq(gateChecks.phase, project.currentPhase)
+        )).run()
         for (const r of results) {
           database.insert(gateChecks).values({
             id: randomUUID(),

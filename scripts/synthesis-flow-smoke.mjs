@@ -1,7 +1,7 @@
 /**
  * Phase 6 综合链冒烟测试：
  * 1. 生成含时钟与 I/O delay 的 SDC。
- * 2. 默认使用本机 Nangate45 typical Liberty 完成映射。
+ * 2. 未配置 Liberty 时完成通用综合，不猜测开发机路径。
  * 3. 输出门级网表、JSON、日志、面积与 Markdown 报告。
  *
  * 运行：node scripts/synthesis-flow-smoke.mjs
@@ -77,12 +77,8 @@ check('Yosys 日志已输出', existsSync(result.logPath))
 check('Markdown 报告已输出', existsSync(result.reportPath))
 check('网表包含顶层模块', readFileSync(result.netlistPath, 'utf-8').includes('module counter'))
 check('报告包含时钟周期', readFileSync(result.reportPath, 'utf-8').includes('10 ns'))
-check(
-  '默认使用 Nangate45 typical Liberty',
-  result.area.mode === 'liberty' && /NangateOpenCellLibrary_typical\.lib$/i.test(result.targetLibrary ?? ''),
-  result.targetLibrary
-)
-check('默认库生成映射面积', result.area.value !== undefined, `${result.area.value ?? 'unavailable'}`)
+check('未配置工艺库时使用通用综合', result.area.mode === 'generic' && !result.targetLibrary)
+check('通用综合提供单元数量', result.area.cells > 0, `${result.area.cells} cells`)
 check('未解析到 ABC 延迟时不伪造时序', result.timing.available === false || result.timing.delayNs !== undefined)
 check('综合后存在单元统计', result.area.cells > 0, `${result.area.cells} cells`)
 

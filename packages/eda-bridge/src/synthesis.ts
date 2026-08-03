@@ -412,7 +412,7 @@ export async function runLogicSynthesis(
     `- RTL 文件：${options.rtlFiles.length} 个`,
     `- Blackbox 宏视图：${options.libraryFiles?.length ?? 0} 个`,
     `- SDC：${options.sdcFile ? `\`${resolve(options.sdcFile)}\`` : '未提供'}`,
-    `- Liberty：${targetLibrary ? `\`${targetLibrary}\`` : '未提供（默认 Nangate45 库不可用）'}`,
+    `- Liberty：${targetLibrary ? `\`${targetLibrary}\`` : '未配置（使用通用综合，面积与时序不具备工艺意义）'}`,
     `- 网表：\`${netlistPath}\``,
     '',
     '## 面积',

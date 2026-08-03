@@ -24,6 +24,7 @@ import {
 } from './eda-bridge/tool-runner'
 import { runCocotbSimulation, runVerilatorSimulation } from './eda-bridge/simulation'
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
+import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
 
 // ============================================================
 // 工具特定逻辑
@@ -280,73 +281,6 @@ function extractModuleInfo(code: string, filePath: string): ModuleInfo {
   }
 
   return { moduleName, ports, parameters }
-}
-
-// 递归收集 RTL 文件
-/** 排除的生成文件/目录名模式 */
-const EXCLUDED_DIRS = /^(obj_dir|__pycache__|node_modules|build|sim_build|04_verification)$/
-const EXCLUDED_FILES = /^(_+)?(synth_|output_|result_|merged_|combined_|tmp_|temp_)/i
-
-function collectRtlFiles(dir: string): string[] {
-  const out: string[] = []
-  let entries
-  try {
-    entries = readdirSync(dir, { withFileTypes: true })
-  } catch {
-    return out
-  }
-  for (const e of entries) {
-    if (e.name.startsWith('.') || EXCLUDED_DIRS.test(e.name)) continue
-    const full = join(dir, e.name)
-    if (e.isDirectory()) {
-      out.push(...collectRtlFiles(full))
-    } else if (/\.(v|sv)$/i.test(e.name) && !EXCLUDED_FILES.test(e.name)) {
-      out.push(full)
-    }
-  }
-  return out
-}
-
-interface RtlInputSet {
-  designFiles: string[]
-  simulationFiles: string[]
-  libraryFiles: string[]
-  physicalFiles: string[]
-  manifestPath?: string
-}
-
-function resolveRtlEntry(cwd: string, rtlDir: string, entry: string): string {
-  if (/^[A-Za-z]:[\\/]/.test(entry)) return resolve(entry)
-  return resolve(entry.replace(/\\/g, '/').startsWith('rtl/') ? cwd : rtlDir, entry)
-}
-
-function readRtlInputs(cwd: string): RtlInputSet {
-  const rtlDir = resolve(cwd, 'rtl')
-  const manifestPath = join(rtlDir, 'design.json')
-  if (!existsSync(manifestPath)) {
-    const macroView = /(?:^|[\\/])macros[\\/]|_(?:behavioral|blackbox|phy_template)\.v$/i
-    return { designFiles: collectRtlFiles(rtlDir).filter((file) => !macroView.test(file)), simulationFiles: [], libraryFiles: [], physicalFiles: [] }
-  }
-  const data = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown>
-  const entries = (key: string): string[] => Array.isArray(data[key])
-    ? (data[key] as unknown[]).filter((item): item is string => typeof item === 'string')
-    : []
-  let designEntries = entries('files')
-  const filelistName = typeof data.filelist === 'string' ? data.filelist : 'filelist.f'
-  const filelistPath = resolveRtlEntry(cwd, rtlDir, filelistName)
-  if (designEntries.length === 0 && existsSync(filelistPath)) {
-    designEntries = readFileSync(filelistPath, 'utf-8').split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0 && !/^(#|\/\/|\+|-)/.test(line))
-  }
-  const resolveEntries = (items: string[]) => [...new Set(items.map((item) => resolveRtlEntry(cwd, rtlDir, item)))]
-  return {
-    designFiles: resolveEntries(designEntries),
-    simulationFiles: resolveEntries(entries('simulationFiles')),
-    libraryFiles: resolveEntries(entries('libraryFiles')),
-    physicalFiles: resolveEntries(entries('physicalFiles')),
-    manifestPath
-  }
 }
 
 // ============================================================
@@ -1017,7 +951,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       libraryFiles: Type.Optional(Type.Array(Type.String(), { description: '宏/库 blackbox Verilog；使用 read_verilog -lib' })),
       topModule: Type.String({ description: '顶层模块名称' }),
       sdcFile: Type.Optional(Type.String({ description: 'SDC 文件路径' })),
-      targetLibrary: Type.Optional(Type.String({ description: 'Liberty .lib 工艺库路径；缺省使用本机 Nangate45 typical 开源库' })),
+      targetLibrary: Type.Optional(Type.String({ description: 'Liberty .lib 工艺库路径；缺省使用 MoonGlass 工艺库索引选定的默认库，未配置则执行通用综合' })),
       outputDir: Type.Optional(Type.String({ description: '输出目录，缺省为 imp/synthesis' })),
       outputName: Type.Optional(Type.String({ description: '输出文件名前缀，缺省为顶层模块名' })),
       effort: Type.Optional(Type.Union([

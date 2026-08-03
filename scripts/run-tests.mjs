@@ -1,0 +1,29 @@
+import { spawnSync } from 'node:child_process'
+
+const suites = {
+  core: [
+    'scripts/rtl-engine-smoke.mjs',
+    'scripts/pi-tools-smoke.mjs'
+  ],
+  integration: [
+    'scripts/design-browser-smoke.mjs',
+    'scripts/eda-gate-smoke.mjs',
+    'scripts/simulation-artifacts-smoke.mjs',
+    'scripts/synthesis-flow-smoke.mjs'
+  ]
+}
+
+const suiteName = process.argv[2] ?? 'core'
+const scripts = suites[suiteName]
+if (!scripts) {
+  console.error(`未知测试套件: ${suiteName}`)
+  process.exit(2)
+}
+
+for (const script of scripts) {
+  console.log(`\n[test] ${script}`)
+  const result = spawnSync(process.execPath, [script], { stdio: 'inherit', env: process.env })
+  if (result.status !== 0) process.exit(result.status ?? 1)
+}
+
+console.log(`\n[test] ${suiteName} suite passed (${scripts.length} scripts)`)

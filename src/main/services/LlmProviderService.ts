@@ -214,7 +214,7 @@ export class LlmProviderService implements MoonGlassService {
     const path = url.pathname + url.search
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'User-Agent': 'MoonGlass/0.3.0'
+      'User-Agent': `MoonGlass/${app.getVersion()}`
     }
     if (provider.protocol === 'anthropic') {
       headers['x-api-key'] = provider.apiKey

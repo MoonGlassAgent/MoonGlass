@@ -74,6 +74,14 @@ writeFileSync(join(resolvedTbdDir, 'docs', '03_design', 'clock_reset.md'), `# Cl
 
 The design uses a single core clock. Reset is asserted asynchronously and released synchronously through a two-stage synchronizer. All state elements return to documented reset values.
 `)
+writeFileSync(join(resolvedTbdDir, 'docs', '03_design', 'interface_spec.md'), `# Interface Specification
+
+The control block accepts a registered command interface and returns a valid response from the datapath. Signal direction, width, clock domain, and reset behavior are defined for every top-level port.
+`)
+writeFileSync(join(resolvedTbdDir, 'docs', '03_design', 'microarchitecture.md'), `# Microarchitecture
+
+The registered control block decodes commands and schedules datapath operations. The datapath captures operands, performs the selected operation, and registers the result before asserting response valid.
+`)
 
 let failures = 0
 function check(name, cond, detail = '') {

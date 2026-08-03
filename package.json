@@ -13,7 +13,9 @@
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
     "rebuild:node": "pnpm rebuild better-sqlite3",
     "typecheck": "pnpm -r typecheck",
-    "typecheck:root": "tsc --noEmit -p tsconfig.json"
+    "typecheck:root": "tsc --noEmit -p tsconfig.json",
+    "test": "node scripts/check-skills.mjs && node scripts/run-tests.mjs core",
+    "test:integration": "node scripts/run-tests.mjs integration"
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",

@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve } from 'node:path'
 import { elaborateDesign, type DesignDatabase } from '@moonglass/design-browser-engine'
+import { readRtlInputs } from '@moonglass/eda-bridge'
 import type { MoonGlassService } from '../core/lifecycle'
 
 export interface TopModuleCandidate {
@@ -14,17 +15,6 @@ export interface DesignSourceContent {
   file: string
   line: number
   content: string
-}
-
-function collectRtl(dir: string): string[] {
-  if (!existsSync(dir)) return []
-  const out: string[] = []
-  for (const entry of readdirSync(dir, { withFileTypes: true })) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) out.push(...collectRtl(full))
-    else if (/\.(v|sv)$/i.test(entry.name)) out.push(full)
-  }
-  return out
 }
 
 interface DesignManifest {
@@ -86,7 +76,7 @@ function parseFilelist(workspaceDir: string, rtlDir: string, manifest: DesignMan
   const filelistPath = resolveDesignPath(workspaceDir, rtlDir, filelistName)
   if (!existsSync(filelistPath)) {
     return {
-      files: collectRtl(rtlDir),
+      files: readRtlInputs(workspaceDir).designFiles,
       includeDirs,
       defines
     }
@@ -99,7 +89,7 @@ function parseFilelist(workspaceDir: string, rtlDir: string, manifest: DesignMan
     else if (line.startsWith('+define+')) defines.push(line.slice(8))
     else if (!line.startsWith('+')) files.push(resolveDesignPath(workspaceDir, rtlDir, line))
   }
-  return { files: files.length > 0 ? files : collectRtl(rtlDir), includeDirs, defines }
+  return { files: files.length > 0 ? files : readRtlInputs(workspaceDir).designFiles, includeDirs, defines }
 }
 
 export class DesignBrowserService implements MoonGlassService {
@@ -122,7 +112,7 @@ export class DesignBrowserService implements MoonGlassService {
   listTopModules(workspaceDir: string): TopModuleCandidate[] {
     const rtlDir = join(workspaceDir, 'rtl')
     const manifest = readManifest(rtlDir)
-    const modules = collectRtl(rtlDir).flatMap((file) => {
+    const modules = readRtlInputs(workspaceDir).designFiles.flatMap((file) => {
       const content = readFileSync(file, 'utf-8')
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/.*$/gm, '')

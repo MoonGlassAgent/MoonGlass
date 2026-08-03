@@ -253,7 +253,7 @@ export interface LlmProviderConfig {
   name: string
   protocol: LlmProviderProtocol
   baseUrl: string
-  /** 骨架期明文存本地 JSON（userData/moonglass/llm-providers.json）；TODO(Phase 2): 迁移 electron safeStorage 加密 */
+  /** 由主进程使用 Electron safeStorage 加密后存入 userData/moonglass/llm-providers.json */
   apiKey: string
   /** 用户可用的模型 ID 列表（可增删） */
   models: string[]

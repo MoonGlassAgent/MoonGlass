@@ -17,7 +17,7 @@
 
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, Phase } from '@shared/types'
@@ -227,6 +227,7 @@ export class AgentService implements MoonGlassService {
     copyEda('tool-runner.ts')
     copyEda('simulation.ts')
     copyEda('synthesis.ts')
+    copyEda('rtl-files.ts')
 
     // MoonGlass 使用隔离的 Pi 目录；内置技能必须复制并显式写入该目录的设置。
     const piAgentDir = this.piAgentDir()
@@ -395,7 +396,7 @@ scripts/
 - 仿真日志、机器可读结果、覆盖率与波形必须写入 \`verification/results/<module>/\`。
 - Cocotb 是默认验证执行方式：调用 \`run_simulation\` 时使用 \`mode="cocotb"\`、Python 模块名 \`testModule\` 和环境根目录 \`testDir\`；Windows 默认选 \`simulator="icarus"\`。除非兼容已有 C++ testbench，不得使用 cpp 模式或自行生成临时 runner 绕过工具。
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
-- 综合默认使用本机 Nangate45 / FreePDK45 typical 开源 Liberty；用户未指定其他库时不要省略默认库。
+- 综合优先使用 MoonGlass 工艺库索引选定的默认 Liberty；若没有配置默认库，允许通用综合，但须明确提示面积和时序不具备工艺意义。
 - MoonGlass 工艺库统一索引路径：${processLibraryIndex.replace(/\\/g, '/')}。涉及工艺选择、综合、时序或物理视图前，先读取该索引并核对 Liberty/LEF/GDS/Verilog 等可用文件；不得只凭目录名猜测文件。用户新增或下载工艺库后，以该索引为准。
 - 不得在根目录或旧式平铺目录创建阶段产出；不得虚构工具结果。
 `
@@ -466,7 +467,9 @@ argument-hint: "<模块名>"
       env: {
         ...cleanEnv,
         MOONGLASS_PROVIDERS_FILE: providerFile,
-        MOONGLASS_DEFAULT_LIBERTY: process.env.MOONGLASS_DEFAULT_LIBERTY,
+        ...(process.env.MOONGLASS_DEFAULT_LIBERTY
+          ? { MOONGLASS_DEFAULT_LIBERTY: process.env.MOONGLASS_DEFAULT_LIBERTY }
+          : {}),
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
         PI_CODING_AGENT_DIR: piAgentDir,
@@ -642,10 +645,7 @@ argument-hint: "<模块名>"
     const active = this.sessions.get(projectId)
 
     try {
-      const files = await Promise.resolve().then(() => {
-        const { readdirSync } = require('node:fs') as typeof import('node:fs')
-        return readdirSync(dir)
-      })
+      const files = readdirSync(dir)
 
       for (const f of files) {
         if (!f.endsWith('.jsonl') || f.endsWith('.bak.jsonl')) continue
@@ -654,7 +654,6 @@ argument-hint: "<模块名>"
         let messageCount = 0
         let label = name === 'main' ? '主会话' : name
         try {
-          const { readFileSync } = require('node:fs') as typeof import('node:fs')
           const content = readFileSync(filePath, 'utf-8')
           const lines = content.trim().split(/\n/).filter(l => l.trim().length > 0)
           for (const line of lines) {
