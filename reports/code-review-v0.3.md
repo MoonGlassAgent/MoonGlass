@@ -214,3 +214,69 @@ IPC 通道名只在 `src/shared/ipc-contract.ts` 定义，`src/main/ipc.ts` 与 
 MoonGlass v0.3 是一个**架构正确、核心功能真实可用**的中型 Electron 应用骨架：契约中心化、生命周期管理、pi Agent 嵌入、真实 EDA 门禁、提示词工程化均为加分项，且经本次审查实证与上游 pi 协议一致、类型检查全绿。
 
 当前不具备阻断性缺陷，但**测试空白与打包链路未验证**是发布前必须补上的两块短板；安全加固（R-03）与 CDC 门禁语义（R-04）建议在下一个版本周期优先处理。建议团队按 §5 顺序推进，并将 §3 问题表逐条转为 Issue 跟踪闭环。
+
+---
+
+## 7. 第二轮评审（基线 review-baseline-2026-08-03）
+
+> 评审日期：2026-08-03
+> 评审对象：提交 `24f39d5`（tag `review-baseline-2026-08-03`，分支 `feature/rtl-design-browser`）
+> 评审方式：基于基线全量复核 + 独立执行验证 + 补齐首轮未覆盖文件（`styles.css`、`ThemePicker`、`Sidebar`、`SettingsPage` 剩余、`ProcessLibrariesPage`、`main.tsx` 等）
+
+### 7.1 基线范围确认
+
+基线提交 `24f39d5` 相对首轮评审的 `0e9a14d` 变更 38 个文件、+2594/-265 行。经逐文件比对确认：**基线内容即首轮评审所读工作树**（此前未提交的开发改动被打包进基线），外加主题系统（CSS 变量 + ThemePicker + `workbench-texture.png`）与评审报告本身。基线没有包含任何问题修复。
+
+### 7.2 独立验证结果（本轮重新执行）
+
+| 检查项 | 结果 |
+|--------|------|
+| `pnpm typecheck`（4 个子包） | ✅ 通过 |
+| `pnpm typecheck:root`（main/preload/renderer） | ✅ 通过 |
+| `pnpm build` | ✅ 通过 |
+| 基线工作树 / tag | ✅ 干净 / 存在 |
+
+**构建产物体积告警**（本轮新观察）：
+
+- `out/renderer/assets/workbench-texture-*.png` **2,356 KB**
+- `out/renderer/assets/index-*.js` **978 KB**（详见 R-21 / R-23）
+
+### 7.3 首轮 20 条问题状态确认
+
+**结论：R-01 ~ R-20 在基线中全部仍存在，无一条被修复**（基线为评审快照，符合预期）。抽样复核证据：
+
+| ID | 复核证据 | 状态 |
+|----|---------|------|
+| R-01 | `package.json` 仍无 test 脚本；无 `.github/` | 🔴 仍存在 |
+| R-02 | `synthesis.ts:177` 与 `toolchains.json:18` 硬编码 `D:/Projects/rtl_lib/...` | 🔴 仍存在 |
+| R-03 | `index.ts:45-48` `setWindowOpenHandler` 无 scheme 校验；`index.ts:31` `sandbox: false` | 🔴 仍存在 |
+| R-04 | `PhaseEngine.ts:488` `cdcPassed` 返回 `passed=true + warning`，永不阻断 | 🟡 仍存在 |
+| R-05 | `ai/tools/moonglass/index.ts` stub 与 `ai/agents/index.ts` 死代码（RTL 阶段仍引用不存在的工具名） | 🟡 仍存在 |
+| R-06 | `collectRtlFiles` 三份拷贝：`PhaseEngine.ts:79`、`moonglass-tools.ts:290`、`DesignBrowserService` | 🟡 仍存在 |
+| R-07 | `gate_checks` 无清理策略 | 🟡 仍存在 |
+| R-09 | `README.md:25` 仍标综合为“🚧 桩（Phase 6）”，与已实现代码不符 | 🟡 仍存在 |
+| R-10 | `ChatPanel.tsx` `MessageBubble` 条件 hooks | 🟢 仍存在 |
+| R-11 | `LlmProviderService.ts:217` 硬编码 `User-Agent: MoonGlass/0.3.0` | 🟢 仍存在 |
+| R-12 | `PythonService.ts:32` `spawn('python')` 无候选回退 | 🟢 仍存在 |
+| R-14 | `AgentService.ts:628/639` 内联 `require('node:fs')` | 🟢 仍存在 |
+| R-15 | `lint.ts:41` `veribleAvailable` 模块级缓存 | 🟢 仍存在 |
+| R-16 | `WorkspacePage.tsx:221` `handleAdvance` 无 try/catch | 🟢 仍存在 |
+| R-17 | `ipc-contract.ts:128` `llm.test` JSDoc 冗余 | 🟢 仍存在 |
+| R-18 | `resources/moonglass/skills/` 与外部 skills 双份拷贝 | 🟢 仍存在 |
+
+（R-08、R-13、R-19、R-20 复核未变，同上轮描述。）
+
+### 7.4 本轮新增发现
+
+| ID | 位置 | 问题 | 影响 | 建议 |
+|----|------|------|------|------|
+| **R-21** | `src/renderer/assets/workbench-texture.png`（2.3 MB）；引用：`styles.css` 多个 `background-image: url(...)` | 512px 平铺纹理使用 2.3 MB PNG，随 renderer 产物整体打包 | 安装包体积 +~2.3 MB，首屏解码与 `background-attachment: fixed` 渲染开销 | 转 WebP/量化压缩（目标 ≤300 KB），或改用 CSS 渐变 / 内联噪声 SVG 替代 |
+| **R-22** | `src/renderer/styles.css` 主题实现：`.bg-blue-600 { ... !important }` 等全局 `!important` 覆盖 Tailwind 工具类（约 10 组） | 以 `!important` 全局劫持 Tailwind 类实现主题换色 | 后续任何组件使用 `bg-blue-600`（包括未来"警示/危险"等非主题语义）都会被主题色强制替换；`!important` 堆叠排障困难 | 改用 Tailwind v4 `@theme` / CSS 变量生成语义色（`--color-*`），或限定作用域选择器，消除全局 `!important` |
+| **R-23** | `out/renderer/assets/index-*.js` 978 KB | 单 bundle 过大（Prism 全量语言 + React + TanStack Router） | 首屏加载慢；未来路由增多更严重 | Prism 按需加载语言、路由级 code splitting（TanStack Router `route.lazy`） |
+| **R-24** | `SettingsPage.tsx` `EdaDetectSection` 的 `inferLegacyCategory` 兜底分支 | 兼容旧版主进程返回的检测项 | 说明主/渲染进程存在跨版本运行场景（升级期） | 保留即可；若可约束主/渲染同版本则删除该分支 |
+
+### 7.5 第二轮结论
+
+1. **基线可信**：`24f39d5` 内容与首轮评审对象一致，可放心作为后续修复工作的出发点；首轮 §3 全部 20 条问题 + 本轮 4 条新发现（R-21~R-24）即为待办全集。
+2. **修复优先级不变**：仍按 §5 顺序推进（测试/CI → 硬编码路径 → 安全加固 → CDC 门禁），新增 R-21（纹理体积）建议随视觉收尾一并处理，R-22（`!important` 主题）建议在主题系统扩展前重构。
+3. **发布前红线**（沿用首轮）：`pnpm dist` 打包验证 + 安装后 Agent/门禁/综合链路冒烟（R-08），以及 ABI 顺序（`rebuild:electron` ↔ `rebuild:node`，见 progress-report §3.1）。
