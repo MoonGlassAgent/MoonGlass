@@ -11,6 +11,7 @@ Use this canonical document layout:
 docs/
   01_project/project_charter.md
   02_requirements/product_requirements.md
+  02_requirements/module_specification.md
   02_requirements/requirements_traceability.md
   03_design/architecture.md
   03_design/microarchitecture.md
@@ -30,7 +31,7 @@ docs/
 - Preserve previous-stage documents. Update them deliberately; never silently
   replace them with a new interpretation.
 - Use stable IDs for requirements, interfaces, registers, tests, and decisions.
-- Keep `requirements_traceability.md` bidirectional and current.
+- Keep `requirements_traceability.md` bidirectional and current across requirement, specification, design, and verification IDs.
 - State assumptions, unresolved items, acceptance criteria, and source evidence.
 - Link related documents using relative paths.
 - Templates are available in `assets/templates/`; adapt them to the project

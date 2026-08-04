@@ -6,14 +6,14 @@
 
 import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-contract'
-import type { LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
+import type { IpLibraryImportInput, LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
 import { projectWorkspaceDir } from './core/paths'
 import { pathToFileURL } from 'node:url'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
-  const { projects, phaseEngine, python, eda, llm, agent, files, designBrowser, processLibraries } = services
+  const { projects, phaseEngine, python, eda, llm, agent, files, designBrowser, processLibraries, ipLibraries } = services
 
   // ==================== 项目 ====================
   ipcMain.handle(IPC.Project.List, () => projects.list())
@@ -62,6 +62,12 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     return projects.save(phaseEngine.rollback(project, to))
   })
 
+  ipcMain.handle(IPC.Phase.Enter, (_e, projectId: string, to: Phase) => {
+    const project = projects.get(projectId)
+    if (!project) return null
+    return projects.save(phaseEngine.enterPhase(project, to))
+  })
+
   ipcMain.handle(IPC.Phase.FastTrackSynthesis, (_e, projectId: string) => {
     const project = projects.get(projectId)
     if (!project) return null
@@ -87,9 +93,16 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     return results
   })
 
+  ipcMain.handle(IPC.Phase.AcknowledgeChange, (_e, projectId: string, phase: Phase, responseNote?: string) => {
+    const project = projects.get(projectId)
+    if (!project) return null
+    return projects.save(phaseEngine.acknowledgePhaseChange(project, phase, responseNote))
+  })
+
   // ==================== EDA ====================
   ipcMain.handle(IPC.Eda.DetectTools, () => eda.detectTools())
-  ipcMain.handle(IPC.Eda.InstallBundle, (_e, id: string) => eda.installBundle(id))
+  ipcMain.handle(IPC.Eda.InstallBundle, (_e, id: string) => eda.startInstallBundle(id))
+  ipcMain.handle(IPC.Eda.GetInstallStatus, (_e, id: string) => eda.getInstallStatus(id))
   ipcMain.handle(IPC.Eda.OpenInstallPage, async (_e, url: string) => {
     if (!/^https:\/\//i.test(url)) return false
     await shell.openExternal(url)
@@ -114,6 +127,23 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.ProcessLibrary.Remove, (_e, id: string) => processLibraries.remove(id))
   ipcMain.handle(IPC.ProcessLibrary.OpenFolder, async (_e, id: string) => {
     const record = processLibraries.get(id)
+    return record ? (await shell.openPath(record.path)) === '' : false
+  })
+
+  // ==================== IP 模板库 ====================
+  ipcMain.handle(IPC.IpLibrary.List, () => ipLibraries.list())
+  ipcMain.handle(IPC.IpLibrary.ChooseDirectory, async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender)
+    const result = owner
+      ? await dialog.showOpenDialog(owner, { title: '选择 IP 库目录', properties: ['openDirectory'] })
+      : await dialog.showOpenDialog({ title: '选择 IP 库目录', properties: ['openDirectory'] })
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
+  })
+  ipcMain.handle(IPC.IpLibrary.AddLocal, (_e, input: IpLibraryImportInput) => ipLibraries.addLocal(input))
+  ipcMain.handle(IPC.IpLibrary.Reindex, (_e, id: string) => ipLibraries.reindex(id))
+  ipcMain.handle(IPC.IpLibrary.Remove, (_e, id: string) => ipLibraries.remove(id))
+  ipcMain.handle(IPC.IpLibrary.OpenFolder, async (_e, id: string) => {
+    const record = await ipLibraries.get(id)
     return record ? (await shell.openPath(record.path)) === '' : false
   })
 

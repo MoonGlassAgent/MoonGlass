@@ -652,14 +652,20 @@ select {
 .message-user,
 .message-assistant,
 .message-tool {
-  max-width: min(82%, 840px);
   border: 1px solid var(--line);
   box-shadow: 0 5px 16px rgb(20 25 35 / 6%);
 }
 
 .message-user {
+  max-width: min(82%, 840px);
   border-color: var(--accent-border);
   box-shadow: 0 5px 16px rgb(20 25 35 / 7%);
+}
+
+.message-assistant,
+.message-tool {
+  width: 100%;
+  max-width: none;
 }
 
 .message-assistant {

@@ -7,10 +7,9 @@
 
 // ==================== 阶段定义 ====================
 
-/** 芯片开发 7 阶段 */
+/** 芯片开发 6 阶段 */
 export type Phase =
-  | 'REQ' // 需求定义 (Requirements)
-  | 'SPEC' // 规格定义 (Specification)
+  | 'REQ_SPEC' // 需求-规格定义 (Requirements & Specification)
   | 'ARCH' // 架构设计 (Architecture)
   | 'RTL' // RTL 开发 (RTL Implementation)
   | 'VERIF' // 验证完备 (Verification)
@@ -18,8 +17,7 @@ export type Phase =
   | 'SYNTH' // 综合实现 (Synthesis)
 
 export const PHASE_ORDER: readonly Phase[] = [
-  'REQ',
-  'SPEC',
+  'REQ_SPEC',
   'ARCH',
   'RTL',
   'VERIF',
@@ -28,8 +26,7 @@ export const PHASE_ORDER: readonly Phase[] = [
 ] as const
 
 export const PHASE_LABELS: Record<Phase, string> = {
-  REQ: '需求定义',
-  SPEC: '规格定义',
+  REQ_SPEC: '需求-规格定义',
   ARCH: '架构设计',
   RTL: 'RTL 开发',
   VERIF: '验证完备',
@@ -73,6 +70,21 @@ export interface AgentContext {
   lastActiveAt?: string
 }
 
+export type PhaseChangeNoticeStatus = 'pending' | 'responded'
+
+/** 阶段变更对后续阶段的影响通知；不删除后续阶段已有产物。 */
+export interface PhaseChangeNotice {
+  id: string
+  sourcePhase: Phase
+  reason: string
+  changedAt: string
+  /** 仅对已经完成并形成结果的后续阶段创建通知。 */
+  baselineCompletedAt: string
+  status: PhaseChangeNoticeStatus
+  respondedAt?: string
+  responseNote?: string
+}
+
 export interface PhaseState {
   status: PhaseStatus
   deliverables: Deliverable[]
@@ -83,6 +95,8 @@ export interface PhaseState {
   completedAt?: string
   skippedAt?: string
   skipReason?: string
+  /** 最近一次上游变更通知；pending 时阶段显示黄色感叹号。 */
+  changeNotice?: PhaseChangeNotice
 }
 
 export interface ChipProject {
@@ -183,6 +197,15 @@ export interface ToolInstallResult {
   path?: string
 }
 
+export interface ToolInstallJob {
+  id: string
+  status: 'idle' | 'running' | 'completed' | 'failed'
+  message: string
+  path?: string
+  startedAt?: string
+  finishedAt?: string
+}
+
 export interface WaveformOpenResult {
   ok: boolean
   viewer?: string
@@ -223,6 +246,61 @@ export interface OpenProcessLibrary {
   repository: string
   maturity: 'reference' | 'experimental' | 'research'
   installed: boolean
+}
+
+// ==================== IP 模板库管理 ====================
+
+export type IpLibrarySource = 'builtin' | 'local'
+
+export type IpLibraryStatus = 'ready' | 'missing' | 'indexing' | 'error'
+
+export type IpLibraryFileKind = 'rtl' | 'verification' | 'document' | 'constraint' | 'script' | 'metadata' | 'other'
+
+export interface IpLibraryFileSummary {
+  kind: IpLibraryFileKind
+  count: number
+  examples: string[]
+}
+
+export interface IpTemplateRecord {
+  id: string
+  libraryId: string
+  name: string
+  type: string
+  path: string
+  source: IpLibrarySource
+  status: 'ready' | 'error'
+  topModule?: string
+  summary?: string
+  metadataPath?: string
+  fileCount: number
+  files: IpLibraryFileSummary[]
+  rtlFiles: string[]
+  verificationFiles: string[]
+  documentFiles: string[]
+  constraintFiles: string[]
+  error?: string
+}
+
+export interface IpLibraryRecord {
+  id: string
+  name: string
+  type: string
+  path: string
+  source: IpLibrarySource
+  status: IpLibraryStatus
+  importedAt?: string
+  indexedAt?: string
+  ipCount: number
+  fileCount: number
+  ips: IpTemplateRecord[]
+  error?: string
+}
+
+export interface IpLibraryImportInput {
+  path: string
+  name: string
+  type: string
 }
 
 // ==================== Python 执行 ====================
@@ -315,6 +393,9 @@ export interface AgentUiMessage {
   role: 'user' | 'assistant' | 'tool'
   text: string
   toolName?: string
+  toolCallId?: string
+  /** 工具调用参数的格式化 JSON。 */
+  toolInput?: string
   isError?: boolean
   timestamp: number
   /** 模型的思考过程（reasoning content） */
@@ -327,7 +408,7 @@ export interface AgentUiMessage {
 export type AgentStreamEvent =
   | { type: 'text-delta'; delta: string }
   | { type: 'thinking-delta'; delta: string }
-  | { type: 'tool-start'; toolName: string; toolCallId: string }
+  | { type: 'tool-start'; toolName: string; toolCallId: string; input?: string }
   | { type: 'tool-end'; toolName: string; toolCallId: string; isError: boolean; output: string; decisionRequest?: AgentDecisionRequest }
   | { type: 'agent-start' }
   | { type: 'agent-settled' }
@@ -343,6 +424,8 @@ export interface AgentEventPayload {
 export interface AgentSessionInfo {
   projectId: string
   phase: Phase
+  /** 当前 Agent 会话名：main 为主会话，其余为平行会话 */
+  sessionName: string
   isStreaming: boolean
   /** 当前模型展示名，如 "deepseek / deepseek-chat"；未选择时为空串 */
   modelLabel: string

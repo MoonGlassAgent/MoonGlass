@@ -107,7 +107,8 @@ class DocumentRepositoryValidator:
 
         # 可选文档
         optional_docs = {
-            'docs/02_requirements/requirements_traceability.md': '需求追溯矩阵',
+            'docs/02_requirements/module_specification.md': '模块规格说明书',
+            'docs/02_requirements/requirements_traceability.md': '需求-规格追溯矩阵',
             'docs/03_design/register_map.md': '寄存器映射表',
             'docs/03_design/microarchitecture.md': '微架构设计',
             'docs/04_verification/test_plan.md': '测试计划'
@@ -176,7 +177,7 @@ class DocumentRepositoryValidator:
                 missing_revision_history.append(rel_path)
 
             # 检查审批签名（关键文档）
-            critical_docs = ['project_charter.md', 'product_requirements.md', 
+            critical_docs = ['project_charter.md', 'product_requirements.md', 'module_specification.md',
                            'architecture.md', 'verification_plan.md']
             if md_file.name in critical_docs:
                 has_approval = ('审批' in content or 

@@ -1,8 +1,8 @@
 /**
- * 每个项目当前选中模型的持久化存储
+ * 每个项目、每个会话选中模型的持久化存储
  *
  * 文件：userData/moonglass/agent-model-selections.json
- * 按 projectId 记录 { providerId, modelId }，切换阶段或重启后恢复。
+ * 按 projectId/sessionName 记录 { providerId, modelId }，切换会话或重启后恢复。
  */
 
 import { app } from 'electron'
@@ -16,6 +16,7 @@ interface ModelSelection {
 
 interface AgentModelStoreFile {
   selections: Record<string, ModelSelection>
+  activeSessions?: Record<string, string>
 }
 
 export class AgentModelStore {
@@ -23,6 +24,7 @@ export class AgentModelStore {
 
   private storePath = ''
   private selections = new Map<string, ModelSelection>()
+  private activeSessions = new Map<string, string>()
   private dirty = false
 
   start(): void {
@@ -40,9 +42,15 @@ export class AgentModelStore {
     if (!existsSync(this.storePath)) return
     try {
       const data = JSON.parse(readFileSync(this.storePath, 'utf-8')) as AgentModelStoreFile
-      for (const [projectId, selection] of Object.entries(data.selections ?? {})) {
+      for (const [key, selection] of Object.entries(data.selections ?? {})) {
         if (selection.providerId && selection.modelId) {
-          this.selections.set(projectId, selection)
+          // 兼容旧版按项目保存的选择：迁移为该项目主会话的选择。
+          this.selections.set(key.includes('::') ? key : this.key(key, 'main'), selection)
+        }
+      }
+      for (const [projectId, sessionName] of Object.entries(data.activeSessions ?? {})) {
+        if (sessionName && /^[a-zA-Z0-9_-]+$/.test(sessionName)) {
+          this.activeSessions.set(projectId, sessionName)
         }
       }
     } catch (err) {
@@ -53,26 +61,53 @@ export class AgentModelStore {
   persist(): void {
     if (!this.dirty) return
     const data: AgentModelStoreFile = {
-      selections: Object.fromEntries(this.selections)
+      selections: Object.fromEntries(this.selections),
+      activeSessions: Object.fromEntries(this.activeSessions)
     }
     writeFileSync(this.storePath, JSON.stringify(data, null, 2), 'utf-8')
     this.dirty = false
   }
 
-  get(projectId: string): ModelSelection | undefined {
-    return this.selections.get(projectId)
+  get(projectId: string, sessionName = 'main'): ModelSelection | undefined {
+    return this.selections.get(this.key(projectId, sessionName))
   }
 
-  set(projectId: string, providerId: string, modelId: string): void {
-    this.selections.set(projectId, { providerId, modelId })
+  set(projectId: string, sessionName: string, providerId: string, modelId: string): void {
+    this.selections.set(this.key(projectId, sessionName), { providerId, modelId })
     this.dirty = true
     this.persist()
   }
 
-  delete(projectId: string): void {
-    if (this.selections.delete(projectId)) {
+  delete(projectId: string, sessionName?: string): void {
+    const prefix = `${projectId}::`
+    const keys = sessionName ? [this.key(projectId, sessionName)] : [...this.selections.keys()].filter((key) => key.startsWith(prefix))
+    let changed = false
+    for (const key of keys) changed = this.selections.delete(key) || changed
+    if (changed) {
       this.dirty = true
       this.persist()
     }
+  }
+
+  getActiveSession(projectId: string): string | undefined {
+    return this.activeSessions.get(projectId)
+  }
+
+  setActiveSession(projectId: string, sessionName: string): void {
+    this.activeSessions.set(projectId, sessionName || 'main')
+    this.dirty = true
+    this.persist()
+  }
+
+  deleteProject(projectId: string): void {
+    this.delete(projectId)
+    if (this.activeSessions.delete(projectId)) {
+      this.dirty = true
+      this.persist()
+    }
+  }
+
+  private key(projectId: string, sessionName: string): string {
+    return `${projectId}::${sessionName || 'main'}`
   }
 }

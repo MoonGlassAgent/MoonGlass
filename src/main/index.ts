@@ -12,6 +12,7 @@ import { IPC } from '@shared/ipc-contract'
 import { createApplication } from './core/application'
 import { registerIpcHandlers } from './ipc'
 
+app.setName('MoonGlass')
 const services = createApplication()
 registerIpcHandlers(services)
 
@@ -23,7 +24,7 @@ function createMainWindow(): BrowserWindow {
     minHeight: 700,
     show: false,
     autoHideMenuBar: true,
-    title: 'MoonGlass',
+    title: 'MoonGlass ASIC Design Agent',
     icon: join(__dirname, '../../resources/moonglass/logo.png'),
     backgroundColor: '#f4f4f5',
     webPreferences: {
@@ -62,7 +63,7 @@ function createMainWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
-  electronApp.setAppUserModelId('com.moonglass.studio')
+  electronApp.setAppUserModelId('com.moonglass.asic-design-agent')
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

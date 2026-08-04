@@ -1,5 +1,5 @@
 /**
- * 7 阶段流程引擎（状态机 + 门禁规则）
+ * 6 阶段流程引擎（状态机 + 门禁规则）
  *
  * 依据规格书 §3.1 的阶段跳转规则定义。
  * Phase 3：门禁自动检查接入真实 EDA 工具（lint / yosys 可综合性），
@@ -17,6 +17,7 @@ import {
   type GateCheckResult,
   type GateRule,
   type Phase,
+  type PhaseChangeNotice,
   type PhaseState
 } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
@@ -25,8 +26,7 @@ import type { DbService } from './DbService.ts'
 
 /** 阶段跳转门禁规则表（规格书 §3.1） */
 export const GATE_RULES: readonly GateRule[] = [
-  { from: 'REQ', to: 'SPEC', precondition: '需求文档已建立', autoChecks: ['doc-completeness', 'rtm-exists'] },
-  { from: 'SPEC', to: 'ARCH', precondition: '需求定义可用 + RTM 可追溯', autoChecks: ['requirements-usable', 'rtm-complete'] },
+  { from: 'REQ_SPEC', to: 'ARCH', precondition: '需求、模块规格、接口规格与追溯矩阵可用于架构设计', autoChecks: ['requirements-usable', 'module-spec-usable', 'interface-spec-usable', 'rtm-complete'] },
   { from: 'ARCH', to: 'RTL', precondition: '架构、接口、模块划分与时钟复位方案可用', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
   { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
   { from: 'VERIF', to: 'QA', precondition: '覆盖率报告', autoChecks: ['line-coverage-gte-90', 'func-coverage-gte-80', 'sim-passed'] },
@@ -44,10 +44,10 @@ function inferCheckType(checkId: string): 'lint' | 'cdc' | 'rdc' | 'synthesis' |
   return 'custom'
 }
 const CHECK_NAMES: Record<string, string> = {
-  'doc-completeness': '需求文档已建立',
-  'rtm-exists': '需求追溯矩阵（RTM）存在',
   'requirements-usable': '需求定义可用于架构设计',
-  'rtm-complete': '需求追溯矩阵（RTM）完备',
+  'module-spec-usable': '模块规格可用于架构设计',
+  'interface-spec-usable': '接口规格可用于架构设计',
+  'rtm-complete': '需求-规格追溯矩阵完备',
   'interface-signals-nonempty': '接口信号清单非空',
   'module-partition-sane': '模块划分合理性',
   'block-diagram-parsable': '架构框图可解析',
@@ -130,7 +130,8 @@ function requireFiles(paths: string[], severity: GateCheckResult['severity'] = '
   }
 }
 
-const REQUIREMENT_ID = /\b(?:REQ(?:-[A-Z]+)?|FR|NFR|PERF|IF|SEC)[-_]?\d+\b/gi
+const REQUIREMENT_ID = /\b(?:REQ(?:-[A-Z]+)?|FR|F|NFR|PERF|P|IF|SEC)[-_]?\d+\b/gi
+const SPECIFICATION_ID = /\bSPEC(?:-[A-Z]+)?[-_]?\d+\b/gi
 
 function requirementIds(content: string): Set<string> {
   return new Set((content.match(REQUIREMENT_ID) ?? []).map((id) => id.toUpperCase().replace('_', '-')))
@@ -167,7 +168,7 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
       checkId,
       false,
       'error',
-      `RTM 不可用：\n• ${rtm.path}\n${rtm.issues.map((issue) => `  - ${issue}`).join('\n')}`
+      `需求-规格追溯矩阵不可用：\n• ${rtm.path}\n${rtm.issues.map((issue) => `  - ${issue}`).join('\n')}`
     )
   }
   const tableRows = rtm.content
@@ -177,7 +178,7 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
     .filter((cells) => !cells.every((cell) => /^:?-{3,}:?$/.test(cell)))
     .filter((cells) => !cells.some((cell) => /^(?:需求|requirement)\s*(?:id|编号)?$/i.test(cell)))
   if (tableRows.length === 0) {
-    return makeResult(checkId, false, 'error', 'RTM 未识别到有效的 Markdown 追溯表行')
+    return makeResult(checkId, false, 'error', '需求-规格追溯矩阵未识别到有效的 Markdown 表格行')
   }
 
   const requirements = inspectDocument(ctx, 'docs/02_requirements/product_requirements.md')
@@ -189,7 +190,19 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
       checkId,
       false,
       'error',
-      `RTM 缺少 ${missing.length} 个需求 ID 的追溯关系：${missing.slice(0, 12).join('、')}${missing.length > 12 ? '…' : ''}`
+      `需求-规格追溯矩阵缺少 ${missing.length} 个需求 ID 的追溯关系：${missing.slice(0, 12).join('、')}${missing.length > 12 ? '…' : ''}`
+    )
+  }
+  const rowsWithoutSpecification = tableRows.filter((cells) => {
+    const row = cells.join(' | ')
+    return requirementIds(row).size > 0 && (row.match(SPECIFICATION_ID) ?? []).length === 0
+  })
+  if (rowsWithoutSpecification.length > 0) {
+    return makeResult(
+      checkId,
+      false,
+      'error',
+      `需求-规格追溯矩阵有 ${rowsWithoutSpecification.length} 行缺少 SPEC-* 规格 ID 映射`
     )
   }
   return makeResult(
@@ -197,8 +210,8 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
     true,
     'error',
     requiredIds.size > 0
-      ? `通过：RTM 表格有效，${requiredIds.size} 个需求 ID 均可追溯`
-      : '通过：RTM 表格存在有效追溯内容；需求文档尚未采用标准 ID，不阻断进入架构阶段'
+      ? `通过：需求-规格追溯矩阵有效，${requiredIds.size} 个需求 ID 均已映射规格 ID`
+      : '通过：需求-规格追溯矩阵存在有效内容；需求文档尚未采用标准 ID，不阻断进入架构阶段'
   )
 }
 
@@ -440,11 +453,9 @@ async function cdcPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
 
 /** 检查器注册表：checkId → 真实检查实现；未注册的走「未接入」占位 */
 const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promise<GateCheckResult>> = {
-  'doc-completeness': requireFiles([
-    'docs/02_requirements/product_requirements.md'
-  ], 'warning'),
-  'rtm-exists': requireFiles(['docs/02_requirements/requirements_traceability.md'], 'warning'),
   'requirements-usable': requirementsUsable,
+  'module-spec-usable': requireFiles(['docs/02_requirements/module_specification.md']),
+  'interface-spec-usable': requireFiles(['docs/03_design/interface_spec.md']),
   'rtm-complete': rtmComplete,
   'interface-signals-nonempty': requireFiles(['docs/03_design/interface_spec.md']),
   'module-partition-sane': requireFiles(['docs/03_design/microarchitecture.md']),
@@ -469,9 +480,59 @@ export function createInitialPhases(): Record<Phase, PhaseState> {
     gateCheckResults: []
   })
   const phases = Object.fromEntries(PHASE_ORDER.map((p) => [p, blank()])) as Record<Phase, PhaseState>
-  phases.REQ.status = 'active'
-  phases.REQ.startedAt = new Date().toISOString()
+  phases.REQ_SPEC.status = 'active'
+  phases.REQ_SPEC.startedAt = new Date().toISOString()
   return phases
+}
+
+/** 将一次阶段修改传播给已完成的后续阶段；尚未开始的阶段不产生通知。 */
+export function markPhaseChanged(project: ChipProject, sourcePhase: Phase, reason: string): ChipProject {
+  const sourceIndex = PHASE_ORDER.indexOf(sourcePhase)
+  if (sourceIndex < 0) return project
+  const now = new Date().toISOString()
+  const changeId = randomUUID()
+  for (let index = sourceIndex + 1; index < PHASE_ORDER.length; index += 1) {
+    const phase = PHASE_ORDER[index]
+    const phaseState = project.phases[phase]
+    if (phaseState.status !== 'completed') continue
+    const notice: PhaseChangeNotice = {
+      id: changeId,
+      sourcePhase,
+      reason,
+      changedAt: now,
+      baselineCompletedAt: phaseState.completedAt ?? now,
+      status: 'pending'
+    }
+    phaseState.changeNotice = notice
+  }
+  project.updatedAt = now
+  return project
+}
+
+/** 双击阶段节点进入阶段，不清理任何后续阶段结果。 */
+export function enterPhase(project: ChipProject, to: Phase): ChipProject {
+  if (!PHASE_ORDER.includes(to)) throw new Error(`[phase-engine] 未知阶段: ${to}`)
+  const now = new Date().toISOString()
+  project.currentPhase = to
+  project.phases[to].status = 'active'
+  project.phases[to].startedAt = project.phases[to].startedAt ?? now
+  project.updatedAt = now
+  return project
+}
+
+/** 标记指定阶段已完成对上游变更的响应。 */
+export function acknowledgePhaseChange(project: ChipProject, phase: Phase, responseNote = '已完成变更响应'): ChipProject {
+  const notice = project.phases[phase].changeNotice
+  if (!notice || notice.status !== 'pending') return project
+  const now = new Date().toISOString()
+  project.phases[phase].changeNotice = {
+    ...notice,
+    status: 'responded',
+    respondedAt: now,
+    responseNote
+  }
+  project.updatedAt = now
+  return project
 }
 
 export class PhaseEngine implements MoonGlassService {
@@ -562,10 +623,22 @@ export class PhaseEngine implements MoonGlassService {
     return PHASE_ORDER.indexOf(to) === cur + 1
   }
 
+  enterPhase(project: ChipProject, to: Phase): ChipProject {
+    return enterPhase(project, to)
+  }
+
+  acknowledgePhaseChange(project: ChipProject, phase: Phase, responseNote?: string): ChipProject {
+    return acknowledgePhaseChange(project, phase, responseNote)
+  }
+
   /** 推进到下一阶段（就地修改 project，由调用方持久化） */
   advance(project: ChipProject, to: Phase): ChipProject {
     if (!this.canAdvance(project, to)) {
       throw new Error(`[phase-engine] 非法阶段跳转: ${project.currentPhase} → ${to}（仅支持逐阶段推进）`)
+    }
+    const pendingChange = project.phases[project.currentPhase].changeNotice
+    if (pendingChange?.status === 'pending') {
+      throw new Error(`[phase-engine] ${project.currentPhase} 仍有上游变更待响应，请先完成变更响应`)
     }
     const now = new Date().toISOString()
     project.phases[project.currentPhase].status = 'completed'

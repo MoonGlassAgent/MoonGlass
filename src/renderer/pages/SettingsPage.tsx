@@ -443,6 +443,39 @@ function EdaDetectSection(): React.JSX.Element {
 
   useEffect(() => { void detect() }, [])
 
+  useEffect(() => {
+    if (!installing) return
+    let closed = false
+    let polling = false
+    const poll = async (): Promise<void> => {
+      if (polling) return
+      polling = true
+      try {
+        const job = await window.moonglass.eda.getInstallStatus(installing)
+        if (closed) return
+        setInstallMessage(job.message)
+        if (job.status === 'completed' || job.status === 'failed') {
+          setInstalling(null)
+          await detect()
+        }
+      } catch (error) {
+        if (!closed) {
+          setInstallMessage(`安装状态读取失败：${error instanceof Error ? error.message : String(error)}`)
+          setInstalling(null)
+          await detect()
+        }
+      } finally {
+        polling = false
+      }
+    }
+    void poll()
+    const timer = window.setInterval(() => { void poll() }, 1000)
+    return () => {
+      closed = true
+      window.clearInterval(timer)
+    }
+  }, [installing])
+
   const installBundle = async (id: string): Promise<void> => {
     const prompt = id === 'python-cocotb'
       ? '将使用当前 Python 的 pip 安装或升级 Cocotb、cocotb-bus 和 cocotb-coverage，是否继续？'
@@ -451,10 +484,10 @@ function EdaDetectSection(): React.JSX.Element {
     setInstalling(id)
     setInstallMessage(id === 'python-cocotb' ? '正在通过 pip 安装 Cocotb…' : '正在下载并解压工具包，请保持网络连接…')
     try {
-      const result = await window.moonglass.eda.installBundle(id)
-      setInstallMessage(result.message)
-      if (result.ok) await detect()
-    } finally {
+      const job = await window.moonglass.eda.installBundle(id)
+      setInstallMessage(job.message)
+    } catch (error) {
+      setInstallMessage(`启动安装失败：${error instanceof Error ? error.message : String(error)}`)
       setInstalling(null)
     }
   }
@@ -559,8 +592,9 @@ function EdaDetectSection(): React.JSX.Element {
                     </button>
                   )}
                   {!tool.found && !tool.installId && tool.installUrl && (
-                    <button onClick={() => void window.moonglass.eda.openInstallPage(tool.installUrl!)} className="environment-link-button" title="打开官方下载页面">
+                    <button onClick={() => void window.moonglass.eda.openInstallPage(tool.installUrl!)} className="environment-install-button" title="打开官方安装指南">
                       <ExternalLink size={14} />
+                      安装指南
                     </button>
                   )}
                 </div>

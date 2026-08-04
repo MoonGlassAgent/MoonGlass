@@ -14,8 +14,8 @@ mkdirSync(SHOT_DIR, { recursive: true })
 const electronBin = join(process.cwd(), 'node_modules', 'electron', 'dist', 'electron.exe')
 
 const TEST_PROJECT_NAME = `E2E-History-${Date.now()}`
-const PROMPT_REQ = '用 5 个字介绍你自己'
-const PROMPT_SPEC = '用 5 个字说明你的角色'
+const PROMPT_REQ_SPEC = '完成需求-规格阶段最小交付：创建有有效内容的 product_requirements.md、module_specification.md、requirements_traceability.md 和 interface_spec.md；使用 REQ-FUNC-001 与 SPEC-FUNC-001 建立追溯关系。完成后用 5 个字介绍你自己'
+const PROMPT_ARCH = '用 5 个字说明你的角色'
 
 async function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms))
@@ -137,51 +137,51 @@ async function main() {
     console.log('[e2e] selected model:', modelValue)
     if (!modelValue) throw new Error('没有可用模型')
 
-    // 5. 在 REQ 阶段发送第一条消息
-    console.log('[e2e] sending REQ prompt...')
-    await sendPrompt(page, PROMPT_REQ)
-    await screenshot(page, '05-req-response')
+    // 5. 在 REQ_SPEC 阶段发送第一条消息
+    console.log('[e2e] sending REQ_SPEC prompt...')
+    await sendPrompt(page, PROMPT_REQ_SPEC)
+    await screenshot(page, '05-req-spec-response')
 
     const reqMessagesBefore = await getMessageTexts(page)
-    console.log('[e2e] REQ messages:', reqMessagesBefore)
+    console.log('[e2e] REQ_SPEC messages:', reqMessagesBefore)
 
-    // 6. 推进到 SPEC
-    console.log('[e2e] advancing to SPEC...')
-    await page.click('button:has-text("推进到 SPEC")')
+    // 6. 推进到 ARCH
+    console.log('[e2e] advancing to ARCH...')
+    await page.click('button:has-text("推进到 ARCH")')
     await waitForSessionReady(page)
-    await screenshot(page, '06-spec-entered')
+    await screenshot(page, '06-arch-entered')
 
-    // 7. 在 SPEC 阶段发送第二条消息
-    console.log('[e2e] sending SPEC prompt...')
-    await sendPrompt(page, PROMPT_SPEC)
-    await screenshot(page, '07-spec-response')
+    // 7. 在 ARCH 阶段发送第二条消息
+    console.log('[e2e] sending ARCH prompt...')
+    await sendPrompt(page, PROMPT_ARCH)
+    await screenshot(page, '07-arch-response')
 
     const specMessages = await getMessageTexts(page)
-    console.log('[e2e] SPEC messages:', specMessages)
+    console.log('[e2e] ARCH messages:', specMessages)
 
-    // 8. 回退到 REQ，验证 REQ 历史还在
-    console.log('[e2e] rolling back to REQ...')
-    await page.click('button:has-text("回退到 REQ")')
+    // 8. 回退到 REQ_SPEC，验证历史还在
+    console.log('[e2e] rolling back to REQ_SPEC...')
+    await page.click('button:has-text("回退到 REQ_SPEC")')
     await waitForSessionReady(page)
-    await screenshot(page, '08-req-after-rollback')
+    await screenshot(page, '08-req-spec-after-rollback')
 
     const reqMessagesAfter = await getMessageTexts(page)
-    console.log('[e2e] REQ messages after rollback:', reqMessagesAfter)
+    console.log('[e2e] REQ_SPEC messages after rollback:', reqMessagesAfter)
 
-    const reqHistoryPreserved = reqMessagesAfter.some((t) => t.includes(PROMPT_REQ))
-    console.log('[e2e] REQ history preserved:', reqHistoryPreserved)
+    const reqHistoryPreserved = reqMessagesAfter.some((t) => t.includes(PROMPT_REQ_SPEC))
+    console.log('[e2e] REQ_SPEC history preserved:', reqHistoryPreserved)
 
-    // 9. 再次推进到 SPEC，验证 SPEC 历史还在
-    console.log('[e2e] advancing to SPEC again...')
-    await page.click('button:has-text("推进到 SPEC")')
+    // 9. 再次推进到 ARCH，验证 ARCH 历史还在
+    console.log('[e2e] advancing to ARCH again...')
+    await page.click('button:has-text("推进到 ARCH")')
     await waitForSessionReady(page)
-    await screenshot(page, '09-spec-reentered')
+    await screenshot(page, '09-arch-reentered')
 
     const specMessagesAfter = await getMessageTexts(page)
-    console.log('[e2e] SPEC messages after re-enter:', specMessagesAfter)
+    console.log('[e2e] ARCH messages after re-enter:', specMessagesAfter)
 
-    const specHistoryPreserved = specMessagesAfter.some((t) => t.includes(PROMPT_SPEC))
-    console.log('[e2e] SPEC history preserved:', specHistoryPreserved)
+    const specHistoryPreserved = specMessagesAfter.some((t) => t.includes(PROMPT_ARCH))
+    console.log('[e2e] ARCH history preserved:', specHistoryPreserved)
 
     // 10. 结果
     const passed = reqHistoryPreserved && specHistoryPreserved

@@ -7,7 +7,7 @@
 
 import type { Database } from 'better-sqlite3'
 
-const CURRENT_VERSION = 1
+const CURRENT_VERSION = 2
 
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   {
@@ -17,7 +17,7 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
         id TEXT PRIMARY KEY,
         name TEXT NOT NULL,
         description TEXT,
-        current_phase TEXT NOT NULL DEFAULT 'REQ',
+        current_phase TEXT NOT NULL DEFAULT 'REQ_SPEC',
         eda_toolchain TEXT DEFAULT 'verilator-yosys',
         target_process TEXT,
         target_frequency REAL,
@@ -104,6 +104,16 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
         created_at INTEGER NOT NULL DEFAULT (unixepoch()),
         updated_at INTEGER NOT NULL DEFAULT (unixepoch())
       );
+    `
+  },
+  {
+    version: 2,
+    sql: `
+      UPDATE chip_projects SET current_phase = 'REQ_SPEC' WHERE current_phase IN ('REQ', 'SPEC');
+      UPDATE phase_deliverables SET phase = 'REQ_SPEC' WHERE phase IN ('REQ', 'SPEC');
+      UPDATE gate_checks SET phase = 'REQ_SPEC' WHERE phase IN ('REQ', 'SPEC');
+      UPDATE agent_conversations SET phase = 'REQ_SPEC' WHERE phase IN ('REQ', 'SPEC');
+      UPDATE prompt_templates SET phase = 'REQ_SPEC' WHERE phase IN ('REQ', 'SPEC');
     `
   }
 ]

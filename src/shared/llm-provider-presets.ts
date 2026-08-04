@@ -15,7 +15,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.openai.com/v1',
     apiKey: '',
-    models: ['gpt-5.2', 'gpt-5-mini', 'gpt-4.1'],
+    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
     enabled: false,
     builtin: true
   },
@@ -25,7 +25,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'anthropic',
     baseUrl: 'https://api.anthropic.com',
     apiKey: '',
-    models: ['claude-sonnet-4-5', 'claude-opus-4-1', 'claude-haiku-4-5'],
+    models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
     enabled: false,
     builtin: true
   },
@@ -35,7 +35,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     apiKey: '',
-    models: ['gemini-3.6-flash', 'gemini-3.1-pro-preview', 'gemini-2.5-pro'],
+    models: ['gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'],
     enabled: false,
     builtin: true
   },
@@ -45,7 +45,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.x.ai/v1',
     apiKey: '',
-    models: ['grok-4', 'grok-4-fast'],
+    models: ['grok-4.5'],
     enabled: false,
     builtin: true
   },
@@ -55,7 +55,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.mistral.ai/v1',
     apiKey: '',
-    models: ['mistral-large-latest', 'codestral-latest', 'ministral-8b-latest'],
+    models: ['mistral-large-latest', 'devstral-latest', 'mistral-medium-latest'],
     enabled: false,
     builtin: true
   },
@@ -65,7 +65,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://openrouter.ai/api/v1',
     apiKey: '',
-    models: ['openai/gpt-5.2', 'anthropic/claude-sonnet-4.5', 'google/gemini-3.1-pro-preview'],
+    models: ['openai/gpt-5.5', 'anthropic/claude-opus-4.7', 'google/gemini-3.1-pro-preview', 'x-ai/grok-4.5'],
     enabled: false,
     builtin: true
   },
@@ -85,7 +85,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.together.xyz/v1',
     apiKey: '',
-    models: ['openai/gpt-oss-120b', 'deepseek-ai/DeepSeek-V3.1', 'moonshotai/Kimi-K2-Instruct'],
+    models: ['deepseek-ai/DeepSeek-V4-Pro', 'moonshotai/Kimi-K2.6', 'MiniMaxAI/MiniMax-M2.7', 'Qwen/Qwen3.7-Max', 'zai-org/GLM-5.1', 'openai/gpt-oss-120b'],
     enabled: false,
     builtin: true
   },
@@ -95,7 +95,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.deepseek.com',
     apiKey: '',
-    models: [],
+    models: ['deepseek-v4-pro', 'deepseek-v4-flash'],
     enabled: false,
     builtin: true
   },
@@ -105,7 +105,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.moonshot.cn/v1',
     apiKey: '',
-    models: ['kimi-k2.6'],
+    models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'],
     enabled: false,
     builtin: true
   },
@@ -115,7 +115,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.kimi.com/coding/v1',
     apiKey: '',
-    models: ['kimi-k2.6'],
+    models: ['k3', 'k3-256k', 'kimi-for-coding', 'kimi-for-coding-highspeed'],
     enabled: false,
     builtin: true
   },
@@ -125,7 +125,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     apiKey: '',
-    models: ['glm-4.6', 'glm-4-air'],
+    models: ['glm-5.2', 'glm-5'],
     enabled: false,
     builtin: true
   },
@@ -135,7 +135,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.minimaxi.com/v1',
     apiKey: '',
-    models: ['MiniMax-M2'],
+    models: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
     enabled: false,
     builtin: true
   },
@@ -145,7 +145,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKey: '',
-    models: ['qwen-plus', 'qwen-max'],
+    models: ['qwen3.7-plus', 'qwen3.7-max', 'qwen3-coder-plus', 'qwen3-coder-next'],
     enabled: false,
     builtin: true
   },
@@ -155,7 +155,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.siliconflow.cn/v1',
     apiKey: '',
-    models: ['Pro/deepseek-ai/DeepSeek-V3', 'deepseek-ai/DeepSeek-V2.5', 'Qwen/Qwen2.5-72B-Instruct', 'THUDM/glm-4-9b-chat'],
+    models: ['deepseek-ai/DeepSeek-V4-Flash', 'moonshotai/Kimi-K2.6', 'Qwen/Qwen3.5-397B-A17B', 'zai-org/GLM-5', 'MiniMaxAI/MiniMax-M2.7'],
     enabled: false,
     builtin: true
   }

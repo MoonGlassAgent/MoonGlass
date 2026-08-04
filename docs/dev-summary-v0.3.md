@@ -30,9 +30,9 @@ MoonGlass（芯片开发全流程 AI 工作台，Electron 桌面应用）已完�
 | 模块 | 功能 | 状态 |
 |------|------|------|
 | 工程基座 | electron-vite + pnpm monorepo（根 + 3 子包）、Tailwind v4、zustand | ✅ |
-| 领域模型 | 7 阶段枚举、ChipProject、门禁规则表（规格书 §3.1）、IPC 契约（三端唯一来源） | ✅ |
+| 领域模型 | 6 阶段枚举、ChipProject、门禁规则表（规格书 §3.1）、IPC 契约（三端唯一来源） | ✅ |
 | 提示词系统 | `@moonglass/prompts`：全局/阶段/安全五段式 `buildSystemPrompt()` | ✅ |
-| 项目管理 | CRUD + 7 阶段状态机推进/回退（JSON 持久化） | ✅ |
+| 项目管理 | CRUD + 6 阶段状态机推进/回退（SQLite + JSON 备份） | ✅ |
 | LLM 配置 | 设置页「模型服务」：8 家预置 + 自定义，Key/URL/模型列表，JSON 持久化 | ✅ |
 | Agent 对话 | **真实 Pi Coding Agent（RPC 子进程）**：流式输出、工具调用（read/write/edit/bash）、思考过程折叠展示、模型切换/持久化、单会话跨阶段连续、可手动「新会话」 | ✅ |
 | 门禁系统 | 推进阶段时真实执行检查，**Error 级失败阻断**；lint（verible 优先/verilator 回退）、yosys 可综合性已接真；其余检查项 info 占位不阻塞 | ✅ |

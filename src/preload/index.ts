@@ -5,7 +5,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, type MoonGlassApi } from '@shared/ipc-contract'
-import type { AgentEventPayload, LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
+import type { AgentEventPayload, IpLibraryImportInput, LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 
 const api: MoonGlassApi = {
   project: {
@@ -18,14 +18,18 @@ const api: MoonGlassApi = {
   },
   phase: {
     advance: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Advance, projectId, to),
+    enter: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Enter, projectId, to),
     rollback: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Rollback, projectId, to),
     gateCheck: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.GateCheck, projectId, to),
+    acknowledgeChange: (projectId: string, phase: Phase, responseNote?: string) =>
+      ipcRenderer.invoke(IPC.Phase.AcknowledgeChange, projectId, phase, responseNote),
     fastTrackSynthesis: (projectId: string) => ipcRenderer.invoke(IPC.Phase.FastTrackSynthesis, projectId),
     completeProject: (projectId: string) => ipcRenderer.invoke(IPC.Phase.CompleteProject, projectId)
   },
   eda: {
     detectTools: () => ipcRenderer.invoke(IPC.Eda.DetectTools),
     installBundle: (id: string) => ipcRenderer.invoke(IPC.Eda.InstallBundle, id),
+    getInstallStatus: (id: string) => ipcRenderer.invoke(IPC.Eda.GetInstallStatus, id),
     openInstallPage: (url: string) => ipcRenderer.invoke(IPC.Eda.OpenInstallPage, url),
     openWaveform: (projectId: string, relPath: string) =>
       ipcRenderer.invoke(IPC.Eda.OpenWaveform, projectId, relPath)
@@ -38,6 +42,14 @@ const api: MoonGlassApi = {
     reindex: (id: string) => ipcRenderer.invoke(IPC.ProcessLibrary.Reindex, id),
     remove: (id: string) => ipcRenderer.invoke(IPC.ProcessLibrary.Remove, id),
     openFolder: (id: string) => ipcRenderer.invoke(IPC.ProcessLibrary.OpenFolder, id)
+  },
+  ipLibrary: {
+    list: () => ipcRenderer.invoke(IPC.IpLibrary.List),
+    chooseDirectory: () => ipcRenderer.invoke(IPC.IpLibrary.ChooseDirectory),
+    addLocal: (input: IpLibraryImportInput) => ipcRenderer.invoke(IPC.IpLibrary.AddLocal, input),
+    reindex: (id: string) => ipcRenderer.invoke(IPC.IpLibrary.Reindex, id),
+    remove: (id: string) => ipcRenderer.invoke(IPC.IpLibrary.Remove, id),
+    openFolder: (id: string) => ipcRenderer.invoke(IPC.IpLibrary.OpenFolder, id)
   },
   python: {
     run: (req: PythonRunRequest) => ipcRenderer.invoke(IPC.Python.Run, req)

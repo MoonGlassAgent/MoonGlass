@@ -100,7 +100,7 @@ chipforge-studio/
 │   ├── main/
 │   │   ├── ai/
 │   │   │   ├── agentSession/      # Agent 会话（复用 Cherry）
-│   │   │   ├── agents/            # [改造] 7 阶段专用 Agent
+│   │   │   ├── agents/            # [改造] 6 阶段专用 Agent
 │   │   │   ├── mcp/               # MCP 服务器（复用 Cherry）
 │   │   │   ├── runtime/
 │   │   │   │   └── chipforge/     # [新增] Pi Coding Agent 运行时
@@ -136,8 +136,7 @@ chipforge-studio/
 // src/shared/types/chipforge.ts
 
 type Phase = 
-  | 'REQ'   // 需求定义 (Requirements)
-  | 'SPEC'  // 规格定义 (Specification)
+  | 'REQ_SPEC' // 需求-规格定义 (Requirements & Specification)
   | 'ARCH'  // 架构设计 (Architecture)
   | 'RTL'   // RTL 开发 (RTL Implementation)
   | 'VERIF' // 验证完备 (Verification)
@@ -166,6 +165,16 @@ interface PhaseState {
   gateCheckResults: GateCheckResult[]
   startedAt?: Date
   completedAt?: Date
+  /** 上游阶段变更通知；pending 时保留产物并显示黄色感叹号 */
+  changeNotice?: {
+    id: string
+    sourcePhase: Phase
+    reason: string
+    changedAt: Date
+    status: 'pending' | 'responded'
+    respondedAt?: Date
+    responseNote?: string
+  }
 }
 
 interface Deliverable {
@@ -194,19 +203,21 @@ interface GateCheckResult {
 
 | 跳转 | 前置条件 | 自动检查项 |
 |------|----------|------------|
-| `REQ → SPEC` | 需求文档 ≥1 份 | 文档完整性、RTM（需求追溯矩阵）存在 |
-| `SPEC → ARCH` | 模块规格书 + 接口定义 | 接口信号清单非空、模块划分合理 |
+| `REQ_SPEC → ARCH` | 需求文档 + 模块规格书 + 接口定义 + 需求-规格矩阵 | 需求和规格可用、接口信号非空、需求-规格双向追溯完整 |
 | `ARCH → RTL` | 架构框图 + 信号清单 | 框图可解析、时钟/复位方案定义 |
 | `RTL → VERIF` | 可编译 RTL + 端口提取通过 | Verible Lint 零 Error、端口一致性检查 |
 | `VERIF → QA` | 覆盖率报告 | 行覆盖 ≥90%、功能覆盖 ≥80%、仿真通过 |
 | `QA → SYNTH` | Lint/CDC/代码审查通过 | Verible 零 Error、Yosys 可综合检查通过、CDC 检查通过 |
+| **双击任意阶段** | 用户主动进入 | 不清理、不锁定后续阶段产物；进入阶段后继续使用该阶段 Agent |
+| **阶段内容发生变更** | 工作区文件监听 | 仅已完成的后续阶段保留原有结果并显示黄色感叹号，记录变更来源、时间和原因；尚未开始或锁定的阶段不提示 |
+| **点击后续阶段黄色感叹号** | Agent 执行变更响应 | 按阶段完成架构/RTL/验证回归/QA 变更审查/综合重跑，完成后消除该阶段提醒 |
 | **任意 → 回退** | 用户确认 | 警告：后续阶段产出将被标记为废弃 |
 
 #### 状态机图示
 
 ```
 ┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐
-│ REQ │───→│SPEC │───→│ARCH │───→│ RTL │───→│VERIF│───→│ QA  │───→│SYNTH│
+│REQ_SPEC│───→│ARCH │───→│ RTL │───→│VERIF│───→│ QA  │───→│SYNTH│
 └─────┘    └─────┘    └─────┘    └─────┘    └─────┘    └─────┘    └─────┘
    ↑         ↑         ↑         ↑         ↑         ↑         ↑
    └─────────┴─────────┴─────────┴─────────┴─────────┴─────────┘
@@ -531,42 +542,24 @@ const GLOBAL_CONSTRAINTS: PromptTemplate = {
 // 阶段约束
 // ============================================================
 
-const REQ_PHASE_CONSTRAINTS: PromptTemplate = {
-  id: 'cf-phase-req-001',
+const REQ_SPEC_PHASE_CONSTRAINTS: PromptTemplate = {
+  id: 'cf-phase-req-spec-001',
   level: 'phase',
-  phase: 'REQ',
-  content: `当前处于【需求定义】阶段。
+  phase: 'REQ_SPEC',
+  content: `当前处于【需求-规格定义】阶段。
 
 你的任务是：
 1. 与用户深入沟通，提取功能需求、性能需求、接口需求
-2. 生成结构化的需求规格书（SRS）
-3. 建立需求追溯矩阵（RTM），确保每个需求可追踪
+2. 生成结构化需求文档和模块规格说明书
+3. 建立需求-规格追溯矩阵，确保每条需求映射到可验证规格
 4. 识别关键性能指标：频率、面积、功耗、带宽
-5. 输出格式必须为 Markdown，包含需求 ID、描述、优先级、验收标准
+5. 定义功能边界、接口信号、时序要求、寄存器和异常行为
+6. 输出格式必须为 Markdown，包含稳定的需求 ID、规格 ID、优先级和验收标准
 
 约束：
-- 禁止在此阶段讨论具体实现细节
 - 所有需求必须有明确的可验证标准
-- 必须区分功能需求与非功能需求`,
-  injectMode: 'prepend',
-  version: '1.0.0',
-  updatedAt: new Date('2026-07-28')
-}
-
-const SPEC_PHASE_CONSTRAINTS: PromptTemplate = {
-  id: 'cf-phase-spec-001',
-  level: 'phase',
-  phase: 'SPEC',
-  content: `当前处于【规格定义】阶段。
-
-你的任务是：
-1. 基于需求文档，定义模块级规格（Module Specification）
-2. 明确每个模块的功能边界、接口信号、时序要求
-3. 生成接口定义文档（IDD），包含信号名、位宽、方向、时钟域
-4. 定义模块间通信协议
-
-约束：
-- 必须引用 REQ 阶段的输出，确保规格覆盖所有需求
+- 必须区分功能需求与非功能需求
+- 每条规格必须在需求-规格矩阵中关联需求 ID
 - 接口信号必须使用标准命名规范
 - 必须定义每个信号的时钟域归属
 - 禁止在此阶段编写 RTL 代码`,
@@ -589,7 +582,7 @@ const ARCH_PHASE_CONSTRAINTS: PromptTemplate = {
 5. 生成架构设计文档（ADS）
 
 约束：
-- 必须基于 SPEC 阶段的接口定义
+- 必须基于需求-规格定义阶段冻结的接口与模块规格
 - 框图必须使用 Mermaid 或 ASCII 格式
 - 必须标注关键路径与瓶颈分析
 - 时钟域划分必须清晰标注`,
@@ -934,8 +927,8 @@ export const chipProjects = sqliteTable('chip_projects', {
   name: text('name').notNull(),
   description: text('description'),
   currentPhase: text('current_phase', { 
-    enum: ['REQ','SPEC','ARCH','RTL','VERIF','QA','SYNTH'] 
-  }).notNull().default('REQ'),
+    enum: ['REQ_SPEC','ARCH','RTL','VERIF','QA','SYNTH']
+  }).notNull().default('REQ_SPEC'),
 
   // 工程配置
   edaToolchain: text('eda_toolchain').default('verilator-yosys'),
@@ -964,7 +957,7 @@ export const phaseDeliverables = sqliteTable('phase_deliverables', {
   id: text('id').primaryKey(),
   projectId: text('project_id').references(() => chipProjects.id).notNull(),
   phase: text('phase', { 
-    enum: ['REQ','SPEC','ARCH','RTL','VERIF','QA','SYNTH'] 
+    enum: ['REQ_SPEC','ARCH','RTL','VERIF','QA','SYNTH']
   }).notNull(),
 
   type: text('type', { 
@@ -999,7 +992,7 @@ export const gateChecks = sqliteTable('gate_checks', {
   id: text('id').primaryKey(),
   projectId: text('project_id').references(() => chipProjects.id).notNull(),
   phase: text('phase', { 
-    enum: ['REQ','SPEC','ARCH','RTL','VERIF','QA','SYNTH'] 
+    enum: ['REQ_SPEC','ARCH','RTL','VERIF','QA','SYNTH']
   }).notNull(),
 
   checkId: text('check_id').notNull(),         // 检查项唯一标识
@@ -1050,7 +1043,7 @@ export const promptTemplates = sqliteTable('prompt_templates', {
   name: text('name').notNull(),
   level: text('level', { enum: ['global','phase','project','security'] }).notNull(),
   phase: text('phase', { 
-    enum: ['REQ','SPEC','ARCH','RTL','VERIF','QA','SYNTH'] 
+    enum: ['REQ_SPEC','ARCH','RTL','VERIF','QA','SYNTH']
   }),
   content: text('content').notNull(),
   injectMode: text('inject_mode', { enum: ['prepend','append','wrap'] }).default('prepend'),
@@ -1089,7 +1082,7 @@ Cherry Studio 原版：
 ChipForge 改造：
 ┌──────────┐
 │ [项目]   │  ← 芯片项目列表（替代"助手"）
-│ [阶段]   │  ← 当前项目的 7 阶段导航
+│ [阶段]   │  ← 当前项目的 6 阶段导航
 │ [IP库]   │  ← 内置 IP 模板库
 │ [脚本]   │  ← Python 脚本管理
 │ [知识库] │  ← 项目知识库（复用）
@@ -1103,7 +1096,7 @@ ChipForge 改造：
 - 芯片项目列表（类似 Cherry 的助手列表）
 - 每个项目卡片显示：
   - 项目名称 + 当前阶段标签
-  - 进度条（7 阶段完成度）
+  - 进度条（6 阶段完成度）
   - 最近更新时间
   - 质量门禁状态（绿/黄/红）
 - 点击项目 → 进入该项目的阶段工作区
@@ -1115,7 +1108,7 @@ ChipForge 改造：
 │  项目：DDR_BIST_Controller    阶段：RTL开发 ▶    模型：Claude-4-Sonnet    │
 ├──────────┬─────────────────────────────────────────────────────────────────┤
 │          │  阶段进度导航栏                                                 │
-│  项目    │  REQ ✓  →  SPEC ✓  →  ARCH ✓  →  [RTL ▶]  →  VERIF  →  QA   │
+│  项目    │  REQ_SPEC ✓  →  ARCH ✓  →  [RTL ▶]  →  VERIF  →  QA  → SYNTH │
 │  文件树  │         ↑ 已锁定    ↑ 已锁定    ↑ 进行中    ↓ 未解锁        │
 │          │                                                               │
 │  📁 rtl/ │  ┌─────────────────────────────────────────────────────────┐│
@@ -1177,7 +1170,7 @@ ChipForge 改造：
 | **Phase 0** | 1 周 | Fork Cherry Studio，清理无关功能（小程序、绘画、翻译面板），保留核心对话+文件+知识库骨架 | 可运行的基础框架 |
 | **Phase 1** | 2 周 | 新增芯片项目数据模型（Project/Phase/Deliverable），改造左侧导航为项目+阶段视图，实现基础阶段切换 | 项目创建+阶段导航可用 |
 | **Phase 2** | 2 周 | 集成 Pi Coding Agent（Python 子进程 + IPC），实现基础工具调用（文件读写、Shell、Python 执行） | Agent 可执行工具 |
-| **Phase 3** | 2 周 | 7 阶段流程引擎 + 门禁检查系统，提示词模板系统（全局+阶段+安全） | 阶段流转+约束生效 |
+| **Phase 3** | 2 周 | 6 阶段流程引擎 + 门禁检查系统，提示词模板系统（全局+阶段+安全） | 阶段流转+约束生效 |
 | **Phase 4** | 2 周 | 芯片专用工具集：Verible Lint、Yosys 可综合检查、接口提取、UVM TB 生成 | RTL 工具链可用 |
 | **Phase 5** | 2 周 | IP 模板库 + 知识库种子内容（导入 DDR_BIST、PSRAM、AXI 等模块） | 内置资产可用 |
 | **Phase 6** | 持续 | EDA 工具链深度集成（VCS/DC）、团队协作、CI/CD 对接、企业级功能 | 生产就绪 |
@@ -1208,7 +1201,7 @@ ChipForge 改造：
 | **AXI4 总线协议** | `resources/chipforge/ip-library/interface/` + AXI Agent 提示词 | IP 模板 + 约束提示词 |
 | **Verible Lint 经验** | `resources/chipforge/rules/verible_company_rules.txt` | 默认 Lint 规则文件 |
 | **NPU/端侧芯片架构** | `resources/chipforge/templates/npu_design_flow/` | 设计流程模板 |
-| **ASIC IP 全流程** | 7 阶段流程引擎默认配置 + 门禁检查项 | 系统默认配置 |
+| **ASIC IP 全流程** | 6 阶段流程引擎默认配置 + 门禁检查项 | 系统默认配置 |
 | **PSRAM 控制器** | `resources/chipforge/ip-library/memory/psram_controller.v` | 参考模板 |
 | **12nm/ODIO/PLL 经验** | `resources/chipforge/constraints/12nm_process.sdc` + 工艺约束模板 | 约束模板库 |
 | **小数分频器/PLL 缓调频** | `resources/chipforge/ip-library/clock/frac_divider.v` | 参考模板 |

@@ -40,11 +40,11 @@ check('数据库文件已创建', existsSync(join(fakeUserData, 'moonglass', 'mo
 
 const created = projectService.create({ name: 'DB_Smoke_Test', description: 'test' })
 check('创建项目成功', created.name === 'DB_Smoke_Test')
-check('初始阶段为 REQ', created.currentPhase === 'REQ')
+check('初始阶段为 REQ_SPEC', created.currentPhase === 'REQ_SPEC')
 
 // 2. 读取
 const fetched = projectService.get(created.id)
-check('读取项目成功', fetched?.id === created.id && fetched.phases.REQ.status === 'active')
+check('读取项目成功', fetched?.id === created.id && fetched.phases.REQ_SPEC.status === 'active')
 
 // 3. 列表
 const list = projectService.list()
@@ -55,12 +55,12 @@ const updated = projectService.update(created.id, { description: 'updated' })
 check('更新项目成功', updated?.description === 'updated')
 
 // 5. 阶段推进模拟（save）
-updated.currentPhase = 'SPEC'
-updated.phases.REQ.status = 'completed'
-updated.phases.SPEC.status = 'active'
+updated.currentPhase = 'ARCH'
+updated.phases.REQ_SPEC.status = 'completed'
+updated.phases.ARCH.status = 'active'
 projectService.save(updated)
 const afterAdvance = projectService.get(created.id)
-check('阶段推进已落库', afterAdvance?.currentPhase === 'SPEC' && afterAdvance.phases.REQ.status === 'completed')
+check('阶段推进已落库', afterAdvance?.currentPhase === 'ARCH' && afterAdvance.phases.REQ_SPEC.status === 'completed')
 
 // 6. 删除
 const deleted = projectService.delete(created.id)

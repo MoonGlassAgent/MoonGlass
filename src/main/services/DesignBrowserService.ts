@@ -20,6 +20,8 @@ export interface DesignSourceContent {
 interface DesignManifest {
   topModule?: string
   filelist?: string | string[]
+  /** 综合视图优先，避免 Design Browser 展开 SRAM 等行为模型。 */
+  filelistSyn?: string | string[]
   files?: string[]
   includeDirs?: string[]
   defines?: string[]
@@ -58,8 +60,9 @@ function parseFilelist(workspaceDir: string, rtlDir: string, manifest: DesignMan
   includeDirs: string[]
   defines: string[]
 } {
-  const manifestFiles = Array.isArray(manifest.filelist)
-    ? stringList(manifest.filelist)
+  const preferredFilelist = manifest.filelistSyn ?? manifest.filelist
+  const manifestFiles = Array.isArray(preferredFilelist)
+    ? stringList(preferredFilelist)
     : stringList(manifest.files)
   const includeDirs = stringList(manifest.includeDirs)
     .map((dir) => resolveDesignPath(workspaceDir, rtlDir, dir))
@@ -72,7 +75,7 @@ function parseFilelist(workspaceDir: string, rtlDir: string, manifest: DesignMan
     }
   }
 
-  const filelistName = typeof manifest.filelist === 'string' ? manifest.filelist : 'filelist.f'
+  const filelistName = typeof preferredFilelist === 'string' ? preferredFilelist : 'filelist.f'
   const filelistPath = resolveDesignPath(workspaceDir, rtlDir, filelistName)
   if (!existsSync(filelistPath)) {
     return {
@@ -112,25 +115,32 @@ export class DesignBrowserService implements MoonGlassService {
   listTopModules(workspaceDir: string): TopModuleCandidate[] {
     const rtlDir = join(workspaceDir, 'rtl')
     const manifest = readManifest(rtlDir)
-    const modules = readRtlInputs(workspaceDir).designFiles.flatMap((file) => {
+    const sources = readRtlInputs(workspaceDir).designFiles.map((file) => {
       const content = readFileSync(file, 'utf-8')
         .replace(/\/\*[\s\S]*?\*\//g, '')
         .replace(/\/\/.*$/gm, '')
-      return [...content.matchAll(/\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)/g)].map((match) => ({
-        name: match[1],
-        file: relative(workspaceDir, file),
-        content
-      }))
+      return { file, content }
     })
+    const modules = sources.flatMap(({ file, content }) =>
+      [...content.matchAll(/\bmodule\s+([A-Za-z_][A-Za-z0-9_$]*)/g)].map((match) => ({
+        name: match[1],
+        file: relative(workspaceDir, file)
+      }))
+    )
     const names = new Set(modules.map((module) => module.name))
     const instantiated = new Set<string>()
-    for (const owner of modules) {
-      for (const name of names) {
-        if (name === owner.name) continue
-        const instancePattern = new RegExp(
-          `\\b${regexEscape(name)}\\b\\s*(?:#\\s*\\([\\s\\S]{0,500}?\\)\\s*)?[A-Za-z_][A-Za-z0-9_$]*\\s*\\(`
-        )
-        if (instancePattern.test(owner.content)) instantiated.add(name)
+    if (names.size > 0) {
+      const moduleAlternation = [...names]
+        .sort((a, b) => b.length - a.length)
+        .map(regexEscape)
+        .join('|')
+      const instancePattern = new RegExp(
+        `\\b(${moduleAlternation})\\b\\s*(?:#\\s*\\([\\s\\S]{0,500}?\\)\\s*)?[A-Za-z_][A-Za-z0-9_$]*\\s*\\(`,
+        'g'
+      )
+      for (const source of sources) {
+        instancePattern.lastIndex = 0
+        for (const match of source.content.matchAll(instancePattern)) instantiated.add(match[1])
       }
     }
     const roots = new Set(modules.filter((module) => !instantiated.has(module.name)).map((module) => module.name))

@@ -44,5 +44,5 @@ pnpm typecheck   # 全 workspace tsc --noEmit
 - 注释与 UI 文案使用中文；标识符使用英文。
 - 未实现的能力统一 `throw new Error('NotImplemented: ...')`，并在注释中以
   `TODO(Phase N)` 标注对应规格书阶段，禁止静默返回假数据。
-- 芯片领域约定：7 阶段枚举 `Phase`（REQ/SPEC/ARCH/RTL/VERIF/QA/SYNTH）定义在
+- 芯片领域约定：6 阶段枚举 `Phase`（REQ_SPEC/ARCH/RTL/VERIF/QA/SYNTH）定义在
   `src/shared/types/moonglass.ts`，不得在其他位置重复定义。

@@ -6,6 +6,7 @@
  */
 
 import { useCallback, useEffect, useRef, useState } from 'react'
+import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
 import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponse } from '@shared/agent-interaction'
@@ -16,6 +17,8 @@ interface SessionInfo {
   file: string
   label: string
   messageCount: number
+  modelLabel: string
+  selectedModel: { providerId: string; modelId: string } | null
   isActive: boolean
 }
 
@@ -24,7 +27,7 @@ interface ChatPanelProps {
   phase: Phase
 }
 
-export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Element {
+export function SessionTabs({ projectId, onActivate }: { projectId: string; onActivate?: () => void }): React.JSX.Element {
   const { sessionInfo, createParallel, switchSession, closeSession } = useChatStore()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [showDialog, setShowDialog] = useState(false)
@@ -45,6 +48,7 @@ export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Ele
   }, [projectId, refresh, sessionInfo])
 
   const select = async (sessionName: string): Promise<void> => {
+    onActivate?.()
     if (busy || sessions.find((session) => session.name === sessionName)?.isActive) return
     setBusy(true)
     setError('')
@@ -65,6 +69,7 @@ export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Ele
     try {
       await createParallel(name.trim() || undefined)
       await refresh()
+      onActivate?.()
       setShowDialog(false)
       setName('review')
     } catch (reason) {
@@ -94,7 +99,7 @@ export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Ele
       {sessions.map((session) => (
         <span
           key={session.name}
-          title={`${session.label}，${session.messageCount} 条消息`}
+          title={`${session.label}，${session.messageCount} 条消息${session.modelLabel ? `，模型 ${session.modelLabel}` : '，尚未选择模型'}`}
           className={`flex max-w-48 shrink-0 items-center rounded-t border-x border-t text-xs ${
             session.isActive
               ? 'border-blue-300 bg-blue-50 font-medium text-blue-700'
@@ -108,6 +113,9 @@ export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Ele
             className="min-w-0 truncate px-3 py-1.5 disabled:opacity-50"
           >
             {session.name === 'main' ? '主会话' : session.label.replace(/\s*\([^)]*\)$/, '')}
+            <span className="ml-1 max-w-24 truncate text-[10px] font-normal opacity-60">
+              {session.modelLabel || '未选模型'}
+            </span>
           </button>
           {session.name !== 'main' && (
             <button
@@ -136,9 +144,9 @@ export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Ele
       </button>
       {error && !showDialog && <span className="shrink-0 text-xs text-red-600">{error}</span>}
 
-      {showDialog && (
+      {showDialog && createPortal((
         <div
-          className="fixed inset-0 z-50 flex items-center justify-center bg-black/30 p-4"
+          className="fixed inset-0 z-[200] flex items-center justify-center bg-black/30 p-4"
           onMouseDown={(event) => {
             if (event.target === event.currentTarget && !busy) setShowDialog(false)
           }}
@@ -183,7 +191,7 @@ export function SessionTabs({ projectId }: { projectId: string }): React.JSX.Ele
             </div>
           </div>
         </div>
-      )}
+      ), document.body)}
     </>
   )
 }
@@ -193,6 +201,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     sessionInfo,
     messages,
     streaming,
+    aborting,
     ensure,
     send,
     abort,
@@ -256,11 +265,22 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           <span className="text-sm font-medium text-zinc-700">
             🤖 {PHASE_LABELS[phase]}阶段 Agent
           </span>
+          {sessionInfo && (
+            <span className="text-xs text-zinc-400">
+              · {sessionInfo.sessionName === 'main' ? '主会话' : sessionInfo.sessionName}
+            </span>
+          )}
           {ensuring && <span className="text-xs text-zinc-400">会话启动中…</span>}
+          {!ensuring && (
+            <span className={`text-xs ${streaming ? 'text-amber-600' : 'text-emerald-600'}`}>
+              {streaming ? '运行中' : '已就绪'}
+            </span>
+          )}
 
         </div>
 
         <div className="flex items-center gap-2">
+          <span className="text-[11px] text-zinc-400">当前会话模型</span>
           <select
           value={sessionInfo?.selectedModel ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId]) : ''}
           onChange={(e) => {
@@ -313,7 +333,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
 
       {/* 输入区 */}
       <div className="chat-composer border-t border-zinc-200 p-3">
-        <div className="mx-auto flex max-w-3xl items-end gap-2">
+        <div className="flex w-full items-end gap-2">
           <textarea
             value={input}
             onChange={(e) => setInput(e.target.value)}
@@ -331,9 +351,10 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           {streaming ? (
             <button
               onClick={() => void abort()}
+              disabled={aborting}
               className="rounded border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
             >
-              中止
+              {aborting ? '正在中止…' : '中止'}
             </button>
           ) : (
             <button
@@ -362,21 +383,9 @@ function MessageBubble({
   onDecision: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
 }): React.JSX.Element {
   const thinkingRef = useRef<HTMLDetailsElement>(null)
-  const [thinkingOpen, setThinkingOpen] = useState(false)
-
-  useEffect(() => {
-    const el = thinkingRef.current
-    if (!el || msg.role !== 'assistant' || !msg.thinking) return
-
-    const observer = new IntersectionObserver(
-      ([entry]) => {
-        if (!entry.isIntersecting || entry.intersectionRatio < 0.3) setThinkingOpen(false)
-      },
-      { threshold: [0, 0.3] }
-    )
-    observer.observe(el)
-    return () => observer.disconnect()
-  }, [msg.role, msg.thinking, msg.id])
+  const [thinkingOpen, setThinkingOpen] = useState(true)
+  const [toolOpen, setToolOpen] = useState(true)
+  const time = new Date(msg.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
   if (msg.role === 'user') {
     const displayText = msg.decisionResponse
@@ -384,7 +393,8 @@ function MessageBubble({
       : msg.text
     return (
       <div className="message-user self-end rounded-lg bg-blue-600 px-3 py-2 text-sm whitespace-pre-wrap text-white">
-        {displayText}
+        <span className="block">{displayText}</span>
+        <span className="mt-1 block text-right text-[10px] text-blue-100">{time}</span>
       </div>
     )
   }
@@ -401,16 +411,32 @@ function MessageBubble({
       )
     }
     return (
-      <details className="message-tool rounded border border-zinc-200 bg-zinc-50 px-3 py-1.5 text-xs">
-        <summary className="cursor-pointer text-zinc-500">
+      <details
+        open={toolOpen}
+        onToggle={(event) => setToolOpen(event.currentTarget.open)}
+        className={`message-tool w-full rounded border px-3 py-1.5 text-xs ${msg.isError ? 'border-red-200 bg-red-50' : 'border-zinc-200 bg-zinc-50'}`}
+      >
+        <summary className="cursor-pointer text-zinc-600">
           🔧 工具调用：<span className="font-mono">{msg.toolName ?? 'tool'}</span>
           {msg.isError ? (
             <span className="ml-2 text-red-600">失败</span>
           ) : (
             <span className="ml-2 text-emerald-600">完成</span>
           )}
+          <span className="ml-2 text-[10px] text-zinc-400">{time}</span>
         </summary>
-        <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-zinc-600">{msg.text}</pre>
+        {msg.toolInput && (
+          <div className="mt-2 border-t border-zinc-200 pt-2">
+            <div className="mb-1 font-medium text-zinc-500">调用参数</div>
+            <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 font-mono text-zinc-700">{msg.toolInput}</pre>
+          </div>
+        )}
+        <div className="mt-2 border-t border-zinc-200 pt-2">
+          <div className={`mb-1 font-medium ${msg.isError ? 'text-red-600' : 'text-zinc-500'}`}>
+            {msg.isError ? '失败原因 / 工具输出' : '工具输出'}
+          </div>
+          <pre className={`max-h-56 overflow-auto whitespace-pre-wrap rounded bg-white p-2 ${msg.isError ? 'text-red-700' : 'text-zinc-700'}`}>{msg.text}</pre>
+        </div>
       </details>
     )
   }
@@ -424,6 +450,7 @@ function MessageBubble({
       }`}
     >
       {msg.text}
+      <span className="mt-1 block text-[10px] text-zinc-400">{time}</span>
       {msg.thinking && (
         <details
           ref={thinkingRef}

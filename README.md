@@ -1,6 +1,6 @@
-# MoonGlass — 芯片开发全流程 AI 工作台
+# MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台
 
-MoonGlass 是一个面向 ASIC/SoC 设计工程师的 AI 工作台：以 **7 阶段开发流程引擎**（REQ → SPEC → ARCH → RTL → VERIF → QA → SYNTH）为骨架，将 LLM Agent、提示词分层约束、Python 脚本引擎与 EDA 工具链（Verible / Yosys / Verilator …）整合进同一个桌面应用。
+MoonGlass 是一个面向 ASIC/SoC 设计工程师的 AI 工作台：以 **6 阶段开发流程引擎**（REQ_SPEC → ARCH → RTL → VERIF → QA → SYNTH）为骨架，将 LLM Agent、提示词分层约束、Python 脚本引擎与 EDA 工具链（Verible / Yosys / Verilator …）整合进同一个桌面应用。
 
 > 设计依据：[`ChipForge_Studio_Specification.md`](./ChipForge_Studio_Specification.md)
 
@@ -15,7 +15,7 @@ MoonGlass 在**架构思想**上借鉴了 [Cherry Studio](https://github.com/Che
 | monorepo 工程（electron-vite + pnpm workspace） | ✅ 可用 |
 | 核心领域类型（`src/shared/types`） | ✅ 完整定义 |
 | 提示词分层约束系统（`@moonglass/prompts`） | ✅ 完整实现 |
-| 项目 CRUD + 7 阶段状态机推进/回退（IPC 全链路） | ✅ 可用（JSON 文件存储） |
+| 项目 CRUD + 6 阶段状态机、双击进入与变更影响传播（IPC 全链路） | ✅ 可用（SQLite + JSON 备份） |
 | LLM Provider 配置与 Agent 对话闭环（Pi RPC） | ✅ 可用 |
 | EDA 工具探测与门禁检查（Lint / Yosys / 简单 CDC） | ✅ Phase 3 已接入 |
 | 工作区分栏 UI / 文件树 / 选项卡代码查看 / Prism 高亮 | ✅ Phase 4 已接入 |
@@ -23,7 +23,7 @@ MoonGlass 在**架构思想**上借鉴了 [Cherry Studio](https://github.com/Che
 | Agent 芯片专用工具集（lint / 综合 / 仿真 / CDC / 测试台生成） | ✅ 7 个工具已注册 |
 | RTL 解析与模板生成（`@moonglass/rtl-engine`） | ✅ Phase 4 已实现 |
 | 逻辑综合网表生成（`runLogicSynthesis`） | ✅ 已实现（Yosys，支持目标 Liberty 与通用综合） |
-| IP 模板库内容 | 🚧 占位（Phase 5） |
+| IP 模板库内容 | ✅ 支持内置/本地 IP 库索引，已有 `utility/axi_lite_timer` smoke 样例 |
 | 知识库（sqlite-vec RAG） | 🚧 占位（Phase 5） |
 | better-sqlite3 + drizzle 数据库接线 | ✅ 已实现（ProjectService + 门禁历史） |
 | Electron 打包分发（electron-builder） | ✅ 已配置，可生成安装包 |
@@ -35,6 +35,8 @@ pnpm install
 pnpm dev              # 开发模式（electron-vite，HMR）
 pnpm build            # 产物构建（out/）
 pnpm typecheck        # 全 workspace 类型检查
+pnpm smoke:ip-library # IP 库服务：内置库扫描 + 用户库导入索引冒烟
+pnpm smoke:axi-lite-timer # AXI-Lite Timer 样例 RTL lint + Icarus 仿真冒烟
 pnpm dist             # 打包安装包（dist/）
 
 # better-sqlite3 是原生模块：
@@ -58,9 +60,9 @@ pnpm dist             # 打包安装包（dist/）
 │   ├── main/         # Electron 主进程：core(lifecycle/application) services ai ipc
 │   ├── preload/      # contextBridge 类型化 API（window.moonglass）
 │   └── renderer/     # React 19 + TanStack Router + Tailwind v4：6 页面 + PhaseBoard
-└── resources/moonglass/  # IP 模板库骨架 / Verible 默认规则 / 工具链配置样例
+└── resources/moonglass/  # IP 模板库（含 axi_lite_timer 样例）/ Verible 默认规则 / 工具链配置样例
 ```
 
 ## 开发路线
 
-见规格书 §6。骨架之后的优先级：① LLM Provider + Agent 对话闭环 → ② 门禁检查接入真实 EDA 工具 → ③ IP 模板库内容导入 → ④ better-sqlite3 + drizzle 接线 → ⑤ 项目数据跟随工程目录迁移。
+见规格书 §6。骨架之后的优先级：① LLM Provider + Agent 对话闭环 → ② 门禁检查接入真实 EDA 工具 → ③ IP 模板库内容导入（已加入 `axi_lite_timer` 样例） → ④ better-sqlite3 + drizzle 接线 → ⑤ 项目数据跟随工程目录迁移。

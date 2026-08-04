@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os'
 
 const { runLint } = await import('../packages/eda-bridge/src/lint.ts')
 const { checkSynthesizability } = await import('../packages/eda-bridge/src/synthesis.ts')
-const { PhaseEngine } = await import('../src/main/services/PhaseEngine.ts')
+const { PhaseEngine, markPhaseChanged, enterPhase, acknowledgePhaseChange } = await import('../src/main/services/PhaseEngine.ts')
 
 const GOOD_V = `module counter (
   input  wire       i_clk,
@@ -136,11 +136,21 @@ const qaResults = await engine.runGateChecks(fakeProject('QA'), 'SYNTH', { works
 const yosysCheck = qaResults.find((r) => r.checkId === 'yosys-synthesizable')
 check('QA→SYNTH 坏文件 yosys 阻断', yosysCheck?.passed === false && engine.isBlocked(qaResults), yosysCheck?.message)
 
-const reqResults = await engine.runGateChecks(fakeProject('REQ'), 'SPEC', { workspaceDir: emptyDir })
+const reqResults = await engine.runGateChecks(fakeProject('REQ_SPEC'), 'ARCH', { workspaceDir: emptyDir })
 check(
-  'REQ 文档遗留项为警告且允许推进',
-  reqResults.every((result) => !result.passed && result.severity === 'warning') && !engine.isBlocked(reqResults)
+  'REQ_SPEC 文档缺失会阻断进入 ARCH',
+  reqResults.some((result) => !result.passed && result.severity === 'error') && engine.isBlocked(reqResults)
 )
+
+const reqSpecDir = join(root, 'req-spec-ready')
+mkdirSync(join(reqSpecDir, 'docs', '02_requirements'), { recursive: true })
+mkdirSync(join(reqSpecDir, 'docs', '03_design'), { recursive: true })
+writeFileSync(join(reqSpecDir, 'docs', '02_requirements', 'product_requirements.md'), '# 产品需求\n\nREQ-FUNC-001：计数器必须按时钟递增，并可通过复位清零。验收标准为连续十个周期计数结果正确。输入时钟必须稳定，复位信号有效期间输出保持为零，解除复位后的首个有效时钟沿开始计数。\n')
+writeFileSync(join(reqSpecDir, 'docs', '02_requirements', 'module_specification.md'), '# 模块规格\n\nSPEC-FUNC-001：计数器模块接收时钟与复位，输出单调递增计数值；复位后输出必须为零。关联 REQ-FUNC-001。计数宽度固定为八位，达到最大值后自然回绕，所有输出仅在有效时钟沿更新。\n')
+writeFileSync(join(reqSpecDir, 'docs', '02_requirements', 'requirements_traceability.md'), '# 需求-规格追溯矩阵\n\n| 需求 ID | 需求摘要 | 规格 ID | 状态 |\n|---|---|---|---|\n| REQ-FUNC-001 | 计数递增 | SPEC-FUNC-001 | 已定义 |\n')
+writeFileSync(join(reqSpecDir, 'docs', '03_design', 'interface_spec.md'), '# 接口规格\n\n| 信号 | 方向 | 位宽 | 时钟域 |\n|---|---|---|---|\n| i_clk | input | 1 | clk |\n| i_rst_n | input | 1 | clk |\n| o_count | output | 8 | clk |\n')
+const reqSpecResults = await engine.runGateChecks(fakeProject('REQ_SPEC'), 'ARCH', { workspaceDir: reqSpecDir })
+check('REQ_SPEC 完整交付物允许进入 ARCH', reqSpecResults.every((result) => result.passed), reqSpecResults.find((result) => !result.passed)?.message)
 
 const resolvedTbdResults = await engine.runGateChecks(
   fakeProject('ARCH'),
@@ -151,7 +161,7 @@ const resolvedTbdResults = await engine.runGateChecks(
 const fastTrackProject = {
   ...fakeProject('RTL'),
   phases: {
-    REQ: {}, SPEC: {}, ARCH: {},
+    REQ_SPEC: {}, ARCH: {},
     RTL: { status: 'active', gateCheckResults: [] },
     VERIF: { status: 'locked', gateCheckResults: [] },
     QA: { status: 'locked', gateCheckResults: [] },
@@ -172,6 +182,31 @@ check(
   fastTrackProject.phases.SYNTH.status === 'completed' &&
     fastTrackProject.phases.SYNTH.completedAt !== undefined
 )
+
+const phaseNames = ['REQ_SPEC', 'ARCH', 'RTL', 'VERIF', 'QA', 'SYNTH']
+const changeProject = {
+  currentPhase: 'ARCH',
+  phases: Object.fromEntries(phaseNames.map((phase) => [phase, {
+    status: phase === 'REQ_SPEC' || phase === 'RTL' || phase === 'VERIF'
+      ? 'completed'
+      : phase === 'ARCH' ? 'active' : 'locked',
+    deliverables: phase === 'RTL' ? [{ id: 'rtl-1' }] : [],
+    agentContext: { messageCount: 0 },
+    reviewStatus: 'approved',
+    gateCheckResults: []
+  }]))
+}
+markPhaseChanged(changeProject, 'ARCH', '接口规格新增一个握手信号')
+check('阶段修改不删除后续交付物', changeProject.phases.RTL.deliverables.length === 1)
+check('阶段修改只传播到已完成的后续阶段',
+  changeProject.phases.RTL.changeNotice?.status === 'pending' &&
+  changeProject.phases.VERIF.changeNotice?.status === 'pending' &&
+  changeProject.phases.QA.changeNotice === undefined &&
+  changeProject.phases.SYNTH.changeNotice === undefined)
+enterPhase(changeProject, 'RTL')
+check('双击进入阶段不清理其他后续结果', changeProject.currentPhase === 'RTL' && changeProject.phases.VERIF.status === 'completed')
+acknowledgePhaseChange(changeProject, 'RTL', '已完成 RTL 变更响应')
+check('后续阶段可单独完成变更响应', changeProject.phases.RTL.changeNotice?.status === 'responded' && changeProject.phases.VERIF.changeNotice?.status === 'pending')
 check(
   '已关闭的 TBD 追踪表不触发误报',
   resolvedTbdResults.every((result) => result.passed) && !engine.isBlocked(resolvedTbdResults),

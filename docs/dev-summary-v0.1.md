@@ -33,10 +33,10 @@ EDA 桥接桩代码。要求 `pnpm install → typecheck → build → dev` 全�
 ### 3.2 已真实可用的功能
 | 功能 | 位置 | 说明 |
 |------|------|------|
-| 提示词分层约束系统 | `packages/prompts` | 规格书 §3.3 完整实现：全局 + 7 阶段 + 安全约束模板，`buildSystemPrompt()` 五段式组装 |
+| 提示词分层约束系统 | `packages/prompts` | 规格书 §3.3 完整实现：全局 + 6 阶段 + 安全约束模板，`buildSystemPrompt()` 五段式组装 |
 | 核心领域类型 | `src/shared/types` | §3.1/§3.5 全量类型：Phase、ChipProject、PhaseState、Deliverable、GateCheckResult、ToolchainConfig 等 |
 | IPC 通道契约 | `src/shared/ipc-contract.ts` | 三端唯一契约源，preload 暴露类型化 `window.moonglass` |
-| 项目 CRUD + 阶段流转 | `ProjectService` / `PhaseEngine` | 7 阶段状态机推进/回退、§3.1 门禁规则表常量，IPC 全链路走通，JSON 持久化 |
+| 项目 CRUD + 阶段流转 | `ProjectService` / `PhaseEngine` | 6 阶段状态机推进/回退、§3.1 门禁规则表常量，IPC 全链路走通，JSON 持久化 |
 | Python 脚本引擎 | `PythonService` | spawn + 超时控制，脚本页可直接运行冒烟验证 |
 | EDA 工具探测 | `packages/eda-bridge/detect.ts` | PATH 扫描 verilator/yosys/verible 等并取版本，设置页一键探测 |
 | 骨架 UI | `src/renderer` | 侧边栏导航 + 6 页面（项目/工作区/IP库/脚本/知识库/设置）+ PhaseBoard 四态阶段看板 + ProjectCard 进度卡片 |
@@ -44,7 +44,7 @@ EDA 桥接桩代码。要求 `pnpm install → typecheck → build → dev` 全�
 ### 3.3 桩与占位（统一 `throw NotImplemented` + `TODO(Phase N)` 标注）
 - 芯片专用工具集注册表：§3.2 全部 15 个工具的名称/描述/inputSchema 已注册，handler 为桩
 - Lint / 可综合检查 / 仿真 / 逻辑综合（`eda-bridge`）、RTL 解析 / 模板生成（`rtl-engine`）
-- 7 阶段 Agent descriptor（§3.2 每阶段 Agent 的提示词 ID + 工具白名单已定义）
+- 6 阶段 Agent descriptor（§3.2 每阶段 Agent 的提示词 ID + 工具白名单已定义）
 - LLM Provider 接入、Agent 对话流式输出、MCP、向量知识库、波形查看、IP 库模板内容
 
 ## 4. 验证结果

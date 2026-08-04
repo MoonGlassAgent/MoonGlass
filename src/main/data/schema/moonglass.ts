@@ -9,14 +9,14 @@
 import { sqliteTable, text, integer, real } from 'drizzle-orm/sqlite-core'
 import type { Phase, PhaseState } from '@shared/types'
 
-const PHASE_ENUM = ['REQ', 'SPEC', 'ARCH', 'RTL', 'VERIF', 'QA', 'SYNTH'] as const
+const PHASE_ENUM = ['REQ_SPEC', 'ARCH', 'RTL', 'VERIF', 'QA', 'SYNTH'] as const
 
 // ==================== 芯片项目 ====================
 export const chipProjects = sqliteTable('chip_projects', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
-  currentPhase: text('current_phase', { enum: PHASE_ENUM }).notNull().default('REQ'),
+  currentPhase: text('current_phase', { enum: PHASE_ENUM }).notNull().default('REQ_SPEC'),
 
   // 工程配置
   edaToolchain: text('eda_toolchain').default('verilator-yosys'),

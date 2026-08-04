@@ -41,7 +41,19 @@ const PREFERRED_PROVIDER_ORDER = [
   'bailian'
 ] as const
 const RETIRED_PRESET_MODELS: Readonly<Record<string, readonly string[]>> = {
-  deepseek: ['deepseek-chat', 'deepseek-reasoner']
+  openai: ['gpt-5.2', 'gpt-5-mini', 'gpt-4.1'],
+  anthropic: ['claude-sonnet-4-5', 'claude-opus-4-1'],
+  'google-gemini': ['gemini-2.5-pro'],
+  xai: ['grok-4', 'grok-4-fast'],
+  mistral: ['codestral-latest', 'ministral-8b-latest'],
+  openrouter: ['openai/gpt-5.2', 'anthropic/claude-sonnet-4.5'],
+  together: ['deepseek-ai/DeepSeek-V3.1', 'moonshotai/Kimi-K2-Instruct'],
+  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+  'kimi-code': ['kimi-k2.6'],
+  glm: ['glm-4.6', 'glm-4-air'],
+  minimax: ['MiniMax-M2'],
+  bailian: ['qwen-plus', 'qwen-max'],
+  siliconflow: ['Pro/deepseek-ai/DeepSeek-V3', 'deepseek-ai/DeepSeek-V2.5', 'Qwen/Qwen2.5-72B-Instruct', 'THUDM/glm-4-9b-chat']
 }
 
 export class LlmProviderService implements MoonGlassService {
@@ -121,7 +133,7 @@ export class LlmProviderService implements MoonGlassService {
       } else if (existing.builtin) {
         // 预置更新只补充推荐模型；用户的 Key、URL、启用状态和自定义模型均保留。
         const retired = new Set(RETIRED_PRESET_MODELS[existing.id] ?? [])
-        const models = [...new Set([...existing.models, ...preset.models])].filter((model) => !retired.has(model))
+        const models = [...new Set([...preset.models, ...existing.models])].filter((model) => !retired.has(model))
         if (models.length !== existing.models.length || models.some((model, index) => model !== existing.models[index])) {
           this.providers.set(existing.id, { ...existing, models })
           dirty = true

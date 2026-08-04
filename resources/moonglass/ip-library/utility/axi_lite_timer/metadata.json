@@ -1,0 +1,20 @@
+{
+  "id": "utility.axi_lite_timer",
+  "name": "AXI-Lite Timer",
+  "category": "utility",
+  "version": "0.1.0",
+  "language": "SystemVerilog",
+  "topModule": "axi_lite_timer",
+  "bus": "AXI-Lite",
+  "status": "smoke_verified",
+  "summary": "带 prescaler、auto-reload 和 W1C 中断状态位的 32-bit AXI-Lite 定时器样例。",
+  "sourceFiles": [
+    "rtl/axi_lite_timer.sv"
+  ],
+  "verificationFiles": [
+    "verification/tb_axi_lite_timer.sv"
+  ],
+  "qualityEvidence": [
+    "scripts/axi-lite-timer-smoke.mjs"
+  ]
+}

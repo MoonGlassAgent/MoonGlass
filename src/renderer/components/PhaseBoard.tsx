@@ -1,8 +1,8 @@
 /**
  * 阶段看板（规格书 §5.4）
  *
- * 7 个阶段节点横向排列，四态样式：
- *   locked(灰) / active(蓝) / completed(绿) / blocked(红)
+ * 6 个阶段节点横向排列，阶段节点支持双击进入；上游变更会在后续阶段显示黄色感叹号。
+ *   locked(灰) / active(蓝) / completed(绿) / blocked(红) / change-pending(黄)
  * 推进/回退按钮 + 门禁检查结果展示（Phase 3：Error 级失败阻断推进）。
  */
 
@@ -38,22 +38,26 @@ export interface GatePanelData {
 
 interface PhaseBoardProps {
   project: ChipProject
+  onEnterPhase?: (to: Phase) => void
   onAdvance?: (to: Phase) => void
   onRollback?: (to: Phase) => void
   onFastTrackSynthesis?: () => void
   onCompleteProject?: () => void
   onFixGateIssues?: (phase: Phase, results: GateCheckResult[]) => void
+  onRespondChange?: (phase: Phase) => void
   /** 最近一次推进尝试的门禁结果（含被阻断的情况） */
   gate?: GatePanelData | null
 }
 
 export function PhaseBoard({
   project,
+  onEnterPhase,
   onAdvance,
   onRollback,
   onFastTrackSynthesis,
   onCompleteProject,
   onFixGateIssues,
+  onRespondChange,
   gate
 }: PhaseBoardProps): React.JSX.Element {
   const currentIdx = PHASE_ORDER.indexOf(project.currentPhase)
@@ -61,24 +65,44 @@ export function PhaseBoard({
   const prevPhase = PHASE_ORDER[currentIdx - 1] as Phase | undefined
 
   return (
-    <div className="flex flex-col gap-2">
+    <div className="relative z-40 flex flex-col gap-2">
       <div className="flex items-center gap-1">
         {PHASE_ORDER.map((phase, idx) => {
-          const status = project.phases[phase].status
+          const phaseState = project.phases[phase]
+          const status = phaseState.status
           const isCurrent = phase === project.currentPhase
-          const unresolved = project.phases[phase].gateCheckResults.filter((result) => !result.passed)
+          const unresolved = phaseState.gateCheckResults.filter((result) => !result.passed)
+          const changePending = phaseState.changeNotice?.status === 'pending'
+          const changeNotice = phaseState.changeNotice
           return (
             <div key={phase} className="flex items-center gap-1">
               {idx > 0 && <span className="text-zinc-400">→</span>}
               <div
-                title={`${PHASE_LABELS[phase]} — ${status}\n交付物: ${project.phases[phase].deliverables.length} 项`}
-                className={`flex items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${STATUS_STYLES[status]} ${
+                title={`${PHASE_LABELS[phase]} — ${status}\n交付物: ${phaseState.deliverables.length} 项\n双击进入阶段`}
+                onDoubleClick={() => onEnterPhase?.(phase)}
+                className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                  changePending ? 'border-yellow-400 bg-yellow-50 text-yellow-800' : STATUS_STYLES[status]
+                } ${
                   isCurrent ? `ring-1 ${status === 'completed' ? 'ring-emerald-400' : 'ring-blue-400'}` : ''
                 }`}
               >
-                <span className={`h-2 w-2 rounded-full ${STATUS_DOTS[status]}`} />
+                <span className={`h-2 w-2 rounded-full ${changePending ? 'bg-yellow-500' : STATUS_DOTS[status]}`} />
                 <span className="font-medium">{phase}</span>
                 <span className="text-xs opacity-70">{PHASE_LABELS[phase]}</span>
+                {changePending && changeNotice && (
+                  <button
+                    type="button"
+                    aria-label={`${PHASE_LABELS[phase]}有来自${PHASE_LABELS[changeNotice.sourcePhase]}的变更待响应`}
+                    title={`来自${PHASE_LABELS[changeNotice.sourcePhase]}的变更待响应：${changeNotice.reason}`}
+                    onClick={(event) => {
+                      event.stopPropagation()
+                      onRespondChange?.(phase)
+                    }}
+                    className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-yellow-400 text-[11px] font-bold leading-none text-yellow-950 outline-none ring-yellow-500 focus:ring-2"
+                  >
+                    !
+                  </button>
+                )}
                 {unresolved.length > 0 && (
                   <span className="group/issues relative">
                     <button
@@ -90,7 +114,7 @@ export function PhaseBoard({
                     </button>
                     <span
                       role="tooltip"
-                      className={`pointer-events-none invisible absolute top-full z-50 w-96 max-w-[calc(100vw-2rem)] pt-2 opacity-0 transition-opacity group-hover/issues:pointer-events-auto group-hover/issues:visible group-hover/issues:opacity-100 group-focus-within/issues:pointer-events-auto group-focus-within/issues:visible group-focus-within/issues:opacity-100 ${
+                      className={`pointer-events-none invisible absolute top-full z-[100] w-96 max-w-[calc(100vw-2rem)] pt-2 opacity-0 transition-opacity group-hover/issues:pointer-events-auto group-hover/issues:visible group-hover/issues:opacity-100 group-focus-within/issues:pointer-events-auto group-focus-within/issues:visible group-focus-within/issues:opacity-100 ${
                         idx < PHASE_ORDER.length / 2 ? 'left-0' : 'right-0'
                       }`}
                     >

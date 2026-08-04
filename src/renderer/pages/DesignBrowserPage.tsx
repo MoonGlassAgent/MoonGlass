@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
+import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import type {
   DesignCell,
   DesignDatabase,
@@ -76,38 +77,62 @@ function ColumnResizeHandle({
 function HierarchyNode({
   node,
   selected,
+  expandedPaths,
+  onToggle,
   onSelect,
   onOpenDefinition
 }: {
   node: DesignInstance
   selected: string
+  expandedPaths: Set<string>
+  onToggle: (path: string) => void
   onSelect: (node: DesignInstance) => void
   onOpenDefinition: (node: DesignInstance) => void
 }): React.JSX.Element {
+  const hasChildren = node.children.length > 0
+  const expanded = expandedPaths.has(node.path)
   return (
     <div>
-      <button
-        type="button"
-        onClick={() => onSelect(node)}
-        onDoubleClick={(event) => {
-          event.stopPropagation()
-          onOpenDefinition(node)
-        }}
+      <div
         className={`flex w-full items-center gap-2 px-2 py-1 text-left text-xs ${
           selected === node.path ? 'bg-blue-50 text-blue-700' : 'text-zinc-700 hover:bg-zinc-100'
         }`}
       >
-        <span className="text-zinc-400">{node.children.length > 0 ? '▾' : '·'}</span>
-        <span className="truncate font-medium">{node.name}</span>
-        <span className="ml-auto truncate text-zinc-400">{node.module}</span>
-      </button>
-      {node.children.length > 0 && (
+        {hasChildren ? (
+          <button
+            type="button"
+            onClick={() => onToggle(node.path)}
+            className="flex h-4 w-4 shrink-0 items-center justify-center text-zinc-500 hover:text-blue-700"
+            aria-label={expanded ? `收起 ${node.name}` : `展开 ${node.name}`}
+            title={expanded ? '收起' : '展开'}
+          >
+            {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
+          </button>
+        ) : (
+          <span className="flex h-4 w-4 shrink-0 items-center justify-center text-zinc-300">·</span>
+        )}
+        <button
+          type="button"
+          onClick={() => onSelect(node)}
+          onDoubleClick={(event) => {
+            event.stopPropagation()
+            onOpenDefinition(node)
+          }}
+          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+        >
+          <span className="truncate font-medium">{node.name}</span>
+          <span className="ml-auto truncate text-zinc-400">{node.module}</span>
+        </button>
+      </div>
+      {hasChildren && expanded && (
         <div className="ml-3 border-l border-zinc-200 pl-1">
           {node.children.map((child) => (
             <HierarchyNode
               key={child.path}
               node={child}
               selected={selected}
+              expandedPaths={expandedPaths}
+              onToggle={onToggle}
               onSelect={onSelect}
               onOpenDefinition={onOpenDefinition}
             />
@@ -164,6 +189,7 @@ export function DesignBrowserPage(): React.JSX.Element {
   const [top, setTop] = useState('')
   const [database, setDatabase] = useState<DesignDatabase | null>(null)
   const [selectedPath, setSelectedPath] = useState('')
+  const [expandedPaths, setExpandedPaths] = useState<Set<string>>(() => new Set())
   const [selectedModuleName, setSelectedModuleName] = useState('')
   const [selectedTrace, setSelectedTrace] = useState<DesignSignalTrace | null>(null)
   const [selectedCell, setSelectedCell] = useState<DesignCell | null>(null)
@@ -189,6 +215,29 @@ export function DesignBrowserPage(): React.JSX.Element {
   useEffect(() => {
     window.localStorage.setItem('moonglass.designBrowser.inspectorWidth', String(inspectorWidth))
   }, [inspectorWidth])
+  useEffect(() => {
+    if (database) setExpandedPaths(new Set([database.hierarchy.path]))
+  }, [database])
+
+  const toggleHierarchy = (path: string): void => {
+    setExpandedPaths((current) => {
+      const next = new Set(current)
+      if (next.has(path)) next.delete(path)
+      else next.add(path)
+      return next
+    })
+  }
+
+  const expandAllHierarchy = (): void => {
+    if (!database) return
+    const paths = new Set<string>()
+    const visit = (node: DesignInstance): void => {
+      if (node.children.length > 0) paths.add(node.path)
+      node.children.forEach(visit)
+    }
+    visit(database.hierarchy)
+    setExpandedPaths(paths)
+  }
 
   useEffect(() => {
     void Promise.all([
@@ -201,7 +250,12 @@ export function DesignBrowserPage(): React.JSX.Element {
       const preferred = candidates.find((candidate) => candidate.recommended)
       const initialTop = preferred?.name ?? cached?.topModule ?? candidates[0]?.name ?? ''
       setTop(initialTop)
-      if (preferred) {
+      if (cached && (!preferred || cached.topModule === preferred.name)) {
+        setDatabase(cached)
+        setSelectedPath(cached.hierarchy.path)
+        setSelectedModuleName(cached.topModule)
+        void showSource(cached.hierarchy.source)
+      } else if (preferred) {
         setLoading(true)
         void window.moonglass.designBrowser.elaborate(projectId, preferred.name)
           .then((result) => {
@@ -212,10 +266,6 @@ export function DesignBrowserPage(): React.JSX.Element {
           })
           .catch((reason) => setError(reason instanceof Error ? reason.message : String(reason)))
           .finally(() => setLoading(false))
-      } else if (cached) {
-        setDatabase(cached)
-        setSelectedPath(cached.hierarchy.path)
-        setSelectedModuleName(cached.topModule)
       }
     }).catch((reason) => setError(String(reason)))
   }, [projectId])
@@ -376,13 +426,35 @@ export function DesignBrowserPage(): React.JSX.Element {
           }}
         >
           <aside className="min-h-0 overflow-auto border-r border-zinc-300 bg-white">
-            <div className="sticky top-0 border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-semibold text-zinc-600">
-              DESIGN HIERARCHY
+            <div className="sticky top-0 z-10 flex items-center border-b border-zinc-200 bg-zinc-50 px-3 py-2 text-xs font-semibold text-zinc-600">
+              <span>DESIGN HIERARCHY</span>
+              <span className="ml-auto flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={expandAllHierarchy}
+                  className="flex h-6 w-6 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200 hover:text-blue-700"
+                  title="全部展开"
+                  aria-label="全部展开设计层次"
+                >
+                  <ChevronsUpDown size={14} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setExpandedPaths(new Set())}
+                  className="flex h-6 w-6 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200 hover:text-blue-700"
+                  title="全部收起"
+                  aria-label="全部收起设计层次"
+                >
+                  <ChevronsDownUp size={14} />
+                </button>
+              </span>
             </div>
             <div className="py-1">
               <HierarchyNode
                 node={database.hierarchy}
                 selected={selectedPath}
+                expandedPaths={expandedPaths}
+                onToggle={toggleHierarchy}
                 onSelect={selectInstance}
                 onOpenDefinition={openInstanceDefinition}
               />

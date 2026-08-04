@@ -91,13 +91,13 @@ src/
 │   ├── core/                     # lifecycle / application（服务注册表）
 │   ├── services/
 │   │   ├── ProjectService.ts     # 项目 CRUD（JSON 持久化）
-│   │   ├── PhaseEngine.ts        # 7 阶段状态机
+│   │   ├── PhaseEngine.ts        # 6 阶段状态机
 │   │   ├── PythonService.ts      # Python spawn 执行
 │   │   ├── EdaService.ts         # EDA 工具探测
 │   │   ├── LlmProviderService.ts # Provider 配置（JSON 持久化 + 预置播种）
 │   │   └── AgentService.ts       # ★ Agent 会话：pi 进程生命周期/提示词注入/事件映射
 │   ├── ai/
-│   │   ├── agents/index.ts       # 7 阶段 Agent descriptor（提示词 ID + 工具白名单）
+│   │   ├── agents/index.ts       # 6 阶段 Agent descriptor（提示词 ID + 工具白名单）
 │   │   ├── runtime/pi/PiRpcClient.ts  # ★ pi RPC 协议客户端（JSONL 分帧）
 │   │   └── tools/moonglass/      # 15 个芯片工具注册表（handler 全为桩）
 │   ├── ipc.ts / index.ts         # handler 注册 / 入口（含 agent 事件推送注入）

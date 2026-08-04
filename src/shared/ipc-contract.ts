@@ -11,12 +11,15 @@ import type {
   FileContentResult,
   FileTreeNode,
   GateCheckResult,
+  IpLibraryImportInput,
+  IpLibraryRecord,
   LlmProviderConfig,
   Phase,
   PhaseAdvanceResult,
   PythonRunRequest,
   PythonRunResult,
   ToolDetection,
+  ToolInstallJob,
   ToolInstallResult,
   WaveformOpenResult
 } from './types/moonglass'
@@ -34,14 +37,17 @@ export const IPC = {
   },
   Phase: {
     Advance: 'phase:advance',
+    Enter: 'phase:enter',
     Rollback: 'phase:rollback',
     GateCheck: 'phase:gate-check',
+    AcknowledgeChange: 'phase:acknowledge-change',
     FastTrackSynthesis: 'phase:fast-track-synthesis',
     CompleteProject: 'phase:complete-project'
   },
   Eda: {
     DetectTools: 'eda:detect-tools',
     InstallBundle: 'eda:install-bundle',
+    GetInstallStatus: 'eda:get-install-status',
     OpenInstallPage: 'eda:open-install-page',
     OpenWaveform: 'eda:open-waveform'
   },
@@ -81,6 +87,14 @@ export const IPC = {
     Remove: 'process-library:remove',
     OpenFolder: 'process-library:open-folder'
   },
+  IpLibrary: {
+    List: 'ip-library:list',
+    ChooseDirectory: 'ip-library:choose-directory',
+    AddLocal: 'ip-library:add-local',
+    Reindex: 'ip-library:reindex',
+    Remove: 'ip-library:remove',
+    OpenFolder: 'ip-library:open-folder'
+  },
   DesignBrowser: {
     ListTops: 'design-browser:list-tops',
     Elaborate: 'design-browser:elaborate',
@@ -102,9 +116,13 @@ export interface MoonGlassApi {
   phase: {
     /** 推进阶段（先跑门禁检查，Error 级失败则阻断并返回未推进的原状态） */
     advance(projectId: string, to: Phase): Promise<PhaseAdvanceResult | null>
+    /** 双击阶段节点进入阶段，不删除或锁定后续阶段产物。 */
+    enter(projectId: string, to: Phase): Promise<ChipProject | null>
     rollback(projectId: string, to: Phase): Promise<ChipProject | null>
     /** 仅运行门禁检查，不推进阶段。用于修复问题后重新验证 */
     gateCheck(projectId: string, to: Phase): Promise<GateCheckResult[] | null>
+    /** 完成指定阶段对上游变更的响应。 */
+    acknowledgeChange(projectId: string, phase: Phase, responseNote?: string): Promise<ChipProject | null>
     /** 用户明确跳过 VERIF/QA，直接进入仅用于快速面积评估的综合阶段 */
     fastTrackSynthesis(projectId: string): Promise<ChipProject | null>
     /** 完成最终综合阶段并将项目标记为完成 */
@@ -112,7 +130,8 @@ export interface MoonGlassApi {
   }
   eda: {
     detectTools(): Promise<ToolDetection[]>
-    installBundle(id: string): Promise<ToolInstallResult>
+    installBundle(id: string): Promise<ToolInstallJob>
+    getInstallStatus(id: string): Promise<ToolInstallJob>
     openInstallPage(url: string): Promise<boolean>
     /** 使用 GTKWave 打开项目内的 VCD/FST 波形文件 */
     openWaveform(projectId: string, relPath: string): Promise<WaveformOpenResult>
@@ -139,7 +158,15 @@ export interface MoonGlassApi {
     /** 创建平行会话（不关闭当前会话）。name 可选，默认自动生成 review-<时间戳> */
     resetSession(projectId: string, sessionName?: string): Promise<AgentSessionInfo>
     /** 列出项目所有可用会话 */
-    listSessions(projectId: string): Promise<Array<{ name: string; file: string; label: string; messageCount: number; isActive: boolean }>>
+    listSessions(projectId: string): Promise<Array<{
+      name: string
+      file: string
+      label: string
+      messageCount: number
+      modelLabel: string
+      selectedModel: { providerId: string; modelId: string } | null
+      isActive: boolean
+    }>>
     /** 切换到指定会话 */
     switchSession(projectId: string, sessionName: string): Promise<AgentSessionInfo>
     /** 关闭并删除平行会话；主会话不可关闭 */
@@ -162,6 +189,14 @@ export interface MoonGlassApi {
     chooseAndAdd(): Promise<ProcessLibraryRecord | null>
     download(catalogId: string): Promise<ProcessLibraryRecord>
     reindex(id: string): Promise<ProcessLibraryRecord>
+    remove(id: string): Promise<boolean>
+    openFolder(id: string): Promise<boolean>
+  }
+  ipLibrary: {
+    list(): Promise<IpLibraryRecord[]>
+    chooseDirectory(): Promise<string | null>
+    addLocal(input: IpLibraryImportInput): Promise<IpLibraryRecord>
+    reindex(id: string): Promise<IpLibraryRecord>
     remove(id: string): Promise<boolean>
     openFolder(id: string): Promise<boolean>
   }

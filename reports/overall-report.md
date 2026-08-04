@@ -1,6 +1,6 @@
 # MoonGlass 项目总体报告
 
-> 报告日期：2026-07-30
+> 报告日期：2026-08-03
 > 版本：v0.3.0
 > 当前阶段：Phase 4（RTL / 验证）
 > 许可证：Apache-2.0
@@ -9,10 +9,10 @@
 
 ## 1. 项目定位
 
-MoonGlass 是面向 **ASIC/SoC 设计工程师** 的 AI 工作台桌面应用，以 **7 阶段芯片开发流程引擎** 为核心：
+MoonGlass 是面向 **ASIC/SoC 设计工程师** 的 AI 工作台桌面应用，以 **6 阶段芯片开发流程引擎** 为核心：
 
 ```
-REQ → SPEC → ARCH → RTL → VERIF → QA → SYNTH
+REQ_SPEC → ARCH → RTL → VERIF → QA → SYNTH
 ```
 
 将 LLM Agent、提示词分层约束、Python 脚本引擎与 EDA 工具链（Verible / Yosys / Verilator 等）整合到同一个 Electron 桌面应用中。
@@ -49,7 +49,7 @@ MoonGlass/
 │   ├── rtl-engine/             # Verilog 解析与模板生成
 │   └── prompts/                # 提示词分层约束系统
 ├── resources/moonglass/        # 内置资产
-│   ├── ip-library/             # IP 模板库（占位）
+│   ├── ip-library/             # IP 模板库（含 axi_lite_timer smoke 样例）
 │   ├── rules/                  # Lint / 编码规则（占位）
 │   ├── pi-bridge/              # Pi 桥接扩展
 │   └── toolchains.json         # 工具链配置
@@ -163,7 +163,7 @@ EdaService → LlmProviderService → AgentModelStore → AgentService → FileS
 
 ### 5.2 项目与阶段引擎
 
-- [x] 7 阶段状态机（REQ/SPEC/ARCH/RTL/VERIF/QA/SYNTH）
+- [x] 6 阶段状态机（REQ_SPEC/ARCH/RTL/VERIF/QA/SYNTH），保留需求-规格矩阵
 - [x] 项目 CRUD
 - [x] 阶段推进/回退
 - [x] 门禁检查（Lint / 可综合性 / 简单 CDC）
@@ -179,12 +179,14 @@ EdaService → LlmProviderService → AgentModelStore → AgentService → FileS
 - [x] Agent 工具集：7 个芯片专用工具
 - [x] 系统提示词注入（`.pi/APPEND_SYSTEM.md`）
 - [x] Prompt Templates（`/verify` 等）
+- [x] IP 模板库统一索引注入 Agent 系统提示词
 
 ### 5.4 EDA 工具链
 
 - [x] Verible Lint 解析
 - [x] Yosys 可综合性检查
 - [x] Verilator 仿真
+- [x] AXI-Lite Timer 样例 RTL lint + Icarus 仿真 smoke
 - [x] 工具链自动探测
 - [x] Windows 路径解析修复
 
@@ -194,6 +196,7 @@ EdaService → LlmProviderService → AgentModelStore → AgentService → FileS
 - [x] 模块模板生成
 - [x] Wrapper 生成
 - [x] 位宽保留
+- [x] IP 库本地目录导入、用户自定义名称/类型、自动扫描索引
 
 ### 5.6 打包与分发
 
@@ -214,7 +217,7 @@ EdaService → LlmProviderService → AgentModelStore → AgentService → FileS
 
 ### 6.2 Phase 5
 
-- [ ] IP 模板库内容填充
+- [ ] IP 模板库内容继续填充（已具备本地导入/索引与 `axi_lite_timer` 首个 smoke 样例）
 - [ ] 知识库与本地 RAG（sqlite-vec）
 - [ ] 公司/团队规则管理
 - [ ] 工具链路径自定义配置
@@ -274,7 +277,9 @@ pnpm rebuild:node      # 用于 Node 冒烟测试
 
 ```bash
 node scripts/db-migration-smoke.mjs
+pnpm smoke:ip-library
 node scripts/eda-gate-smoke.mjs
+pnpm smoke:axi-lite-timer
 node scripts/pi-tools-smoke.mjs
 node scripts/rtl-engine-smoke.mjs
 ```

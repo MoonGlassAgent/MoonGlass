@@ -8,12 +8,12 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, watch, type FSWatcher } from 'node:fs'
+import { join, relative } from 'node:path'
 import { eq, desc, sql } from 'drizzle-orm'
-import type { ChipProject } from '@shared/types'
+import type { ChipProject, Phase, PhaseState } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
-import { createInitialPhases } from './PhaseEngine.ts'
+import { createInitialPhases, markPhaseChanged } from './PhaseEngine.ts'
 import { projectWorkspaceDir } from '../core/paths.ts'
 import { chipProjects } from '../data/schema/moonglass.ts'
 import type { DbService } from './DbService.ts'
@@ -41,14 +41,75 @@ function projectToRow(project: ChipProject): typeof chipProjects.$inferInsert {
   }
 }
 
+type StoredPhase = Phase | 'REQ' | 'SPEC'
+type StoredProject = Omit<ChipProject, 'currentPhase' | 'phases'> & {
+  currentPhase: StoredPhase
+  phases: Partial<Record<StoredPhase, PhaseState>>
+}
+
+function mergeLegacyRequirementPhases(req?: PhaseState, spec?: PhaseState): PhaseState {
+  const initial = createInitialPhases().REQ_SPEC
+  if (!req && !spec) return initial
+  const states = [req, spec].filter((state): state is PhaseState => Boolean(state))
+  const status = spec?.status === 'completed' || spec?.status === 'skipped'
+    ? spec.status
+    : states.some((state) => state.status === 'blocked')
+      ? 'blocked'
+      : states.some((state) => state.status === 'active' || state.status === 'completed')
+        ? 'active'
+        : 'locked'
+  return {
+    status,
+    deliverables: states.flatMap((state) => state.deliverables),
+    agentContext: {
+      summary: [req?.agentContext.summary, spec?.agentContext.summary].filter(Boolean).join('\n\n') || undefined,
+      messageCount: states.reduce((sum, state) => sum + state.agentContext.messageCount, 0),
+      lastActiveAt: states.map((state) => state.agentContext.lastActiveAt).filter((value): value is string => Boolean(value)).sort().at(-1)
+    },
+    reviewStatus: states.some((state) => state.reviewStatus === 'rejected')
+      ? 'rejected'
+      : states.length > 0 && states.every((state) => state.reviewStatus === 'approved') ? 'approved' : 'pending',
+    gateCheckResults: states.flatMap((state) => state.gateCheckResults),
+    startedAt: states.map((state) => state.startedAt).filter((value): value is string => Boolean(value)).sort().at(0),
+    completedAt: status === 'completed' ? spec?.completedAt ?? req?.completedAt : undefined,
+    skippedAt: status === 'skipped' ? spec?.skippedAt : undefined,
+    skipReason: status === 'skipped' ? spec?.skipReason : undefined
+  }
+}
+
+/** 读取旧版七阶段项目时，无损归并 REQ/SPEC，并补齐当前六阶段结构。 */
+function normalizeStoredProject(project: StoredProject): ChipProject {
+  const initial = createInitialPhases()
+  const phases = { ...initial }
+  for (const phase of ['ARCH', 'RTL', 'VERIF', 'QA', 'SYNTH'] as const) {
+    phases[phase] = project.phases[phase] ?? initial[phase]
+  }
+  phases.REQ_SPEC = project.phases.REQ_SPEC
+    ?? mergeLegacyRequirementPhases(project.phases.REQ, project.phases.SPEC)
+  // 清理旧版错误传播给未完成阶段的黄色标记；新版通知必须记录完成基线。
+  for (const phase of Object.keys(phases) as Phase[]) {
+    const notice = phases[phase].changeNotice
+    if (notice?.status === 'pending' && !notice.baselineCompletedAt) {
+      phases[phase] = { ...phases[phase], changeNotice: undefined }
+    }
+  }
+  return {
+    ...project,
+    currentPhase: project.currentPhase === 'REQ' || project.currentPhase === 'SPEC'
+      ? 'REQ_SPEC'
+      : project.currentPhase,
+    phases
+  }
+}
+
 /** 数据库行转 ChipProject */
 function rowToProject(row: typeof chipProjects.$inferSelect): ChipProject {
-  return {
+  return normalizeStoredProject({
     id: row.id,
     name: row.name,
     description: row.description ?? undefined,
-    currentPhase: row.currentPhase,
-    phases: (row.phasesJson as ChipProject['phases']) ?? createInitialPhases(),
+    currentPhase: row.currentPhase as StoredPhase,
+    phases: (row.phasesJson as StoredProject['phases']) ?? createInitialPhases(),
     edaToolchain: row.edaToolchain ?? 'verilator-yosys',
     targetProcess: row.targetProcess ?? undefined,
     targetFrequency: row.targetFrequency ?? undefined,
@@ -57,7 +118,7 @@ function rowToProject(row: typeof chipProjects.$inferSelect): ChipProject {
     gitRepo: row.gitRepoUrl ?? undefined,
     createdAt: row.createdAt?.toISOString() ?? new Date().toISOString(),
     updatedAt: row.updatedAt?.toISOString() ?? new Date().toISOString()
-  }
+  })
 }
 
 export class ProjectService implements MoonGlassService {
@@ -67,6 +128,8 @@ export class ProjectService implements MoonGlassService {
   private legacyPath = ''
   private db: DbService
   private dataDir: string
+  private workspaceWatchers = new Map<string, FSWatcher>()
+  private workspaceChangeTimers = new Map<string, NodeJS.Timeout>()
 
   constructor(db: DbService, dataDir: string) {
     this.db = db
@@ -80,11 +143,20 @@ export class ProjectService implements MoonGlassService {
     this.legacyPath = join(dir, 'projects.json.legacy')
 
     this.migrateFromLegacyIfNeeded()
-    for (const project of this.list()) this.initWorkspace(project.id)
+    const projects = this.list()
+    for (const project of projects) {
+      this.db.getDb().update(chipProjects).set(projectToRow(project)).where(eq(chipProjects.id, project.id)).run()
+      this.initWorkspace(project.id)
+      this.watchWorkspace(project.id)
+    }
+    if (projects.length > 0) this.backupToJson()
   }
 
   stop(): void {
-    // 数据已落库，无需额外操作
+    for (const watcher of this.workspaceWatchers.values()) watcher.close()
+    this.workspaceWatchers.clear()
+    for (const timer of this.workspaceChangeTimers.values()) clearTimeout(timer)
+    this.workspaceChangeTimers.clear()
   }
 
   /** 首次启动：若 SQLite 为空，从 projects.json 导入 */
@@ -216,7 +288,7 @@ export class ProjectService implements MoonGlassService {
       id: randomUUID(),
       name: input.name,
       description: input.description,
-      currentPhase: 'REQ',
+      currentPhase: 'REQ_SPEC',
       phases: createInitialPhases(),
       edaToolchain: input.edaToolchain ?? 'verilator-yosys',
       createdAt: now,
@@ -224,6 +296,7 @@ export class ProjectService implements MoonGlassService {
     }
     this.db.getDb().insert(chipProjects).values(projectToRow(project)).run()
     this.initWorkspace(project.id)
+    this.watchWorkspace(project.id)
     this.backupToJson()
     return project
   }
@@ -256,6 +329,11 @@ export class ProjectService implements MoonGlassService {
   }
 
   delete(id: string): boolean {
+    this.workspaceWatchers.get(id)?.close()
+    this.workspaceWatchers.delete(id)
+    const timer = this.workspaceChangeTimers.get(id)
+    if (timer) clearTimeout(timer)
+    this.workspaceChangeTimers.delete(id)
     const before = this.db
       .getDb()
       .select({ count: sql<number>`count(*)` })
@@ -269,5 +347,37 @@ export class ProjectService implements MoonGlassService {
       .get()
     this.backupToJson()
     return (after?.count ?? 0) < (before?.count ?? 0)
+  }
+
+  /** Agent 或 Claude Code 修改工作区文件时，自动向后续阶段传播变更通知。 */
+  private watchWorkspace(projectId: string): void {
+    if (this.workspaceWatchers.has(projectId)) return
+    const root = projectWorkspaceDir(projectId, this.dataDir)
+    try {
+      const watcher = watch(root, { recursive: true }, (_eventType, filename) => {
+        const changedPath = filename ? String(filename).replace(/\\/g, '/') : ''
+        if (!changedPath || changedPath.startsWith('.pi/') || changedPath.startsWith('.git/')) return
+        const sourcePhase = this.get(projectId)?.currentPhase
+        if (!sourcePhase) return
+        const previous = this.workspaceChangeTimers.get(projectId)
+        if (previous) clearTimeout(previous)
+        const timer = setTimeout(() => {
+          this.workspaceChangeTimers.delete(projectId)
+          const project = this.get(projectId)
+          if (!project) return
+          const detail = relative(root, join(root, changedPath)).replace(/\\/g, '/')
+          this.save(markPhaseChanged(project, sourcePhase, `检测到工作区文件变更：${detail}`))
+        }, 700)
+        this.workspaceChangeTimers.set(projectId, timer)
+      })
+      watcher.on('error', (error) => {
+        console.error(`[project-service] 工作区监听失败 (${projectId})`, error)
+        watcher.close()
+        this.workspaceWatchers.delete(projectId)
+      })
+      this.workspaceWatchers.set(projectId, watcher)
+    } catch (error) {
+      console.error(`[project-service] 无法监听工作区 (${projectId})`, error)
+    }
   }
 }

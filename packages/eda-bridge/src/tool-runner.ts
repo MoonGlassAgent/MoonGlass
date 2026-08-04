@@ -9,7 +9,7 @@
 
 import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
-import { delimiter, dirname, extname, join } from 'node:path'
+import { delimiter, dirname, extname, join, normalize, resolve } from 'node:path'
 import { promisify } from 'node:util'
 
 const execFileAsync = promisify(execFile)
@@ -32,6 +32,39 @@ export interface RunResult {
   stdout: string
   stderr: string
   code: number | null
+}
+
+const MINGW_RUNTIME_DLLS = [
+  'libgcc_s_seh-1.dll',
+  'libstdc++-6.dll',
+  'libwinpthread-1.dll',
+  'libvvp-1.dll'
+]
+
+function pathKey(value: string): string {
+  const normalized = normalize(resolve(value))
+  return process.platform === 'win32' ? normalized.toLowerCase() : normalized
+}
+
+function containsMinGWRuntime(dir: string): boolean {
+  return process.platform === 'win32' && MINGW_RUNTIME_DLLS.some((name) => existsSync(join(dir, name)))
+}
+
+/**
+ * 为单一工具链构造隔离 PATH。目标工具链的 bin/lib 固定在最前，其他携带
+ * MinGW 运行时 DLL 的目录会被移除，防止 Windows 加载到不兼容版本。
+ */
+export function isolatedToolPath(toolPath: string, inheritedPath = process.env.PATH ?? ''): string {
+  const bin = dirname(toolPath)
+  const lib = join(bin, '..', 'lib')
+  const selected = new Set([pathKey(bin), pathKey(lib)])
+  const retained = inheritedPath
+    .split(delimiter)
+    .map((entry) => entry.trim())
+    .filter(Boolean)
+    .filter((entry) => !selected.has(pathKey(entry)))
+    .filter((entry) => !containsMinGWRuntime(entry))
+  return [bin, lib, ...retained].join(delimiter)
 }
 
 /** 在 PATH 中定位可执行文件（支持候选名列表） */
@@ -78,7 +111,7 @@ export function toolEnv(toolPath: string): NodeJS.ProcessEnv {
   const bin = dirname(toolPath)
   const env: NodeJS.ProcessEnv = {
     ...process.env,
-    PATH: `${bin}${delimiter}${join(bin, '..', 'lib')}${delimiter}${process.env.PATH ?? ''}`
+    PATH: isolatedToolPath(toolPath)
   }
   if (/verilator(?:_bin)?(?:\.exe)?$/i.test(toolPath)) {
     // Verilator 会把该值写入 Makefile；Windows 反斜杠会被 make 当作转义符吞掉。

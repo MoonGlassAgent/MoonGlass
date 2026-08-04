@@ -1,7 +1,7 @@
 {
   "name": "moonglass",
   "version": "0.3.0",
-  "description": "MoonGlass — 芯片开发全流程 AI 工作台",
+  "description": "MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台",
   "private": true,
   "license": "Apache-2.0",
   "author": "MoonGlass Contributors",
@@ -14,6 +14,8 @@
     "rebuild:node": "pnpm rebuild better-sqlite3",
     "typecheck": "pnpm -r typecheck",
     "typecheck:root": "tsc --noEmit -p tsconfig.json",
+    "smoke:ip-library": "node scripts/ip-library-service-smoke.mjs",
+    "smoke:axi-lite-timer": "node scripts/axi-lite-timer-smoke.mjs",
     "test": "node scripts/check-skills.mjs && node scripts/run-tests.mjs core",
     "test:integration": "node scripts/run-tests.mjs integration"
   },

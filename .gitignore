@@ -1,6 +1,7 @@
 node_modules/
 out/
 dist/
+portable-asar-dist/
 *.log
 .DS_Store
 e2e-screenshots/

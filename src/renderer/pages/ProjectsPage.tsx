@@ -37,7 +37,7 @@ export function ProjectsPage(): React.JSX.Element {
         <div>
           <h1 className="text-xl font-bold text-zinc-900">芯片项目</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            每个项目走 7 阶段流程：REQ → SPEC → ARCH → RTL → VERIF → QA → SYNTH
+            每个项目走 6 阶段流程：REQ_SPEC → ARCH → RTL → VERIF → QA → SYNTH
           </p>
         </div>
         <button

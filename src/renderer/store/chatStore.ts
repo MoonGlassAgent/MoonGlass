@@ -14,6 +14,7 @@ interface ChatState {
   sessionInfo: AgentSessionInfo | null
   messages: AgentUiMessage[]
   streaming: boolean
+  aborting: boolean
   /** 当前流式累加目标消息 id（text-delta 追加到这条消息上） */
   streamTargetId: string | null
 
@@ -42,6 +43,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     sessionInfo: null,
     messages: [],
     streaming: false,
+    aborting: false,
     streamTargetId: null,
 
     ensure: async (projectId) => {
@@ -50,7 +52,7 @@ export const useChatStore = create<ChatState>((set, get) => {
         eventSubscribed = true
       }
       if (get().projectId !== projectId) {
-        set({ projectId, sessionInfo: null, messages: [], streaming: false, streamTargetId: null })
+        set({ projectId, sessionInfo: null, messages: [], streaming: false, aborting: false, streamTargetId: null })
       }
       let info: AgentSessionInfo
       try {
@@ -99,15 +101,21 @@ export const useChatStore = create<ChatState>((set, get) => {
       try {
         await window.moonglass.agent.prompt(projectId, text.trim())
       } catch (err) {
-        pushError(set, err)
+        if (!get().aborting) pushError(set, err)
       }
     },
 
     abort: async () => {
-      const { projectId } = get()
-      if (!projectId) return
-      await window.moonglass.agent.abort(projectId)
-      set({ streaming: false, streamTargetId: null })
+      const { projectId, aborting } = get()
+      if (!projectId || aborting) return
+      set({ aborting: true })
+      try {
+        await window.moonglass.agent.abort(projectId)
+        set({ streaming: false, aborting: false, streamTargetId: null })
+      } catch (error) {
+        set({ aborting: false })
+        pushError(set, error)
+      }
     },
 
     setModel: async (providerId, modelId) => {
@@ -169,6 +177,7 @@ function pushError(set: Set, err: unknown): void {
   const message = err instanceof Error ? err.message : String(err)
   set((s) => ({
     streaming: false,
+    aborting: false,
     streamTargetId: null,
     messages: [
       ...s.messages,
@@ -180,11 +189,11 @@ function pushError(set: Set, err: unknown): void {
 function applyEvent(set: Set, event: AgentStreamEvent): void {
   switch (event.type) {
     case 'agent-start':
-      set(() => ({ streaming: true, streamTargetId: null }))
+      set(() => ({ streaming: true, aborting: false, streamTargetId: null }))
       break
 
     case 'agent-settled':
-      set(() => ({ streaming: false, streamTargetId: null }))
+      set(() => ({ streaming: false, aborting: false, streamTargetId: null }))
       break
 
     case 'text-delta':
@@ -239,6 +248,8 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
             id: nextId(),
             role: 'tool',
             toolName: event.toolName,
+            toolCallId: event.toolCallId,
+            toolInput: event.input,
             text: '执行中…',
             timestamp: Date.now()
           }
@@ -248,10 +259,12 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
 
     case 'tool-end':
       set((s) => {
-        // 回填最近一条同 toolCallId 占位的 tool 消息（按工具名匹配最后一条"执行中"）
+        // 按 toolCallId 精确回填；兼容旧事件时才回退到工具名。
         const idx = [...s.messages]
           .reverse()
-          .findIndex((m) => m.role === 'tool' && m.text === '执行中…' && m.toolName === event.toolName)
+          .findIndex((m) => m.role === 'tool' && m.text === '执行中…' && (
+            m.toolCallId ? m.toolCallId === event.toolCallId : m.toolName === event.toolName
+          ))
         const output = event.output || (event.isError ? '（执行失败）' : '（无输出）')
         if (idx === -1) {
           return {
@@ -261,6 +274,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
                 id: nextId(),
                 role: 'tool',
                 toolName: event.toolName,
+                toolCallId: event.toolCallId,
                 text: output,
                 isError: event.isError,
                 timestamp: Date.now(),

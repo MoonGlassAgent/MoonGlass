@@ -18,7 +18,7 @@
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, Phase } from '@shared/types'
 import { parseDecisionRequest, parseDecisionResponse } from '@shared/agent-interaction'
@@ -40,6 +40,8 @@ export interface SessionSummary {
   file: string
   label: string
   messageCount: number
+  modelLabel: string
+  selectedModel: { providerId: string; modelId: string } | null
   isActive: boolean
 }
 
@@ -111,6 +113,13 @@ function buildChildEnvironment(): Record<string, string | undefined> {
   return env
 }
 
+/** 将会话文件名统一转换为模型存储使用的逻辑会话名。 */
+function sessionNameFromFile(filePath: string): string {
+  const fileName = basename(filePath)
+  if (fileName === 'session.jsonl') return 'main'
+  return fileName.replace(/^session-/, '').replace(/\.jsonl$/, '') || 'main'
+}
+
 /** 从 __dirname 向上探测 node_modules 中 pi 的 cli.js（开发模式）。 */
 function resolvePiBinFromNodeModules(): string {
   const rel = join('node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js')
@@ -152,6 +161,8 @@ interface PiSession {
   currentSessionFile: string
   /** 会话展示名 */
   activeSessionName: string
+  /** 由 Pi agent_start/agent_settled 事件维护，避免运行中查询 RPC 队列。 */
+  isStreaming: boolean
 }
 
 /** pi 消息（仅声明映射所需的最小形状） */
@@ -159,6 +170,7 @@ interface PiMessage {
   role: string
   content?: unknown
   toolName?: string
+  toolCallId?: string
   isError?: boolean
   stopReason?: string
   errorMessage?: string
@@ -178,6 +190,7 @@ export class AgentService implements MoonGlassService {
   private piBinPath = ''
   private bridgeDir = ''
   private emit: (projectId: string, event: AgentStreamEvent) => void = () => {}
+  private readonly pendingStreamEvents = new Map<string, { events: AgentStreamEvent[]; timer: NodeJS.Timeout }>()
   private projects: ProjectService
   private llm: LlmProviderService
   private modelStore: AgentModelStore
@@ -257,6 +270,8 @@ export class AgentService implements MoonGlassService {
   }
 
   stop(): void {
+    for (const pending of this.pendingStreamEvents.values()) clearTimeout(pending.timer)
+    this.pendingStreamEvents.clear()
     for (const session of this.sessions.values()) session.client.dispose()
     for (const projectSessions of this.backgroundSessions.values()) {
       for (const session of projectSessions.values()) session.client.dispose()
@@ -284,6 +299,32 @@ export class AgentService implements MoonGlassService {
   /** 由主进程入口注入事件推送通道（webContents.send） */
   attachEmitter(emit: (projectId: string, event: AgentStreamEvent) => void): void {
     this.emit = emit
+  }
+
+  private queueStreamEvent(projectId: string, event: AgentStreamEvent): void {
+    const pending = this.pendingStreamEvents.get(projectId)
+    if (pending) {
+      const last = pending.events.at(-1)
+      if (event.type === 'text-delta' && last?.type === 'text-delta') {
+        last.delta += event.delta
+      } else if (event.type === 'thinking-delta' && last?.type === 'thinking-delta') {
+        last.delta += event.delta
+      } else {
+        pending.events.push(event)
+      }
+      return
+    }
+    const events = [event]
+    const timer = setTimeout(() => this.flushStreamEvents(projectId), 50)
+    this.pendingStreamEvents.set(projectId, { events, timer })
+  }
+
+  private flushStreamEvents(projectId: string): void {
+    const pending = this.pendingStreamEvents.get(projectId)
+    if (!pending) return
+    clearTimeout(pending.timer)
+    this.pendingStreamEvents.delete(projectId)
+    for (const event of pending.events) this.emit(projectId, event)
   }
 
   /** 已启用且配置了 Key、且有可用模型的 Provider */
@@ -355,6 +396,7 @@ export class AgentService implements MoonGlassService {
     // TODO(Phase 3 后续): 传入项目级约束与用户自定义提示词
     const basePrompt = buildSystemPrompt(phase)
     const processLibraryIndex = join(app.getPath('userData'), 'moonglass', 'process-libraries', 'index.json')
+    const ipLibraryIndex = join(app.getPath('userData'), 'moonglass', 'ip-libraries', 'index.json')
     const project = this.projects.get(projectId)
     const fastTrackNotice =
       phase === 'SYNTH' &&
@@ -399,6 +441,7 @@ scripts/
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
 - 综合优先使用 MoonGlass 工艺库索引选定的默认 Liberty；若没有配置默认库，允许通用综合，但须明确提示面积和时序不具备工艺意义。
 - MoonGlass 工艺库统一索引路径：${processLibraryIndex.replace(/\\/g, '/')}。涉及工艺选择、综合、时序或物理视图前，先读取该索引并核对 Liberty/LEF/GDS/Verilog 等可用文件；不得只凭目录名猜测文件。用户新增或下载工艺库后，以该索引为准。
+- MoonGlass IP 模板库统一索引路径：${ipLibraryIndex.replace(/\\/g, '/')}。复用或参考 IP 模板前，先读取该索引并核对模板名称、类型、topModule、RTL/验证/文档文件；不得只凭页面分类或目录名猜测可用模板。
 - 当需求、规格、架构或约束存在两种以上合理选项并需要用户决定时，必须调用 \`request_user_decision\`，不要只在普通文本中列出编号让用户手工回复。单选和多选默认允许用户补充自己的要求；选项应说明关键面积、性能、功耗、验证或交付影响，并且最多标记一个推荐项。调用后停止继续决策，等待用户回答。
 - 不得在根目录或旧式平铺目录创建阶段产出；不得虚构工具结果。
 `
@@ -480,6 +523,8 @@ argument-hint: "<模块名>"
         ELECTRON_RUN_AS_NODE: '1'
       },
       onEvent: (event) => {
+        if (event.type === 'agent_start') session.isStreaming = true
+        if (event.type === 'agent_settled') session.isStreaming = false
         if (this.sessions.get(projectId) === session) this.handlePiEvent(projectId, event)
       },
       onExit: (code, stderrTail) => {
@@ -505,9 +550,7 @@ argument-hint: "<模块名>"
     setTimeout(() => rmSync(providerFile, { force: true }), 60_000)
 
     // 从文件名提取会话名
-    const sessionName = sessionFile.endsWith('.jsonl')
-      ? sessionFile.split(/[\\/]/).pop()!.replace(/^session-?|\.jsonl$/g, '') || 'main'
-      : 'main'
+    const sessionName = sessionNameFromFile(sessionFile)
 
     const session: PiSession = {
       client,
@@ -517,7 +560,8 @@ argument-hint: "<模块名>"
       selectedModel: null,
       fingerprint: this.providersFingerprint(),
       currentSessionFile: sessionFile,
-      activeSessionName: sessionName
+      activeSessionName: sessionName,
+      isStreaming: false
     }
     this.sessions.set(projectId, session)
     return session
@@ -529,9 +573,11 @@ argument-hint: "<模块名>"
 
     const providers = this.readyProviders()
     if (providers.length === 0) {
+      const activeSessionName = this.sessions.get(projectId)?.activeSessionName ?? 'main'
       return {
         projectId,
         phase: project.currentPhase,
+        sessionName: activeSessionName,
         isStreaming: false,
         modelLabel: '',
         selectedModel: null,
@@ -553,27 +599,33 @@ argument-hint: "<模块名>"
     }
 
     if (!session) {
-      session = this.spawnSession(projectId, project.currentPhase, project.name)
+      const rememberedSessionName = this.modelStore.getActiveSession(projectId) ?? 'main'
+      const rememberedSessionFile = rememberedSessionName === 'main'
+        ? this.sessionFilePath(projectId)
+        : join(this.sessionDir(projectId), `session-${rememberedSessionName}.jsonl`)
+      const targetSessionFile = existsSync(rememberedSessionFile)
+        ? rememberedSessionFile
+        : this.sessionFilePath(projectId)
+      session = this.spawnSession(projectId, project.currentPhase, project.name, targetSessionFile)
       await session.client.waitReady()
 
       // 优先恢复上次选中的模型；失效则回退到第一个可用 Provider 的第一个模型
-      const selection = this.modelStore.get(projectId)
+      const selection = this.modelStore.get(projectId, session.activeSessionName)
       const initial =
         selection && providers.some((p) => p.id === selection.providerId && p.models.includes(selection.modelId))
           ? selection
           : { providerId: providers[0].id, modelId: providers[0].models[0] }
 
       await this.setModelInternal(session, initial.providerId, initial.modelId)
+      this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
+      this.modelStore.setActiveSession(projectId, session.activeSessionName)
     }
-
-    const state = await session.client
-      .command<{ isStreaming?: boolean }>({ type: 'get_state' })
-      .catch(() => ({ isStreaming: false }))
 
     return {
       projectId,
       phase: session.phase,
-      isStreaming: state.isStreaming ?? false,
+      sessionName: session.activeSessionName,
+      isStreaming: session.isStreaming,
       modelLabel: session.modelLabel,
       selectedModel: session.selectedModel,
       providersReady: true
@@ -659,18 +711,26 @@ argument-hint: "<模块名>"
           const content = readFileSync(filePath, 'utf-8')
           const lines = content.trim().split(/\n/).filter(l => l.trim().length > 0)
           for (const line of lines) {
+            if (line.includes('"type":"message"')) {
+              messageCount += 1
+              continue
+            }
+            if (!line.includes('"type":"session_info"')) continue
             try {
               const entry = JSON.parse(line) as { type?: string; name?: string }
               if (entry.type === 'session_info' && entry.name) label = entry.name
-              if (entry.type === 'message') messageCount += 1
             } catch { /* 忽略损坏的单行，保留文件名作为展示名 */ }
           }
         } catch { /* 忽略 */ }
+        const sessionName = sessionNameFromFile(filePath)
+        const storedModel = this.modelStore.get(projectId, sessionName)
         summaries.push({
           name,
           file: filePath,
           label,
           messageCount,
+          modelLabel: storedModel ? `${storedModel.providerId} / ${storedModel.modelId}` : '',
+          selectedModel: storedModel ?? null,
           isActive: active ? active.currentSessionFile === filePath : false
         })
       }
@@ -693,22 +753,21 @@ argument-hint: "<模块名>"
       : join(this.sessionDir(projectId), `${sessionName}.jsonl`))
     if (!existsSync(targetFile)) throw new Error(`[agent-service] 会话文件不存在: ${targetFile}`)
     if (resolve(current.currentSessionFile) === targetFile) {
-      const state = await current.client.command<{ isStreaming?: boolean }>({ type: 'get_state' })
+      this.modelStore.setActiveSession(projectId, current.activeSessionName)
       return {
         projectId,
         phase: current.phase,
-        isStreaming: state.isStreaming ?? false,
+        sessionName: current.activeSessionName,
+        isStreaming: current.isStreaming,
         modelLabel: current.modelLabel,
         selectedModel: current.selectedModel,
         providersReady: true
       }
     }
 
-    const currentState = await current.client
-      .command<{ isStreaming?: boolean }>({ type: 'get_state' })
-      .catch(() => ({ isStreaming: false }))
+    this.flushStreamEvents(projectId)
     this.sessions.delete(projectId)
-    if (currentState.isStreaming) {
+    if (current.isStreaming) {
       this.backgroundFor(projectId).set(resolve(current.currentSessionFile), current)
     } else {
       current.client.dispose()
@@ -726,26 +785,27 @@ argument-hint: "<模块名>"
       await session.client.waitReady()
 
       const providers = this.readyProviders()
-      const preferred = current.selectedModel ?? this.modelStore.get(projectId)
+      const targetSessionName = sessionNameFromFile(targetFile)
+      const preferred = this.modelStore.get(projectId, targetSessionName)
       const initial = preferred && providers.some(
         (provider) => provider.id === preferred.providerId && provider.models.includes(preferred.modelId)
       )
         ? preferred
         : { providerId: providers[0].id, modelId: providers[0].models[0] }
       await this.setModelInternal(session, initial.providerId, initial.modelId)
+      this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
       if (storedLabel) {
         await session.client.command({ type: 'set_session_name', name: storedLabel })
       }
     }
 
-    const state = await session.client
-      .command<{ isStreaming?: boolean }>({ type: 'get_state' })
-      .catch(() => ({ isStreaming: false }))
+    this.modelStore.setActiveSession(projectId, session.activeSessionName)
 
     return {
       projectId,
       phase: session.phase,
-      isStreaming: state.isStreaming ?? false,
+      sessionName: session.activeSessionName,
+      isStreaming: session.isStreaming,
       modelLabel: session.modelLabel,
       selectedModel: session.selectedModel,
       providersReady: true
@@ -777,13 +837,35 @@ argument-hint: "<模块名>"
       info = await this.ensureSession(projectId)
     }
     rmSync(targetFile, { force: true })
+    this.modelStore.delete(projectId, sessionNameFromFile(targetFile))
     return info
   }
 
   async abort(projectId: string): Promise<void> {
     const session = this.sessions.get(projectId)
     if (!session) return
-    await session.client.command({ type: 'abort' }).catch(() => undefined)
+    try {
+      await session.client.command({ type: 'abort' }, 5_000)
+      session.isStreaming = false
+      this.flushStreamEvents(projectId)
+      return
+    } catch (error) {
+      console.warn('[agent-service] Pi 中止命令未及时响应，重启当前会话进程', error)
+    }
+
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
+    const selectedModel = session.selectedModel
+    const sessionFile = session.currentSessionFile
+    this.sessions.delete(projectId)
+    session.client.dispose()
+
+    const replacement = this.spawnSession(projectId, session.phase, project.name, sessionFile)
+    await replacement.client.waitReady()
+    if (selectedModel) {
+      await this.setModelInternal(replacement, selectedModel.providerId, selectedModel.modelId)
+    }
+    replacement.isStreaming = false
   }
 
   /**
@@ -812,10 +894,11 @@ argument-hint: "<模块名>"
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
     await this.setModelInternal(session, providerId, modelId)
-    this.modelStore.set(projectId, providerId, modelId)
+    this.modelStore.set(projectId, session.activeSessionName, providerId, modelId)
     return {
       projectId,
       phase: session.phase,
+      sessionName: session.activeSessionName,
       isStreaming: false,
       modelLabel: session.modelLabel,
       selectedModel: session.selectedModel,
@@ -826,8 +909,39 @@ argument-hint: "<模块名>"
   async getMessages(projectId: string): Promise<AgentUiMessage[]> {
     const session = this.sessions.get(projectId)
     if (!session) return []
-    const data = await session.client.command<{ messages: PiMessage[] }>({ type: 'get_messages' })
-    return data.messages.flatMap((m, i) => this.mapMessage(m, i))
+    const data = session.isStreaming
+      ? { messages: this.readSessionMessages(session.currentSessionFile) }
+      : await session.client.command<{ messages: PiMessage[] }>({ type: 'get_messages' })
+    const toolInputs = new Map<string, { toolName: string; input: string }>()
+    for (const message of data.messages) {
+      if (message.role !== 'assistant') continue
+      const blocks = (message.content as Array<Record<string, unknown>> | undefined) ?? []
+      for (const block of blocks) {
+        if (block.type !== 'toolCall') continue
+        const callId = String(block.id ?? '')
+        if (!callId) continue
+        toolInputs.set(callId, {
+          toolName: String(block.name ?? 'tool'),
+          input: this.formatToolInput(block.arguments)
+        })
+      }
+    }
+    return data.messages.flatMap((message, index) => this.mapMessage(message, index, toolInputs))
+  }
+
+  private readSessionMessages(sessionFile: string): PiMessage[] {
+    if (!existsSync(sessionFile)) return []
+    const messages: PiMessage[] = []
+    for (const line of readFileSync(sessionFile, 'utf-8').split(/\r?\n/)) {
+      if (!line.includes('"type":"message"')) continue
+      try {
+        const entry = JSON.parse(line) as { type?: string; message?: PiMessage }
+        if (entry.type === 'message' && entry.message) messages.push(entry.message)
+      } catch {
+        // 流式写入时末行可能尚未完整，忽略后等待下一次读取。
+      }
+    }
+    return messages
   }
 
   // ==================== pi 事件 → AgentStreamEvent ====================
@@ -836,17 +950,19 @@ argument-hint: "<模块名>"
     const type = event.type as string
     switch (type) {
       case 'agent_start':
+        this.flushStreamEvents(projectId)
         this.emit(projectId, { type: 'agent-start' })
         break
       case 'agent_settled':
+        this.flushStreamEvents(projectId)
         this.emit(projectId, { type: 'agent-settled' })
         break
       case 'message_update': {
         const delta = (event.assistantMessageEvent ?? {}) as Record<string, unknown>
         if (delta.type === 'text_delta') {
-          this.emit(projectId, { type: 'text-delta', delta: String(delta.delta ?? '') })
+          this.queueStreamEvent(projectId, { type: 'text-delta', delta: String(delta.delta ?? '') })
         } else if (delta.type === 'thinking_delta') {
-          this.emit(projectId, { type: 'thinking-delta', delta: String(delta.delta ?? '') })
+          this.queueStreamEvent(projectId, { type: 'thinking-delta', delta: String(delta.delta ?? '') })
         } else if (delta.type === 'error') {
           const partial = (delta.partial ?? event.message ?? {}) as Record<string, unknown>
           this.emit(projectId, {
@@ -857,13 +973,16 @@ argument-hint: "<模块名>"
         break
       }
       case 'tool_execution_start':
+        this.flushStreamEvents(projectId)
         this.emit(projectId, {
           type: 'tool-start',
           toolName: String(event.toolName ?? ''),
-          toolCallId: String(event.toolCallId ?? '')
+          toolCallId: String(event.toolCallId ?? ''),
+          input: this.formatToolInput(event.args ?? event.input ?? event.arguments)
         })
         break
       case 'tool_execution_end': {
+        this.flushStreamEvents(projectId)
         const result = (event.result ?? {}) as { content?: Array<{ text?: string }> }
         const output = (result.content ?? []).map((c) => c.text ?? '').join('\n')
         this.emit(projectId, {
@@ -888,7 +1007,21 @@ argument-hint: "<模块名>"
 
   // ==================== pi 消息 → AgentUiMessage ====================
 
-  private mapMessage(m: PiMessage, index: number): AgentUiMessage[] {
+  private formatToolInput(input: unknown): string {
+    if (input === undefined || input === null) return ''
+    if (typeof input === 'string') return input
+    try {
+      return JSON.stringify(input, null, 2)
+    } catch {
+      return String(input)
+    }
+  }
+
+  private mapMessage(
+    m: PiMessage,
+    index: number,
+    toolInputs: Map<string, { toolName: string; input: string }>
+  ): AgentUiMessage[] {
     const ts = m.timestamp ?? Date.now()
     const id = `${ts}-${index}`
 
@@ -910,11 +1043,16 @@ argument-hint: "<模块名>"
         .filter((b) => b.type === 'text')
         .map((b) => String(b.text ?? ''))
         .join('\n')
-      if (text) {
+      const thinking = blocks
+        .filter((block) => block.type === 'thinking')
+        .map((block) => String(block.thinking ?? ''))
+        .join('\n')
+      if (text || thinking) {
         out.push({
           id,
           role: 'assistant',
           text,
+          thinking: thinking || undefined,
           isError: m.stopReason === 'error',
           timestamp: ts
         })
@@ -928,11 +1066,14 @@ argument-hint: "<模块名>"
     if (m.role === 'toolResult') {
       const blocks = (m.content as Array<{ text?: string }> | undefined) ?? []
       const text = blocks.map((b) => b.text ?? '').join('\n')
+      const toolInput = m.toolCallId ? toolInputs.get(m.toolCallId) : undefined
       return [
         {
           id,
           role: 'tool',
           toolName: m.toolName,
+          toolCallId: m.toolCallId,
+          toolInput: toolInput?.input,
           isError: m.isError,
           text: text.length > TOOL_OUTPUT_MAX ? text.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : text,
           timestamp: ts,

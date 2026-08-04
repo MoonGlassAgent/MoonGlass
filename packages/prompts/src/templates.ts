@@ -52,50 +52,30 @@ export const GLOBAL_CONSTRAINTS: PromptTemplate = {
 // 阶段约束
 // ============================================================
 export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
-  REQ: {
-    id: 'mg-phase-req-001',
+  REQ_SPEC: {
+    id: 'mg-phase-req-spec-001',
     level: 'phase',
-    phase: 'REQ',
+    phase: 'REQ_SPEC',
     injectMode: 'prepend',
-    version: '2.0.0',
-    updatedAt: '2026-07-30',
-    content: `当前处于【需求定义】阶段。
+    version: '3.0.0',
+    updatedAt: '2026-08-03',
+    content: `当前处于【需求-规格定义】阶段。
 
 你的任务是：
 1. 与用户深入沟通，提取功能需求、性能需求、接口需求
-2. 生成结构化的需求规格书（SRS）
-3. 建立需求追溯矩阵（RTM），确保每个需求可追踪
-4. 识别关键性能指标：频率、面积、功耗、带宽
+2. 生成结构化需求文档，并同步定义模块级功能、接口、时序、寄存器和异常行为规格
+3. 建立需求-规格追溯矩阵，确保每条需求映射到一条或多条可验证规格
+4. 识别关键性能指标：频率、面积、功耗、带宽，并写明测试条件与验收阈值
 5. 使用 doc-repository 技能
-6. 输出 docs/01_project/project_charter.md、docs/02_requirements/product_requirements.md、docs/02_requirements/requirements_traceability.md
+6. 输出 docs/01_project/project_charter.md、docs/02_requirements/product_requirements.md、docs/02_requirements/module_specification.md、docs/02_requirements/requirements_traceability.md、docs/03_design/interface_spec.md 与 register_map.md
 
 约束：
-- 禁止在此阶段讨论具体实现细节
 - 所有需求必须有明确的可验证标准
-- 必须区分功能需求与非功能需求`
-  },
-
-  SPEC: {
-    id: 'mg-phase-spec-001',
-    level: 'phase',
-    phase: 'SPEC',
-    injectMode: 'prepend',
-    version: '2.0.0',
-    updatedAt: '2026-07-30',
-    content: `当前处于【规格定义】阶段。
-
-你的任务是：
-1. 基于需求文档，定义模块级规格（Module Specification）
-2. 明确每个模块的功能边界、接口信号、时序要求
-3. 生成接口定义文档（IDD），包含信号名、位宽、方向、时钟域
-4. 定义模块间通信协议
-5. 使用 doc-repository 技能，更新 docs/03_design/interface_spec.md 与 register_map.md
-
-约束：
-- 必须引用 REQ 阶段的输出，确保规格覆盖所有需求
+- 必须区分功能需求与非功能需求
+- 每条规格必须使用稳定 ID，并在追溯矩阵中关联需求 ID
 - 接口信号必须使用标准命名规范
 - 必须定义每个信号的时钟域归属
-- 禁止在此阶段编写 RTL 代码`
+- 可以讨论实现约束和候选方案，但不得提前编写 RTL 代码`
   },
 
   ARCH: {
@@ -117,7 +97,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 7. 识别 SRAM/ROM/寄存器堆等存储需求；若依赖未指定的 memory compiler 或厂商宏，必须在 architecture.md 中记录宏组织、容量、端口、时序假设、面积/功耗估算口径和待替换物理宏
 
 约束：
-- 必须基于 SPEC 阶段的接口定义
+- 必须基于需求-规格定义阶段冻结的接口与模块规格
 - 框图必须使用 Mermaid 或 ASCII 格式
 - 必须标注关键路径与瓶颈分析
 - 时钟域划分必须清晰标注`

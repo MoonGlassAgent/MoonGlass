@@ -84,39 +84,62 @@ function buildModule(
     )
   }))
 
-  const traces: DesignSignalTrace[] = nets.map((net) => {
-    const bitSet = new Set(net.bits)
-    const drivers: DesignEndpoint[] = []
-    const loads: DesignEndpoint[] = []
-    for (const port of ports) {
-      if (!port.bits.some((bit) => bitSet.has(bit))) continue
+  const driversByBit = new Map<string, DesignEndpoint[]>()
+  const loadsByBit = new Map<string, DesignEndpoint[]>()
+  const addEndpoint = (index: Map<string, DesignEndpoint[]>, bits: string[], endpoint: DesignEndpoint): void => {
+    for (const bit of bits) {
+      const endpoints = index.get(bit)
+      if (endpoints) endpoints.push(endpoint)
+      else index.set(bit, [endpoint])
+    }
+  }
+  for (const port of ports) {
+    const endpoint: DesignEndpoint = {
+      kind: 'port',
+      name: port.name,
+      pin: port.name,
+      direction: port.direction,
+      source: sourceOf(raw.attributes)
+    }
+    if (port.direction === 'input' || port.direction === 'inout') addEndpoint(driversByBit, port.bits, endpoint)
+    if (port.direction === 'output' || port.direction === 'inout') addEndpoint(loadsByBit, port.bits, endpoint)
+  }
+  for (const [cellName, cell] of Object.entries(raw.cells ?? {})) {
+    for (const [pin, rawBits] of Object.entries(cell.connections ?? {})) {
+      const direction = endpointDirection(cell.port_directions?.[pin])
       const endpoint: DesignEndpoint = {
-        kind: 'port',
-        name: port.name,
-        pin: port.name,
-        direction: port.direction,
-        source: net.source ?? sourceOf(raw.attributes)
+        kind: 'cell',
+        name: cellName,
+        pin,
+        direction,
+        source: sourceOf(cell.attributes),
+        cellType: cell.type
       }
-      if (port.direction === 'input' || port.direction === 'inout') drivers.push(endpoint)
-      if (port.direction === 'output' || port.direction === 'inout') loads.push(endpoint)
+      const bits = rawBits.map(bitId)
+      if (direction === 'output' || direction === 'inout') addEndpoint(driversByBit, bits, endpoint)
+      if (direction === 'input' || direction === 'inout' || direction === 'unknown') addEndpoint(loadsByBit, bits, endpoint)
     }
-    for (const [cellName, cell] of Object.entries(raw.cells ?? {})) {
-      for (const [pin, bits] of Object.entries(cell.connections ?? {})) {
-        if (!bits.map(bitId).some((bit) => bitSet.has(bit))) continue
-        const direction = endpointDirection(cell.port_directions?.[pin])
-        const endpoint: DesignEndpoint = {
-          kind: 'cell',
-          name: cellName,
-          pin,
-          direction,
-          source: sourceOf(cell.attributes),
-          cellType: cell.type
-        }
-        if (direction === 'output' || direction === 'inout') drivers.push(endpoint)
-        if (direction === 'input' || direction === 'inout' || direction === 'unknown') loads.push(endpoint)
+  }
+  const endpointsForBits = (index: Map<string, DesignEndpoint[]>, bits: string[]): DesignEndpoint[] => {
+    const found: DesignEndpoint[] = []
+    const seen = new Set<string>()
+    for (const bit of bits) {
+      for (const endpoint of index.get(bit) ?? []) {
+        const key = `${endpoint.kind}\0${endpoint.name}\0${endpoint.pin}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        found.push(endpoint)
       }
     }
-    return { net: net.name, bits: net.bits, drivers, loads }
+    return found
+  }
+  const traces: DesignSignalTrace[] = nets.map((net) => {
+    return {
+      net: net.name,
+      bits: net.bits,
+      drivers: endpointsForBits(driversByBit, net.bits),
+      loads: endpointsForBits(loadsByBit, net.bits)
+    }
   })
 
   return {

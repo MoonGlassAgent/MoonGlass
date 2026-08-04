@@ -6,7 +6,7 @@
  */
 
 import type { ToolDetection } from '@shared/types'
-import { locateTool, run } from './tool-runner'
+import { locateTool, run, toolEnv } from './tool-runner'
 
 type Probe = Omit<ToolDetection, 'found' | 'path' | 'version'> & {
   candidates: string[]
@@ -29,8 +29,28 @@ const TOOL_PROBES: Probe[] = [
   { tool: 'Verible', candidates: ['verible-verilog-lint'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'Verilog/SystemVerilog 语法与风格检查', installUrl: 'https://github.com/chipsalliance/verible/releases' },
   { tool: 'GTKWave', candidates: process.platform === 'win32' ? ['gtkwave.exe', 'gtkwave'] : ['gtkwave'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'VCD/FST 波形查看', installId: OSS_CAD },
   { tool: 'Cocotb', candidates: ['python', 'python3'], versionArgs: ['-c', 'import cocotb; print(cocotb.__version__)'], category: 'verification', importance: 'required', description: '默认 Python 验证框架', installId: 'python-cocotb' },
-  { tool: 'OpenSTA', candidates: ['sta', 'opensta'], versionArgs: ['-version'], category: 'physical', importance: 'recommended', description: '门级静态时序分析', installUrl: 'https://github.com/The-OpenROAD-Project/OpenSTA' },
-  { tool: 'OpenROAD', candidates: ['openroad'], versionArgs: ['-version'], category: 'physical', importance: 'optional', description: '物理感知时序优化与 RTL-to-GDS', installUrl: 'https://github.com/The-OpenROAD-Project/OpenROAD-flow-scripts' }
+  {
+    tool: 'OpenSTA',
+    candidates: ['sta', 'opensta'],
+    versionArgs: ['-version'],
+    category: 'physical',
+    importance: 'recommended',
+    description: process.platform === 'win32'
+      ? '门级静态时序分析；Windows 工具包不包含，需通过 WSL2 或 Docker 配置'
+      : '门级静态时序分析',
+    installUrl: 'https://openroad.readthedocs.io/en/latest/user/Build.html'
+  },
+  {
+    tool: 'OpenROAD',
+    candidates: ['openroad'],
+    versionArgs: ['-version'],
+    category: 'physical',
+    importance: 'optional',
+    description: process.platform === 'win32'
+      ? '物理感知优化与 RTL-to-GDS；Windows 原生不受支持，需使用 WSL2 或 Docker'
+      : '物理感知时序优化与 RTL-to-GDS',
+    installUrl: 'https://openroad.readthedocs.io/en/latest/user/Build.html'
+  }
 ]
 
 async function probeOne(probe: Probe): Promise<ToolDetection> {
@@ -40,7 +60,7 @@ async function probeOne(probe: Probe): Promise<ToolDetection> {
 
   let version: string | undefined
   try {
-    const { stdout, stderr, code } = await run(toolPath, probe.versionArgs)
+    const { stdout, stderr, code } = await run(toolPath, probe.versionArgs, toolEnv(toolPath))
     if (code !== 0 && code !== null) return { ...metadata, found: false, path: toolPath }
     version = (stdout || stderr).trim().split(/\r?\n/)[0]
   } catch {

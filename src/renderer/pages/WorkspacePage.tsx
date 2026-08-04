@@ -153,6 +153,32 @@ function flattenFiles(nodes: Array<{ name: string; path: string; type: 'file' | 
   return out
 }
 
+function buildChangeResponsePrompt(project: ChipProject, targetPhase: Phase): string {
+  const notice = project.phases[targetPhase].changeNotice
+  if (!notice) return `请检查并完成${PHASE_LABELS[targetPhase]}阶段的变更响应。`
+  const taskByPhase: Record<Phase, string> = {
+    REQ_SPEC: '核对需求、规格和需求-规格追溯矩阵，确认变更边界与验收标准。',
+    ARCH: '根据上游变更更新架构、模块划分、接口、时钟复位和相关验证计划。',
+    RTL: '根据最新架构和接口规格检查并更新 RTL、filelist、设计元数据和必要的代码质量证据。',
+    VERIF: '根据最新规格和 RTL 更新验证环境、测试用例、覆盖率计划，并执行相关回归，落盘真实日志和结果。',
+    QA: '执行变更专项质量审查，检查需求-规格-架构-RTL-验证追溯、Lint/CDC/回归证据和检查清单，记录遗留项。',
+    SYNTH: '根据变更后的 RTL 和约束重新生成 SDC、重新执行综合，并更新面积、时序和综合质量证据。'
+  }
+  return `请完成${PHASE_LABELS[targetPhase]}阶段的变更响应。
+
+变更来源：${PHASE_LABELS[notice.sourcePhase]}
+变更时间：${notice.changedAt}
+变更原因：${notice.reason}
+本阶段要求：${taskByPhase[targetPhase]}
+
+要求：
+1. 先读取当前工作区的真实文件和已有证据，判断变更影响范围。
+2. 直接修改需要更新的实际文件，不要只给出建议或文字方案。
+3. 不要删除原有有效产物；如需替换，保留可审计的变更记录。
+4. 调用本阶段适用的工具和技能完成检查，并把日志、报告和结果落盘。
+5. 最后汇总修改文件、执行的检查、真实结果和仍需用户决定的事项。`
+}
+
 // ============================================================
 // 工作区页面
 // ============================================================
@@ -175,13 +201,23 @@ export function WorkspacePage(): React.JSX.Element {
   const [verifLog, setVerifLog] = useState<string[]>([])
   const agentStreaming = useChatStore((s) => s.streaming)
   const sendAgentPrompt = useChatStore((s) => s.send)
+  const ensureAgent = useChatStore((s) => s.ensure)
 
   const reload = useCallback(async () => {
     setProject(await window.moonglass.project.get(projectId))
   }, [projectId])
 
   useEffect(() => { void reload() }, [reload])
-  useEffect(() => { if (!agentStreaming) setTreeTick((t) => t + 1) }, [agentStreaming])
+  useEffect(() => {
+    if (!agentStreaming) {
+      setTreeTick((t) => t + 1)
+      void reload()
+    }
+  }, [agentStreaming, reload])
+  useEffect(() => {
+    const timer = window.setInterval(() => { void reload() }, 2000)
+    return () => window.clearInterval(timer)
+  }, [reload])
   useEffect(() => {
     localStorage.setItem(`moonglass:bottom-height:${projectId}`, String(bottomH))
   }, [bottomH, projectId])
@@ -256,6 +292,49 @@ export function WorkspacePage(): React.JSX.Element {
 
   const appendLog = (msg: string): void => {
     setVerifLog((prev) => [...prev, `[${new Date().toLocaleTimeString()}] ${msg}`])
+  }
+
+  const handleEnterPhase = async (to: Phase): Promise<void> => {
+    if (!project || project.currentPhase === to) return
+    try {
+      const entered = await window.moonglass.phase.enter(projectId, to)
+      if (entered) {
+        setProject(entered)
+        setGate(null)
+        appendLog(`已进入 ${PHASE_LABELS[to]}，后续阶段产物已保留`)
+      }
+    } catch (error) {
+      appendLog(`进入阶段失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const handleRespondChange = async (targetPhase: Phase): Promise<void> => {
+    if (!project || project.phases[targetPhase].changeNotice?.status !== 'pending') return
+    setMainTab('chat')
+    let activeProject = project
+    try {
+      if (project.currentPhase !== targetPhase) {
+        const entered = await window.moonglass.phase.enter(projectId, targetPhase)
+        if (!entered) return
+        activeProject = entered
+        setProject(entered)
+        setGate(null)
+        await ensureAgent(projectId)
+      }
+      appendLog(`开始响应 ${PHASE_LABELS[targetPhase]} 的变更影响`)
+      await sendAgentPrompt(buildChangeResponsePrompt(activeProject, targetPhase))
+      const acknowledged = await window.moonglass.phase.acknowledgeChange(
+        projectId,
+        targetPhase,
+        `已完成 ${PHASE_LABELS[targetPhase]} 的变更响应并提交 Agent 处理结果`
+      )
+      if (acknowledged) {
+        setProject(acknowledged)
+        appendLog(`✅ ${PHASE_LABELS[targetPhase]} 变更响应已完成`)
+      }
+    } catch (error) {
+      appendLog(`变更响应失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   const handleFixGateIssues = async (
@@ -377,7 +456,7 @@ export function WorkspacePage(): React.JSX.Element {
   return (
     <div className="workspace-shell flex h-full flex-col">
       {/* ======== 顶部：项目信息 + 阶段看板 ======== */}
-      <header className="workspace-header shrink-0 border-b border-zinc-200 bg-white px-6 py-4">
+      <header className="workspace-header relative z-30 shrink-0 overflow-visible border-b border-zinc-200 bg-white px-6 py-4">
         <div className="mb-3 flex items-center gap-3">
           <h1 className="text-lg font-bold text-zinc-900">{project.name}</h1>
           <span className="text-sm text-zinc-500">
@@ -401,11 +480,13 @@ export function WorkspacePage(): React.JSX.Element {
         </div>
         <PhaseBoard
           project={project}
+          onEnterPhase={(phase) => void handleEnterPhase(phase)}
           onAdvance={handleAdvance}
           onRollback={handleRollback}
           onFastTrackSynthesis={() => void handleFastTrackSynthesis()}
           onCompleteProject={() => void handleCompleteProject()}
           onFixGateIssues={(phase, results) => void handleFixGateIssues(phase, results)}
+          onRespondChange={(phase) => void handleRespondChange(phase)}
           gate={gate}
         />
 
@@ -490,7 +571,7 @@ export function WorkspacePage(): React.JSX.Element {
               >
                 💬 对话
               </button>
-              <SessionTabs projectId={project.id} />
+              <SessionTabs projectId={project.id} onActivate={() => setMainTab('chat')} />
               {openFiles.map((f) => (
                 <span
                   key={f.path}

@@ -5,7 +5,7 @@
  * VCS / Xcelium 为预留类型，当前仅 Verilator 有真实现。
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import {
   locateTool,
@@ -88,6 +88,44 @@ function findWaveform(dir: string): string | null {
   return null
 }
 
+function windowsExitCode(code: number | null): string {
+  if (code === null) return '未知'
+  return process.platform === 'win32' && code > 255
+    ? `${code} (0x${code.toString(16).toUpperCase().padStart(8, '0')})`
+    : String(code)
+}
+
+async function checkIcarusToolchain(
+  iverilogPath: string,
+  buildDir: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal
+): Promise<void> {
+  const vvpPath = join(dirname(iverilogPath), process.platform === 'win32' ? 'vvp.exe' : 'vvp')
+  if (!existsSync(vvpPath)) throw new Error(`Icarus 工具链不完整：未找到配套运行器 ${vvpPath}`)
+
+  const smokeDir = join(buildDir, '.moonglass-icarus-check')
+  const sourcePath = join(smokeDir, 'smoke.v')
+  const outputPath = join(smokeDir, 'smoke.vvp')
+  mkdirSync(smokeDir, { recursive: true })
+  writeFileSync(sourcePath, 'module smoke; initial begin $display("MOONGLASS_ICARUS_OK"); $finish; end endmodule\n', 'utf-8')
+  try {
+    const compile = await run(iverilogPath, ['-o', outputPath, sourcePath], env, signal, smokeDir, 15_000)
+    if (compile.code !== 0 || !existsSync(outputPath)) {
+      throw new Error(`iverilog 最小编译失败，退出码 ${windowsExitCode(compile.code)}：${(compile.stderr || compile.stdout).trim() || '无输出'}`)
+    }
+    const execute = await run(vvpPath, [outputPath], env, signal, smokeDir, 15_000)
+    if (execute.code !== 0 || !execute.stdout.includes('MOONGLASS_ICARUS_OK')) {
+      throw new Error(`vvp 最小运行失败，退出码 ${windowsExitCode(execute.code)}：${(execute.stderr || execute.stdout).trim() || '无输出'}`)
+    }
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error)
+    throw new Error(`Icarus 工具链自检未通过。MoonGlass 已绑定 ${dirname(iverilogPath)} 并隔离冲突的 MinGW DLL；请在“设置 > 工具链”重新安装 OSS CAD Suite。\n${detail}`)
+  } finally {
+    rmSync(smokeDir, { recursive: true, force: true })
+  }
+}
+
 /** 使用 cocotb 2.x Python Runner 运行测试，并统一归档日志、JUnit、结果和波形。 */
 export async function runCocotbSimulation(options: CocotbSimOptions): Promise<VerilatorSimResult> {
   const simulator = options.simulator ?? 'icarus'
@@ -119,6 +157,9 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
   const env = toolEnv(simulatorPath)
   env.PYTHONPATH = `${resolve(options.testDir)}${delimiter}${env.PYTHONPATH ?? ''}`
   env.COCOTB_RESULTS_FILE = resultsXml
+  if (simulator === 'icarus') {
+    await checkIcarusToolchain(simulatorPath, options.buildDir, env, options.signal)
+  }
   const execution = await run(
     python,
     [runnerPath],

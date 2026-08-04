@@ -17,6 +17,8 @@ import { AgentService } from '../services/AgentService'
 import { FileService } from '../services/FileService'
 import { DesignBrowserService } from '../services/DesignBrowserService'
 import { ProcessLibraryService } from '../services/ProcessLibraryService'
+import { IpLibraryService } from '../services/IpLibraryService'
+import { join } from 'node:path'
 
 export interface ApplicationServices {
   lifecycle: LifecycleManager
@@ -31,6 +33,7 @@ export interface ApplicationServices {
   files: FileService
   designBrowser: DesignBrowserService
   processLibraries: ProcessLibraryService
+  ipLibraries: IpLibraryService
 }
 
 export function createApplication(): ApplicationServices {
@@ -48,6 +51,11 @@ export function createApplication(): ApplicationServices {
   const files = new FileService()
   const designBrowser = new DesignBrowserService(userDataDir)
   const processLibraries = new ProcessLibraryService(userDataDir)
+  const resourcesDir = app.isPackaged ? process.resourcesPath : process.cwd()
+  const builtinIpRoot = app.isPackaged
+    ? join(resourcesDir, 'ip-library')
+    : join(resourcesDir, 'resources', 'moonglass', 'ip-library')
+  const ipLibraries = new IpLibraryService(userDataDir, builtinIpRoot)
 
   // 注册顺序即启动顺序；db 必须在 projects 之前启动
   lifecycle
@@ -62,6 +70,7 @@ export function createApplication(): ApplicationServices {
     .register(files)
     .register(designBrowser)
     .register(processLibraries)
+    .register(ipLibraries)
 
-  return { lifecycle, db, projects, phaseEngine, python, eda, llm, modelStore, agent, files, designBrowser, processLibraries }
+  return { lifecycle, db, projects, phaseEngine, python, eda, llm, modelStore, agent, files, designBrowser, processLibraries, ipLibraries }
 }

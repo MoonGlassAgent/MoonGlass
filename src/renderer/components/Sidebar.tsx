@@ -35,7 +35,7 @@ export function Sidebar(): React.JSX.Element {
         <div className="logo-preview" role="tooltip">
           <img src={logoUrl} alt="" />
           <strong>MoonGlass</strong>
-          <span>ASIC Design Workspace</span>
+          <span>ASIC Design Agent</span>
         </div>
       </div>
       {NAV_ITEMS.map((item) => {

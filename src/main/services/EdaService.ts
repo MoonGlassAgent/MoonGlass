@@ -12,13 +12,14 @@ import { delimiter, dirname, extname, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { detectToolchain, locateTool } from '@moonglass/eda-bridge'
-import type { ToolDetection, ToolInstallResult, WaveformOpenResult } from '@shared/types'
+import type { ToolDetection, ToolInstallJob, ToolInstallResult, WaveformOpenResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
 import { projectWorkspaceDir } from '../core/paths'
 
 export class EdaService implements MoonGlassService {
   readonly name = 'eda-service'
   private readonly toolchainRoot: string
+  private readonly installJobs = new Map<string, ToolInstallJob>()
   private static readonly REQUEST_TIMEOUT_MS = 30_000
   private static readonly DOWNLOAD_TIMEOUT_MS = 30 * 60_000
 
@@ -40,7 +41,47 @@ export class EdaService implements MoonGlassService {
     return detectToolchain()
   }
 
-  async installBundle(id: string): Promise<ToolInstallResult> {
+  startInstallBundle(id: string): ToolInstallJob {
+    const current = this.installJobs.get(id)
+    if (current?.status === 'running') return current
+    const job: ToolInstallJob = {
+      id,
+      status: 'running',
+      message: id === 'python-cocotb' ? '正在通过 pip 安装 Cocotb…' : '正在查询 OSS CAD Suite 下载地址…',
+      startedAt: new Date().toISOString()
+    }
+    this.installJobs.set(id, job)
+    void this.installBundle(id).then((result) => {
+      this.installJobs.set(id, {
+        id,
+        status: result.ok ? 'completed' : 'failed',
+        message: result.message,
+        path: result.path,
+        startedAt: job.startedAt,
+        finishedAt: new Date().toISOString()
+      })
+    }).catch((error) => {
+      this.installJobs.set(id, {
+        id,
+        status: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+        startedAt: job.startedAt,
+        finishedAt: new Date().toISOString()
+      })
+    })
+    return job
+  }
+
+  getInstallStatus(id: string): ToolInstallJob {
+    return this.installJobs.get(id) ?? { id, status: 'idle', message: '尚未开始安装' }
+  }
+
+  private updateInstallMessage(id: string, message: string): void {
+    const current = this.installJobs.get(id)
+    if (current?.status === 'running') this.installJobs.set(id, { ...current, message })
+  }
+
+  private async installBundle(id: string): Promise<ToolInstallResult> {
     if (id === 'python-cocotb') return this.installCocotb()
     if (id !== 'oss-cad-suite') return { ok: false, message: `未知工具包: ${id}` }
     if (process.platform !== 'win32' || process.arch !== 'x64') {
@@ -60,12 +101,14 @@ export class EdaService implements MoonGlassService {
       if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
 
       await rm(suiteDir, { recursive: true, force: true })
+      this.updateInstallMessage(id, '正在下载 OSS CAD Suite，请保持网络连接…')
       const download = await fetch(asset.browser_download_url, {
         headers: { 'User-Agent': 'MoonGlass' },
         signal: AbortSignal.timeout(EdaService.DOWNLOAD_TIMEOUT_MS)
       })
       if (!download.ok || !download.body) throw new Error(`工具包下载失败: HTTP ${download.status}`)
       await pipeline(Readable.fromWeb(download.body as never), createWriteStream(archivePath))
+      this.updateInstallMessage(id, '下载完成，正在后台解压工具包…')
       await this.runProcess('tar', ['-xzf', archivePath, '-C', this.toolchainRoot])
       await rm(archivePath, { force: true })
       if (!existsSync(join(suiteDir, 'bin'))) throw new Error('工具包解压完成，但未找到 bin 目录')
@@ -82,6 +125,7 @@ export class EdaService implements MoonGlassService {
     const python = await locateTool(process.platform === 'win32' ? ['python.exe', 'python', 'python3.exe'] : ['python3', 'python'])
     if (!python) return { ok: false, message: '未找到可用的 Python，请先安装 Python 3' }
     try {
+      this.updateInstallMessage('python-cocotb', '正在通过 pip 安装或升级 Cocotb 组件…')
       await this.runProcess(python, ['-m', 'pip', 'install', '--user', '--upgrade', 'cocotb', 'cocotb-bus', 'cocotb-coverage'])
       const check = await this.runProcess(python, ['-c', 'import cocotb; print(cocotb.__version__)'], true)
       return { ok: true, message: `Cocotb 安装完成，版本 ${check.trim()}`, path: python }
@@ -128,10 +172,12 @@ export class EdaService implements MoonGlassService {
   private activateManagedTools(): void {
     const bin = join(this.toolchainRoot, 'oss-cad-suite', 'bin')
     if (!existsSync(bin)) return
-    const current = process.env.PATH ?? ''
-    if (!current.toLowerCase().split(delimiter).includes(bin.toLowerCase())) {
-      process.env.PATH = `${bin}${delimiter}${current}`
-    }
+    const lib = join(this.toolchainRoot, 'oss-cad-suite', 'lib')
+    const selected = new Set([bin.toLowerCase(), lib.toLowerCase()])
+    const current = (process.env.PATH ?? '').split(delimiter)
+      .filter(Boolean)
+      .filter((entry) => !selected.has(resolve(entry).toLowerCase()))
+    process.env.PATH = [bin, lib, ...current].join(delimiter)
   }
 
   private runProcess(command: string, args: string[], captureOutput?: false): Promise<void>

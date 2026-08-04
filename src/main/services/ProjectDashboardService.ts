@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
 import { basename, join, relative } from 'node:path'
-import type { ChipProject, Phase } from '@shared/types'
+import { PHASE_ORDER, type ChipProject, type Phase } from '@shared/types'
 
 export interface DashboardResult {
   path: string
@@ -124,7 +124,7 @@ main{max-width:1180px;margin:0 auto;padding:24px}.summary{display:grid;grid-temp
 .metric strong{display:block;margin:5px 0;font-size:23px}.band{margin:0 -24px;padding:22px 24px;border-top:1px solid #d4d4d8}
 .band:nth-child(even){background:#fff}h2{margin:0 0 14px;font-size:18px}table{width:100%;border-collapse:collapse;background:#fff}
 th,td{text-align:left;padding:9px 10px;border-bottom:1px solid #e4e4e7}th{color:#52525b;background:#fafafa}
-.phase-row{display:grid;grid-template-columns:repeat(7,1fr);gap:8px}.phase{padding:10px 6px;border:1px solid #d4d4d8;border-radius:5px;text-align:center}
+.phase-row{display:grid;grid-template-columns:repeat(6,1fr);gap:8px}.phase{padding:10px 6px;border:1px solid #d4d4d8;border-radius:5px;text-align:center}
 .completed{border-color:#10b981;background:#ecfdf5;color:#047857}.skipped{border-color:#f59e0b;background:#fffbeb;color:#b45309}
 .active{border-color:#3b82f6;background:#eff6ff;color:#1d4ed8}.muted{color:#71717a}.notice{padding:10px;border-left:3px solid #f59e0b;background:#fffbeb}
 footer{max-width:1180px;margin:0 auto;padding:18px 24px 28px;color:#71717a}@media(max-width:760px){.summary{grid-template-columns:1fr 1fr}.phase-row{grid-template-columns:1fr}.band{margin:0}}
@@ -132,13 +132,13 @@ footer{max-width:1180px;margin:0 auto;padding:18px 24px 28px;color:#71717a}@medi
 <header><h1>${escapeHtml(project.name)}</h1><p>${escapeHtml(project.description ?? 'MoonGlass ASIC 项目总体报告')} · ${completed ? '项目完成' : '项目进行中'}</p></header>
 <main>
 <section class="summary">
-${metric('项目进度', `${resolvedPhases}/7`, completed ? '已完成' : `当前 ${project.currentPhase}`)}
+${metric('项目进度', `${resolvedPhases}/${PHASE_ORDER.length}`, completed ? '已完成' : `当前 ${project.currentPhase}`)}
 ${metric('RTL 规模', `${rtlLines.toLocaleString()} 行`, `${rtlFiles.length} 文件 / ${modules.size} 模块`)}
 ${metric('验证运行', resultFiles.length, `${passedRuns} 通过 / ${failedRuns} 失败`)}
 ${metric('综合单元', synthesis.cells, synthesis.area === '暂无' ? '无工艺映射面积' : `面积 ${synthesis.area}`)}
 </section>
 <section class="band"><h2>阶段状态</h2><div class="phase-row">
-${(['REQ','SPEC','ARCH','RTL','VERIF','QA','SYNTH'] as Phase[]).map((phase) => `<div class="phase ${project.phases[phase].status}"><strong>${phase}</strong><br>${phaseStatus(project, phase)}</div>`).join('')}
+${PHASE_ORDER.map((phase) => `<div class="phase ${project.phases[phase].status}"><strong>${phase}</strong><br>${phaseStatus(project, phase)}</div>`).join('')}
 </div></section>
 <section class="band"><h2>核心规格</h2><table><tbody>${specRows.map(([key,value]) => `<tr><th>${escapeHtml(key)}</th><td>${escapeHtml(value)}</td></tr>`).join('')}</tbody></table></section>
 <section class="band"><h2>项目规模</h2><div class="summary">

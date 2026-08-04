@@ -1,6 +1,6 @@
 # MoonGlass 开发进展报告
 
-> 报告日期：2026-07-30
+> 报告日期：2026-08-03
 > 版本：v0.3.0
 > 当前阶段：Phase 4（RTL / 验证）
 > 状态：可构建、可打包、基础功能可运行
@@ -8,6 +8,13 @@
 ---
 
 ## 1. 本阶段完成的工作
+
+### 1.0 需求与规格阶段正式合并
+
+- 将 `REQ` 与 `SPEC` 合并为 `REQ_SPEC`（需求-规格定义），全流程由 7 阶段调整为 6 阶段。
+- 新项目直接使用六阶段模型；旧项目启动时自动归并两个阶段的状态、交付物、Agent 上下文、评审和门禁记录。
+- `REQ_SPEC → ARCH` 门禁同时检查需求、模块规格、接口规格及需求-规格追溯矩阵。
+- 需求-规格矩阵继续保留，并要求每条需求 ID 映射至少一个 `SPEC-*` 规格 ID。
 
 ### 1.1 文档与版本同步
 
@@ -81,6 +88,25 @@
 - `LlmProviderService.test()` 调用 Provider `/models` 端点验证 API Key，不消耗 token。
 - `SettingsPage.tsx` 增加"测试连接"按钮与结果展示。
 
+### 1.9 IP 模板库首个真实样例
+
+- 新增 `resources/moonglass/ip-library/utility/axi_lite_timer/`：
+  - `rtl/axi_lite_timer.sv`：AXI-Lite 定时器 RTL。
+  - `verification/tb_axi_lite_timer.sv`：Icarus smoke testbench。
+  - `docs/register-map.md`：寄存器说明。
+  - `docs/verification-plan.md`：最小验证计划与质量证据清单。
+  - `metadata.json`：模板元数据。
+- 新增 `pnpm smoke:axi-lite-timer`，验证 lint、Icarus 编译仿真、VCD 与 `result.json` 证据生成。
+
+### 1.10 IP 模板库导入与索引
+
+- 新增 `IpLibraryService`，统一扫描内置库与用户登记的本地 IP 库。
+- 支持用户自定义 IP 库名称、类型和目录路径；重复路径会更新名称/类型并重建索引。
+- 索引器优先读取 `metadata.json` / `ip.json`，否则按 `rtl/`、`.v/.sv`、docs、verification、constraints 自动识别 IP 条目。
+- 索引结果持久化到 `userData/moonglass/ip-libraries/libraries.json`，统一输出 `index.json` 供 Agent 与流程看板读取。
+- `IpLibraryPage` 从静态占位改为真实导入表单、库列表、分类视图、刷新/重建索引/移除登记/打开目录。
+- 新增 `pnpm smoke:ip-library`，覆盖内置样例扫描、用户库导入、自定义类型与统一索引落盘。
+
 ---
 
 ## 2. 验证结果
@@ -97,7 +123,9 @@
 | 测试 | 脚本 | 结果 |
 |------|------|------|
 | 数据库迁移 | `scripts/db-migration-smoke.mjs` | ✅ |
+| IP 库索引 | `scripts/ip-library-service-smoke.mjs` | ✅ |
 | EDA 门禁 | `scripts/eda-gate-smoke.mjs` | ✅ |
+| AXI-Lite Timer 样例 | `scripts/axi-lite-timer-smoke.mjs` | ✅ |
 | Pi 工具集 | `scripts/pi-tools-smoke.mjs` | ✅ |
 | RTL 引擎 | `scripts/rtl-engine-smoke.mjs` | ✅ |
 
@@ -173,7 +201,7 @@ Pi 子进程无法解析 `workspace:*` 包，因此 `AgentService.start()` 运�
 
 ### 5.2 中优先级
 
-4. **IP 模板库内容填充**：当前 `resources/moonglass/ip-library/` 为占位，需要添加真实 IP 模板。
+4. **IP 模板库内容继续填充**：当前已有导入/索引能力与 `utility/axi_lite_timer` 样例，需要继续扩展 UART/SPI/FIFO/arbiter 等模板。
 5. **知识库 / RAG**：接入 `sqlite-vec` 实现本地向量检索。
 6. **RTL→VERIF 闭环 GUI 反馈**：将 lint/综合/仿真结果以面板形式展示，而非仅依赖 Agent 文本输出。
 
