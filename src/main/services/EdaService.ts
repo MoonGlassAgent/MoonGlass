@@ -6,8 +6,9 @@
  */
 
 import { spawn } from 'node:child_process'
-import { createWriteStream, existsSync, statSync } from 'node:fs'
+import { closeSync, createWriteStream, existsSync, openSync, readFileSync, statSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
 import { delimiter, dirname, extname, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
@@ -156,13 +157,62 @@ export class EdaService implements MoonGlassService {
     }
 
     try {
-      const child = spawn(viewer, [filePath], {
-        cwd: dirname(filePath),
-        detached: true,
-        stdio: 'ignore',
-        windowsHide: false
+      await new Promise<void>((resolveLaunch, rejectLaunch) => {
+        const viewerBin = dirname(viewer)
+        const viewerRoot = resolve(viewerBin, '..')
+        const viewerEnv: NodeJS.ProcessEnv = {
+          ...process.env,
+          // GTK 的图像加载器还依赖工具包之外的系统 DLL；只前置自身目录，不做 MinGW 路径净化。
+          PATH: `${viewerBin}${delimiter}${join(viewerRoot, 'lib')}${delimiter}${process.env.PATH ?? ''}`,
+          YOSYSHQ_ROOT: `${viewerRoot}${sep}`,
+          GTK_EXE_PREFIX: viewerRoot,
+          GTK_DATA_PREFIX: viewerRoot,
+          GDK_PIXBUF_MODULEDIR: join(viewerRoot, 'lib', 'gdk-pixbuf-2.0', '2.10.0', 'loaders'),
+          GDK_PIXBUF_MODULE_FILE: join(viewerRoot, 'lib', 'gdk-pixbuf-2.0', '2.10.0', 'loaders.cache')
+        }
+        const pixbufQuery = join(viewerRoot, 'lib', process.platform === 'win32' ? 'gdk-pixbuf-query-loaders.exe' : 'gdk-pixbuf-query-loaders')
+        const prepare = existsSync(pixbufQuery)
+          ? this.runProcess(pixbufQuery, ['--update-cache'], false, viewerEnv)
+          : Promise.resolve()
+
+        void prepare.then(() => {
+        const startupLog = join(tmpdir(), `moonglass-gtkwave-${Date.now()}-${Math.random().toString(16).slice(2)}.log`)
+        const startupLogFd = openSync(startupLog, 'w')
+        let child: ReturnType<typeof spawn>
+        try {
+          child = spawn(viewer, [filePath], {
+            cwd: dirname(filePath),
+            detached: true,
+            stdio: ['ignore', 'ignore', startupLogFd],
+            windowsHide: false,
+            env: viewerEnv
+          })
+        } finally {
+          closeSync(startupLogFd)
+        }
+        let settled = false
+        const finish = (error?: Error): void => {
+          if (settled) return
+          settled = true
+          clearTimeout(readyTimer)
+          if (error) rejectLaunch(error)
+          else {
+            child.unref()
+            child.once('exit', () => { void rm(startupLog, { force: true }) })
+            resolveLaunch()
+          }
+        }
+        const readyTimer = setTimeout(() => finish(), 2500)
+        child.once('error', (error) => finish(error))
+        child.once('exit', (code, signal) => {
+          if (!settled) {
+            const detail = existsSync(startupLog) ? readFileSync(startupLog, 'utf-8').trim().slice(-4000) : ''
+            void rm(startupLog, { force: true })
+            finish(new Error(`GTKWave 启动后立即退出（code=${code ?? 'null'}, signal=${signal ?? 'null'}）${detail ? `：${detail}` : ''}`))
+          }
+        })
+        }).catch(rejectLaunch)
       })
-      child.unref()
       return { ok: true, viewer }
     } catch (err) {
       return { ok: false, error: err instanceof Error ? err.message : String(err) }
@@ -180,11 +230,11 @@ export class EdaService implements MoonGlassService {
     process.env.PATH = [bin, lib, ...current].join(delimiter)
   }
 
-  private runProcess(command: string, args: string[], captureOutput?: false): Promise<void>
-  private runProcess(command: string, args: string[], captureOutput: true): Promise<string>
-  private runProcess(command: string, args: string[], captureOutput = false): Promise<void | string> {
+  private runProcess(command: string, args: string[], captureOutput?: false, env?: NodeJS.ProcessEnv): Promise<void>
+  private runProcess(command: string, args: string[], captureOutput: true, env?: NodeJS.ProcessEnv): Promise<string>
+  private runProcess(command: string, args: string[], captureOutput = false, env?: NodeJS.ProcessEnv): Promise<void | string> {
     return new Promise((resolvePromise, reject) => {
-      const child = spawn(command, args, { windowsHide: true })
+      const child = spawn(command, args, { windowsHide: true, env })
       let stdout = ''
       let stderr = ''
       child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-8000) })

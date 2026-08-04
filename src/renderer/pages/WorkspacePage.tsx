@@ -199,6 +199,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
   const [treeTick, setTreeTick] = useState(0)
   const [verifLog, setVerifLog] = useState<string[]>([])
+  const [fileNotice, setFileNotice] = useState<{ ok: boolean; text: string } | null>(null)
   const agentStreaming = useChatStore((s) => s.streaming)
   const sendAgentPrompt = useChatStore((s) => s.send)
   const ensureAgent = useChatStore((s) => s.ensure)
@@ -224,13 +225,21 @@ export function WorkspacePage(): React.JSX.Element {
 
   const openFile = async (relPath: string): Promise<void> => {
     if (/\.(vcd|fst)$/i.test(relPath)) {
-      const result = await window.moonglass.eda.openWaveform(projectId, relPath)
-      appendLog(
-        result.ok
-          ? `波形已用 GTKWave 打开: ${relPath}`
-          : `波形打开失败: ${result.error ?? relPath}`
-      )
-      if (result.ok) return
+      try {
+        const result = await window.moonglass.eda.openWaveform(projectId, relPath)
+        const text = result.ok
+          ? `已用 GTKWave 打开：${relPath}`
+          : `波形打开失败：${result.error ?? relPath}`
+        appendLog(text)
+        setFileNotice({ ok: result.ok, text })
+        window.setTimeout(() => setFileNotice(null), 5000)
+      } catch (error) {
+        const text = `波形打开失败：${error instanceof Error ? error.message : String(error)}`
+        appendLog(text)
+        setFileNotice({ ok: false, text })
+        window.setTimeout(() => setFileNotice(null), 5000)
+      }
+      return
     }
     if (shouldOpenExternally(relPath)) {
       const opened = await window.moonglass.fs.openExternal(projectId, relPath)
@@ -455,6 +464,13 @@ export function WorkspacePage(): React.JSX.Element {
 
   return (
     <div className="workspace-shell flex h-full flex-col">
+      {fileNotice && (
+        <div className={`fixed right-5 top-5 z-[100] max-w-xl rounded border px-4 py-2 text-sm shadow-lg ${
+          fileNotice.ok ? 'border-emerald-300 bg-emerald-50 text-emerald-800' : 'border-red-300 bg-red-50 text-red-700'
+        }`}>
+          {fileNotice.text}
+        </div>
+      )}
       {/* ======== 顶部：项目信息 + 阶段看板 ======== */}
       <header className="workspace-header relative z-30 shrink-0 overflow-visible border-b border-zinc-200 bg-white px-6 py-4">
         <div className="mb-3 flex items-center gap-3">

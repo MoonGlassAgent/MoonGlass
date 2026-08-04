@@ -6,7 +6,7 @@
  */
 
 import { useCallback, useEffect, useState } from 'react'
-import { ChevronDown, ChevronRight, FileCode2, Folder, FolderOpen, RefreshCw } from 'lucide-react'
+import { Activity, ChevronDown, ChevronRight, FileCode2, Folder, FolderOpen, RefreshCw } from 'lucide-react'
 import type { FileTreeNode } from '@shared/types'
 
 interface FileTreeProps {
@@ -110,16 +110,30 @@ function TreeNode({
 
   return (
     <li>
-      <button
-        onDoubleClick={() => onOpenFile(node.path)}
-        title={`${node.path}（双击打开）`}
-        className="flex w-full items-center gap-1 rounded px-1 py-0.5 text-left font-mono text-zinc-600 hover:bg-zinc-100"
-        style={indent}
-      >
-        <span className="w-[13px] shrink-0" />
-        <FileCode2 size={14} className="shrink-0 text-sky-600" />
-        <span className="truncate">{node.name}</span>
-      </button>
+      <div className="group flex w-full items-center rounded hover:bg-zinc-100">
+        <button
+          onClick={(event) => {
+            if (event.detail >= 2) onOpenFile(node.path)
+          }}
+          title={`${node.path}（双击打开）`}
+          className="flex min-w-0 flex-1 items-center gap-1 px-1 py-0.5 text-left font-mono text-zinc-600"
+          style={indent}
+        >
+          <span className="w-[13px] shrink-0" />
+          <FileCode2 size={14} className="shrink-0 text-sky-600" />
+          <span className="truncate">{node.name}</span>
+        </button>
+        {/\.(?:fst|vcd)$/i.test(node.name) && (
+          <button
+            type="button"
+            onClick={() => onOpenFile(node.path)}
+            title="用 GTKWave 打开波形"
+            className="mr-1 shrink-0 rounded p-0.5 text-emerald-600 opacity-70 hover:bg-emerald-50 hover:opacity-100"
+          >
+            <Activity size={14} />
+          </button>
+        )}
+      </div>
     </li>
   )
 }
