@@ -5,7 +5,7 @@
  */
 
 import { Link } from '@tanstack/react-router'
-import { Trash2 } from 'lucide-react'
+import { Folder, Trash2 } from 'lucide-react'
 import { PHASE_LABELS, PHASE_ORDER, type ChipProject } from '@shared/types'
 
 interface ProjectCardProps {
@@ -36,6 +36,13 @@ export function ProjectCard({ project, onDelete }: ProjectCardProps): React.JSX.
         {project.description && (
           <p className="mb-3 line-clamp-2 text-sm text-zinc-600">{project.description}</p>
         )}
+        <div
+          className="mb-3 flex min-w-0 items-center gap-1.5 text-xs text-zinc-500"
+          title={project.workspacePath ?? 'MoonGlass 默认项目目录'}
+        >
+          <Folder size={13} className="shrink-0" />
+          <span className="truncate">{project.workspacePath ?? 'MoonGlass 默认项目目录'}</span>
+        </div>
         <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-zinc-200">
           <div className="h-full rounded-full bg-emerald-500" style={{ width: `${progress}%` }} />
         </div>

@@ -103,6 +103,8 @@ export interface ChipProject {
   id: string
   name: string
   description?: string
+  /** 项目工作目录绝对路径；旧项目缺省时继续使用 MoonGlass 默认 workspace。 */
+  workspacePath?: string
   currentPhase: Phase
   phases: Record<Phase, PhaseState>
   gitRepo?: string

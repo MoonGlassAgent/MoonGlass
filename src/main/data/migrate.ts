@@ -7,7 +7,7 @@
 
 import type { Database } from 'better-sqlite3'
 
-const CURRENT_VERSION = 2
+const CURRENT_VERSION = 3
 
 const MIGRATIONS: Array<{ version: number; sql: string }> = [
   {
@@ -114,6 +114,12 @@ const MIGRATIONS: Array<{ version: number; sql: string }> = [
       UPDATE gate_checks SET phase = 'REQ_SPEC' WHERE phase IN ('REQ', 'SPEC');
       UPDATE agent_conversations SET phase = 'REQ_SPEC' WHERE phase IN ('REQ', 'SPEC');
       UPDATE prompt_templates SET phase = 'REQ_SPEC' WHERE phase IN ('REQ', 'SPEC');
+    `
+  },
+  {
+    version: 3,
+    sql: `
+      ALTER TABLE chip_projects ADD COLUMN workspace_path TEXT;
     `
   }
 ]

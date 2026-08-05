@@ -9,13 +9,15 @@ import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import type { FileContentResult, FileTreeNode } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
-import { projectWorkspaceDir } from '../core/paths'
+import type { ProjectService } from './ProjectService'
 
 /** 单文件读取上限（超出截断展示） */
 const READ_MAX_BYTES = 256 * 1024
 
 export class FileService implements MoonGlassService {
   readonly name = 'file-service'
+
+  constructor(private readonly projects: ProjectService) {}
 
   start(): void {
     // 无常驻资源
@@ -27,7 +29,7 @@ export class FileService implements MoonGlassService {
 
   /** 扫描工作目录文件树（跳过隐藏项与 node_modules，目录在前按名称排序） */
   tree(projectId: string): FileTreeNode[] {
-    const root = projectWorkspaceDir(projectId)
+    const root = this.projects.workspaceDir(projectId)
     if (!existsSync(root)) return []
     return this.scanDir(root, root)
   }
@@ -72,7 +74,7 @@ export class FileService implements MoonGlassService {
 
   /** 将项目相对路径安全解析为绝对文件路径，拒绝目录穿越与不存在的文件。 */
   resolveProjectFile(projectId: string, relPath: string): string | null {
-    const root = resolve(projectWorkspaceDir(projectId))
+    const root = resolve(this.projects.workspaceDir(projectId))
     const full = resolve(root, relPath)
     if (full !== root && !full.startsWith(root + sep)) return null
     if (!existsSync(full) || !statSync(full).isFile()) return null

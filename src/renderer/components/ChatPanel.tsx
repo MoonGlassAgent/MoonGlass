@@ -209,6 +209,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   } = useChatStore()
   const [input, setInput] = useState('')
   const [providers, setProviders] = useState<LlmProviderConfig[]>([])
+  const [providerHint, setProviderHint] = useState('')
   const [ensuring, setEnsuring] = useState(false)
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -217,9 +218,27 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     void ensure(projectId).finally(() => setEnsuring(false))
   }, [ensure, projectId, phase])
 
-  useEffect(() => {
-    void window.moonglass.llm.list().then((list) => setProviders(list.filter((p) => p.enabled && p.apiKey)))
+  const refreshProviders = useCallback(async (): Promise<void> => {
+    const list = await window.moonglass.llm.list()
+    const ready = list.filter((p) => p.enabled && p.apiKey.trim() && p.models.length > 0)
+    setProviders(ready)
+    const configuredButDisabled = list.some((p) => !p.enabled && p.apiKey.trim() && p.models.length > 0)
+    setProviderHint(configuredButDisabled
+      ? '检测到已保存但尚未启用的模型服务。请在设置中打开“启用”开关。'
+      : '还没有可用的大模型 Provider。请配置 API Key、模型 ID，并启用该 Provider。')
   }, [])
+
+  useEffect(() => {
+    void refreshProviders()
+    const handleConfigurationChanged = (): void => {
+      setEnsuring(true)
+      void refreshProviders()
+        .then(() => ensure(projectId))
+        .finally(() => setEnsuring(false))
+    }
+    window.addEventListener('moonglass:llm-config-changed', handleConfigurationChanged)
+    return () => window.removeEventListener('moonglass:llm-config-changed', handleConfigurationChanged)
+  }, [ensure, projectId, refreshProviders])
 
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
@@ -245,12 +264,13 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         <div className="max-w-md rounded-lg border border-dashed border-zinc-300 p-8 text-center text-zinc-500">
           <div className="mb-2 text-3xl">🤖</div>
           <p className="font-medium text-zinc-700">{PHASE_LABELS[phase]}阶段 Agent 已就绪</p>
-          <p className="mt-2 text-sm">
-            还没有可用的大模型 Provider。请先到
+          <p className="mt-2 text-sm">{providerHint || '正在读取模型服务配置…'}</p>
+          <p className="mt-1 text-sm">
+            前往
             <Link to="/settings" className="mx-1 text-blue-600 underline">
               设置 → 模型服务
             </Link>
-            启用一个 Provider 并配置 API Key。
+            管理 Provider 配置。
           </p>
         </div>
       </div>

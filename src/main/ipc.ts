@@ -8,7 +8,6 @@ import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
 import { IPC } from '@shared/ipc-contract'
 import type { IpLibraryImportInput, LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
-import { projectWorkspaceDir } from './core/paths'
 import { pathToFileURL } from 'node:url'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
 
@@ -20,9 +19,23 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(
     IPC.Project.Create,
-    (_e, input: { name: string; description?: string; edaToolchain?: string }) =>
+    (_e, input: { name: string; description?: string; edaToolchain?: string; workspacePath?: string }) =>
       projects.create(input)
   )
+
+  ipcMain.handle(IPC.Project.ChooseDirectory, async (event) => {
+    const owner = BrowserWindow.fromWebContents(event.sender)
+    const result = owner
+      ? await dialog.showOpenDialog(owner, {
+          title: '选择项目工作目录',
+          properties: ['openDirectory', 'createDirectory']
+        })
+      : await dialog.showOpenDialog({
+          title: '选择项目工作目录',
+          properties: ['openDirectory', 'createDirectory']
+        })
+    return result.canceled || result.filePaths.length === 0 ? null : result.filePaths[0]
+  })
 
   ipcMain.handle(IPC.Project.Get, (_e, id: string) => projects.get(id))
 
@@ -36,7 +49,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Project.GenerateDashboard, async (_e, id: string) => {
     const project = projects.get(id)
     if (!project) throw new Error(`项目不存在: ${id}`)
-    const result = generateProjectDashboard(project, projectWorkspaceDir(id))
+    const result = generateProjectDashboard(project, projects.workspaceDir(id))
     const openError = await shell.openPath(result.path)
     return { ...result, opened: openError === '' }
   })
@@ -47,7 +60,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     if (!project) return null
     // 运行门禁检查（Error 级失败阻断推进；结果落库供 UI 展示）
     const results = await phaseEngine.runGateChecks(project, to, {
-      workspaceDir: projectWorkspaceDir(projectId)
+      workspaceDir: projects.workspaceDir(projectId)
     })
     project.phases[project.currentPhase].gateCheckResults = results
     if (phaseEngine.isBlocked(results)) {
@@ -85,7 +98,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     const project = projects.get(projectId)
     if (!project) return null
     const results = await phaseEngine.runGateChecks(project, to, {
-      workspaceDir: projectWorkspaceDir(projectId)
+      workspaceDir: projects.workspaceDir(projectId)
     })
     // 结果落库供展示
     project.phases[project.currentPhase].gateCheckResults = results
@@ -100,7 +113,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   })
 
   // ==================== EDA ====================
-  ipcMain.handle(IPC.Eda.DetectTools, () => eda.detectTools())
+  ipcMain.handle(IPC.Eda.DetectTools, (_e, force?: boolean) => eda.detectTools(force === true))
   ipcMain.handle(IPC.Eda.InstallBundle, (_e, id: string) => eda.startInstallBundle(id))
   ipcMain.handle(IPC.Eda.GetInstallStatus, (_e, id: string) => eda.getInstallStatus(id))
   ipcMain.handle(IPC.Eda.OpenInstallPage, async (_e, url: string) => {
@@ -212,15 +225,15 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   // ==================== RTL Design Browser ====================
   ipcMain.handle(IPC.DesignBrowser.ListTops, (_e, projectId: string) =>
-    designBrowser.listTopModules(projectWorkspaceDir(projectId))
+    designBrowser.listTopModules(projects.workspaceDir(projectId))
   )
   ipcMain.handle(IPC.DesignBrowser.Elaborate, (_e, projectId: string, topModule: string) =>
-    designBrowser.elaborate(projectId, projectWorkspaceDir(projectId), topModule)
+    designBrowser.elaborate(projectId, projects.workspaceDir(projectId), topModule)
   )
   ipcMain.handle(IPC.DesignBrowser.GetCached, (_e, projectId: string) =>
     designBrowser.getCached(projectId)
   )
   ipcMain.handle(IPC.DesignBrowser.ReadSource, (_e, projectId: string, source: string) =>
-    designBrowser.readSource(projectWorkspaceDir(projectId), source)
+    designBrowser.readSource(projects.workspaceDir(projectId), source)
   )
 }

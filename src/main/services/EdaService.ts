@@ -6,7 +6,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { closeSync, createWriteStream, existsSync, openSync, readFileSync, statSync } from 'node:fs'
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, extname, join, resolve, sep } from 'node:path'
@@ -15,31 +15,71 @@ import { pipeline } from 'node:stream/promises'
 import { detectToolchain, locateTool } from '@moonglass/eda-bridge'
 import type { ToolDetection, ToolInstallJob, ToolInstallResult, WaveformOpenResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
-import { projectWorkspaceDir } from '../core/paths'
+import type { ProjectService } from './ProjectService'
 
 export class EdaService implements MoonGlassService {
   readonly name = 'eda-service'
   private readonly toolchainRoot: string
+  private readonly detectionCachePath: string
+  private detectionCache: ToolDetection[] | null = null
   private readonly installJobs = new Map<string, ToolInstallJob>()
   private static readonly REQUEST_TIMEOUT_MS = 30_000
   private static readonly DOWNLOAD_TIMEOUT_MS = 30 * 60_000
 
-  constructor(userDataDir: string) {
+  constructor(userDataDir: string, private readonly projects: ProjectService) {
     this.toolchainRoot = join(userDataDir, 'moonglass', 'toolchains')
+    this.detectionCachePath = join(userDataDir, 'moonglass', 'eda-detection-cache.json')
   }
 
   async start(): Promise<void> {
     await mkdir(this.toolchainRoot, { recursive: true })
     this.activateManagedTools()
+    this.loadDetectionCache()
   }
 
   stop(): void {
     // 无常驻资源
   }
 
-  detectTools(): Promise<ToolDetection[]> {
+  async detectTools(force = false): Promise<ToolDetection[]> {
+    if (!force && this.detectionCache) return this.detectionCache
     this.activateManagedTools()
-    return detectToolchain()
+    const tools = await detectToolchain()
+    this.detectionCache = tools
+    this.persistDetectionCache(tools)
+    return tools
+  }
+
+  private loadDetectionCache(): void {
+    if (!existsSync(this.detectionCachePath)) return
+    try {
+      const cached = JSON.parse(readFileSync(this.detectionCachePath, 'utf-8')) as {
+        version?: number
+        platform?: string
+        arch?: string
+        tools?: ToolDetection[]
+      }
+      if (cached.version === 1 && cached.platform === process.platform && cached.arch === process.arch && Array.isArray(cached.tools)) {
+        this.detectionCache = cached.tools
+      }
+    } catch (error) {
+      console.warn('[eda-service] EDA 检测缓存读取失败，将重新检测', error)
+    }
+  }
+
+  private persistDetectionCache(tools: ToolDetection[]): void {
+    try {
+      mkdirSync(dirname(this.detectionCachePath), { recursive: true })
+      writeFileSync(this.detectionCachePath, JSON.stringify({
+        version: 1,
+        platform: process.platform,
+        arch: process.arch,
+        detectedAt: new Date().toISOString(),
+        tools
+      }, null, 2), 'utf-8')
+    } catch (error) {
+      console.warn('[eda-service] EDA 检测缓存保存失败', error)
+    }
   }
 
   startInstallBundle(id: string): ToolInstallJob {
@@ -137,7 +177,7 @@ export class EdaService implements MoonGlassService {
 
   async openWaveform(projectId: string, relPath: string): Promise<WaveformOpenResult> {
     this.activateManagedTools()
-    const root = resolve(projectWorkspaceDir(projectId))
+    const root = resolve(this.projects.workspaceDir(projectId))
     const filePath = resolve(root, relPath)
     if (filePath !== root && !filePath.startsWith(root + sep)) {
       return { ok: false, error: '波形路径超出项目工作区' }

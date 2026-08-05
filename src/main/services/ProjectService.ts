@@ -9,7 +9,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, watch, type FSWatcher } from 'node:fs'
-import { join, relative } from 'node:path'
+import { isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { eq, desc, sql } from 'drizzle-orm'
 import type { ChipProject, Phase, PhaseState } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
@@ -28,6 +28,7 @@ function projectToRow(project: ChipProject): typeof chipProjects.$inferInsert {
     id: project.id,
     name: project.name,
     description: project.description,
+    workspacePath: project.workspacePath,
     currentPhase: project.currentPhase,
     phasesJson: project.phases,
     edaToolchain: project.edaToolchain,
@@ -108,6 +109,7 @@ function rowToProject(row: typeof chipProjects.$inferSelect): ChipProject {
     id: row.id,
     name: row.name,
     description: row.description ?? undefined,
+    workspacePath: row.workspacePath ?? undefined,
     currentPhase: row.currentPhase as StoredPhase,
     phases: (row.phasesJson as StoredProject['phases']) ?? createInitialPhases(),
     edaToolchain: row.edaToolchain ?? 'verilator-yosys',
@@ -216,6 +218,12 @@ export class ProjectService implements MoonGlassService {
     return row ? rowToProject(row) : null
   }
 
+  /** 返回项目实际工作目录；旧项目保持默认目录，不要求迁移。 */
+  workspaceDir(projectId: string): string {
+    const configured = this.get(projectId)?.workspacePath?.trim()
+    return configured ? resolve(configured) : projectWorkspaceDir(projectId, this.dataDir)
+  }
+
   /** MoonGlass 项目规范目录。模块级 `<module>_tb` 在生成验证环境时创建。 */
   private static readonly DIR_TEMPLATE = [
     'docs/01_project',
@@ -243,7 +251,7 @@ export class ProjectService implements MoonGlassService {
 
   /** 初始化项目工作目录结构 */
   private initWorkspace(projectId: string): void {
-    const root = projectWorkspaceDir(projectId, this.dataDir)
+    const root = this.workspaceDir(projectId)
     mkdirSync(root, { recursive: true })
     for (const dir of ProjectService.DIR_TEMPLATE) {
       mkdirSync(join(root, dir), { recursive: true })
@@ -282,12 +290,21 @@ export class ProjectService implements MoonGlassService {
     }
   }
 
-  create(input: { name: string; description?: string; edaToolchain?: string }): ChipProject {
+  create(input: { name: string; description?: string; edaToolchain?: string; workspacePath?: string }): ChipProject {
+    const requestedPath = input.workspacePath?.trim()
+    if (requestedPath && !isAbsolute(requestedPath)) {
+      throw new Error('项目目录必须是绝对路径')
+    }
+    const workspacePath = requestedPath ? normalize(resolve(requestedPath)) : undefined
+    if (workspacePath && this.list().some((item) => this.workspaceDir(item.id).toLowerCase() === workspacePath.toLowerCase())) {
+      throw new Error('该项目目录已被另一个 MoonGlass 项目使用')
+    }
     const now = new Date().toISOString()
     const project: ChipProject = {
       id: randomUUID(),
       name: input.name,
       description: input.description,
+      workspacePath,
       currentPhase: 'REQ_SPEC',
       phases: createInitialPhases(),
       edaToolchain: input.edaToolchain ?? 'verilator-yosys',
@@ -352,7 +369,7 @@ export class ProjectService implements MoonGlassService {
   /** Agent 或 Claude Code 修改工作区文件时，自动向后续阶段传播变更通知。 */
   private watchWorkspace(projectId: string): void {
     if (this.workspaceWatchers.has(projectId)) return
-    const root = projectWorkspaceDir(projectId, this.dataDir)
+    const root = this.workspaceDir(projectId)
     try {
       const watcher = watch(root, { recursive: true }, (_eventType, filename) => {
         const changedPath = filename ? String(filename).replace(/\\/g, '/') : ''

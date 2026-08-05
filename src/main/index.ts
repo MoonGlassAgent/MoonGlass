@@ -6,13 +6,26 @@
  */
 
 import { app, shell, BrowserWindow } from 'electron'
-import { join } from 'node:path'
+import { existsSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { IPC } from '@shared/ipc-contract'
 import { createApplication } from './core/application'
 import { registerIpcHandlers } from './ipc'
 
 app.setName('MoonGlass')
+
+/**
+ * 绿色版在可执行文件旁放置 portable-mode 标记。必须在创建任何服务前
+ * 固定 userData，否则数据库和 Demo 会落到系统用户目录。
+ */
+const executableDir = dirname(process.execPath)
+if (app.isPackaged && existsSync(join(executableDir, 'portable-mode'))) {
+  const portableUserData = join(executableDir, 'userdata')
+  app.setPath('userData', portableUserData)
+  console.log('[moonglass] 便携模式数据目录:', portableUserData)
+}
+
 const services = createApplication()
 registerIpcHandlers(services)
 

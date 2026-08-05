@@ -11,6 +11,7 @@ const api: MoonGlassApi = {
   project: {
     list: () => ipcRenderer.invoke(IPC.Project.List),
     create: (input) => ipcRenderer.invoke(IPC.Project.Create, input),
+    chooseDirectory: () => ipcRenderer.invoke(IPC.Project.ChooseDirectory),
     get: (id) => ipcRenderer.invoke(IPC.Project.Get, id),
     update: (id, patch) => ipcRenderer.invoke(IPC.Project.Update, id, patch),
     delete: (id) => ipcRenderer.invoke(IPC.Project.Delete, id),
@@ -27,7 +28,7 @@ const api: MoonGlassApi = {
     completeProject: (projectId: string) => ipcRenderer.invoke(IPC.Phase.CompleteProject, projectId)
   },
   eda: {
-    detectTools: () => ipcRenderer.invoke(IPC.Eda.DetectTools),
+    detectTools: (force?: boolean) => ipcRenderer.invoke(IPC.Eda.DetectTools, force),
     installBundle: (id: string) => ipcRenderer.invoke(IPC.Eda.InstallBundle, id),
     getInstallStatus: (id: string) => ipcRenderer.invoke(IPC.Eda.GetInstallStatus, id),
     openInstallPage: (url: string) => ipcRenderer.invoke(IPC.Eda.OpenInstallPage, url),

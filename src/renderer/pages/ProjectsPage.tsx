@@ -3,7 +3,7 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Cpu, Plus } from 'lucide-react'
+import { Cpu, FolderOpen, Plus } from 'lucide-react'
 import { ProjectCard } from '../components/ProjectCard'
 import { useAppStore } from '../store/appStore'
 
@@ -12,6 +12,8 @@ export function ProjectsPage(): React.JSX.Element {
   const [creating, setCreating] = useState(false)
   const [name, setName] = useState('')
   const [description, setDescription] = useState('')
+  const [workspacePath, setWorkspacePath] = useState('')
+  const [createError, setCreateError] = useState('')
 
   useEffect(() => {
     void refreshProjects()
@@ -19,11 +21,26 @@ export function ProjectsPage(): React.JSX.Element {
 
   const handleCreate = async (): Promise<void> => {
     if (!name.trim()) return
-    await window.moonglass.project.create({ name: name.trim(), description: description.trim() || undefined })
-    setName('')
-    setDescription('')
-    setCreating(false)
-    await refreshProjects()
+    setCreateError('')
+    try {
+      await window.moonglass.project.create({
+        name: name.trim(),
+        description: description.trim() || undefined,
+        workspacePath: workspacePath.trim() || undefined
+      })
+      setName('')
+      setDescription('')
+      setWorkspacePath('')
+      setCreating(false)
+      await refreshProjects()
+    } catch (error) {
+      setCreateError(error instanceof Error ? error.message : String(error))
+    }
+  }
+
+  const handleChooseDirectory = async (): Promise<void> => {
+    const selected = await window.moonglass.project.chooseDirectory()
+    if (selected) setWorkspacePath(selected)
   }
 
   const handleDelete = async (id: string): Promise<void> => {
@@ -63,6 +80,29 @@ export function ProjectsPage(): React.JSX.Element {
             placeholder="项目描述（可选）"
             className="mb-3 w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
           />
+          <label className="mb-1 block text-xs font-medium text-zinc-600">项目目录</label>
+          <div className="mb-2 flex gap-2">
+            <input
+              value={workspacePath}
+              onChange={(e) => setWorkspacePath(e.target.value)}
+              placeholder="留空则使用 MoonGlass 默认目录"
+              className="min-w-0 flex-1 rounded border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500"
+            />
+            <button
+              type="button"
+              onClick={() => void handleChooseDirectory()}
+              title="选择项目目录"
+              className="inline-flex size-9 shrink-0 items-center justify-center rounded border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50"
+            >
+              <FolderOpen size={17} />
+            </button>
+          </div>
+          <p className="mb-3 text-xs text-zinc-500">可选择已有工程目录；MoonGlass 只补齐缺失的规范目录，不覆盖现有文件。</p>
+          {createError && (
+            <div className="mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+              {createError}
+            </div>
+          )}
           <div className="flex gap-2">
             <button
               onClick={() => void handleCreate()}

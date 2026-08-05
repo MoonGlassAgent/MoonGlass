@@ -29,6 +29,7 @@ interface ChatState {
 
 let eventSubscribed = false
 let msgSeq = 0
+let ensureSeq = 0
 const nextId = (): string => `ui-${Date.now()}-${++msgSeq}`
 
 export const useChatStore = create<ChatState>((set, get) => {
@@ -47,22 +48,29 @@ export const useChatStore = create<ChatState>((set, get) => {
     streamTargetId: null,
 
     ensure: async (projectId) => {
+      const requestSeq = ++ensureSeq
       if (!eventSubscribed) {
         window.moonglass.agent.onEvent(handleEvent)
         eventSubscribed = true
       }
       if (get().projectId !== projectId) {
         set({ projectId, sessionInfo: null, messages: [], streaming: false, aborting: false, streamTargetId: null })
+      } else if (get().sessionInfo?.providersReady === false) {
+        // 配置刚变为可用时，立即移除旧的“未配置”提示；pi 启动期间展示加载状态。
+        set({ sessionInfo: null })
       }
       let info: AgentSessionInfo
       try {
         info = await window.moonglass.agent.ensureSession(projectId)
       } catch (err) {
+        if (requestSeq !== ensureSeq) return
         // 会话启动失败（如 pi 进程异常）：以错误气泡展示原因
         set({ projectId, sessionInfo: null, messages: [], streaming: false, streamTargetId: null })
         pushError(set, err)
         return
       }
+      // Provider 配置变化或阶段切换可能触发并发初始化；旧请求不得覆盖新状态。
+      if (requestSeq !== ensureSeq || get().projectId !== projectId) return
       if (!info.providersReady) {
         set({ projectId, sessionInfo: info, messages: [], streaming: false, streamTargetId: null })
         return
@@ -72,8 +80,10 @@ export const useChatStore = create<ChatState>((set, get) => {
       try {
         history = await window.moonglass.agent.getMessages(projectId)
       } catch (err) {
+        if (requestSeq !== ensureSeq) return
         pushError(set, err)
       }
+      if (requestSeq !== ensureSeq || get().projectId !== projectId) return
       set({
         projectId,
         sessionInfo: info,

@@ -343,7 +343,7 @@ export class AgentService implements MoonGlassService {
   }
 
   private workspaceDir(projectId: string): string {
-    return join(app.getPath('userData'), 'moonglass', 'workspaces', projectId)
+    return this.projects.workspaceDir(projectId)
   }
 
   /** pi 全局配置隔离目录（auth.json / settings.json / models-store.json 等） */

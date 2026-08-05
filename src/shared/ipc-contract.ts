@@ -30,6 +30,7 @@ export const IPC = {
   Project: {
     List: 'project:list',
     Create: 'project:create',
+    ChooseDirectory: 'project:choose-directory',
     Get: 'project:get',
     Update: 'project:update',
     Delete: 'project:delete',
@@ -107,7 +108,8 @@ export const IPC = {
 export interface MoonGlassApi {
   project: {
     list(): Promise<ChipProject[]>
-    create(input: { name: string; description?: string; edaToolchain?: string }): Promise<ChipProject>
+    create(input: { name: string; description?: string; edaToolchain?: string; workspacePath?: string }): Promise<ChipProject>
+    chooseDirectory(): Promise<string | null>
     get(id: string): Promise<ChipProject | null>
     update(id: string, patch: Partial<Pick<ChipProject, 'name' | 'description'>>): Promise<ChipProject | null>
     delete(id: string): Promise<boolean>
@@ -129,7 +131,8 @@ export interface MoonGlassApi {
     completeProject(projectId: string): Promise<ChipProject | null>
   }
   eda: {
-    detectTools(): Promise<ToolDetection[]>
+    /** 默认返回持久缓存；force=true 时重新扫描开发环境和 EDA 工具。 */
+    detectTools(force?: boolean): Promise<ToolDetection[]>
     installBundle(id: string): Promise<ToolInstallJob>
     getInstallStatus(id: string): Promise<ToolInstallJob>
     openInstallPage(url: string): Promise<boolean>

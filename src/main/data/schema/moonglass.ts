@@ -16,6 +16,7 @@ export const chipProjects = sqliteTable('chip_projects', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
+  workspacePath: text('workspace_path'),
   currentPhase: text('current_phase', { enum: PHASE_ENUM }).notNull().default('REQ_SPEC'),
 
   // 工程配置

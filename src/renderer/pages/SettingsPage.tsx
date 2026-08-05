@@ -16,6 +16,10 @@ import type {
 } from '@shared/types'
 import { ThemePicker } from '../components/ThemePicker'
 
+const notifyLlmConfigurationChanged = (): void => {
+  window.dispatchEvent(new Event('moonglass:llm-config-changed'))
+}
+
 export function SettingsPage(): React.JSX.Element {
   return (
     <div className="h-full overflow-y-auto p-6">
@@ -112,6 +116,7 @@ function LlmProviderSection(): React.JSX.Element {
       setProviders((current) => current?.map((provider) => provider.id === saved.id ? saved : provider) ?? null)
       setDraft({ ...saved, models: [...saved.models] })
       setSavedTip(enabled ? '已启用' : '已停用')
+      notifyLlmConfigurationChanged()
       setTimeout(() => setSavedTip(''), 1600)
     } catch (error) {
       setDraft(draft)
@@ -129,7 +134,8 @@ function LlmProviderSection(): React.JSX.Element {
       const list = await window.moonglass.llm.list()
       setProviders(list)
       setDraft({ ...saved, models: [...saved.models] })
-      setSavedTip('已保存')
+      setSavedTip(saved.enabled ? '已保存并启用' : '已保存，但尚未启用')
+      notifyLlmConfigurationChanged()
       setTimeout(() => setSavedTip(''), 2000)
     } finally {
       setSaving(false)
@@ -149,6 +155,7 @@ function LlmProviderSection(): React.JSX.Element {
     })
     const list = await window.moonglass.llm.list()
     setProviders(list)
+    notifyLlmConfigurationChanged()
     select(created)
   }
 
@@ -158,6 +165,7 @@ function LlmProviderSection(): React.JSX.Element {
     if (!ok) return
     const list = await window.moonglass.llm.list()
     setProviders(list)
+    notifyLlmConfigurationChanged()
     if (list.length > 0) select(list[0])
     else {
       setSelectedId(null)
@@ -426,11 +434,11 @@ function EdaDetectSection(): React.JSX.Element {
   const [installing, setInstalling] = useState<string | null>(null)
   const [installMessage, setInstallMessage] = useState('')
 
-  const detect = async (): Promise<void> => {
+  const detect = async (force = false): Promise<void> => {
     setDetecting(true)
     setDetectError('')
     try {
-      const detected = await window.moonglass.eda.detectTools()
+      const detected = await window.moonglass.eda.detectTools(force)
       setTools(detected)
       if (detected.length === 0) setDetectError('主进程未返回任何环境检测项，请重启 MoonGlass 后重试。')
     } catch (error) {
@@ -441,7 +449,7 @@ function EdaDetectSection(): React.JSX.Element {
     }
   }
 
-  useEffect(() => { void detect() }, [])
+  useEffect(() => { void detect(false) }, [])
 
   useEffect(() => {
     if (!installing) return
@@ -456,13 +464,13 @@ function EdaDetectSection(): React.JSX.Element {
         setInstallMessage(job.message)
         if (job.status === 'completed' || job.status === 'failed') {
           setInstalling(null)
-          await detect()
+          await detect(true)
         }
       } catch (error) {
         if (!closed) {
           setInstallMessage(`安装状态读取失败：${error instanceof Error ? error.message : String(error)}`)
           setInstalling(null)
-          await detect()
+          await detect(true)
         }
       } finally {
         polling = false
@@ -525,7 +533,7 @@ function EdaDetectSection(): React.JSX.Element {
           </p>
         </div>
         <button
-          onClick={() => void detect()}
+          onClick={() => void detect(true)}
           disabled={detecting}
           className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
         >
