@@ -18,7 +18,8 @@ const api: MoonGlassApi = {
     generateDashboard: (id) => ipcRenderer.invoke(IPC.Project.GenerateDashboard, id)
   },
   phase: {
-    advance: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Advance, projectId, to),
+    advance: (projectId: string, to: Phase, options?: { force?: boolean }) =>
+      ipcRenderer.invoke(IPC.Phase.Advance, projectId, to, options),
     enter: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Enter, projectId, to),
     rollback: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.Rollback, projectId, to),
     gateCheck: (projectId: string, to: Phase) => ipcRenderer.invoke(IPC.Phase.GateCheck, projectId, to),

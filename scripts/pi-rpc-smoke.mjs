@@ -6,8 +6,10 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const bin = join(process.cwd(), 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js')
-const bridge = join(process.cwd(), 'resources', 'moonglass', 'pi-bridge', 'moonglass-providers.ts')
+// 可指定 pi cli.js（默认开发环境 node_modules；验证绿色版时传 SMOKE_BIN）
+const bin = process.env.SMOKE_BIN ?? join(process.cwd(), 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js')
+// 可指定桥接扩展（验证绿色版时传 SMOKE_BRIDGE 指向 resources/pi-bridge）
+const bridge = process.env.SMOKE_BRIDGE ?? join(process.cwd(), 'resources', 'moonglass', 'pi-bridge', 'moonglass-providers.ts')
 // 可指定执行器（默认 node；复现 Electron 场景时传 electron.exe 路径）
 const execPath = process.env.SMOKE_EXEC ?? process.execPath
 const work = join(tmpdir(), 'moonglass-pi-smoke')
@@ -103,6 +105,16 @@ console.log('[deepseek models registered]', JSON.stringify(dsModels))
 
 const setRes = await send({ type: 'set_model', provider: 'deepseek', modelId: 'deepseek-chat' })
 console.log('[set_model]', setRes.success, setRes.error ?? '')
+
+// 打包验收不依赖外部模型服务：ready、Provider 注册和模型切换通过即可。
+if (process.env.SMOKE_READY_ONLY === '1') {
+  done = setRes.success === true && dsModels.includes('deepseek-chat')
+  console.log(done
+    ? '[verdict] PASS — pi RPC、Provider 注册和模型切换均正常'
+    : '[verdict] FAIL — pi RPC 就绪但 Provider 或模型切换异常')
+  child.kill()
+  process.exit(done ? 0 : 1)
+}
 
 await send({ type: 'prompt', message: 'say hi' })
 for (let i = 0; i < 60 && !sawError && !sawDelta; i++) await sleep(1000)

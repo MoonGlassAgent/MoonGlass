@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { join } from 'node:path'
+import { join, relative } from 'node:path'
 import { runLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
 import {
   PHASE_ORDER,
@@ -190,7 +190,7 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
       checkId,
       false,
       'error',
-      `需求-规格追溯矩阵缺少 ${missing.length} 个需求 ID 的追溯关系：${missing.slice(0, 12).join('、')}${missing.length > 12 ? '…' : ''}`
+      `需求-规格追溯矩阵缺少 ${missing.length} 个需求 ID 的追溯关系：${missing.join('、')}`
     )
   }
   const rowsWithoutSpecification = tableRows.filter((cells) => {
@@ -198,11 +198,19 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
     return requirementIds(row).size > 0 && (row.match(SPECIFICATION_ID) ?? []).length === 0
   })
   if (rowsWithoutSpecification.length > 0) {
+    // 逐行列出需求 ID 与行内容摘要，便于 Agent 直接定位修复
+    const details = rowsWithoutSpecification.slice(0, 10).map((cells) => {
+      const row = cells.join(' | ')
+      const ids = [...requirementIds(row)].join('、')
+      const preview = row.length > 80 ? `${row.slice(0, 80)}…` : row
+      return `  - ${ids || '(未识别需求 ID)'}：${preview}`
+    })
+    const more = rowsWithoutSpecification.length > 10 ? `\n  … 其余 ${rowsWithoutSpecification.length - 10} 行同问题` : ''
     return makeResult(
       checkId,
       false,
       'error',
-      `需求-规格追溯矩阵有 ${rowsWithoutSpecification.length} 行缺少 SPEC-* 规格 ID 映射`
+      `需求-规格追溯矩阵有 ${rowsWithoutSpecification.length} 行缺少 SPEC-* 规格 ID 映射：\n${details.join('\n')}${more}`
     )
   }
   return makeResult(
@@ -267,9 +275,25 @@ async function simPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
   const failed = resultFiles.filter((file) => {
     try { return JSON.parse(readFileSync(file, 'utf-8')).passed !== true } catch { return true }
   })
-  return failed.length === 0
-    ? makeResult(checkId, true, 'error', `${resultFiles.length} 个仿真结果均通过`)
-    : makeResult(checkId, false, 'error', `${failed.length} 个仿真结果失败或无法解析`)
+  if (failed.length === 0) {
+    return makeResult(checkId, true, 'error', `${resultFiles.length} 个仿真结果均通过`)
+  }
+  // 列出失败文件与原因（结果未通过 / JSON 无法解析），便于 Agent 定位
+  const details = failed.map((file) => {
+    const rel = relative(ctx.workspaceDir, file)
+    try {
+      JSON.parse(readFileSync(file, 'utf-8'))
+      return `  - ${rel}：仿真未通过（passed != true）`
+    } catch {
+      return `  - ${rel}：result.json 无法解析`
+    }
+  })
+  return makeResult(
+    checkId,
+    false,
+    'error',
+    `${failed.length} 个仿真结果失败或无法解析：\n${details.join('\n')}`
+  )
 }
 
 function coverageAtLeast(keys: string[], threshold: number) {

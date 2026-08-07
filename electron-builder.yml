@@ -4,16 +4,13 @@ copyright: Copyright © 2026 MoonGlass Contributors
 directories:
   output: dist
   buildResources: build-resources
+# pi 运行时（含 node_modules 依赖）由 afterPack 钩子注入，见 build-resources/afterPack.cjs
+afterPack: build-resources/afterPack.cjs
 files:
   - out/**/*
   - resources/**/*
   - package.json
 extraResources:
-  - from: node_modules/@earendil-works/pi-coding-agent
-    to: pi-coding-agent
-    filter:
-      - dist/**
-      - package.json
   - from: resources/moonglass/pi-bridge
     to: pi-bridge
   - from: packages/eda-bridge/src
@@ -27,6 +24,9 @@ extraResources:
 win:
   target:
     - target: nsis
+      arch:
+        - x64
+    - target: dir
       arch:
         - x64
   icon: resources/moonglass/logo.png

@@ -5,3 +5,6 @@ portable-asar-dist/
 *.log
 .DS_Store
 e2e-screenshots/
+build-resources/pi-runtime/
+demo-seed/
+green-dist-*/

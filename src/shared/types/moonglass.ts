@@ -135,6 +135,8 @@ export interface PhaseAdvanceResult {
   gate: {
     blocked: boolean
     results: GateCheckResult[]
+    /** true 表示门禁未全过但用户确认强制推进（失败项保留为遗留问题） */
+    forced?: boolean
   }
 }
 

@@ -64,7 +64,7 @@ export function Sidebar(): React.JSX.Element {
         </div>
       </div>
       <div className="mt-2 px-1 text-center text-[10px] leading-tight text-zinc-400">
-        v0.3
+        v0.4
       </div>
     </nav>
   )

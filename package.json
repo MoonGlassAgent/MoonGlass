@@ -1,6 +1,6 @@
 {
   "name": "moonglass",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台",
   "private": true,
   "license": "Apache-2.0",
@@ -9,7 +9,10 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
+    "predist": "node scripts/stage-pi-runtime.mjs",
     "dist": "electron-builder",
+    "dist:dir": "node scripts/stage-pi-runtime.mjs && electron-builder --win dir",
+    "package:green": "node scripts/package-green.mjs",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
     "rebuild:node": "pnpm rebuild better-sqlite3",
     "typecheck": "pnpm -r typecheck",

@@ -269,6 +269,21 @@ export function WorkspacePage(): React.JSX.Element {
       if (!result) return
       setProject(result.project)
       setGate(result.gate)
+      if (result.gate.blocked) {
+        // 门禁阻断：允许用户确认后强制推进（失败项以红色感叹号保留为遗留问题）
+        const failed = result.gate.results.filter((r) => r.severity === 'error' && !r.passed)
+        const confirmed = window.confirm(
+          `门禁未完全通过（${failed.length} 项 Error 级检查失败）。\n\n` +
+            `确定在门禁没有完全通过的情况下继续推进到 ${to} 吗？\n` +
+            '未通过的检查项将以红色感叹号保留为遗留问题。'
+        )
+        if (!confirmed) return
+        appendLog(`⚠️ 用户确认在门禁未完全通过的情况下强制推进到 ${to}`)
+        const forced = await window.moonglass.phase.advance(projectId, to, { force: true })
+        if (!forced) return
+        setProject(forced.project)
+        setGate(forced.gate)
+      }
     } catch (error) {
       appendLog(`阶段推进失败: ${error instanceof Error ? error.message : String(error)}`)
       setGate({ blocked: true, results: [] })
@@ -518,6 +533,8 @@ export function WorkspacePage(): React.JSX.Element {
             </button>
             {gate.blocked ? (
               <span className="text-xs text-amber-600">修复问题后点击重新检查</span>
+            ) : gate.forced ? (
+              <span className="text-xs text-amber-600">⚠️ 已强制推进，遗留问题以红色感叹号标注</span>
             ) : (
               <span className="text-xs text-emerald-600">✅ 门禁通过，可推进</span>
             )}
@@ -719,7 +736,7 @@ export function WorkspacePage(): React.JSX.Element {
         <span>
           阶段处理: {PHASE_ORDER.filter((p) => ['completed', 'skipped'].includes(project.phases[p].status)).length}/{PHASE_ORDER.length}
         </span>
-        <span className="ml-auto">MoonGlass v0.3 · Phase 6 综合链</span>
+        <span className="ml-auto">MoonGlass v0.4 · Phase 6 综合链</span>
       </footer>
     </div>
   )

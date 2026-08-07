@@ -55,9 +55,23 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   })
 
   // ==================== 阶段流转 ====================
-  ipcMain.handle(IPC.Phase.Advance, async (_e, projectId: string, to: Phase) => {
+  ipcMain.handle(IPC.Phase.Advance, async (_e, projectId: string, to: Phase, options?: { force?: boolean }) => {
     const project = projects.get(projectId)
     if (!project) return null
+    if (options?.force) {
+      // 强制推进：复用上一次已落库的门禁结果（未跑过门禁则补跑），失败项保留为遗留问题
+      let results = project.phases[project.currentPhase].gateCheckResults
+      if (results.length === 0) {
+        results = await phaseEngine.runGateChecks(project, to, {
+          workspaceDir: projects.workspaceDir(projectId)
+        })
+        project.phases[project.currentPhase].gateCheckResults = results
+      }
+      return {
+        project: projects.save(phaseEngine.advance(project, to)),
+        gate: { blocked: false, results, forced: phaseEngine.isBlocked(results) }
+      }
+    }
     // 运行门禁检查（Error 级失败阻断推进；结果落库供 UI 展示）
     const results = await phaseEngine.runGateChecks(project, to, {
       workspaceDir: projects.workspaceDir(projectId)

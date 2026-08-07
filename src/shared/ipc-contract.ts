@@ -116,8 +116,9 @@ export interface MoonGlassApi {
     generateDashboard(id: string): Promise<{ path: string; generatedAt: string; opened: boolean }>
   }
   phase: {
-    /** 推进阶段（先跑门禁检查，Error 级失败则阻断并返回未推进的原状态） */
-    advance(projectId: string, to: Phase): Promise<PhaseAdvanceResult | null>
+    /** 推进阶段（先跑门禁检查，Error 级失败则阻断并返回未推进的原状态；
+     *  force=true 时复用已落库的门禁结果并强制推进，失败项保留为遗留问题） */
+    advance(projectId: string, to: Phase, options?: { force?: boolean }): Promise<PhaseAdvanceResult | null>
     /** 双击阶段节点进入阶段，不删除或锁定后续阶段产物。 */
     enter(projectId: string, to: Phase): Promise<ChipProject | null>
     rollback(projectId: string, to: Phase): Promise<ChipProject | null>

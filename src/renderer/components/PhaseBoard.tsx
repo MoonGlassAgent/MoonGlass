@@ -34,6 +34,8 @@ const STATUS_DOTS: Record<PhaseStatus, string> = {
 export interface GatePanelData {
   blocked: boolean
   results: GateCheckResult[]
+  /** true 表示门禁未全过但用户确认强制推进 */
+  forced?: boolean
 }
 
 interface PhaseBoardProps {
@@ -201,9 +203,16 @@ export function PhaseBoard({
           }`}
         >
           {gate.blocked && (
-            <p className="mb-1 font-medium text-red-700">门禁未通过，已阻止推进。修复后请重试。</p>
+            <p className="mb-1 font-medium text-red-700">
+              门禁未通过，已阻止推进。修复后请重试；也可再次点击“推进”按钮并确认强制推进。
+            </p>
           )}
-          {!gate.blocked && gate.results.some((result) => !result.passed) && (
+          {!gate.blocked && gate.forced && gate.results.some((result) => !result.passed) && (
+            <p className="mb-1 font-medium text-amber-700">
+              门禁未完全通过，已由用户确认强制推进；以下问题保留为遗留事项（红色感叹号）。
+            </p>
+          )}
+          {!gate.blocked && !gate.forced && gate.results.some((result) => !result.passed) && (
             <p className="mb-1 font-medium text-amber-700">已允许推进，以下问题已记录为遗留事项。</p>
           )}
           <ul className="space-y-0.5">
