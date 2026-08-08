@@ -1,0 +1,949 @@
+@import 'tailwindcss';
+
+/* Prism.js 语法高亮主题（亮色） */
+@import 'prismjs/themes/prism.css';
+
+:root {
+  color-scheme: light;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --accent-border: #bfdbfe;
+  --focus-ring: rgb(37 99 235 / 22%);
+  --app-bg: #f4f5f7;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --line: #e1e4e8;
+  --line-strong: #c8cdd4;
+  --text: #272a2f;
+  --muted: #6d737d;
+  --shadow-soft: 0 1px 2px rgb(23 28 38 / 5%), 0 8px 24px rgb(23 28 38 / 5%);
+}
+
+:root[data-theme='jade'] {
+  --accent: #0f8a68;
+  --accent-hover: #0b6f55;
+  --accent-soft: #ecfdf5;
+  --accent-border: #a7e7d2;
+  --focus-ring: rgb(15 138 104 / 22%);
+}
+
+:root[data-theme='graphite'] {
+  --accent: #3f4652;
+  --accent-hover: #292e37;
+  --accent-soft: #f0f2f4;
+  --accent-border: #cbd0d7;
+  --focus-ring: rgb(63 70 82 / 22%);
+}
+
+:root[data-theme='coral'] {
+  --accent: #c84f45;
+  --accent-hover: #a93c34;
+  --accent-soft: #fff1ef;
+  --accent-border: #f2c2bd;
+  --focus-ring: rgb(200 79 69 / 22%);
+}
+
+body {
+  @apply bg-zinc-100 text-zinc-800 antialiased;
+  background: var(--app-bg);
+  color: var(--text);
+  font-family:
+    'Segoe UI',
+    'PingFang SC',
+    'Microsoft YaHei',
+    system-ui,
+    sans-serif;
+}
+
+/* 代码查看器样式 */
+pre[class*='language-'] {
+  @apply m-0 rounded border-0 bg-transparent p-0 text-xs leading-relaxed;
+  text-shadow: none;
+}
+
+code[class*='language-'] {
+  @apply text-xs leading-relaxed;
+  text-shadow: none;
+}
+
+/* ---- 日志高亮（prism-log 主题覆盖） ---- */
+
+/* Error 级别：红色 */
+code.language-log .token.error,
+code.language-log .token.important {
+  color: #dc2626 !important;
+  font-weight: 700;
+}
+
+/* Warning 级别：黄色/琥珀色 */
+code.language-log .token.warning {
+  color: #d97706 !important;
+  font-weight: 600;
+}
+
+/* Info/Pass 级别：绿色 */
+code.language-log .token.info,
+code.language-log .token.keyword {
+  color: #059669 !important;
+}
+
+/* Debug 级别：灰色 */
+code.language-log .token.debug {
+  color: #6b7280 !important;
+}
+
+/* 时间戳：灰色弱化 */
+code.language-log .token.number {
+  color: #9ca3af !important;
+}
+
+/* ---- Verilog 高亮增强 ---- */
+
+code.language-verilog .token.keyword {
+  color: #2563eb !important;  /* 关键字蓝色 */
+  font-weight: 600;
+}
+
+code.language-verilog .token.important {
+  color: #7c3aed !important;  /* always/assign 紫色 */
+  font-weight: 700;
+}
+
+code.language-verilog .token.number {
+  color: #059669 !important;  /* 数值绿色 */
+}
+
+code.language-verilog .token.comment {
+  color: #9ca3af !important;  /* 注释灰色 */
+  font-style: italic;
+}
+
+code.language-verilog .token.constant {
+  color: #d97706 !important;  /* `define 棕色 */
+}
+
+* {
+  scrollbar-color: #c5cad1 transparent;
+  scrollbar-width: thin;
+}
+
+button,
+a {
+  -webkit-tap-highlight-color: transparent;
+}
+
+button {
+  border: 1px solid transparent;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 100ms ease;
+}
+
+button:not(:disabled):active {
+  transform: translateY(1px);
+}
+
+button:focus-visible,
+a:focus-visible,
+input:focus-visible,
+textarea:focus-visible,
+select:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+input,
+textarea,
+select {
+  transition: border-color 140ms ease, box-shadow 140ms ease, background-color 140ms ease;
+}
+
+.app-shell {
+  background: var(--app-bg);
+}
+
+.app-sidebar {
+  position: relative;
+  z-index: 50;
+  border-color: var(--line);
+  background: rgb(255 255 255 / 94%);
+  box-shadow: 1px 0 0 rgb(255 255 255 / 75%);
+}
+
+.nav-item {
+  position: relative;
+  border: 1px solid transparent;
+  transition: color 140ms ease, background-color 140ms ease, border-color 140ms ease, transform 120ms ease;
+}
+
+.nav-item:hover {
+  border-color: var(--line);
+  transform: translateY(-1px);
+}
+
+.nav-item.bg-zinc-200 {
+  border-color: var(--accent-border) !important;
+  background: var(--accent-soft) !important;
+  color: var(--accent) !important;
+  box-shadow: inset 3px 0 0 var(--accent);
+}
+
+.logo-interaction {
+  position: relative;
+  cursor: default;
+}
+
+.logo-small {
+  border: 1px solid var(--line);
+  box-shadow: 0 2px 8px rgb(20 25 35 / 10%);
+  transition: transform 160ms ease, box-shadow 160ms ease;
+}
+
+.logo-interaction:hover .logo-small,
+.logo-interaction:focus .logo-small {
+  transform: scale(1.06);
+  box-shadow: 0 4px 14px rgb(20 25 35 / 16%);
+}
+
+.logo-preview {
+  pointer-events: none;
+  position: absolute;
+  top: -5px;
+  left: 51px;
+  display: grid;
+  z-index: 100;
+  width: 226px;
+  grid-template-columns: 72px minmax(0, 1fr);
+  align-items: center;
+  gap: 2px 10px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: 0 14px 34px rgb(20 25 35 / 16%);
+  opacity: 0;
+  transform: translateX(-5px) scale(0.97);
+  transform-origin: left center;
+  transition: opacity 150ms ease, transform 150ms ease;
+}
+
+.logo-preview img {
+  grid-row: 1 / 3;
+  width: 72px;
+  height: 72px;
+  border-radius: 7px;
+}
+
+.logo-preview strong {
+  align-self: end;
+  color: var(--text);
+  font-size: 16px;
+}
+
+.logo-preview span {
+  align-self: start;
+  color: var(--muted);
+  font-size: 10px;
+  white-space: nowrap;
+}
+
+.icon-button {
+  display: inline-grid;
+  width: 30px;
+  height: 30px;
+  place-items: center;
+  border-color: var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--muted);
+}
+
+.icon-button:hover {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+.icon-button.danger:hover {
+  border-color: #fecaca;
+  background: #fef2f2;
+  color: #dc2626;
+}
+
+.status-dot {
+  width: 7px;
+  height: 7px;
+  flex: 0 0 auto;
+  border-radius: 50%;
+  background: #a1a1aa;
+}
+
+.status-ready { background: #10b981; box-shadow: 0 0 0 3px rgb(16 185 129 / 12%); }
+.status-error, .status-missing { background: #ef4444; box-shadow: 0 0 0 3px rgb(239 68 68 / 12%); }
+.status-indexing { background: #f59e0b; box-shadow: 0 0 0 3px rgb(245 158 11 / 12%); }
+
+.process-library-row,
+.process-catalog-item {
+  transition: border-color 140ms ease, background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.process-library-row:hover { background: #fafafa; }
+.process-catalog-item:hover { border-color: var(--accent-border) !important; box-shadow: var(--shadow-soft); }
+
+.logo-interaction:hover .logo-preview,
+.logo-interaction:focus .logo-preview {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+}
+
+.surface-panel,
+.rounded-lg.border.bg-white,
+.rounded-md.border.bg-white {
+  border-color: var(--line);
+  box-shadow: var(--shadow-soft);
+}
+
+.project-card {
+  box-shadow: 0 1px 2px rgb(23 28 38 / 5%);
+  transition: border-color 150ms ease, box-shadow 150ms ease, transform 150ms ease;
+}
+
+.app-shell .project-card:hover {
+  border-color: var(--accent-border);
+  box-shadow: 0 10px 26px rgb(23 28 38 / 9%);
+  transform: translateY(-2px);
+}
+
+.app-shell .bg-blue-600 {
+  background-color: var(--accent);
+}
+
+.app-shell .hover\:bg-blue-500:hover,
+.app-shell .hover\:bg-blue-700:hover {
+  background-color: var(--accent-hover);
+}
+
+.app-shell .text-blue-600,
+.app-shell .text-blue-700 {
+  color: var(--accent);
+}
+
+.app-shell .border-blue-200,
+.app-shell .border-blue-500 {
+  border-color: var(--accent-border);
+}
+
+.app-shell .bg-blue-50 {
+  background-color: var(--accent-soft);
+}
+
+.app-shell .focus\:border-blue-500:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--focus-ring);
+}
+
+.theme-picker {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.theme-option {
+  display: inline-flex;
+  min-width: 104px;
+  align-items: center;
+  gap: 8px;
+  border-color: var(--line);
+  border-radius: 6px;
+  background: var(--surface);
+  padding: 7px 10px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.theme-option:hover {
+  border-color: var(--line-strong);
+  color: var(--text);
+  box-shadow: 0 3px 10px rgb(20 25 35 / 7%);
+}
+
+.theme-option.is-selected {
+  border-color: var(--accent-border);
+  background: var(--accent-soft);
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.theme-swatch {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border: 2px solid rgb(255 255 255 / 88%);
+  border-radius: 50%;
+  box-shadow: 0 0 0 1px rgb(30 35 45 / 18%);
+}
+
+.sidebar-theme {
+  position: relative;
+}
+
+.theme-trigger {
+  display: grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  border-color: var(--line);
+  border-radius: 7px;
+  background: var(--surface);
+  color: var(--muted);
+  font-size: 18px;
+}
+
+.theme-trigger:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+  box-shadow: 0 3px 10px rgb(20 25 35 / 8%);
+}
+
+.theme-popover {
+  pointer-events: none;
+  position: absolute;
+  bottom: 0;
+  left: 45px;
+  width: 176px;
+  padding: 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface-raised);
+  box-shadow: 0 14px 34px rgb(20 25 35 / 16%);
+  opacity: 0;
+  transform: translateX(-5px);
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.sidebar-theme:hover .theme-popover,
+.sidebar-theme:focus-within .theme-popover {
+  pointer-events: auto;
+  opacity: 1;
+  transform: translateX(0);
+}
+
+.theme-popover-title {
+  margin-bottom: 8px;
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+}
+
+.theme-picker-compact {
+  gap: 7px;
+}
+
+.theme-picker-compact .theme-option {
+  min-width: 0;
+  width: 32px;
+  height: 32px;
+  justify-content: center;
+  padding: 0;
+}
+
+.project-source code[class*='language-'] {
+  display: block;
+  padding: 0 !important;
+  border: 0 !important;
+  background: transparent !important;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre-wrap;
+  text-shadow: none !important;
+}
+
+.project-source .token {
+  background: transparent !important;
+  text-shadow: none !important;
+}
+
+/* RTL Design Browser uses a self-contained dark editor theme. */
+.rtl-source {
+  color: #d4d4d8;
+  font-family: 'Cascadia Mono', 'SFMono-Regular', Consolas, monospace;
+  tab-size: 2;
+}
+
+.rtl-source code.language-verilog {
+  display: inline;
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  color: inherit;
+  font-family: inherit;
+  font-size: inherit;
+  line-height: inherit;
+  white-space: pre;
+  box-shadow: none !important;
+}
+
+.rtl-source code.language-verilog .token {
+  padding: 0 !important;
+  border: 0 !important;
+  border-radius: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+  text-shadow: none !important;
+}
+
+.rtl-source code.language-verilog .token.keyword {
+  color: #7dd3fc !important;
+  font-weight: 600;
+}
+
+.rtl-source code.language-verilog .token.number {
+  color: #86efac !important;
+}
+
+.rtl-source code.language-verilog .token.comment {
+  color: #71717a !important;
+  font-style: normal;
+}
+
+.rtl-source code.language-verilog .token.string {
+  color: #fcd34d !important;
+}
+
+.rtl-source code.language-verilog .token.operator {
+  color: #f0abfc !important;
+}
+
+.rtl-source code.language-verilog .token.punctuation {
+  color: #a1a1aa !important;
+}
+
+/* Workbench materials: quiet texture, frosted toolbars, and precise editor rails. */
+.app-shell,
+.workspace-shell,
+.material-page {
+  background-color: var(--app-bg);
+  background-image: url('./assets/workbench-texture.png');
+  background-size: 384px 384px;
+  background-attachment: fixed;
+}
+
+.workspace-header,
+.chat-toolbar {
+  background-color: rgb(255 255 255 / 84%);
+  border-color: var(--line);
+  box-shadow: 0 1px 0 rgb(255 255 255 / 85%), 0 5px 18px rgb(20 25 35 / 5%);
+  backdrop-filter: blur(14px) saturate(0.85);
+}
+
+.workspace-tree {
+  background-color: rgb(255 255 255 / 78%);
+  box-shadow: inset -1px 0 rgb(255 255 255 / 80%);
+  backdrop-filter: blur(10px);
+}
+
+.workspace-tabs {
+  background-color: rgb(245 246 248 / 88%);
+  box-shadow: inset 0 -1px rgb(20 25 35 / 7%), 0 1px rgb(255 255 255 / 80%);
+  backdrop-filter: blur(10px);
+}
+
+.workspace-tabs .bg-zinc-100 {
+  background-color: var(--surface-raised) !important;
+  box-shadow: inset 0 -2px var(--accent), 0 -1px 5px rgb(20 25 35 / 5%);
+}
+
+.workspace-content {
+  background-color: rgb(246 247 249 / 46%);
+}
+
+.source-surface {
+  background-color: rgb(255 255 255 / 74%);
+  box-shadow: inset 0 1px rgb(255 255 255 / 90%);
+}
+
+.source-surface pre {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background-color: rgb(252 252 253 / 92%);
+  box-shadow: inset 0 1px 4px rgb(20 25 35 / 4%), 0 7px 22px rgb(20 25 35 / 5%);
+}
+
+.workspace-bottom,
+.chat-composer {
+  background-color: rgb(255 255 255 / 88%);
+  box-shadow: 0 -6px 20px rgb(20 25 35 / 5%), inset 0 1px rgb(255 255 255 / 92%);
+  backdrop-filter: blur(12px);
+}
+
+.workspace-status {
+  background-color: rgb(237 239 242 / 92%);
+  border-color: var(--line);
+  box-shadow: inset 0 1px rgb(255 255 255 / 75%);
+}
+
+.resize-rail {
+  position: relative;
+  z-index: 20;
+  flex: none;
+  background-color: rgb(212 215 220 / 75%);
+  transition: background-color 140ms ease, box-shadow 140ms ease;
+}
+
+.resize-rail::after {
+  content: '';
+  position: absolute;
+  border-radius: 2px;
+  background-color: rgb(113 118 126 / 52%);
+  transition: background-color 140ms ease, transform 140ms ease;
+}
+
+.resize-rail-x::after {
+  top: 50%;
+  left: 2px;
+  width: 1px;
+  height: 28px;
+  transform: translateY(-50%);
+}
+
+.resize-rail-y::after {
+  top: 2px;
+  left: 50%;
+  width: 28px;
+  height: 1px;
+  transform: translateX(-50%);
+}
+
+.resize-rail:hover,
+.resize-rail:active {
+  background-color: var(--accent-border);
+  box-shadow: 0 0 0 1px var(--accent-border);
+}
+
+.resize-rail:hover::after,
+.resize-rail:active::after {
+  background-color: var(--accent);
+}
+
+.chat-surface {
+  background-color: transparent;
+}
+
+.chat-messages {
+  background-color: rgb(246 247 249 / 34%);
+  background-image: url('./assets/workbench-texture.png');
+  background-size: 384px 384px;
+}
+
+.chat-composer textarea,
+.chat-composer input {
+  border-color: var(--line-strong);
+  background-color: rgb(255 255 255 / 94%);
+  box-shadow: inset 0 1px 4px rgb(20 25 35 / 5%), 0 3px 10px rgb(20 25 35 / 4%);
+}
+
+.message-user,
+.message-assistant,
+.message-tool {
+  border: 1px solid var(--line);
+  box-shadow: 0 5px 16px rgb(20 25 35 / 6%);
+}
+
+.message-user {
+  max-width: min(82%, 840px);
+  border-color: var(--accent-border);
+  box-shadow: 0 5px 16px rgb(20 25 35 / 7%);
+}
+
+.message-assistant,
+.message-tool {
+  width: 100%;
+  max-width: none;
+}
+
+.message-assistant {
+  background-color: rgb(255 255 255 / 88%);
+  backdrop-filter: blur(8px);
+}
+
+.message-tool {
+  border-left: 3px solid var(--accent-border);
+  background-color: rgb(247 248 250 / 92%);
+}
+
+.file-tree button {
+  min-height: 26px;
+  border: 1px solid transparent;
+  transition: border-color 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.file-tree button:hover {
+  border-color: var(--line);
+  background-color: rgb(255 255 255 / 82%) !important;
+}
+
+.file-tree-refresh {
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.engineering-console-tabs {
+  min-height: 37px;
+  background-color: rgb(246 247 249 / 78%);
+  box-shadow: inset 0 -1px rgb(20 25 35 / 6%);
+}
+
+.engineering-console-tabs > button:not(.console-icon-button) {
+  min-height: 30px;
+  border-bottom: 2px solid transparent;
+  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
+}
+
+.engineering-console-tabs > button.bg-zinc-100 {
+  border-bottom-color: var(--accent);
+  background-color: rgb(255 255 255 / 88%) !important;
+  color: var(--accent);
+}
+
+.console-icon-button {
+  display: inline-flex;
+  width: 25px;
+  height: 25px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: 4px;
+  color: var(--muted);
+}
+
+.console-icon-button:hover {
+  border-color: var(--line);
+  background-color: var(--surface-raised);
+  color: var(--text);
+}
+
+.console-action {
+  display: inline-flex;
+  min-height: 27px;
+  align-items: center;
+  gap: 5px;
+  border: 1px solid var(--line-strong);
+  border-radius: 5px;
+  background-color: rgb(255 255 255 / 90%);
+  padding: 3px 9px;
+  color: #515761;
+  font-size: 11px;
+  font-weight: 500;
+  box-shadow: 0 1px 2px rgb(20 25 35 / 4%);
+}
+
+.console-action:hover {
+  border-color: var(--accent-border);
+  color: var(--accent);
+}
+
+.console-action:disabled {
+  cursor: default;
+  opacity: 0.48;
+}
+
+.problem-count {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.problem-count::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+}
+
+.problem-count-error::before {
+  background-color: #dc2626;
+}
+
+.problem-count-warning::before {
+  background-color: #d97706;
+}
+
+.console-list {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background-color: rgb(255 255 255 / 62%);
+  box-shadow: inset 0 1px 3px rgb(20 25 35 / 3%);
+}
+
+.console-row {
+  display: flex;
+  min-height: 29px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 1px solid rgb(225 228 232 / 72%);
+  padding: 5px 9px;
+}
+
+.console-row:last-child {
+  border-bottom: 0;
+}
+
+button.console-row:hover {
+  background-color: var(--accent-soft);
+}
+
+.console-empty {
+  display: flex;
+  min-height: 54px;
+  align-items: center;
+  justify-content: center;
+  border: 1px dashed var(--line-strong);
+  border-radius: 6px;
+  padding: 12px;
+  color: #8a9099;
+  font-size: 11px;
+  text-align: center;
+}
+
+.console-metric {
+  display: flex;
+  min-width: 0;
+  align-items: baseline;
+  justify-content: space-between;
+  border-left: 3px solid var(--accent-border);
+  border-radius: 4px;
+  background-color: rgb(255 255 255 / 72%);
+  padding: 6px 9px;
+  color: var(--muted);
+  font-size: 11px;
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.console-metric strong {
+  color: var(--text);
+  font-size: 16px;
+  font-weight: 600;
+}
+
+.environment-group {
+  margin-top: 14px;
+}
+
+.environment-feedback {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+  border: 1px solid var(--accent-border);
+  border-radius: 6px;
+  background-color: var(--accent-soft);
+  padding: 9px 11px;
+  color: var(--accent);
+  font-size: 12px;
+}
+
+.environment-feedback-error {
+  border-color: #fecaca;
+  background-color: #fff1f2;
+  color: #b91c1c;
+}
+
+.environment-group-title {
+  display: flex;
+  align-items: baseline;
+  gap: 9px;
+  margin-bottom: 6px;
+}
+
+.environment-group-title strong {
+  color: var(--text);
+  font-size: 12px;
+}
+
+.environment-group-title span {
+  color: var(--muted);
+  font-size: 10px;
+}
+
+.environment-list {
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background-color: rgb(255 255 255 / 66%);
+}
+
+.environment-row {
+  display: flex;
+  min-height: 58px;
+  align-items: center;
+  gap: 10px;
+  border-bottom: 1px solid var(--line);
+  padding: 8px 10px;
+}
+
+.environment-row:last-child {
+  border-bottom: 0;
+}
+
+.environment-importance {
+  border: 1px solid var(--line);
+  border-radius: 3px;
+  padding: 1px 4px;
+  font-size: 9px;
+  font-weight: 600;
+}
+
+.importance-required {
+  border-color: #fecaca;
+  background-color: #fff1f2;
+  color: #b91c1c;
+}
+
+.importance-recommended {
+  border-color: #fde68a;
+  background-color: #fffbeb;
+  color: #a16207;
+}
+
+.importance-optional {
+  color: var(--muted);
+}
+
+.environment-install-button,
+.environment-link-button {
+  display: inline-flex;
+  flex: none;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  border: 1px solid var(--accent-border);
+  border-radius: 5px;
+  background-color: var(--accent-soft);
+  padding: 5px 8px;
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.environment-link-button {
+  width: 29px;
+  height: 29px;
+  padding: 0;
+}
+
+.environment-install-button:hover,
+.environment-link-button:hover {
+  border-color: var(--accent);
+}
+
+.environment-install-button:disabled {
+  cursor: wait;
+  opacity: 0.55;
+}

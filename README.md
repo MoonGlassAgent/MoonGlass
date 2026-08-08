@@ -1,0 +1,68 @@
+# MoonGlass ASIC Design Agent
+
+MoonGlass 是面向 ASIC/SoC 设计工程师的 AI 工作台，以六阶段流程串联需求-规格定义、架构设计、RTL 开发、验证完备、质量检查和综合实现。
+
+本仓库是 MoonGlass 的**首期公开源码仓库**，公开 Renderer UI、六阶段流程框架、公共领域类型和 IPC 契约，供产品体验、流程研究和社区协作。完整 Agent 编排、EDA 自动化和工程执行能力暂未全部公开。
+
+> 可直接运行的 Windows 完整绿色版请从 GitHub Releases 下载。绿色版包含 MIC_NPU Demo，但不包含模型 API Key。
+
+## 能做什么
+
+- 芯片设计工程师可快速完成 RTL 开发、代码检查、验证执行与回归闭环。
+- 架构师可根据需求和规格快速形成设计 Demo，并进入综合评估面积与时序。
+- 验证工程师可基于规格、架构和需求-规格矩阵搭建验证环境、生成用例并整理质量证据。
+- 主会话与平行会话可独立选择模型，用不同模型交叉 Review。
+- 前序阶段发生变更时，对已完成的后续阶段产生变更响应提醒。
+
+## 六阶段流程
+
+```text
+REQ_SPEC 需求-规格定义
+    -> ARCH 架构设计
+    -> RTL RTL 开发
+    -> VERIF 验证完备
+    -> QA 质量检查
+    -> SYNTH 综合实现
+```
+
+需求和规格在同一阶段协同形成，但仍通过需求-规格矩阵保持需求、设计项、验证点和质量证据的双向追踪。
+
+## 本次公开范围
+
+公开内容：
+
+- `src/renderer/`：React UI、项目面板、阶段看板、会话界面、文件树、设置和关于页面
+- `src/shared/`：公共领域类型、阶段数据结构、IPC 契约和 Provider 预设
+- `docs/USER-MANUAL-ZH-CN.md`：中文实用手册
+- 授权、隐私、安全与贡献说明
+
+暂未公开：
+
+- Electron 主进程和持久化服务实现
+- Agent 调度、会话恢复、系统 Prompt 与 Skills
+- EDA Bridge、自动验证与 Bugfix 循环
+- RTL Engine 与 RTL Design Browser 核心引擎
+- MIC_NPU Demo 源工程及内部测试资产
+
+因此，本仓库当前用于查看和协作公开框架，**不能单独构建出 GitHub Release 中的完整绿色版**。详见 [PUBLIC-SOURCE-SCOPE.md](./PUBLIC-SOURCE-SCOPE.md)。
+
+## 版本
+
+首发版本：`v0.4.0`
+
+完整使用说明见 [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)。
+
+## 授权
+
+MoonGlass 是 **Source Available** 软件，不是 OSI 定义的 Open Source 软件。
+
+- 非商业用途遵循 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
+- 企业研发、客户交付、收费服务、流片、量产及其他商业用途须事先取得单独书面授权。
+- 商用方案和参考价格见 [COMMERCIAL-LICENSE.md](./COMMERCIAL-LICENSE.md)。
+- 历史授权边界见 [LICENSE-CHANGE.md](./LICENSE-CHANGE.md)。
+
+用户合法输入的需求、规格、RTL、验证资产和设计输出归用户或其权利人所有。嵌入输出的 MoonGlass 代码、模板及第三方组件仍受各自许可证约束。
+
+## 联系
+
+商务授权、定制开发、安全问题和产品建议：`moonglassagent@126.com`
