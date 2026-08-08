@@ -27,6 +27,26 @@ REQ_SPEC 需求-规格定义
 
 需求和规格在同一阶段协同形成，但仍通过需求-规格矩阵保持需求、设计项、验证点和质量证据的双向追踪。
 
+## 软件界面
+
+### 六阶段项目工作区
+
+项目工作区集中展示阶段推进、项目文件、主会话与平行会话、Agent 执行过程以及质量问题。阶段变更会沿已完成的后续阶段传播提醒。
+
+![MoonGlass 六阶段项目工作区](./docs/images/workspace-flow.png)
+
+### RTL Design Browser
+
+RTL Design Browser 用于解析 Top、展开设计层次并查看模块实例关系，辅助架构 Review、RTL 定位和综合前检查。
+
+![MoonGlass RTL Design Browser](./docs/images/rtl-design-browser.png)
+
+### 授权与快速使用说明
+
+软件内置中文授权摘要、六阶段快速手册、隐私提示以及商务授权联系方式。
+
+![MoonGlass 授权与快速使用说明](./docs/images/about-license.png)
+
 ## 本次公开范围
 
 公开内容：
