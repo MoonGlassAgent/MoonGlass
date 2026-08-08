@@ -17,7 +17,7 @@ EDA 桥接桩代码。要求 `pnpm install → typecheck → build → dev` 全�
 
 | 决策项 | 结论 | 理由 |
 |--------|------|------|
-| 与 Cherry Studio 的关系 | **独立编码，仅借鉴架构模式**（非 Fork） | 用户明确要求"借鉴而非抄袭"；同时规避 AGPL-3.0 传染性，项目采用 Apache-2.0 |
+| 与 Cherry Studio 的关系 | **独立编码，仅借鉴通用架构模式**（非 Fork） | 用户明确要求“借鉴而非抄袭”；当前授权以仓库根目录 `LICENSE` 和 `LICENSE-CHANGE.md` 为准 |
 | 应用形态 | Electron 桌面应用（主/渲染/preload 三端） | 与规格书一致，贴合桌面 EDA 工具链调用场景 |
 | 产品命名 | MoonGlass，直接初始化于 `D:\tools\MoonGlass\` | 用户确认 |
 | 技术栈 | Electron 41 + React 19 + electron-vite + pnpm workspace + TanStack Router + Tailwind v4 + zustand | 与 Cherry Studio 同代际的业界标准选型，工程自行搭建 |

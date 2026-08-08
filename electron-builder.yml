@@ -10,6 +10,15 @@ files:
   - out/**/*
   - resources/**/*
   - package.json
+  - LICENSE
+  - NOTICE
+  - LICENSE-CHANGE.md
+  - COMMERCIAL-LICENSE.md
+  - THIRD-PARTY-NOTICES.md
+  - PRIVACY.md
+  - TRADEMARKS.md
+  - SECURITY.md
+  - docs/USER-MANUAL-ZH-CN.md
 extraResources:
   - from: resources/moonglass/pi-bridge
     to: pi-bridge

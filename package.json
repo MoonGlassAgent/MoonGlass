@@ -3,8 +3,11 @@
   "version": "0.4.0",
   "description": "MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台",
   "private": true,
-  "license": "Apache-2.0",
-  "author": "MoonGlass Contributors",
+  "license": "SEE LICENSE IN LICENSE",
+  "author": {
+    "name": "MoonGlass Contributors",
+    "email": "moonglassagent@126.com"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
@@ -24,6 +27,7 @@
   },
   "devDependencies": {
     "@electron/rebuild": "^4.2.0",
+    "@electron/asar": "^3.4.1",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.0",
     "@types/prismjs": "^1.26.6",

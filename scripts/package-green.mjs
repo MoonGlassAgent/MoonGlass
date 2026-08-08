@@ -60,14 +60,15 @@ if (!SKIP_BUILD) {
 }
 
 // ── 2. 健全性检查：pi 运行时依赖必须随包分发 ────────────────
-const packagedPi = join(unpacked, 'resources', 'pi-coding-agent')
-if (!existsSync(join(packagedPi, 'node_modules', 'undici', 'package.json'))) {
-  console.error('[green] 打包产物缺少 pi 运行时依赖（resources/pi-coding-agent/node_modules）。')
-  console.error('        请确认 electron-builder.yml 的 extraResources 指向 build-resources/pi-runtime。')
+const packagedPi = join(unpacked, 'resources', 'pi-runtime.asar')
+if (!existsSync(packagedPi)) {
+  console.error('[green] 打包产物缺少 pi 运行时归档（resources/pi-runtime.asar）。')
+  console.error('        请确认 afterPack 已执行。')
   process.exit(1)
 }
 const piVersion = execFileSync(
-  process.execPath, [join(packagedPi, 'dist', 'cli.js'), '--version'], { encoding: 'utf-8' }
+  join(unpacked, 'MoonGlass.exe'), [`${packagedPi}/dist/cli.js`, '--version'],
+  { encoding: 'utf-8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }
 ).trim()
 console.log(`[green] 打包内 pi 运行时自检通过（pi v${piVersion}）`)
 
@@ -76,6 +77,16 @@ rmSync(outRoot, { recursive: true, force: true })
 mkdirSync(appDir, { recursive: true })
 console.log('[green] 复制 win-unpacked ...')
 cpSync(unpacked, appDir, { recursive: true })
+
+// 法律与使用文档放在绿色版根目录，用户无需解包 app.asar 即可阅读。
+for (const file of [
+  'LICENSE', 'NOTICE', 'LICENSE-CHANGE.md', 'COMMERCIAL-LICENSE.md',
+  'THIRD-PARTY-NOTICES.md', 'PRIVACY.md', 'TRADEMARKS.md', 'SECURITY.md'
+]) {
+  cpSync(join(ROOT, file), join(appDir, file))
+}
+mkdirSync(join(appDir, 'docs'), { recursive: true })
+cpSync(join(ROOT, 'docs', 'USER-MANUAL-ZH-CN.md'), join(appDir, 'docs', 'USER-MANUAL-ZH-CN.md'))
 
 // 便携模式标记（src/main/index.ts 检测后把 userData 重定向到程序目录 userdata/）
 writeFileSync(join(appDir, 'portable-mode'), 'portable\n')
@@ -109,13 +120,20 @@ writeFileSync(join(appDir, 'README-ZH-CN.txt'), `MoonGlass ASIC Design Agent 绿
 3. 已内置 MIC_NPU Demo，首次启动自动建立数据库并显示在项目列表中。
 4. 首次使用请在「设置」中配置模型服务（API Key 不随包分发）。
 
+授权说明：
+- MoonGlass 为 Source Available 软件，不是 OSI 定义的 Open Source 软件。
+- 非商业使用遵循 PolyForm Noncommercial License 1.0.0。
+- 企业研发、客户交付、收费服务、流片或量产等商业用途须另行取得书面授权。
+- 详细条款见程序目录 LICENSE、NOTICE 和 COMMERCIAL-LICENSE.md。
+- 商务联系：moonglassagent@126.com
+
 ${RELEASE} 修复：
 - 修复绿色版无法选择模型 / 对话无法启动的问题：
   此前安装包只携带 pi-coding-agent 本体而缺失其全部运行依赖，
   Agent 子进程（pi --mode rpc）启动即崩溃，报
   “[pi-rpc] 等待就绪超时：[pi-rpc] 进程未启动”。
-  现在 pi 运行时及其 128 个依赖包由 scripts/stage-pi-runtime.mjs
-  完整物化后随包分发，并通过打包内自检。
+  现在 pi 运行时及其依赖由 scripts/stage-pi-runtime.mjs 完整物化，
+  再封装为单一 pi-runtime.asar 随包分发，并通过打包内自检。
 
 安全说明：
 - 未包含 API Key、模型账号配置和 Agent 会话。
@@ -125,11 +143,16 @@ ${RELEASE} 修复：
 // ── 4. 压缩 ────────────────────────────────────────────────
 const zipName = `MoonGlass-${VERSION}-Windows-x64-Green-${RELEASE}-MIC_NPU-Demo-${today}.zip`
 const zipPath = join(outRoot, zipName)
+const fileCount = readdirSync(appDir, { recursive: true, withFileTypes: true })
+  .filter((entry) => entry.isFile()).length
+if (fileCount > 1200) {
+  console.error(`[green] 文件数量异常：${fileCount}（上限 1200），已中止打包。`)
+  console.error('        请检查是否把展开的 node_modules 或缓存带入绿色版。')
+  process.exit(1)
+}
+console.log(`[green] 文件数量检查通过：${fileCount}`)
 console.log('[green] 压缩 ZIP ...')
-execSync(
-  `powershell -NoProfile -Command "Compress-Archive -Path '${appDir}' -DestinationPath '${zipPath}' -Force"`,
-  { stdio: 'inherit' }
-)
+execFileSync('tar.exe', ['-a', '-cf', zipPath, '-C', outRoot, basename(appDir)], { stdio: 'inherit' })
 
 const sizeMB = (statSync(zipPath).size / 1024 / 1024).toFixed(1)
 console.log(`[green] 完成：${zipPath}（${sizeMB} MB）`)

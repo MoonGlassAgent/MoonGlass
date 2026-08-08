@@ -134,13 +134,13 @@ function resolvePiBinFromNodeModules(): string {
   return ''
 }
 
-/** 定位 pi-coding-agent 的 cli.js：打包后在 extraResources，开发时在 node_modules */
+/** 定位 pi-coding-agent 的 cli.js：打包后位于单文件 ASAR，开发时在 node_modules。 */
 function resolvePiBin(): string {
-  // 生产环境：从 extraResources 读取
+  // Electron 的 Node 模式支持直接执行 ASAR 内脚本，避免分发数千个依赖文件。
   if (app.isPackaged) {
-    const packaged = join(process.resourcesPath, 'pi-coding-agent', 'dist', 'cli.js')
+    const packaged = join(process.resourcesPath, 'pi-runtime.asar', 'dist', 'cli.js')
     if (existsSync(packaged)) return packaged
-    console.error('[agent-service] 打包环境未找到 pi-coding-agent（extraResources 配置？）')
+    console.error('[agent-service] 打包环境未找到 pi-runtime.asar')
   }
   // 开发环境：从 node_modules 探测
   const fromNodeModules = resolvePiBinFromNodeModules()

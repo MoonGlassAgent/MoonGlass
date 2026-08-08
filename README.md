@@ -1,4 +1,4 @@
-# MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台
+# MoonGlass ASIC Design Agent - 芯片开发全流程 AI 工作台
 
 MoonGlass 是一个面向 ASIC/SoC 设计工程师的 AI 工作台：以 **6 阶段开发流程引擎**（REQ_SPEC → ARCH → RTL → VERIF → QA → SYNTH）为骨架，将 LLM Agent、提示词分层约束、Python 脚本引擎与 EDA 工具链（Verible / Yosys / Verilator …）整合进同一个桌面应用。
 
@@ -6,9 +6,9 @@ MoonGlass 是一个面向 ASIC/SoC 设计工程师的 AI 工作台：以 **6 阶
 
 ## 与 Cherry Studio 的关系
 
-MoonGlass 在**架构思想**上借鉴了 [Cherry Studio](https://github.com/CherryHQ/cherry-studio)（Electron 主/渲染进程分层、侧边栏导航交互、服务生命周期管理、IPC 契约中心等业界通用模式），但 **全部代码独立编写，不包含 Cherry Studio 的任何源码，也不是其 Fork**。因此本项目不受 Cherry Studio AGPL-3.0 的传染性约束，采用 **Apache-2.0** 许可证。
+MoonGlass 在**架构思想**上参考了 Electron 桌面应用的通用工程模式，包括主/渲染进程分层、侧边栏导航、服务生命周期管理与 IPC 契约中心。MoonGlass 第一方代码独立编写，不包含 Cherry Studio 源码，也不是其 Fork。第三方组件适用各自许可证。
 
-## 当前状态：v0.3 Phase 4 开发中
+## 当前状态：v0.4
 
 | 模块 | 状态 |
 |------|------|
@@ -24,7 +24,7 @@ MoonGlass 在**架构思想**上借鉴了 [Cherry Studio](https://github.com/Che
 | RTL 解析与模板生成（`@moonglass/rtl-engine`） | ✅ Phase 4 已实现 |
 | 逻辑综合网表生成（`runLogicSynthesis`） | ✅ 已实现（Yosys，支持目标 Liberty 与通用综合） |
 | IP 模板库内容 | ✅ 支持内置/本地 IP 库索引，已有 `utility/axi_lite_timer` smoke 样例 |
-| 知识库（sqlite-vec RAG） | 🚧 占位（Phase 5） |
+| 知识库（RAG） | 🚧 持续开发 |
 | better-sqlite3 + drizzle 数据库接线 | ✅ 已实现（ProjectService + 门禁历史） |
 | Electron 打包分发（electron-builder） | ✅ 已配置，可生成安装包 |
 
@@ -63,6 +63,20 @@ pnpm dist             # 打包安装包（dist/）
 └── resources/moonglass/  # IP 模板库（含 axi_lite_timer 样例）/ Verible 默认规则 / 工具链配置样例
 ```
 
-## 开发路线
+## 授权
 
-见规格书 §6。骨架之后的优先级：① LLM Provider + Agent 对话闭环 → ② 门禁检查接入真实 EDA 工具 → ③ IP 模板库内容导入（已加入 `axi_lite_timer` 样例） → ④ better-sqlite3 + drizzle 接线 → ⑤ 项目数据跟随工程目录迁移。
+MoonGlass 是 **Source Available** 软件，不是 OSI 定义的 Open Source 软件。
+
+- 非商业用途：遵循 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
+- 商业用途：企业内部商业研发、客户交付、收费服务、流片、量产及其他预期商业应用，须事先取得单独的书面授权。
+- 商用方案与参考价格：见 [COMMERCIAL-LICENSE.md](./COMMERCIAL-LICENSE.md)。
+- 历史授权边界：见 [LICENSE-CHANGE.md](./LICENSE-CHANGE.md)。
+- 第三方组件：见 [THIRD-PARTY-NOTICES.md](./THIRD-PARTY-NOTICES.md)。
+
+用户合法输入的需求、规格、RTL、验证资产和设计输出归用户或其权利人所有。嵌入输出的 MoonGlass 代码、模板及第三方组件仍受各自许可证约束。
+
+商用授权、定制开发与安全问题联系：`moonglassagent@126.com`。
+
+## 使用手册
+
+中文实用手册见 [docs/USER-MANUAL-ZH-CN.md](./docs/USER-MANUAL-ZH-CN.md)。软件内也可从左侧“关于”查看授权摘要、快速流程和联系方式。

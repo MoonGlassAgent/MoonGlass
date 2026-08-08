@@ -8,3 +8,5 @@ e2e-screenshots/
 build-resources/pi-runtime/
 demo-seed/
 green-dist-*/
+.tools-gh-*/
+gh-auth.*.log

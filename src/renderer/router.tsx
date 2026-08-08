@@ -19,6 +19,7 @@ const ProcessLibrariesPage = lazyRouteComponent(() => import('./pages/ProcessLib
 const ScriptsPage = lazyRouteComponent(() => import('./pages/ScriptsPage'), 'ScriptsPage')
 const KnowledgePage = lazyRouteComponent(() => import('./pages/KnowledgePage'), 'KnowledgePage')
 const SettingsPage = lazyRouteComponent(() => import('./pages/SettingsPage'), 'SettingsPage')
+const InformationPage = lazyRouteComponent(() => import('./pages/InformationPage'), 'InformationPage')
 
 const rootRoute = createRootRoute({
   component: AppLayout
@@ -81,6 +82,12 @@ const settingsRoute = createRoute({
   component: SettingsPage
 })
 
+const informationRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/information',
+  component: InformationPage
+})
+
 const routeTree = rootRoute.addChildren([
   indexRoute,
   projectsRoute,
@@ -90,7 +97,8 @@ const routeTree = rootRoute.addChildren([
   processLibrariesRoute,
   scriptsRoute,
   knowledgeRoute,
-  settingsRoute
+  settingsRoute,
+  informationRoute
 ])
 
 export const router = createRouter({ routeTree })

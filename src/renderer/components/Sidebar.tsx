@@ -6,7 +6,8 @@
  */
 
 import { Link, useRouterState } from '@tanstack/react-router'
-import { BookOpen, Boxes, Factory, FolderKanban, Palette, ScrollText, Settings } from 'lucide-react'
+import { BookOpen, Boxes, CircleHelp, Factory, FolderKanban, Palette, ScrollText, Settings } from 'lucide-react'
+import { APP_INFO } from '@shared/app-info'
 import logoUrl from '../assets/logo.png'
 import { ThemePicker } from './ThemePicker'
 
@@ -22,7 +23,8 @@ const NAV_ITEMS: NavItem[] = [
   { to: '/process-libraries', label: '工艺库', icon: Factory },
   { to: '/scripts', label: '脚本', icon: ScrollText },
   { to: '/knowledge', label: '知识库', icon: BookOpen },
-  { to: '/settings', label: '设置', icon: Settings }
+  { to: '/settings', label: '设置', icon: Settings },
+  { to: '/information', label: '关于', icon: CircleHelp }
 ]
 
 export function Sidebar(): React.JSX.Element {
@@ -64,7 +66,7 @@ export function Sidebar(): React.JSX.Element {
         </div>
       </div>
       <div className="mt-2 px-1 text-center text-[10px] leading-tight text-zinc-400">
-        v0.4
+        v{APP_INFO.version.replace(/\.0$/, '')}
       </div>
     </nav>
   )

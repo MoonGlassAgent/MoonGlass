@@ -10,7 +10,8 @@
  * 本脚本把 pi-coding-agent 及其全部传递依赖（含 pnpm 链接的 peer 依赖）
  * 物化为自包含目录 build-resources/pi-runtime/：
  *   dist/  package.json  node_modules/...
- * electron-builder 将其整体复制到 resources/pi-coding-agent（见 electron-builder.yml）。
+ * electron-builder 的 afterPack 钩子将其封装为 resources/pi-runtime.asar，
+ * 避免绿色版出现数千个裸露的依赖文件。
  *
  * 依赖收集原理：pnpm 虚拟存储中 <pkg>/node_modules/ 恰好包含该包解析后的全部依赖
  * （含 peer），因此从 pi-coding-agent 的真实路径出发递归列举同级目录即可。
