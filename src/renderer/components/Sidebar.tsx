@@ -61,7 +61,7 @@ export function Sidebar(): React.JSX.Element {
       <div className="sidebar-theme mt-auto">
         <button type="button" className="theme-trigger" title="切换主题" aria-label="切换主题"><Palette size={17} /></button>
         <div className="theme-popover">
-          <div className="theme-popover-title">界面主题</div>
+          <div className="theme-popover-title">外观与强调色</div>
           <ThemePicker compact />
         </div>
       </div>

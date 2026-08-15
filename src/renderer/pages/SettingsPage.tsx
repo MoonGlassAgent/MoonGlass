@@ -40,7 +40,7 @@ function AppearanceSection(): React.JSX.Element {
     <section className="surface-panel mb-5 rounded-lg border border-zinc-200 bg-white p-4">
       <div className="mb-3">
         <h2 className="font-semibold text-zinc-800">外观</h2>
-        <p className="mt-0.5 text-xs text-zinc-500">选择适合当前工作环境的强调色，设置会自动保存。</p>
+        <p className="mt-0.5 text-xs text-zinc-500">选择浅色、深色或跟随系统，并设置界面强调色。设置会自动保存。</p>
       </div>
       <ThemePicker />
     </section>

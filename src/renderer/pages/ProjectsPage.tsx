@@ -14,6 +14,9 @@ export function ProjectsPage(): React.JSX.Element {
   const [description, setDescription] = useState('')
   const [workspacePath, setWorkspacePath] = useState('')
   const [createError, setCreateError] = useState('')
+  const [migrationMessage, setMigrationMessage] = useState('')
+  const [migrationError, setMigrationError] = useState('')
+  const [migratingProjectId, setMigratingProjectId] = useState<string | null>(null)
 
   useEffect(() => {
     void refreshProjects()
@@ -48,6 +51,28 @@ export function ProjectsPage(): React.JSX.Element {
     await refreshProjects()
   }
 
+  const handleMigrate = async (project: (typeof projects)[number]): Promise<void> => {
+    const destination = await window.moonglass.project.chooseDirectory()
+    if (!destination) return
+    const confirmed = window.confirm(
+      `确认将项目「${project.name}」迁移到：\n${destination}\n\n迁移完成后原目录会保留，请确认新项目正常后再自行删除。`
+    )
+    if (!confirmed) return
+    setMigratingProjectId(project.id)
+    setMigrationError('')
+    setMigrationMessage(`正在迁移「${project.name}」，请勿关闭 MoonGlass…`)
+    try {
+      const result = await window.moonglass.project.migrate(project.id, destination)
+      setMigrationMessage(`「${project.name}」已迁移，共复制 ${result.copiedFiles} 个文件；原目录已保留。`)
+      await refreshProjects()
+    } catch (error) {
+      setMigrationMessage('')
+      setMigrationError(error instanceof Error ? error.message : String(error))
+    } finally {
+      setMigratingProjectId(null)
+    }
+  }
+
   return (
     <div className="h-full overflow-y-auto p-6">
       <div className="mb-6 flex items-center justify-between">
@@ -64,6 +89,17 @@ export function ProjectsPage(): React.JSX.Element {
           <Plus size={16} /> 新建项目
         </button>
       </div>
+
+      {migrationMessage && (
+        <div className="mb-4 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-sm text-blue-700">
+          {migrationMessage}
+        </div>
+      )}
+      {migrationError && (
+        <div className="mb-4 rounded border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+          迁移失败：{migrationError}
+        </div>
+      )}
 
       {creating && (
         <div className="mb-6 rounded-lg border border-zinc-300 bg-white p-4">
@@ -128,7 +164,12 @@ export function ProjectsPage(): React.JSX.Element {
       ) : (
         <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
           {projects.map((p) => (
-            <ProjectCard key={p.id} project={p} onDelete={handleDelete} />
+            <ProjectCard
+              key={p.id}
+              project={p}
+              onDelete={handleDelete}
+              onMigrate={migratingProjectId ? undefined : handleMigrate}
+            />
           ))}
         </div>
       )}
