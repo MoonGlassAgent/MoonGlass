@@ -1,6 +1,6 @@
 {
   "name": "moonglass",
-  "version": "0.4.0",
+  "version": "0.4.3",
   "description": "MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
@@ -26,8 +26,8 @@
     "test:integration": "node scripts/run-tests.mjs integration"
   },
   "devDependencies": {
-    "@electron/rebuild": "^4.2.0",
     "@electron/asar": "^3.4.1",
+    "@electron/rebuild": "^4.2.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.10.0",
     "@types/prismjs": "^1.26.6",
@@ -42,7 +42,7 @@
     "vite": "^7.0.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "^0.82.1",
+    "@earendil-works/pi-coding-agent": "0.84.1",
     "@electron-toolkit/utils": "^4.0.0",
     "@moonglass/design-browser-engine": "workspace:*",
     "@moonglass/eda-bridge": "workspace:*",

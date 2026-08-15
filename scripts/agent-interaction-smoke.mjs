@@ -4,6 +4,7 @@ register('./ts-alias-hooks.mjs', import.meta.url)
 const {
   parseDecisionRequest,
   parseDecisionResponse,
+  parseDecisionResponses,
   serializeDecisionResponse
 } = await import('../src/shared/agent-interaction.ts')
 
@@ -37,6 +38,10 @@ const customText = serializeDecisionResponse(request, [], '采用 48 bit，并�
 const custom = parseDecisionResponse(customText)
 check('支持仅填写用户自定义要求', custom?.selectedIds.length === 0 && custom.customText?.includes('48 bit'))
 check('损坏载荷不会导致异常', parseDecisionResponse('MOONGLASS_DECISION_RESPONSE:{bad json') === undefined)
+
+const batchText = `${selectedText}\n\n${customText}`
+const batch = parseDecisionResponses(batchText)
+check('支持一轮提交多个决策回复', batch.length === 2 && batch[0].requestId === request.id)
 
 console.log('')
 console.log(failures === 0 ? '✅ Agent 结构化交互冒烟全部通过' : `❌ ${failures} 项失败`)

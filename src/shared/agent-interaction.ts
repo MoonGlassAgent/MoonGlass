@@ -21,6 +21,17 @@ export function parseDecisionResponse(text: string): AgentDecisionResponse | und
   return parsePayload<AgentDecisionResponse>(text, DECISION_RESPONSE_PREFIX)
 }
 
+export function parseDecisionResponses(text: string): AgentDecisionResponse[] {
+  return text.split(/\r?\n/).flatMap((line) => {
+    if (!line.startsWith(DECISION_RESPONSE_PREFIX)) return []
+    try {
+      return [JSON.parse(line.slice(DECISION_RESPONSE_PREFIX.length)) as AgentDecisionResponse]
+    } catch {
+      return []
+    }
+  })
+}
+
 export function serializeDecisionResponse(
   request: AgentDecisionRequest,
   selectedIds: string[],
@@ -40,4 +51,13 @@ export function serializeDecisionResponse(
     response.customText ? `补充要求：${response.customText}` : ''
   ].filter(Boolean).join('\n')
   return `${DECISION_RESPONSE_PREFIX}${JSON.stringify(response)}\n${summary}`
+}
+
+
+export function serializeDecisionResponses(
+  decisions: Array<{ request: AgentDecisionRequest; selectedIds: string[]; customText: string }>
+): string {
+  return decisions.map(({ request, selectedIds, customText }) =>
+    serializeDecisionResponse(request, selectedIds, customText)
+  ).join('\n\n')
 }

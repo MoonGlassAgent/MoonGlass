@@ -22,6 +22,8 @@ const BUILTIN_CATEGORIES: Array<{ id: string; label: string }> = [
 
 const EXCLUDED_DIRS = /^(?:\.git|node_modules|dist|out|build|obj_dir|sim_build|__pycache__|coverage)$/i
 const RTL_EXT = /\.(?:v|sv|vh|svh)$/i
+const IP_SOURCE_DIR = /^(?:rtl|src|source|sources|hdl)$/i
+const VERIFICATION_DIR = /^(?:tb|test|tests|testbench|verification|verif|sim|vip|bfm|uvm)$/i
 const MAX_INDEX_FILES = 80_000
 const MAX_EXAMPLES_PER_KIND = 6
 const READ_MODULE_BYTES = 192 * 1024
@@ -42,6 +44,11 @@ interface ScanSummary {
   verificationFiles: string[]
   documentFiles: string[]
   constraintFiles: string[]
+}
+
+interface SemanticHints {
+  protocols: string[]
+  interfaceRoles: string[]
 }
 
 interface CandidateRoot {
@@ -157,6 +164,10 @@ export class IpLibraryService implements MoonGlassService {
     if (!record) throw new Error('IP 库记录不存在')
     record.status = 'indexing'
     record.error = undefined
+    record.semanticAnalysisStatus = 'not-run'
+    record.semanticAnalyzedAt = undefined
+    record.semanticModel = undefined
+    record.semanticError = undefined
     await this.persist()
 
     try {
@@ -261,11 +272,13 @@ export class IpLibraryService implements MoonGlassService {
       if (scannedFiles >= MAX_INDEX_FILES) return
       const entries = await this.safeReaddir(dir)
       const metadata = entries.find((entry) => entry.isFile() && /^(?:metadata|ip)\.json$/i.test(entry.name))
-      const rtlDir = entries.find((entry) => entry.isDirectory() && /^rtl$/i.test(entry.name))
+      const rtlDir = entries.find((entry) => entry.isDirectory() && IP_SOURCE_DIR.test(entry.name))
+      const verificationDir = entries.find((entry) => entry.isDirectory() && VERIFICATION_DIR.test(entry.name))
       const hasDirectRtl = entries.some((entry) => entry.isFile() && RTL_EXT.test(entry.name))
       const hasRtlDir = rtlDir ? await this.containsRtl(join(dir, rtlDir.name)) : false
+      const hasVerificationDir = verificationDir ? await this.containsRtl(join(dir, verificationDir.name)) : false
 
-      if (metadata || hasRtlDir || (dir === root && hasDirectRtl)) {
+      if (metadata || hasRtlDir || hasVerificationDir || hasDirectRtl) {
         roots.set(dir, { path: dir, metadataPath: metadata ? join(dir, metadata.name) : undefined })
         return
       }
@@ -298,8 +311,15 @@ export class IpLibraryService implements MoonGlassService {
     const type = text(metadata?.type) ?? text(metadata?.category) ?? defaultType
     const name = text(metadata?.name) ?? (relRoot === '.' ? basename(ipRoot.path) : basename(relRoot))
     const topModule = text(metadata?.topModule) ?? await this.inferTopModule(ipRoot.path, summary.rtlFiles)
+    const semanticHints = await this.inferSemanticHints(ipRoot.path, summary)
     const metadataPath = ipRoot.metadataPath ?? await this.findMetadataPath(ipRoot.path)
-    const status = summary.rtlFiles.length > 0 ? 'ready' : 'error'
+    const hasDesign = summary.rtlFiles.length > 0
+    const hasVerification = summary.verificationFiles.length > 0
+    const status = hasDesign || hasVerification ? 'ready' : 'error'
+    const componentKind = hasDesign && hasVerification
+      ? 'mixed' as const
+      : hasVerification ? 'verification-component' as const : hasDesign ? 'rtl-ip' as const : 'reference' as const
+    const confidence = metadataPath ? 0.98 : topModule ? 0.86 : hasVerification ? 0.76 : 0.6
     return {
       id: `${libraryId}:${safeIdPart(relRoot)}`,
       libraryId,
@@ -309,6 +329,11 @@ export class IpLibraryService implements MoonGlassService {
       source,
       status,
       topModule,
+      componentKind,
+      protocols: semanticHints.protocols,
+      interfaceRoles: semanticHints.interfaceRoles,
+      confidence,
+      analysisSource: 'deterministic',
       summary: text(metadata?.summary) ?? text(metadata?.description),
       metadataPath,
       fileCount: summary.fileCount,
@@ -317,8 +342,34 @@ export class IpLibraryService implements MoonGlassService {
       verificationFiles: summary.verificationFiles,
       documentFiles: summary.documentFiles,
       constraintFiles: summary.constraintFiles,
-      error: status === 'error' ? '未发现 RTL 源文件' : undefined
+      error: status === 'error' ? '未发现 RTL 或验证组件源文件' : undefined
     }
+  }
+
+  private async inferSemanticHints(root: string, summary: ScanSummary): Promise<SemanticHints> {
+    const paths = [...summary.rtlFiles, ...summary.verificationFiles]
+    let corpus = paths.join('\n').toLowerCase()
+    for (const relPath of paths.slice(0, 24)) {
+      try {
+        corpus += `\n${(await readFile(join(root, relPath), 'utf-8')).slice(0, READ_MODULE_BYTES).toLowerCase()}`
+      } catch { /* 单个源文件不可读不影响其余索引 */ }
+    }
+    const protocols: string[] = []
+    const detect = (label: string, pattern: RegExp): void => { if (pattern.test(corpus)) protocols.push(label) }
+    detect('AXI4', /\baxi(?:4)?\b|\bawvalid\b|\barvalid\b/)
+    detect('AXI4-Lite', /axi[_ -]?lite|axil|\bawaddr\b[\s\S]{0,200}\bwstrb\b/)
+    detect('AXI-Stream', /axi[_ -]?stream|axis|\btvalid\b[\s\S]{0,120}\btready\b/)
+    detect('AHB', /\bahb\b|\bhtrans\b|\bhready\b/)
+    detect('APB', /\bapb\b|\bpsel\b|\bpenable\b/)
+    detect('UART', /\buart\b|\btxd\b|\brxd\b/)
+    detect('SPI', /\bspi\b|\bmosi\b|\bmiso\b|\bsclk\b/)
+    detect('I2C', /\bi2c\b|\bscl\b[\s\S]{0,100}\bsda\b/)
+    const interfaceRoles: string[] = []
+    if (/\b(master|initiator|mst)\b/.test(corpus)) interfaceRoles.push('master')
+    if (/\b(slave|target|slv)\b/.test(corpus)) interfaceRoles.push('slave')
+    if (/\bmonitor\b/.test(corpus)) interfaceRoles.push('monitor')
+    if (/\b(driver|bfm)\b/.test(corpus)) interfaceRoles.push('driver')
+    return { protocols: [...new Set(protocols)], interfaceRoles: [...new Set(interfaceRoles)] }
   }
 
   private async summarizeFiles(root: string): Promise<ScanSummary> {
@@ -328,6 +379,7 @@ export class IpLibraryService implements MoonGlassService {
     const documentFiles: string[] = []
     const constraintFiles: string[] = []
     let fileCount = 0
+    const verificationRoot = VERIFICATION_DIR.test(basename(root)) || /(?:vip|bfm|uvm|testbench)/i.test(basename(root))
 
     const remember = (kind: IpLibraryFileKind, relPath: string): void => {
       const group = groups.get(kind) ?? { count: 0, examples: [] }
@@ -350,7 +402,8 @@ export class IpLibraryService implements MoonGlassService {
         fileCount += 1
         const full = join(dir, entry.name)
         const rel = normalizeRel(relative(root, full))
-        remember(fileKind(rel), rel)
+        const detectedKind = fileKind(rel)
+        remember(detectedKind === 'rtl' && verificationRoot ? 'verification' : detectedKind, rel)
         if (fileCount >= MAX_INDEX_FILES) break
       }
     }
@@ -424,7 +477,48 @@ export class IpLibraryService implements MoonGlassService {
   }
 
   private async refreshIndex(): Promise<void> {
-    await this.writeIndex(await this.combinedRecords())
+    const libraries = await this.combinedRecords()
+    await this.writeIndex(libraries)
+    await this.writeGuide(libraries)
+  }
+
+  async applySemanticAnalysis(
+    id: string,
+    result: { model: string; ips: Array<{ id: string; name?: string; type?: string; summary?: string; protocols?: string[]; interfaceRoles?: string[]; licenseStatus?: 'identified' | 'unknown' | 'restricted'; confidence?: number }> }
+  ): Promise<IpLibraryRecord> {
+    const record = this.records.find((entry) => entry.id === id)
+    if (!record) throw new Error('仅支持分析用户导入的 IP 库')
+    const byId = new Map(result.ips.map((ip) => [ip.id, ip]))
+    record.ips = record.ips.map((ip) => {
+      const semantic = byId.get(ip.id)
+      if (!semantic) return ip
+      return {
+        ...ip,
+        name: text(semantic.name) ?? ip.name,
+        type: text(semantic.type) ?? ip.type,
+        summary: text(semantic.summary) ?? ip.summary,
+        protocols: Array.isArray(semantic.protocols) ? [...new Set(semantic.protocols.filter((value) => typeof value === 'string'))] : ip.protocols,
+        interfaceRoles: Array.isArray(semantic.interfaceRoles) ? [...new Set(semantic.interfaceRoles.filter((value) => typeof value === 'string'))] : ip.interfaceRoles,
+        licenseStatus: semantic.licenseStatus ?? ip.licenseStatus ?? 'unknown',
+        confidence: typeof semantic.confidence === 'number' ? Math.max(0, Math.min(1, semantic.confidence)) : ip.confidence,
+        analysisSource: 'pi'
+      }
+    })
+    record.semanticAnalysisStatus = 'completed'
+    record.semanticAnalyzedAt = new Date().toISOString()
+    record.semanticModel = result.model
+    record.semanticError = undefined
+    await this.persist()
+    await this.refreshIndex()
+    return { ...record, ips: record.ips.map((ip) => ({ ...ip })) }
+  }
+
+  async markSemanticAnalysis(id: string, status: 'running' | 'failed', error?: string): Promise<void> {
+    const record = this.records.find((entry) => entry.id === id)
+    if (!record) throw new Error('仅支持分析用户导入的 IP 库')
+    record.semanticAnalysisStatus = status
+    record.semanticError = error
+    await this.persist()
   }
 
   private async writeIndex(libraries: IpLibraryRecord[]): Promise<void> {
@@ -432,12 +526,48 @@ export class IpLibraryService implements MoonGlassService {
     await writeFile(
       this.indexPath,
       JSON.stringify({
-        version: 1,
+        version: 2,
         generatedAt: new Date().toISOString(),
         builtinRoot: this.builtinRoot,
         libraries
       }, null, 2),
       'utf-8'
     )
+  }
+
+  private async writeGuide(libraries: IpLibraryRecord[]): Promise<void> {
+    const readyIps = libraries.flatMap((library) => library.ips.map((ip) => ({ library, ip })))
+    const lines = [
+      '# MoonGlass IP Library Guide',
+      '',
+      `生成时间：${new Date().toISOString()}`,
+      '',
+      '本文件由确定性索引器生成。Agent 应先从 `index.json` 按功能、协议和组件用途检索，再读取候选 IP 源文件；不得仅凭名称直接集成。',
+      '',
+      '## 使用约束',
+      '',
+      '- IP 库默认只读；项目修改应通过 wrapper、adapter 或项目内受控副本完成。',
+      '- 架构和 RTL 阶段优先评估 `rtl-ip` 或 `mixed`；验证阶段优先评估 `verification-component` 或 `mixed`。',
+      '- 使用前核对接口角色、协议、参数、时钟复位、依赖、许可证和质量证据。',
+      '- 候选不满足需求时允许不用，并记录不采用原因。',
+      '',
+      '## 已索引 IP',
+      ''
+    ]
+    for (const { library, ip } of readyIps) {
+      lines.push(
+        `### ${ip.name}`,
+        '',
+        `- 库：${library.name}`,
+        `- 类型：${ip.type} / ${ip.componentKind ?? '待分析'}`,
+        `- 协议：${ip.protocols?.join('、') || '未识别'}`,
+        `- 接口角色：${ip.interfaceRoles?.join('、') || '未识别'}`,
+        `- Top：${ip.topModule ?? '未识别'}`,
+        `- 路径：${ip.path.replace(/\\/g, '/')}`,
+        `- 置信度：${Math.round((ip.confidence ?? 0) * 100)}%`,
+        ''
+      )
+    }
+    await writeFile(join(this.root, 'IP_LIBRARY_GUIDE.md'), `${lines.join('\n')}\n`, 'utf-8')
   }
 }

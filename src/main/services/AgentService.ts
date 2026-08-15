@@ -20,8 +20,8 @@ import { randomUUID } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
-import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, Phase } from '@shared/types'
-import { parseDecisionRequest, parseDecisionResponse } from '@shared/agent-interaction'
+import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase } from '@shared/types'
+import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import type { ProjectService } from './ProjectService.ts'
 import type { LlmProviderService } from './LlmProviderService.ts'
@@ -296,6 +296,17 @@ export class AgentService implements MoonGlassService {
     this.backgroundSessions.delete(projectId)
   }
 
+  /** 项目目录切换前释放该项目的全部 Pi 进程，后续进入项目时会从新路径重新创建。 */
+  prepareProjectMigration(projectId: string): void {
+    const pending = this.pendingStreamEvents.get(projectId)
+    if (pending) clearTimeout(pending.timer)
+    this.pendingStreamEvents.delete(projectId)
+    const active = this.sessions.get(projectId)
+    if (active) active.client.dispose()
+    this.sessions.delete(projectId)
+    this.disposeBackgroundSessions(projectId)
+  }
+
   /** 由主进程入口注入事件推送通道（webContents.send） */
   attachEmitter(emit: (projectId: string, event: AgentStreamEvent) => void): void {
     this.emit = emit
@@ -397,6 +408,7 @@ export class AgentService implements MoonGlassService {
     const basePrompt = buildSystemPrompt(phase)
     const processLibraryIndex = join(app.getPath('userData'), 'moonglass', 'process-libraries', 'index.json')
     const ipLibraryIndex = join(app.getPath('userData'), 'moonglass', 'ip-libraries', 'index.json')
+    const ipLibraryGuide = join(app.getPath('userData'), 'moonglass', 'ip-libraries', 'IP_LIBRARY_GUIDE.md')
     const project = this.projects.get(projectId)
     const fastTrackNotice =
       phase === 'SYNTH' &&
@@ -441,7 +453,9 @@ scripts/
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
 - 综合优先使用 MoonGlass 工艺库索引选定的默认 Liberty；若没有配置默认库，允许通用综合，但须明确提示面积和时序不具备工艺意义。
 - MoonGlass 工艺库统一索引路径：${processLibraryIndex.replace(/\\/g, '/')}。涉及工艺选择、综合、时序或物理视图前，先读取该索引并核对 Liberty/LEF/GDS/Verilog 等可用文件；不得只凭目录名猜测文件。用户新增或下载工艺库后，以该索引为准。
-- MoonGlass IP 模板库统一索引路径：${ipLibraryIndex.replace(/\\/g, '/')}。复用或参考 IP 模板前，先读取该索引并核对模板名称、类型、topModule、RTL/验证/文档文件；不得只凭页面分类或目录名猜测可用模板。
+- MoonGlass IP 模板库统一索引路径：${ipLibraryIndex.replace(/\\/g, '/')}。优先调用 \`ip_search\` 缩小候选，再用 \`ip_inspect\` 核对模板名称、类型、topModule、RTL/验证/文档文件；库规模很大时不得把整份 index.json 读入上下文，也不得只凭页面分类或目录名猜测可用模板。
+- IP 库使用指南：${ipLibraryGuide.replace(/\\/g, '/')}。在 REQ_SPEC/ARCH 阶段先检索现有能力并说明采用或不采用理由；RTL 阶段优先评估 componentKind 为 rtl-ip/mixed 的候选；VERIF 阶段优先评估 verification-component/mixed 的 VIP、BFM、monitor、driver 和 testbench 资源。
+- IP 库源目录默认只读，不得直接修改。采用 IP 前必须核对 protocols、interfaceRoles、topModule、依赖、时钟复位、许可证和质量证据；信息不足时请求用户确认。需要适配时在项目中生成 wrapper/adapter，并在阶段文档中记录 IP 库名称、源路径与采用理由。
 - 当需求、规格、架构或约束存在两种以上合理选项并需要用户决定时，必须调用 \`request_user_decision\`，不要只在普通文本中列出编号让用户手工回复。单选和多选默认允许用户补充自己的要求；选项应说明关键面积、性能、功耗、验证或交付影响，并且最多标记一个推荐项。调用后停止继续决策，等待用户回答。
 - 不得在根目录或旧式平铺目录创建阶段产出；不得虚构工具结果。
 `
@@ -512,6 +526,7 @@ argument-hint: "<模块名>"
       env: {
         ...cleanEnv,
         MOONGLASS_PROVIDERS_FILE: providerFile,
+        MOONGLASS_IP_LIBRARY_INDEX: join(app.getPath('userData'), 'moonglass', 'ip-libraries', 'index.json'),
         ...(process.env.MOONGLASS_DEFAULT_LIBERTY
           ? { MOONGLASS_DEFAULT_LIBERTY: process.env.MOONGLASS_DEFAULT_LIBERTY }
           : {}),
@@ -687,6 +702,105 @@ argument-hint: "<模块名>"
     } catch (error) {
       rmSync(newFile, { force: true })
       throw error
+    }
+  }
+
+  /** 使用独立、短生命周期的 Pi 会话为确定性 IP 索引补充语义字段。 */
+  async analyzeIpLibrary(record: IpLibraryRecord): Promise<{
+    model: string
+    ips: Array<{ id: string; name?: string; type?: string; summary?: string; protocols?: string[]; interfaceRoles?: string[]; licenseStatus?: 'identified' | 'unknown' | 'restricted'; confidence?: number }>
+  }> {
+    if (!this.piBinPath) throw new Error('Pi Coding Agent 不可用')
+    const provider = this.readyProviders()[0]
+    const modelId = provider?.models[0]
+    if (!provider || !modelId) throw new Error('没有已启用且配置完成的模型服务，无法启动 Pi 语义分析')
+    const analysisDir = join(app.getPath('userData'), 'moonglass', 'ip-analysis')
+    mkdirSync(analysisDir, { recursive: true })
+    const providerFile = join(analysisDir, `providers-${randomUUID()}.json`)
+    const sessionFile = join(analysisDir, `session-${randomUUID()}.jsonl`)
+    writeFileSync(providerFile, JSON.stringify(this.readyProviders()), { encoding: 'utf-8', mode: 0o600 })
+    let responseText = ''
+    let processError = ''
+    const client = new PiRpcClient({
+      binPath: this.piBinPath,
+      args: ['--mode', 'rpc', '--session', sessionFile, '--name', `IP Library Analysis / ${record.name}`, '-e', join(this.bridgeDir, 'moonglass-providers.ts')],
+      cwd: record.path,
+      env: {
+        ...buildChildEnvironment(),
+        MOONGLASS_PROVIDERS_FILE: providerFile,
+        PI_SKIP_VERSION_CHECK: '1', PI_TELEMETRY: '0', PI_CODING_AGENT_DIR: this.piAgentDir(),
+        PI_CODING_AGENT_SESSION_DIR: analysisDir, ELECTRON_RUN_AS_NODE: '1'
+      } as Record<string, string>,
+      onEvent: (event) => {
+        if (event.type !== 'message_update') return
+        const delta = (event.assistantMessageEvent ?? {}) as Record<string, unknown>
+        if (delta.type === 'text_delta') responseText += String(delta.delta ?? '')
+        if (delta.type === 'error') processError = String(delta.errorMessage ?? delta.error ?? '模型分析失败')
+      },
+      onExit: (_code, stderr) => { if (stderr) processError = stderr.slice(-1000) }
+    })
+    try {
+      client.start()
+      await client.waitReady()
+      const actual = await client.command<PiModelInfo>({ type: 'set_model', provider: provider.id, modelId })
+      if (actual.provider !== provider.id || actual.id !== modelId) throw new Error('Pi 语义分析模型切换失败')
+      const compact = record.ips.map((ip) => ({
+        id: ip.id, name: ip.name, type: ip.type, componentKind: ip.componentKind, topModule: ip.topModule,
+        protocols: ip.protocols, interfaceRoles: ip.interfaceRoles, rtlFiles: ip.rtlFiles.slice(0, 12),
+        verificationFiles: ip.verificationFiles.slice(0, 12), documentFiles: ip.documentFiles.slice(0, 8), path: ip.path
+      }))
+      const results: Array<Record<string, unknown>> = []
+      const finalAssistantText = async (): Promise<string> => {
+        const data = await client.command<{ messages: PiMessage[] }>({ type: 'get_messages' })
+        const message = [...data.messages].reverse().find((item) => item.role === 'assistant')
+        if (!message) return responseText
+        if (typeof message.content === 'string') return message.content
+        return ((message.content as Array<{ type?: string; text?: string }> | undefined) ?? [])
+          .filter((block) => block.type === 'text' && typeof block.text === 'string')
+          .map((block) => block.text ?? '')
+          .join('\n') || responseText
+      }
+      const analyzeBatch = async (batch: typeof compact, singleRetry = false): Promise<void> => {
+        responseText = ''
+        const prompt = `你是 ASIC IP 库管理员。只分析下列确定性扫描结果，不修改任何文件，也不要调用工具。\n` +
+          `为每个输入 id 返回一项。只输出 JSON 数组，不要 Markdown。字段：id、name、type、summary（中文一句话）、protocols（字符串数组）、interfaceRoles（master/slave/monitor/driver 等）、licenseStatus（identified/unknown/restricted）、confidence（0 到 1）。不能确定时保留原值或使用 unknown，不得编造。\n输入：${JSON.stringify(batch)}`
+        await client.command({ type: 'prompt', message: prompt }, 15 * 60_000)
+        if (processError) throw new Error(processError)
+        const completeText = await finalAssistantText()
+        const firstBracket = completeText.indexOf('[')
+        const lastBracket = completeText.lastIndexOf(']')
+        try {
+          if (firstBracket < 0 || lastBracket <= firstBracket) throw new Error('响应中没有完整 JSON 数组')
+          const parsed = JSON.parse(completeText.slice(firstBracket, lastBracket + 1)) as unknown
+          if (!Array.isArray(parsed)) throw new Error('Pi 返回的语义分析结果不是 JSON 数组')
+          const expectedIds = new Set(batch.map((item) => item.id))
+          results.push(...parsed.filter((item): item is Record<string, unknown> =>
+            Boolean(item) && typeof item === 'object' && expectedIds.has(String((item as Record<string, unknown>).id ?? ''))
+          ))
+        } catch (error) {
+          if (batch.length > 1) {
+            const middle = Math.ceil(batch.length / 2)
+            await analyzeBatch(batch.slice(0, middle))
+            await analyzeBatch(batch.slice(middle))
+            return
+          }
+          if (!singleRetry) {
+            await analyzeBatch(batch, true)
+            return
+          }
+          throw new Error(`IP ${batch[0]?.id ?? 'unknown'} 的 JSON 响应不完整：${error instanceof Error ? error.message : String(error)}`)
+        }
+      }
+      for (let offset = 0; offset < compact.length; offset += 10) {
+        await analyzeBatch(compact.slice(offset, offset + 10))
+      }
+      return { model: `${provider.id} / ${modelId}`, ips: results as ReturnType<AgentService['analyzeIpLibrary']> extends Promise<infer R> ? R extends { ips: infer I } ? I : never : never }
+    } catch (error) {
+      throw new Error(`Pi 语义分析失败：${error instanceof Error ? error.message : String(error)}`)
+    } finally {
+      client.dispose()
+      rmSync(providerFile, { force: true })
+      rmSync(sessionFile, { force: true })
     }
   }
 
@@ -964,10 +1078,12 @@ argument-hint: "<模块名>"
         } else if (delta.type === 'thinking_delta') {
           this.queueStreamEvent(projectId, { type: 'thinking-delta', delta: String(delta.delta ?? '') })
         } else if (delta.type === 'error') {
+          // Pi 0.84+ 的 RPC 只发送增量事件，不再携带累计 message/partial。
+          // 保留旧字段回退，以兼容历史测试和旧版事件录制。
           const partial = (delta.partial ?? event.message ?? {}) as Record<string, unknown>
           this.emit(projectId, {
             type: 'error',
-            message: String(partial.errorMessage ?? 'LLM 请求失败')
+            message: String(delta.errorMessage ?? delta.error ?? partial.errorMessage ?? 'LLM 请求失败')
           })
         }
         break
@@ -1033,7 +1149,14 @@ argument-hint: "<模块名>"
               .filter((b) => b.type === 'text')
               .map((b) => b.text ?? '')
               .join('\n')
-      return text ? [{ id, role: 'user', text, timestamp: ts, decisionResponse: parseDecisionResponse(text) }] : []
+      return text ? [{
+        id,
+        role: 'user',
+        text,
+        timestamp: ts,
+        decisionResponse: parseDecisionResponse(text),
+        decisionResponses: parseDecisionResponses(text)
+      }] : []
     }
 
     if (m.role === 'assistant') {

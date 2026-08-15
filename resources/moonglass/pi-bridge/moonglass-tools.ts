@@ -304,6 +304,71 @@ function formatIssues(issues: LintIssue[] | SynthIssue[]): string {
 }
 
 export default function (pi: ExtensionAPI): void {
+  const loadIpLibraries = (): Array<{ name: string; type: string; ips: Array<Record<string, unknown>> }> => {
+    const indexPath = process.env.MOONGLASS_IP_LIBRARY_INDEX
+    if (!indexPath || !existsSync(indexPath)) return []
+    try {
+      const index = JSON.parse(readFileSync(indexPath, 'utf-8')) as { libraries?: Array<{ name: string; type: string; ips: Array<Record<string, unknown>> }> }
+      return Array.isArray(index.libraries) ? index.libraries : []
+    } catch {
+      return []
+    }
+  }
+
+  pi.registerTool({
+    name: 'ip_search',
+    label: 'Search MoonGlass IP Library',
+    description: '从 MoonGlass 结构化 IP 索引中按功能、协议、类型或接口角色检索候选，不读取整份大型索引。',
+    promptSnippet: 'Search imported RTL IP, VIP and verification components before implementing from scratch',
+    promptGuidelines: 'Use before architecture selection, RTL implementation, or verification environment construction. Treat results as candidates and inspect compatibility before use.',
+    parameters: Type.Object({
+      query: Type.String({ description: '功能或关键词，例如 AXI master、FIFO、UART' }),
+      componentKind: Type.Optional(Type.Union([
+        Type.Literal('rtl-ip'), Type.Literal('verification-component'), Type.Literal('mixed'), Type.Literal('reference')
+      ])),
+      limit: Type.Optional(Type.Number({ minimum: 1, maximum: 20, default: 8 }))
+    }),
+    async execute(_toolCallId, params) {
+      const terms = String(params.query).toLowerCase().split(/\s+/).filter(Boolean)
+      const kind = params.componentKind ? String(params.componentKind) : undefined
+      const candidates = loadIpLibraries().flatMap((library) => library.ips.map((ip) => ({ library: library.name, ...ip })))
+        .filter((ip) => !kind || ip.componentKind === kind || ip.componentKind === 'mixed')
+        .map((ip) => {
+          const searchable = JSON.stringify([ip.name, ip.type, ip.summary, ip.topModule, ip.protocols, ip.interfaceRoles]).toLowerCase()
+          return { ip, score: terms.reduce((score, term) => score + (searchable.includes(term) ? 1 : 0), 0) }
+        })
+        .filter((entry) => terms.length === 0 || entry.score > 0)
+        .sort((a, b) => b.score - a.score || Number(b.ip.confidence ?? 0) - Number(a.ip.confidence ?? 0))
+        .slice(0, Number(params.limit ?? 8))
+        .map(({ ip }) => ({
+          id: ip.id, library: ip.library, name: ip.name, type: ip.type, componentKind: ip.componentKind,
+          protocols: ip.protocols, interfaceRoles: ip.interfaceRoles, topModule: ip.topModule,
+          summary: ip.summary, confidence: ip.confidence, path: ip.path
+        }))
+      return { content: [{ type: 'text', text: candidates.length > 0 ? JSON.stringify(candidates, null, 2) : '未找到匹配的 IP 候选。' }], details: candidates }
+    }
+  })
+
+  pi.registerTool({
+    name: 'ip_inspect',
+    label: 'Inspect MoonGlass IP',
+    description: '按稳定 ID 读取一个 IP 的完整结构化清单，包括 RTL、验证、文档和约束文件。',
+    promptSnippet: 'Inspect a selected IP candidate before integrating it',
+    promptGuidelines: 'Check protocols, role, source files, dependencies and documentation. Keep the source library read-only.',
+    parameters: Type.Object({ id: Type.String({ description: 'ip_search 返回的 IP ID' }) }),
+    async execute(_toolCallId, params) {
+      const id = String(params.id)
+      for (const library of loadIpLibraries()) {
+        const ip = library.ips.find((candidate) => candidate.id === id)
+        if (ip) {
+          const detail = { library: library.name, libraryType: library.type, ...ip }
+          return { content: [{ type: 'text', text: JSON.stringify(detail, null, 2) }], details: detail }
+        }
+      }
+      return { content: [{ type: 'text', text: `未找到 IP：${id}` }], details: { id, found: false } }
+    }
+  })
+
   pi.registerTool({
     name: 'request_user_decision',
     label: 'Request User Decision',

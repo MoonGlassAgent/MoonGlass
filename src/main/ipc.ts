@@ -46,6 +46,10 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(IPC.Project.Delete, (_e, id: string) => projects.delete(id))
 
+  ipcMain.handle(IPC.Project.Migrate, async (_e, id: string, destinationPath: string) => {
+    return projects.migrate(id, destinationPath, () => agent.prepareProjectMigration(id))
+  })
+
   ipcMain.handle(IPC.Project.GenerateDashboard, async (_e, id: string) => {
     const project = projects.get(id)
     if (!project) throw new Error(`项目不存在: ${id}`)
@@ -168,6 +172,19 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   })
   ipcMain.handle(IPC.IpLibrary.AddLocal, (_e, input: IpLibraryImportInput) => ipLibraries.addLocal(input))
   ipcMain.handle(IPC.IpLibrary.Reindex, (_e, id: string) => ipLibraries.reindex(id))
+  ipcMain.handle(IPC.IpLibrary.Enhance, async (_e, id: string) => {
+    const record = await ipLibraries.get(id)
+    if (!record || record.source !== 'local') throw new Error('仅支持分析用户导入的 IP 库')
+    await ipLibraries.markSemanticAnalysis(id, 'running')
+    try {
+      const result = await agent.analyzeIpLibrary(record)
+      return await ipLibraries.applySemanticAnalysis(id, result)
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await ipLibraries.markSemanticAnalysis(id, 'failed', message)
+      throw error
+    }
+  })
   ipcMain.handle(IPC.IpLibrary.Remove, (_e, id: string) => ipLibraries.remove(id))
   ipcMain.handle(IPC.IpLibrary.OpenFolder, async (_e, id: string) => {
     const record = await ipLibraries.get(id)

@@ -30,6 +30,7 @@ const builtinRoot = join(process.cwd(), 'resources', 'moonglass', 'ip-library')
 
 mkdirSync(join(externalRoot, 'pulse_sync', 'rtl'), { recursive: true })
 mkdirSync(join(externalRoot, 'pulse_sync', 'docs'), { recursive: true })
+mkdirSync(join(externalRoot, 'axi_master_vip'), { recursive: true })
 writeFileSync(join(externalRoot, 'pulse_sync', 'metadata.json'), JSON.stringify({
   name: '脉冲同步器',
   topModule: 'pulse_sync',
@@ -57,6 +58,13 @@ writeFileSync(join(externalRoot, 'pulse_sync', 'rtl', 'pulse_sync.sv'), `module 
   assign pulse_o = dst_sync ^ dst_sync_d;
 endmodule
 `)
+writeFileSync(join(externalRoot, 'axi_master_vip', 'axi_master_bfm.sv'), `module axi_master_bfm (
+  output logic awvalid,
+  input logic awready,
+  output logic [31:0] awaddr
+);
+endmodule
+`)
 
 const service = new IpLibraryService(dataDir, builtinRoot)
 await service.start()
@@ -75,10 +83,32 @@ check('用户 IP 库导入成功', imported.status === 'ready', imported.status)
 check('用户自定义名称生效', imported.name === '公司 CDC IP')
 check('用户自定义类型生效', imported.type === '跨时钟域')
 check('用户库索引到脉冲同步器', imported.ips.some((ip) => ip.topModule === 'pulse_sync') === true)
+check('自动识别目录内多个 IP', imported.ipCount === 2, `${imported.ipCount}`)
+const vip = imported.ips.find((ip) => ip.name === 'axi_master_vip')
+check('识别 AXI 协议', vip?.protocols?.includes('AXI4') === true, vip?.protocols?.join(','))
+check('识别验证组件角色', vip?.componentKind === 'verification-component', vip?.componentKind)
 
 const index = JSON.parse(readFileSync(service.getIndexPath(), 'utf-8'))
 check('统一索引已落盘', Array.isArray(index.libraries) && index.libraries.length >= 1)
 check('统一索引包含用户类型', JSON.stringify(index).includes('跨时钟域'))
+check('索引协议版本升级', index.version === 2, `${index.version}`)
+check('生成 Agent 使用指南', readFileSync(join(dataDir, 'moonglass', 'ip-libraries', 'IP_LIBRARY_GUIDE.md'), 'utf-8').includes('axi_master_vip'))
+
+await service.markSemanticAnalysis(imported.id, 'running')
+const enhanced = await service.applySemanticAnalysis(imported.id, {
+  model: 'test-provider / test-model',
+  ips: [{
+    id: vip.id,
+    summary: '用于 AXI4 主设备事务驱动的验证组件。',
+    protocols: ['AXI4'],
+    interfaceRoles: ['master', 'driver'],
+    licenseStatus: 'unknown',
+    confidence: 0.94
+  }]
+})
+const enhancedVip = enhanced.ips.find((ip) => ip.id === vip.id)
+check('Pi 语义结果按稳定 ID 合并', enhancedVip?.analysisSource === 'pi' && enhancedVip.summary?.includes('事务驱动'))
+check('语义分析模型与状态持久化', enhanced.semanticAnalysisStatus === 'completed' && enhanced.semanticModel === 'test-provider / test-model')
 
 await service.stop()
 

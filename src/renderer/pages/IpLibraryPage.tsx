@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from 'react'
-import { ExternalLink, FolderOpen, PackagePlus, RefreshCw, Search, Trash2 } from 'lucide-react'
+import { ExternalLink, FolderOpen, PackagePlus, RefreshCw, Search, Sparkles, Trash2 } from 'lucide-react'
 import type { IpLibraryFileKind, IpLibraryRecord, IpTemplateRecord } from '@shared/types'
 
 const TYPE_PRESETS = ['总线接口', '存储相关', '时钟相关', '仲裁器', '工具模块', '用户导入']
@@ -20,6 +20,13 @@ const KIND_LABELS: Record<IpLibraryFileKind, string> = {
   script: '脚本',
   metadata: '元数据',
   other: '其他'
+}
+
+const COMPONENT_LABELS: Record<NonNullable<IpTemplateRecord['componentKind']>, string> = {
+  'rtl-ip': 'RTL IP',
+  'verification-component': '验证组件',
+  mixed: 'RTL + 验证',
+  reference: '参考资源'
 }
 
 function pathBaseName(path: string): string {
@@ -144,7 +151,7 @@ export function IpLibraryPage(): React.JSX.Element {
         <div>
           <h1 className="text-xl font-bold text-zinc-900">IP 模板库</h1>
           <p className="mt-1 text-sm text-zinc-500">
-            内置模板与本地 IP 库统一索引，供 Agent、RTL 生成和验证流程复用。
+            选择一个目录后自动递归发现多个 IP、RTL 与验证组件，供 Agent、RTL 生成和验证流程复用。
           </p>
         </div>
         <div className="flex gap-2 text-xs text-zinc-500">
@@ -213,6 +220,9 @@ export function IpLibraryPage(): React.JSX.Element {
             </button>
           </div>
         </form>
+        <p className="mt-3 text-xs text-zinc-500">
+          MoonGlass 会自动跳过构建目录，按 metadata、源码目录和 HDL 文件识别 IP 边界，并提取协议、接口角色与组件用途；不会执行库内脚本，也不会修改源文件。
+        </p>
         {error && <div className="mt-3 rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">{error}</div>}
         {tip && <div className="mt-3 rounded-md border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-700">{tip}</div>}
       </section>
@@ -251,13 +261,25 @@ export function IpLibraryPage(): React.JSX.Element {
                     </div>
                     <div className="mt-1 truncate font-mono text-[11px] text-zinc-400" title={library.path}>{library.path}</div>
                     <div className="mt-2 text-xs text-zinc-500">{librarySubtitle(library)}</div>
+                    {library.semanticAnalysisStatus && library.semanticAnalysisStatus !== 'not-run' && (
+                      <div className="mt-1 text-xs text-zinc-500">
+                        Pi 语义分析：{library.semanticAnalysisStatus === 'completed' ? `已完成 · ${library.semanticModel ?? ''}` : library.semanticAnalysisStatus === 'running' ? '分析中' : '失败'}
+                      </div>
+                    )}
+                    {library.semanticError && <p className="mt-1 text-xs text-red-600">{library.semanticError}</p>}
                     {library.error && <p className="mt-2 text-xs text-red-600">{library.error}</p>}
                   </div>
                   <div className="flex shrink-0 gap-1">
                     <button type="button" className="icon-button" title="打开目录" onClick={() => void getIpLibraryApi().openFolder(library.id)}><ExternalLink size={15} /></button>
                     <button type="button" className="icon-button" title="重新建立索引" disabled={busy !== null} onClick={() => void run(`index-${library.id}`, () => getIpLibraryApi().reindex(library.id))}><RefreshCw className={busy === `index-${library.id}` ? 'animate-spin' : ''} size={15} /></button>
                     {library.source === 'local' && (
-                      <button type="button" className="icon-button danger" title="移除登记（不会删除目录）" disabled={busy !== null} onClick={() => void run(`remove-${library.id}`, () => getIpLibraryApi().remove(library.id))}><Trash2 size={15} /></button>
+                      <>
+                        <button type="button" className="icon-button" title="使用 Pi 补充功能、协议与许可证语义" disabled={busy !== null || library.ipCount === 0} onClick={() => void run(`enhance-${library.id}`, async () => {
+                          const analyzed = await getIpLibraryApi().enhance(library.id)
+                          setTip(`Pi 已完成 ${analyzed.name} 的语义分析，共更新 ${analyzed.ips.filter((ip) => ip.analysisSource === 'pi').length} 个 IP`)
+                        })}><Sparkles className={busy === `enhance-${library.id}` ? 'animate-pulse' : ''} size={15} /></button>
+                        <button type="button" className="icon-button danger" title="移除登记（不会删除目录）" disabled={busy !== null} onClick={() => void run(`remove-${library.id}`, () => getIpLibraryApi().remove(library.id))}><Trash2 size={15} /></button>
+                      </>
                     )}
                   </div>
                 </div>
@@ -316,9 +338,18 @@ function IpTemplateItem({ ip }: { ip: IpTemplateRecord }): React.JSX.Element {
           <div className="flex flex-wrap items-center gap-2">
             <span className="truncate text-sm font-medium text-zinc-800">{ip.name}</span>
             {ip.topModule && <span className="rounded bg-white px-1.5 py-0.5 font-mono text-[10px] text-zinc-500">{ip.topModule}</span>}
+            {ip.componentKind && <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.5 text-[10px] text-blue-700">{COMPONENT_LABELS[ip.componentKind]}</span>}
+            {typeof ip.confidence === 'number' && <span className="text-[10px] text-zinc-400">识别 {Math.round(ip.confidence * 100)}%</span>}
+            {ip.analysisSource === 'pi' && <span className="text-[10px] text-violet-600">Pi 增强</span>}
           </div>
           {ip.summary && <p className="mt-1 line-clamp-2 text-xs leading-5 text-zinc-500">{ip.summary}</p>}
           <div className="mt-2 flex flex-wrap gap-1.5">
+            {ip.protocols?.map((protocol) => (
+              <span key={protocol} className="rounded border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[10px] text-emerald-700">{protocol}</span>
+            ))}
+            {ip.interfaceRoles?.map((role) => (
+              <span key={role} className="rounded border border-amber-200 bg-amber-50 px-1.5 py-0.5 text-[10px] text-amber-700">{role}</span>
+            ))}
             {visibleKinds.map((group) => (
               <span key={group.kind} className="rounded border border-zinc-200 bg-white px-1.5 py-0.5 text-[10px] text-zinc-500" title={group.examples.join('\n')}>
                 {KIND_LABELS[group.kind]} {group.count}

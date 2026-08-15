@@ -9,9 +9,10 @@
 
 import { randomUUID } from 'node:crypto'
 import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, watch, type FSWatcher } from 'node:fs'
-import { isAbsolute, join, normalize, relative, resolve } from 'node:path'
+import { cp, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { eq, desc, sql } from 'drizzle-orm'
-import type { ChipProject, Phase, PhaseState } from '@shared/types'
+import type { ChipProject, Phase, PhaseState, ProjectMigrationResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import { createInitialPhases, markPhaseChanged } from './PhaseEngine.ts'
 import { projectWorkspaceDir } from '../core/paths.ts'
@@ -364,6 +365,93 @@ export class ProjectService implements MoonGlassService {
       .get()
     this.backupToJson()
     return (after?.count ?? 0) < (before?.count ?? 0)
+  }
+
+  async migrate(
+    id: string,
+    requestedDestination: string,
+    beforeCommit?: () => void
+  ): Promise<ProjectMigrationResult> {
+    const project = this.get(id)
+    if (!project) throw new Error('项目不存在')
+    if (!requestedDestination.trim() || !isAbsolute(requestedDestination)) {
+      throw new Error('迁移目标必须是绝对路径')
+    }
+
+    const sourcePath = normalize(resolve(this.workspaceDir(id)))
+    const destinationPath = normalize(resolve(requestedDestination))
+    const comparable = (value: string): string => process.platform === 'win32' ? value.toLowerCase() : value
+    const sourceKey = comparable(sourcePath)
+    const destinationKey = comparable(destinationPath)
+    if (sourceKey === destinationKey) throw new Error('迁移目标与当前项目目录相同')
+    const sourceToDestination = relative(sourcePath, destinationPath)
+    const destinationToSource = relative(destinationPath, sourcePath)
+    if (!sourceToDestination.startsWith('..') || !destinationToSource.startsWith('..')) {
+      throw new Error('迁移目标不能位于当前项目目录内部或包含当前项目目录')
+    }
+    if (this.list().some((item) => item.id !== id && comparable(this.workspaceDir(item.id)) === destinationKey)) {
+      throw new Error('迁移目标已被另一个 MoonGlass 项目使用')
+    }
+    if (!existsSync(sourcePath)) throw new Error('当前项目目录不存在，无法迁移')
+
+    let destinationExisted = false
+    try {
+      const entries = await readdir(destinationPath)
+      destinationExisted = true
+      if (entries.length > 0) throw new Error('迁移目标目录必须为空')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error
+    }
+
+    const temporaryPath = join(dirname(destinationPath), `.${basename(destinationPath)}.moonglass-${randomUUID()}`)
+    const inventory = async (root: string): Promise<{ files: number; bytes: number }> => {
+      let files = 0
+      let bytes = 0
+      for (const entry of await readdir(root, { withFileTypes: true })) {
+        const path = join(root, entry.name)
+        if (entry.isDirectory()) {
+          const nested = await inventory(path)
+          files += nested.files
+          bytes += nested.bytes
+        } else {
+          files += 1
+          bytes += (await stat(path)).size
+        }
+      }
+      return { files, bytes }
+    }
+
+    try {
+      await mkdir(dirname(destinationPath), { recursive: true })
+      await cp(sourcePath, temporaryPath, { recursive: true, force: false, errorOnExist: true })
+      beforeCommit?.()
+      const [sourceInventory, copiedInventory] = await Promise.all([inventory(sourcePath), inventory(temporaryPath)])
+      if (sourceInventory.files !== copiedInventory.files || sourceInventory.bytes !== copiedInventory.bytes) {
+        throw new Error('迁移副本校验失败，项目路径未切换')
+      }
+      if (destinationExisted) await rm(destinationPath, { recursive: true, force: true })
+      await rename(temporaryPath, destinationPath)
+
+      this.workspaceWatchers.get(id)?.close()
+      this.workspaceWatchers.delete(id)
+      const timer = this.workspaceChangeTimers.get(id)
+      if (timer) clearTimeout(timer)
+      this.workspaceChangeTimers.delete(id)
+      project.workspacePath = destinationPath
+      const saved = this.save(project)
+      this.watchWorkspace(id)
+      return {
+        project: saved,
+        sourcePath,
+        destinationPath,
+        copiedFiles: copiedInventory.files,
+        copiedBytes: copiedInventory.bytes,
+        sourceRetained: true
+      }
+    } catch (error) {
+      await rm(temporaryPath, { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
   }
 
   /** Agent 或 Claude Code 修改工作区文件时，自动向后续阶段传播变更通知。 */

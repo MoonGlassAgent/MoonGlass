@@ -16,6 +16,7 @@ import type {
   LlmProviderConfig,
   Phase,
   PhaseAdvanceResult,
+  ProjectMigrationResult,
   PythonRunRequest,
   PythonRunResult,
   ToolDetection,
@@ -34,6 +35,7 @@ export const IPC = {
     Get: 'project:get',
     Update: 'project:update',
     Delete: 'project:delete',
+    Migrate: 'project:migrate',
     GenerateDashboard: 'project:generate-dashboard'
   },
   Phase: {
@@ -93,6 +95,7 @@ export const IPC = {
     ChooseDirectory: 'ip-library:choose-directory',
     AddLocal: 'ip-library:add-local',
     Reindex: 'ip-library:reindex',
+    Enhance: 'ip-library:enhance',
     Remove: 'ip-library:remove',
     OpenFolder: 'ip-library:open-folder'
   },
@@ -113,6 +116,7 @@ export interface MoonGlassApi {
     get(id: string): Promise<ChipProject | null>
     update(id: string, patch: Partial<Pick<ChipProject, 'name' | 'description'>>): Promise<ChipProject | null>
     delete(id: string): Promise<boolean>
+    migrate(id: string, destinationPath: string): Promise<ProjectMigrationResult>
     generateDashboard(id: string): Promise<{ path: string; generatedAt: string; opened: boolean }>
   }
   phase: {
@@ -201,6 +205,7 @@ export interface MoonGlassApi {
     chooseDirectory(): Promise<string | null>
     addLocal(input: IpLibraryImportInput): Promise<IpLibraryRecord>
     reindex(id: string): Promise<IpLibraryRecord>
+    enhance(id: string): Promise<IpLibraryRecord>
     remove(id: string): Promise<boolean>
     openFolder(id: string): Promise<boolean>
   }

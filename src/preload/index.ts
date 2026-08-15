@@ -15,6 +15,7 @@ const api: MoonGlassApi = {
     get: (id) => ipcRenderer.invoke(IPC.Project.Get, id),
     update: (id, patch) => ipcRenderer.invoke(IPC.Project.Update, id, patch),
     delete: (id) => ipcRenderer.invoke(IPC.Project.Delete, id),
+    migrate: (id, destinationPath) => ipcRenderer.invoke(IPC.Project.Migrate, id, destinationPath),
     generateDashboard: (id) => ipcRenderer.invoke(IPC.Project.GenerateDashboard, id)
   },
   phase: {
@@ -50,6 +51,7 @@ const api: MoonGlassApi = {
     chooseDirectory: () => ipcRenderer.invoke(IPC.IpLibrary.ChooseDirectory),
     addLocal: (input: IpLibraryImportInput) => ipcRenderer.invoke(IPC.IpLibrary.AddLocal, input),
     reindex: (id: string) => ipcRenderer.invoke(IPC.IpLibrary.Reindex, id),
+    enhance: (id: string) => ipcRenderer.invoke(IPC.IpLibrary.Enhance, id),
     remove: (id: string) => ipcRenderer.invoke(IPC.IpLibrary.Remove, id),
     openFolder: (id: string) => ipcRenderer.invoke(IPC.IpLibrary.OpenFolder, id)
   },

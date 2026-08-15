@@ -117,6 +117,16 @@ export interface ChipProject {
   updatedAt: string
 }
 
+export interface ProjectMigrationResult {
+  project: ChipProject
+  sourcePath: string
+  destinationPath: string
+  copiedFiles: number
+  copiedBytes: number
+  /** 为避免误删，MoonGlass 迁移成功后保留原目录。 */
+  sourceRetained: true
+}
+
 // ==================== 门禁规则（§3.1 阶段跳转规则） ====================
 
 export interface GateRule {
@@ -260,6 +270,8 @@ export type IpLibraryStatus = 'ready' | 'missing' | 'indexing' | 'error'
 
 export type IpLibraryFileKind = 'rtl' | 'verification' | 'document' | 'constraint' | 'script' | 'metadata' | 'other'
 
+export type IpComponentKind = 'rtl-ip' | 'verification-component' | 'mixed' | 'reference'
+
 export interface IpLibraryFileSummary {
   kind: IpLibraryFileKind
   count: number
@@ -275,6 +287,13 @@ export interface IpTemplateRecord {
   source: IpLibrarySource
   status: 'ready' | 'error'
   topModule?: string
+  /** 确定性扫描得到的组件用途，后续可由语义分析补充。 */
+  componentKind?: IpComponentKind
+  protocols?: string[]
+  interfaceRoles?: string[]
+  confidence?: number
+  analysisSource?: 'deterministic' | 'pi'
+  licenseStatus?: 'identified' | 'unknown' | 'restricted'
   summary?: string
   metadataPath?: string
   fileCount: number
@@ -297,6 +316,12 @@ export interface IpLibraryRecord {
   indexedAt?: string
   ipCount: number
   fileCount: number
+  /** 扫描到但未归入任何候选 IP 的文件数量。 */
+  unclassifiedFileCount?: number
+  semanticAnalysisStatus?: 'not-run' | 'running' | 'completed' | 'failed'
+  semanticAnalyzedAt?: string
+  semanticModel?: string
+  semanticError?: string
   ips: IpTemplateRecord[]
   error?: string
 }
@@ -406,6 +431,8 @@ export interface AgentUiMessage {
   thinking?: string
   decisionRequest?: AgentDecisionRequest
   decisionResponse?: AgentDecisionResponse
+  /** 一条用户消息批量提交的全部决策回复。 */
+  decisionResponses?: AgentDecisionResponse[]
 }
 
 /** 主进程推送给渲染端的流式事件（pi 原始事件的简化映射） */

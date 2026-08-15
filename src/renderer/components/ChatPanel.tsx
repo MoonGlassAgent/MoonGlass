@@ -9,7 +9,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
 import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
-import { DECISION_RESPONSE_PREFIX, serializeDecisionResponse } from '@shared/agent-interaction'
+import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
 import { useChatStore } from '../store/chatStore'
 
 interface SessionInfo {
@@ -211,6 +211,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [providers, setProviders] = useState<LlmProviderConfig[]>([])
   const [providerHint, setProviderHint] = useState('')
   const [ensuring, setEnsuring] = useState(false)
+  const [decisionDrafts, setDecisionDrafts] = useState<Record<string, { selectedIds: string[]; customText: string }>>({})
   const bottomRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -251,11 +252,28 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     setInput('')
   }
 
-  const decisionResponses = new Map(
-    messages
-      .filter((message): message is AgentUiMessage & { decisionResponse: AgentDecisionResponse } => Boolean(message.decisionResponse))
-      .map((message) => [message.decisionResponse.requestId, message.decisionResponse])
-  )
+  const decisionResponses = new Map<string, AgentDecisionResponse>()
+  for (const message of messages) {
+    for (const response of message.decisionResponses ?? (message.decisionResponse ? [message.decisionResponse] : [])) {
+      decisionResponses.set(response.requestId, response)
+    }
+  }
+  const pendingDecisions = messages
+    .flatMap((message) => message.decisionRequest ? [message.decisionRequest] : [])
+    .filter((request) => !decisionResponses.has(request.id))
+  const completedDraftCount = pendingDecisions.filter((request) => Boolean(decisionDrafts[request.id])).length
+  const allDecisionsReady = pendingDecisions.length > 0 && completedDraftCount === pendingDecisions.length
+
+  const submitAllDecisions = (): void => {
+    if (!allDecisionsReady || streaming) return
+    const text = serializeDecisionResponses(pendingDecisions.map((request) => ({
+      request,
+      selectedIds: decisionDrafts[request.id].selectedIds,
+      customText: decisionDrafts[request.id].customText
+    })))
+    setDecisionDrafts({})
+    void send(text)
+  }
 
   // 未配置 Provider 的引导
   if (sessionInfo && !sessionInfo.providersReady) {
@@ -340,14 +358,30 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               decisionResponse={m.decisionRequest ? decisionResponses.get(m.decisionRequest.id) : undefined}
               decisionDisabled={streaming}
               onDecision={(request, selectedIds, customText) => {
-                void send(serializeDecisionResponse(request, selectedIds, customText))
+                setDecisionDrafts((current) => ({ ...current, [request.id]: { selectedIds, customText } }))
               }}
+              decisionDraft={m.decisionRequest ? decisionDrafts[m.decisionRequest.id] : undefined}
             />
           ))}
           {streaming && messages.at(-1)?.role !== 'assistant' && (
             <div className="text-sm text-zinc-400">Agent 思考中…</div>
           )}
         </div>
+        {pendingDecisions.length > 0 && (
+          <div className="mt-3 flex items-center justify-between gap-3 rounded border border-blue-200 bg-blue-50 px-4 py-3">
+            <span className="text-xs text-blue-800">
+              待确认项目：{completedDraftCount}/{pendingDecisions.length}。完成全部项目后统一发送，Agent 才会继续。
+            </span>
+            <button
+              type="button"
+              disabled={!allDecisionsReady || streaming}
+              onClick={submitAllDecisions}
+              className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+            >
+              提交全部确认并继续
+            </button>
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
@@ -395,12 +429,14 @@ function MessageBubble({
   msg,
   decisionResponse,
   decisionDisabled,
-  onDecision
+  onDecision,
+  decisionDraft
 }: {
   msg: AgentUiMessage
   decisionResponse?: AgentDecisionResponse
   decisionDisabled: boolean
   onDecision: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
+  decisionDraft?: { selectedIds: string[]; customText: string }
 }): React.JSX.Element {
   const thinkingRef = useRef<HTMLDetailsElement>(null)
   const [thinkingOpen, setThinkingOpen] = useState(true)
@@ -427,6 +463,7 @@ function MessageBubble({
           response={decisionResponse}
           disabled={decisionDisabled}
           onSubmit={onDecision}
+          draft={decisionDraft}
         />
       )
     }
@@ -498,17 +535,19 @@ function DecisionCard({
   request,
   response,
   disabled,
-  onSubmit
+  onSubmit,
+  draft
 }: {
   request: AgentDecisionRequest
   response?: AgentDecisionResponse
   disabled: boolean
   onSubmit: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
+  draft?: { selectedIds: string[]; customText: string }
 }): React.JSX.Element {
-  const [selectedIds, setSelectedIds] = useState<string[]>(response?.selectedIds ?? [])
-  const [customText, setCustomText] = useState(response?.customText ?? '')
+  const [selectedIds, setSelectedIds] = useState<string[]>(response?.selectedIds ?? draft?.selectedIds ?? [])
+  const [customText, setCustomText] = useState(response?.customText ?? draft?.customText ?? '')
   const [error, setError] = useState('')
-  const locked = Boolean(response)
+  const locked = Boolean(response || draft)
 
   const toggle = (id: string): void => {
     if (locked || disabled) return
@@ -523,7 +562,7 @@ function DecisionCard({
       setError('请选择至少一个方案，或填写自己的要求。')
       return
     }
-    onSubmit(request, selectedIds, customText)
+    onSubmit(request, selectedIds, customText.trim())
   }
 
   return (
@@ -587,7 +626,7 @@ function DecisionCard({
         {error && <p className="text-xs text-red-600">{error}</p>}
         <div className="flex items-center justify-between gap-3 pt-1">
           <span className="text-xs text-zinc-500">
-            {locked ? '该决策已提交并记录到当前会话' : disabled ? '等待 Agent 完成本轮回复' : '选择结果将继续发送给当前 Agent'}
+            {response ? '该决策已提交并记录到当前会话' : draft ? '本项已完成，等待其他确认项' : disabled ? '等待 Agent 完成本轮回复' : '完成本项后不会立即触发下一轮'}
           </span>
           {!locked && (
             <button
@@ -596,7 +635,7 @@ function DecisionCard({
               onClick={submit}
               className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
             >
-              确认选择
+              完成本项
             </button>
           )}
         </div>
