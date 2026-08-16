@@ -603,6 +603,34 @@ select {
   text-shadow: none !important;
 }
 
+/* ---- Markdown 文档预览 ---- */
+.markdown-preview { line-height: 1.7; background: var(--surface, #fff); }
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3 { margin: 1.25em 0 0.55em; color: var(--text-strong, #18181b); font-weight: 650; }
+.markdown-preview h1 { margin-top: 0; border-bottom: 1px solid var(--line, #e4e4e7); padding-bottom: 0.35em; font-size: 1.55rem; }
+.markdown-preview h2 { border-bottom: 1px solid var(--line, #e4e4e7); padding-bottom: 0.25em; font-size: 1.25rem; }
+.markdown-preview h3 { font-size: 1.05rem; }
+.markdown-preview p,
+.markdown-preview ul,
+.markdown-preview ol,
+.markdown-preview pre,
+.markdown-preview blockquote,
+.markdown-preview table { margin: 0.75em 0; }
+.markdown-preview ul,
+.markdown-preview ol { padding-left: 1.6em; }
+.markdown-preview ul { list-style: disc; }
+.markdown-preview ol { list-style: decimal; }
+.markdown-preview code { border-radius: 3px; background: var(--surface-muted, #f4f4f5); padding: 0.12em 0.35em; font-family: Consolas, 'Cascadia Code', monospace; font-size: 0.9em; }
+.markdown-preview pre { overflow: auto; border: 1px solid var(--line, #e4e4e7); border-radius: 4px; background: var(--surface-muted, #f4f4f5); padding: 0.85rem; }
+.markdown-preview pre code { background: transparent; padding: 0; }
+.markdown-preview blockquote { border-left: 3px solid var(--accent, #2563eb); padding-left: 0.85rem; color: var(--text-muted, #71717a); }
+.markdown-preview table { width: 100%; border-collapse: collapse; }
+.markdown-preview th,
+.markdown-preview td { border: 1px solid var(--line, #e4e4e7); padding: 0.4rem 0.6rem; text-align: left; }
+.markdown-preview a { color: var(--accent, #2563eb); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-preview img { max-width: 100%; }
+
 /* RTL Design Browser uses a self-contained dark editor theme. */
 .rtl-source {
   color: #d4d4d8;

@@ -11,7 +11,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
-import { dirname, join, resolve } from 'node:path'
+import { dirname, join, relative, resolve } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import {
@@ -366,6 +366,50 @@ export default function (pi: ExtensionAPI): void {
         }
       }
       return { content: [{ type: 'text', text: `未找到 IP：${id}` }], details: { id, found: false } }
+    }
+  })
+
+  pi.registerTool({
+    name: 'generate_sram_macro_views',
+    label: 'Generate SRAM Macro Views',
+    description: '按真实 SRAM 宏名称和固定 depth/width 生成仿真行为模型、综合 blackbox、wrapper 与 manifest；不会伪造 Liberty。',
+    promptSnippet: 'Generate matching SRAM simulation and synthesis views when the real memory compiler model is unavailable',
+    promptGuidelines: 'Confirm macro name, exact depth, width, port type and control polarity first. Generated behavioral files are simulation-only and blackbox files are synthesis-only. Never claim timing, area or power signoff without the matching Liberty.',
+    parameters: Type.Object({
+      macroName: Type.String({ description: '真实 SRAM 实体模块名，例如 RFSP288X80M4LL' }),
+      wrapperName: Type.String({ description: '项目使用的 wrapper 模块名，例如 SRAMS288X80_CPU' }),
+      depth: Type.Number({ minimum: 1, description: '有效字数，例如 288' }),
+      width: Type.Number({ minimum: 1, description: '每字位宽，例如 80' }),
+      outputDir: Type.Optional(Type.String({ description: '项目内输出目录，默认 rtl/macros/<macroName>' }))
+    }),
+    async execute(_toolCallId, params, signal, _onUpdate, ctx) {
+      const script = process.env.MOONGLASS_SRAM_GENERATOR
+      if (!script || !existsSync(script)) {
+        return { content: [{ type: 'text', text: 'MoonGlass SRAM 生成器未安装或路径不可用。' }], details: { ok: false } }
+      }
+      const workspace = resolve(ctx.cwd)
+      const outputDir = resolve(workspace, String(params.outputDir ?? join('rtl', 'macros', String(params.macroName))))
+      const rel = relative(workspace, outputDir)
+      if (rel.startsWith('..') || rel === '') {
+        return { content: [{ type: 'text', text: '输出目录必须是当前项目工作区内的子目录。' }], details: { ok: false } }
+      }
+      const python = await locateTool(process.platform === 'win32' ? ['python.exe', 'python'] : ['python3', 'python'])
+      if (!python) {
+        return { content: [{ type: 'text', text: '未找到 Python，无法生成 SRAM 视图。' }], details: { ok: false } }
+      }
+      const result = await run(python, [
+        script, '--macro-name', String(params.macroName), '--wrapper-name', String(params.wrapperName),
+        '--depth', String(params.depth), '--width', String(params.width), '--output-dir', outputDir
+      ], toolEnv(python), signal, workspace, 120_000)
+      if (result.code !== 0) {
+        return { content: [{ type: 'text', text: `SRAM 视图生成失败：\n${result.stderr || result.stdout}` }], details: { ok: false, ...result } }
+      }
+      let details: unknown = { ok: true, outputDir }
+      try { details = JSON.parse(result.stdout) } catch { /* 保留文本结果 */ }
+      return {
+        content: [{ type: 'text', text: `SRAM 视图已生成到 ${rel.replace(/\\/g, '/')}。\n注意：没有匹配 Liberty 时只能用于功能仿真和 blackbox 综合，不能用于 SRAM 时序、面积或功耗签核。` }],
+        details
+      }
     }
   })
 

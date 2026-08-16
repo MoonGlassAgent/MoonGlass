@@ -71,8 +71,10 @@ await service.start()
 
 const initial = await service.list()
 const builtinUtility = initial.find((library) => library.id === 'builtin-utility')
+const builtinMemory = initial.find((library) => library.id === 'builtin-memory')
 check('内置工具模块库就绪', builtinUtility?.status === 'ready', builtinUtility?.status)
 check('内置库索引到 AXI-Lite Timer', builtinUtility?.ips.some((ip) => ip.name === 'AXI-Lite Timer') === true)
+check('内置存储库索引到 SRAM 生成器', builtinMemory?.ips.some((ip) => ip.name === 'SRAM Macro Generator') === true)
 
 const imported = await service.addLocal({
   path: externalRoot,

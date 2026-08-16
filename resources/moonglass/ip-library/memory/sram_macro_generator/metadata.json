@@ -1,0 +1,13 @@
+{
+  "id": "memory.sram_macro_generator",
+  "name": "SRAM Macro Generator",
+  "category": "存储相关",
+  "version": "0.1.0",
+  "language": "Verilog-2001 / Python",
+  "topModule": "moonglass_sram_1rw_behavioral",
+  "status": "smoke_verified",
+  "summary": "按固定 depth/width 和真实宏名称生成 1RW SRAM 行为模型、综合 blackbox、wrapper 与 manifest。",
+  "sourceFiles": ["rtl/moonglass_sram_1rw_behavioral.v"],
+  "scriptFiles": ["scripts/generate_sram_views.py"]
+}
+

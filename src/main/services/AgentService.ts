@@ -445,6 +445,7 @@ scripts/
 - RTL 只写入 \`rtl/\`；Lint/CDC 报告分别写入 \`rtlqa/lint/\` 和 \`rtlqa/cdc/\`。
 - RTL 阶段必须维护 \`rtl/design.json\` 和 \`rtl/filelist.f\`：design.json 的 filelist 写字符串 \`"filelist.f"\`，源文件顺序逐行写入 filelist.f，并明确 topModule、includeDirs 与 defines。
 - 默认假设没有可用 SRAM/ROM 宏。若架构需要存储宏，先在 \`docs/03_design/architecture.md\` 记录组织、端口、时序、面积/功耗估算和替换责任，再把存储体从控制器剥离为参数化 bank 级宏接口。
+- 当用户给出固定尺寸 wrapper 和真实 SRAM 实体名但没有厂商仿真模型时，调用 \`generate_sram_macro_views\` 生成同名 behavioral/blackbox/wrapper/manifest；depth 非二次幂时必须保留非法地址检查。获得 Memory Compiler 官方 Verilog/Liberty 后，优先替换通用模型并重新回归。
 - 存储宏三视图写入 \`rtl/macros/\`：\`sram_behavioral.v\` 仅仿真，\`sram_blackbox.v\` 仅综合并用 \`read_verilog -lib\`，\`sram_phy_template.v\` 仅作物理宏例化/端口映射交付物。三者不得在同一次工具调用中作为普通 RTL 同时读入。
 - \`rtl/design.json\` 用 \`simulationFiles\`、\`libraryFiles\`、\`physicalFiles\` 分别登记三类视图；\`filelist.f\` 仅放控制逻辑和其他普通设计源。宏面积/功耗按架构或数据手册单独报告，不得伪装成 Yosys 标准单元面积。
 - Agent 新生成的 RTL 默认符合 Verilog-2001 并使用 \`.v\`；生成的验证断言可使用 SystemVerilog/SVA。此生成约束不得用于拒绝或改写用户导入的较新标准代码。
@@ -504,6 +505,9 @@ argument-hint: "<模块名>"
     mkdirSync(piAgentDir, { recursive: true })
     const cleanEnv = buildChildEnvironment()
     const providerFile = join(piAgentDir, `providers-${randomUUID()}.json`)
+    const sramGenerator = app.isPackaged
+      ? join(process.resourcesPath, 'ip-library', 'memory', 'sram_macro_generator', 'scripts', 'generate_sram_views.py')
+      : join(process.cwd(), 'resources', 'moonglass', 'ip-library', 'memory', 'sram_macro_generator', 'scripts', 'generate_sram_views.py')
     writeFileSync(providerFile, JSON.stringify(providers), { encoding: 'utf-8', mode: 0o600 })
 
     // 调试用：打印已注册 provider 与 key 末尾 4 位（不打印完整 key）
@@ -527,6 +531,7 @@ argument-hint: "<模块名>"
         ...cleanEnv,
         MOONGLASS_PROVIDERS_FILE: providerFile,
         MOONGLASS_IP_LIBRARY_INDEX: join(app.getPath('userData'), 'moonglass', 'ip-libraries', 'index.json'),
+        MOONGLASS_SRAM_GENERATOR: sramGenerator,
         ...(process.env.MOONGLASS_DEFAULT_LIBERTY
           ? { MOONGLASS_DEFAULT_LIBERTY: process.env.MOONGLASS_DEFAULT_LIBERTY }
           : {}),

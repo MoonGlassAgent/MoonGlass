@@ -8,7 +8,7 @@
  * Phase 4 增强：
  * - 可拖拽分栏（水平 + 垂直）
  * - 验证操作按钮（VERIF 阶段）
- * - 语法高亮文件查看（Prism.js）
+ * - 带行号、搜索和语法高亮的只读代码查看器
  * - 底部面板功能化
  */
 
@@ -22,7 +22,10 @@ import {
   FileOutput,
   FlaskConical,
   Maximize2,
+  Minus,
   Play,
+  Plus,
+  RefreshCw,
   RotateCw,
   TerminalSquare
 } from 'lucide-react'
@@ -36,8 +39,9 @@ import {
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
 import { ChatPanel, SessionTabs } from '../components/ChatPanel'
 import { FileTree } from '../components/FileTree'
+import { CodeViewer, fileLanguage } from '../components/CodeViewer'
+import { MarkdownPreview } from '../components/MarkdownPreview'
 import { useChatStore } from '../store/chatStore'
-import { highlightCode } from '../utils/prism-setup'
 
 const BOTTOM_TABS = [
   { id: 'problems', label: '问题', icon: AlertTriangle },
@@ -114,34 +118,24 @@ function VResizeHandle({ onDrag }: { onDrag: (dy: number) => void }): React.JSX.
 // 工具函数
 // ============================================================
 
-/** 文件扩展名 → Prism 语言类 */
-function extToLang(filePath: string): string {
-  const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
-  const name = filePath.split(/[\\/]/).pop()?.toLowerCase() ?? ''
-
-  // 日志文件识别（.log / .out / .rpt 及文件名含 log 的）
-  if (/^(log|out|rpt)$/i.test(ext) || /log/i.test(name)) return 'log'
-
-  const map: Record<string, string> = {
-    v: 'verilog', sv: 'verilog', vh: 'verilog',
-    c: 'cpp', cpp: 'cpp', h: 'cpp', hpp: 'cpp',
-    py: 'python',
-    pl: 'perl', pm: 'perl',
-    tcl: 'tcl', sdc: 'tcl',
-    js: 'javascript', ts: 'typescript',
-    json: 'json', yaml: 'yaml', yml: 'yaml',
-    md: 'markdown', xml: 'xml', html: 'html',
-    sh: 'bash', bash: 'bash', zsh: 'bash',
-    bat: 'batch', cmd: 'batch',
-    txt: 'text', cfg: 'text', ini: 'text',
-    makefile: 'makefile', mk: 'makefile'
-  }
-  return map[ext] ?? 'text'
-}
-
 function shouldOpenExternally(filePath: string): boolean {
   const ext = filePath.split('.').pop()?.toLowerCase() ?? ''
   return ['html', 'htm', 'xml', 'svg'].includes(ext)
+}
+
+function parseFileLocation(reference: string): { path: string; line?: number; column?: number } {
+  const normalized = reference.trim().replace(/^['"`]|['"`]$/g, '')
+  const match = normalized.match(/^(.*?\.[a-zA-Z0-9_+-]+)(?::(\d+))?(?::(\d+))?$/)
+  if (!match) return { path: normalized }
+  return {
+    path: match[1].replace(/\\/g, '/'),
+    line: match[2] ? Number(match[2]) : undefined,
+    column: match[3] ? Number(match[3]) : undefined
+  }
+}
+
+function extractFileReference(text: string): string | null {
+  return text.match(/(?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?/)?.[0] ?? null
 }
 
 function flattenFiles(nodes: Array<{ name: string; path: string; type: 'file' | 'dir'; children?: unknown[] }>): string[] {
@@ -200,6 +194,9 @@ export function WorkspacePage(): React.JSX.Element {
   const [treeTick, setTreeTick] = useState(0)
   const [verifLog, setVerifLog] = useState<string[]>([])
   const [fileNotice, setFileNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  const [wordWrap, setWordWrap] = useState(() => localStorage.getItem('moonglass:viewer-word-wrap') === 'true')
+  const [viewerFontSize, setViewerFontSize] = useState(() => Number(localStorage.getItem('moonglass:viewer-font-size')) || 13)
+  const [markdownPreview, setMarkdownPreview] = useState(true)
   const agentStreaming = useChatStore((s) => s.streaming)
   const sendAgentPrompt = useChatStore((s) => s.send)
   const ensureAgent = useChatStore((s) => s.ensure)
@@ -223,7 +220,18 @@ export function WorkspacePage(): React.JSX.Element {
     localStorage.setItem(`moonglass:bottom-height:${projectId}`, String(bottomH))
   }, [bottomH, projectId])
 
-  const openFile = async (relPath: string): Promise<void> => {
+  const refreshOpenFile = useCallback(async (relPath: string): Promise<void> => {
+    const result = await window.moonglass.fs.readFile(projectId, relPath)
+    if (!result) return
+    setOpenFiles((files) => files.map((file) => file.path === relPath && (file.content !== result.content || file.truncated !== result.truncated)
+      ? { ...file, content: result.content, truncated: result.truncated }
+      : file))
+  }, [projectId])
+
+  const openFile = async (reference: string): Promise<void> => {
+    const location = parseFileLocation(reference)
+    const relPath = location.path
+    if (location.line && /\.md$/i.test(relPath)) setMarkdownPreview(false)
     if (/\.(vcd|fst)$/i.test(relPath)) {
       try {
         const result = await window.moonglass.eda.openWaveform(projectId, relPath)
@@ -251,12 +259,36 @@ export function WorkspacePage(): React.JSX.Element {
       setOpenFiles((files) => [
         ...files,
         result
-          ? { path: relPath, content: result.content, truncated: result.truncated }
-          : { path: relPath, content: '（无法读取该文件）', truncated: false }
+          ? { path: relPath, content: result.content, truncated: result.truncated, ...location, revealKey: Date.now() }
+          : { path: relPath, content: '（无法读取该文件）', truncated: false, ...location, revealKey: Date.now() }
       ])
+    } else if (location.line) {
+      setOpenFiles((files) => files.map((file) => file.path === relPath
+        ? { ...file, line: location.line, column: location.column, revealKey: Date.now() }
+        : file))
     }
     setMainTab(relPath)
   }
+
+  useEffect(() => {
+    localStorage.setItem('moonglass:viewer-word-wrap', String(wordWrap))
+  }, [wordWrap])
+  useEffect(() => {
+    localStorage.setItem('moonglass:viewer-font-size', String(viewerFontSize))
+  }, [viewerFontSize])
+  useEffect(() => {
+    if (mainTab === 'chat') return
+    const timer = window.setInterval(() => { void refreshOpenFile(mainTab) }, 2000)
+    return () => window.clearInterval(timer)
+  }, [mainTab, refreshOpenFile])
+  useEffect(() => {
+    const listener = (event: Event): void => {
+      const path = (event as CustomEvent<{ path?: string }>).detail?.path
+      if (path) void openFile(path)
+    }
+    window.addEventListener('moonglass-open-project-file', listener)
+    return () => window.removeEventListener('moonglass-open-project-file', listener)
+  })
 
   const closeFile = (relPath: string): void => {
     setOpenFiles((files) => files.filter((f) => f.path !== relPath))
@@ -629,18 +661,50 @@ export function WorkspacePage(): React.JSX.Element {
               {/* 文件查看 */}
               {activeFile && (
                 <div className="source-surface flex h-full flex-col overflow-hidden p-3">
-                  <div className="mb-1 flex shrink-0 items-center justify-between">
-                    <div className="flex items-center gap-2">
+                  <div className="mb-1 flex shrink-0 items-center justify-between gap-3 overflow-x-auto pb-1">
+                    <div className="flex min-w-0 shrink items-center gap-2">
                       <span className={`inline-block rounded px-1.5 py-0.5 font-mono text-[10px] ${
-                        extToLang(activeFile.path) !== 'text'
+                        fileLanguage(activeFile.path) !== 'plaintext'
                           ? 'bg-blue-100 text-blue-700'
                           : 'bg-zinc-100 text-zinc-500'
                       }`}>
-                        {extToLang(activeFile.path)}
+                        {fileLanguage(activeFile.path)}
                       </span>
-                      <span className="font-mono text-xs text-zinc-400">{activeFile.path}</span>
+                      <span className="max-w-80 truncate font-mono text-xs text-zinc-400" title={activeFile.path}>{activeFile.path}</span>
+                      <span className="text-[11px] text-zinc-400">
+                        {activeFile.content.split(/\r\n|\r|\n/).length} 行 · 只读
+                      </span>
                     </div>
-                    <div className="flex gap-1">
+                    <div className="flex shrink-0 gap-1">
+                      {/\.md$/i.test(activeFile.path) && (
+                        <button
+                          onClick={() => setMarkdownPreview((value) => !value)}
+                          className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-100"
+                        >
+                          {markdownPreview ? '源码' : '预览'}
+                        </button>
+                      )}
+                      <button
+                        onClick={() => void refreshOpenFile(activeFile.path)}
+                        className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
+                        title="重新加载文件"
+                      ><RefreshCw size={12} /></button>
+                      <button
+                        onClick={() => setWordWrap((value) => !value)}
+                        className={`rounded border px-2 py-0.5 text-xs ${wordWrap ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
+                        title="切换自动换行"
+                      >自动换行</button>
+                      <button
+                        onClick={() => setViewerFontSize((size) => Math.max(10, size - 1))}
+                        className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
+                        title="缩小字体"
+                      ><Minus size={12} /></button>
+                      <span className="min-w-7 text-center text-[11px] leading-6 text-zinc-400">{viewerFontSize}</span>
+                      <button
+                        onClick={() => setViewerFontSize((size) => Math.min(24, size + 1))}
+                        className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
+                        title="放大字体"
+                      ><Plus size={12} /></button>
                       {shouldOpenExternally(activeFile.path) && (
                         <button
                           onClick={() => window.moonglass.fs.openExternal(projectId, activeFile.path).catch(() => {})}
@@ -657,14 +721,21 @@ export function WorkspacePage(): React.JSX.Element {
                       </button>
                     </div>
                   </div>
-                  <pre className={`project-source min-h-0 flex-1 overflow-auto rounded border border-zinc-200 bg-zinc-50 p-3 font-mono text-xs whitespace-pre-wrap language-${extToLang(activeFile.path)}`}>
-                    <code
-                      className={`language-${extToLang(activeFile.path)}`}
-                      dangerouslySetInnerHTML={{
-                        __html: highlightCode(activeFile.content, extToLang(activeFile.path))
-                      }}
-                    />
-                  </pre>
+                  <div className="project-source min-h-0 flex-1 overflow-hidden rounded border border-zinc-200 bg-zinc-50">
+                    {/\.md$/i.test(activeFile.path) && markdownPreview ? (
+                      <MarkdownPreview content={activeFile.content} />
+                    ) : (
+                      <CodeViewer
+                        path={activeFile.path}
+                        content={activeFile.content}
+                        line={activeFile.line}
+                        column={activeFile.column}
+                        revealKey={activeFile.revealKey}
+                        wordWrap={wordWrap}
+                        fontSize={viewerFontSize}
+                      />
+                    )}
+                  </div>
                   {activeFile.truncated && (
                     <p className="mt-1 shrink-0 text-xs text-zinc-400">（内容过大，仅显示前 256 KB）</p>
                   )}
@@ -752,6 +823,9 @@ interface OpenFile {
   path: string
   content: string
   truncated: boolean
+  line?: number
+  column?: number
+  revealKey?: number
 }
 
 // ============================================================
@@ -856,7 +930,15 @@ function BottomPanel({
         </div>
         <div className="console-list flex-1 overflow-auto">
           {failedGates.map((result) => (
-            <div key={result.checkId} className="console-row">
+            <div
+              key={result.checkId}
+              className="console-row"
+              onDoubleClick={() => {
+                const reference = extractFileReference(result.message)
+                if (reference) onOpenFile(reference)
+              }}
+              title={extractFileReference(result.message) ? '双击打开问题文件并定位' : result.message}
+            >
               <AlertTriangle size={14} className="shrink-0 text-red-500" />
               <strong className="shrink-0 text-xs text-zinc-700">{result.checkName}</strong>
               <span className="truncate text-xs text-zinc-500" title={result.message}>{result.message}</span>
@@ -864,7 +946,15 @@ function BottomPanel({
             </div>
           ))}
           {[...errorLogs, ...warningLogs].map((entry, index) => (
-            <div key={`${entry}-${index}`} className="console-row">
+            <div
+              key={`${entry}-${index}`}
+              className="console-row"
+              onDoubleClick={() => {
+                const reference = extractFileReference(entry)
+                if (reference) onOpenFile(reference)
+              }}
+              title={extractFileReference(entry) ? '双击打开问题文件并定位' : entry}
+            >
               <TerminalSquare size={14} className="shrink-0 text-amber-500" />
               <span className="truncate font-mono text-xs text-zinc-600" title={entry}>{entry}</span>
             </div>
