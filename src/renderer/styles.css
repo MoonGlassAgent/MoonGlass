@@ -603,6 +603,34 @@ select {
   text-shadow: none !important;
 }
 
+/* ---- Markdown 文档预览 ---- */
+.markdown-preview { line-height: 1.7; background: var(--surface, #fff); }
+.markdown-preview h1,
+.markdown-preview h2,
+.markdown-preview h3 { margin: 1.25em 0 0.55em; color: var(--text-strong, #18181b); font-weight: 650; }
+.markdown-preview h1 { margin-top: 0; border-bottom: 1px solid var(--line, #e4e4e7); padding-bottom: 0.35em; font-size: 1.55rem; }
+.markdown-preview h2 { border-bottom: 1px solid var(--line, #e4e4e7); padding-bottom: 0.25em; font-size: 1.25rem; }
+.markdown-preview h3 { font-size: 1.05rem; }
+.markdown-preview p,
+.markdown-preview ul,
+.markdown-preview ol,
+.markdown-preview pre,
+.markdown-preview blockquote,
+.markdown-preview table { margin: 0.75em 0; }
+.markdown-preview ul,
+.markdown-preview ol { padding-left: 1.6em; }
+.markdown-preview ul { list-style: disc; }
+.markdown-preview ol { list-style: decimal; }
+.markdown-preview code { border-radius: 3px; background: var(--surface-muted, #f4f4f5); padding: 0.12em 0.35em; font-family: Consolas, 'Cascadia Code', monospace; font-size: 0.9em; }
+.markdown-preview pre { overflow: auto; border: 1px solid var(--line, #e4e4e7); border-radius: 4px; background: var(--surface-muted, #f4f4f5); padding: 0.85rem; }
+.markdown-preview pre code { background: transparent; padding: 0; }
+.markdown-preview blockquote { border-left: 3px solid var(--accent, #2563eb); padding-left: 0.85rem; color: var(--text-muted, #71717a); }
+.markdown-preview table { width: 100%; border-collapse: collapse; }
+.markdown-preview th,
+.markdown-preview td { border: 1px solid var(--line, #e4e4e7); padding: 0.4rem 0.6rem; text-align: left; }
+.markdown-preview a { color: var(--accent, #2563eb); text-decoration: underline; text-underline-offset: 2px; }
+.markdown-preview img { max-width: 100%; }
+
 /* RTL Design Browser uses a self-contained dark editor theme. */
 .rtl-source {
   color: #d4d4d8;
@@ -943,6 +971,67 @@ button.console-row:hover {
   color: #8a9099;
   font-size: 11px;
   text-align: center;
+}
+
+/* 工作区深色覆盖必须位于基础组件样式之后，避免被浅色规则重新覆盖。 */
+:root[data-color-mode='dark'] .workspace-bottom {
+  background-color: rgb(24 27 32 / 96%);
+  box-shadow: 0 -6px 20px rgb(0 0 0 / 20%), inset 0 1px rgb(255 255 255 / 5%);
+}
+
+:root[data-color-mode='dark'] .engineering-console-tabs {
+  background-color: #20242a;
+  box-shadow: inset 0 -1px rgb(255 255 255 / 7%);
+}
+
+:root[data-color-mode='dark'] .engineering-console-tabs > button.bg-zinc-100 {
+  background-color: #292e35 !important;
+  color: var(--accent);
+}
+
+:root[data-color-mode='dark'] .console-list {
+  background-color: rgb(20 23 27 / 72%);
+  box-shadow: inset 0 1px 3px rgb(0 0 0 / 22%);
+}
+
+:root[data-color-mode='dark'] .console-row {
+  border-bottom-color: rgb(255 255 255 / 7%);
+}
+
+:root[data-color-mode='dark'] .console-empty {
+  border-color: var(--line-strong);
+  background-color: #20242a;
+  color: var(--muted);
+}
+
+:root[data-color-mode='dark'] .console-action {
+  border-color: var(--line-strong);
+  background-color: #252a31;
+  color: #c4c9d1;
+  box-shadow: 0 1px 2px rgb(0 0 0 / 24%);
+}
+
+:root[data-color-mode='dark'] .workspace-status {
+  background-color: #181b20;
+  box-shadow: inset 0 1px rgb(255 255 255 / 5%);
+}
+
+:root[data-color-mode='dark'] .chat-messages {
+  background-color: #15181c;
+  background-image: none;
+}
+
+:root[data-color-mode='dark'] .chat-composer {
+  background-color: rgb(24 27 32 / 96%);
+  box-shadow: 0 -6px 20px rgb(0 0 0 / 20%), inset 0 1px rgb(255 255 255 / 5%);
+}
+
+:root[data-color-mode='dark'] .chat-composer textarea,
+:root[data-color-mode='dark'] .chat-composer input {
+  border-color: var(--line-strong);
+  background-color: #1b1f24;
+  color: var(--text);
+  box-shadow: inset 0 1px 4px rgb(0 0 0 / 22%);
 }
 
 .console-metric {

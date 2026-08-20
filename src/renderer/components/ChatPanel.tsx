@@ -492,7 +492,7 @@ function MessageBubble({
           <div className={`mb-1 font-medium ${msg.isError ? 'text-red-600' : 'text-zinc-500'}`}>
             {msg.isError ? '失败原因 / 工具输出' : '工具输出'}
           </div>
-          <pre className={`max-h-56 overflow-auto whitespace-pre-wrap rounded bg-white p-2 ${msg.isError ? 'text-red-700' : 'text-zinc-700'}`}>{msg.text}</pre>
+          <pre className={`max-h-56 overflow-auto whitespace-pre-wrap rounded bg-white p-2 ${msg.isError ? 'text-red-700' : 'text-zinc-700'}`}><FileReferenceText text={msg.text} /></pre>
         </div>
       </details>
     )
@@ -506,7 +506,7 @@ function MessageBubble({
           : 'border-zinc-200 bg-white text-zinc-800'
       }`}
     >
-      {msg.text}
+      <FileReferenceText text={msg.text} />
       <span className="mt-1 block text-[10px] text-zinc-400">{time}</span>
       {msg.thinking && (
         <details
@@ -528,6 +528,27 @@ function MessageBubble({
         </details>
       )}
     </div>
+  )
+}
+
+function FileReferenceText({ text }: { text: string }): React.JSX.Element {
+  const pattern = /((?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?)/g
+  const exactReference = /^(?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?$/
+  const parts = text.split(pattern)
+  return (
+    <>
+      {parts.map((part, index) => exactReference.test(part) ? (
+        <button
+          key={`${part}-${index}`}
+          type="button"
+          className="font-mono text-blue-600 underline decoration-blue-300 underline-offset-2 hover:text-blue-800"
+          title="打开并定位到该文件"
+          onClick={() => window.dispatchEvent(new CustomEvent('moonglass-open-project-file', { detail: { path: part } }))}
+        >
+          {part}
+        </button>
+      ) : <span key={index}>{part}</span>)}
+    </>
   )
 }
 

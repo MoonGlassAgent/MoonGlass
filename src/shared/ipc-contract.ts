@@ -28,9 +28,13 @@ import type { OpenProcessLibrary, ProcessLibraryRecord } from './types/moonglass
 import type { DesignDatabase } from '@moonglass/design-browser-engine'
 
 export const IPC = {
+  Ui: {
+    SetColorMode: 'ui:set-color-mode'
+  },
   Project: {
     List: 'project:list',
     Create: 'project:create',
+    AnalyzeDirectory: 'project:analyze-directory',
     ChooseDirectory: 'project:choose-directory',
     Get: 'project:get',
     Update: 'project:update',
@@ -79,6 +83,7 @@ export const IPC = {
   Fs: {
     Tree: 'fs:tree',
     ReadFile: 'fs:read-file',
+    WriteText: 'fs:write-text',
     OpenExternal: 'fs:open-external'
   },
   ProcessLibrary: {
@@ -109,9 +114,13 @@ export const IPC = {
 
 /** preload 暴露给渲染进程的 API 形状 */
 export interface MoonGlassApi {
+  ui: {
+    setColorMode(mode: 'light' | 'dark' | 'system'): Promise<void>
+  }
   project: {
     list(): Promise<ChipProject[]>
-    create(input: { name: string; description?: string; edaToolchain?: string; workspacePath?: string }): Promise<ChipProject>
+    create(input: { name: string; description?: string; edaToolchain?: string; workspacePath?: string; initialPhase?: Phase }): Promise<ChipProject>
+    analyzeDirectory(path: string): Promise<import('./types/moonglass').ProjectImportAssessment>
     chooseDirectory(): Promise<string | null>
     get(id: string): Promise<ChipProject | null>
     update(id: string, patch: Partial<Pick<ChipProject, 'name' | 'description'>>): Promise<ChipProject | null>
@@ -187,6 +196,8 @@ export interface MoonGlassApi {
     tree(projectId: string): Promise<FileTreeNode[]>
     /** 读取文件内容（相对路径，超限截断；二进制/越界返回 null 或提示） */
     readFile(projectId: string, relPath: string): Promise<FileContentResult | null>
+    /** 在项目工作区内写入 UTF-8 文本，用于托管报告和变更单。 */
+    writeText(projectId: string, relPath: string, content: string): Promise<boolean>
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
     /** 在系统浏览器/默认程序中打开项目文件；路径必须相对项目工作区。 */
     openExternal(projectId: string, relPath: string): Promise<boolean>
