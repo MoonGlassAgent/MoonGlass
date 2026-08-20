@@ -6,6 +6,7 @@
 
 - 新增 `docs/QUICK-START-ZH-CN.html`，覆盖启动、模型配置、新建/导入项目、六阶段开发、Agent 会话、一键托管、变更、IP 库、波形和常见问题。
 - HTML 可离线打开、浏览器阅读和打印为 PDF，使用仓库内现有截图，不依赖外部脚本或样式。
+- 生成可直接分享的单文件版 `D:\Projects\ASIC_Flow\MoonGlass-使用说明书-v0.5.0.html`，将三张界面截图以 Data URI 内嵌，不依赖外部图片目录。
 
 ## v0.5.0 发布摘要
 
