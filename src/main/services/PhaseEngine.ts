@@ -134,7 +134,67 @@ const REQUIREMENT_ID = /\b(?:REQ(?:-[A-Z]+)?|FR|F|NFR|PERF|P|IF|SEC)[-_]?\d+\b/g
 const SPECIFICATION_ID = /\bSPEC(?:-[A-Z]+)?[-_]?\d+\b/gi
 
 function requirementIds(content: string): Set<string> {
-  return new Set((content.match(REQUIREMENT_ID) ?? []).map((id) => id.toUpperCase().replace('_', '-')))
+  const ids = new Set(
+    (content.match(REQUIREMENT_ID) ?? [])
+      .map((id) => id.toUpperCase().replace(/_/g, '-'))
+      .filter((id) => !/^P[0-2]$/.test(id))
+  )
+  const ranges = content.matchAll(
+    /\b(REQ(?:-[A-Z]+)?|FR|F|NFR|PERF|IF|SEC)[-_]?(\d+)\s*(?:~|～|\.\.|至)\s*(\d+)\b/gi
+  )
+  for (const range of ranges) {
+    const prefix = range[1].toUpperCase().replace(/_/g, '-')
+    const start = Number(range[2])
+    const end = Number(range[3])
+    if (!Number.isInteger(start) || !Number.isInteger(end) || end < start || end - start > 999) continue
+    const width = Math.max(range[2].length, range[3].length)
+    for (let value = start; value <= end; value += 1) {
+      ids.add(`${prefix}-${String(value).padStart(width, '0')}`)
+    }
+  }
+  return ids
+}
+
+interface TraceabilityRow {
+  cells: string[]
+  requirementCell: string
+  specificationCell: string
+}
+
+function markdownCells(line: string): string[] | null {
+  if (!/^\s*\|.*\|\s*$/.test(line)) return null
+  return line.split('|').slice(1, -1).map((cell) => cell.trim())
+}
+
+/** 只读取表头明确声明“需求 ID”和“规格 ID”的追溯表，忽略版本、优先级、TBD 等辅助表。 */
+function traceabilityRows(content: string): TraceabilityRow[] {
+  const lines = content.split(/\r?\n/)
+  const rows: TraceabilityRow[] = []
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const headers = markdownCells(lines[index])
+    const separator = markdownCells(lines[index + 1])
+    if (!headers || !separator || !separator.every((cell) => /^:?-{3,}:?$/.test(cell))) continue
+
+    const requirementIndex = headers.findIndex((cell) =>
+      /^(?:关联\s*)?(?:需求|requirement)\s*(?:id|编号)$/i.test(cell)
+    )
+    const specificationIndex = headers.findIndex((cell) =>
+      /^(?:关联\s*)?(?:规格|specification|spec)\s*(?:id|编号)$/i.test(cell)
+    )
+    if (requirementIndex < 0 || specificationIndex < 0) continue
+
+    for (let rowIndex = index + 2; rowIndex < lines.length; rowIndex += 1) {
+      const cells = markdownCells(lines[rowIndex])
+      if (!cells) break
+      rows.push({
+        cells,
+        requirementCell: cells[requirementIndex] ?? '',
+        specificationCell: cells[specificationIndex] ?? ''
+      })
+      index = rowIndex
+    }
+  }
+  return rows
 }
 
 async function requirementsUsable(
@@ -171,19 +231,19 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
       `需求-规格追溯矩阵不可用：\n• ${rtm.path}\n${rtm.issues.map((issue) => `  - ${issue}`).join('\n')}`
     )
   }
-  const tableRows = rtm.content
-    .split(/\r?\n/)
-    .filter((line) => /^\s*\|.*\|\s*$/.test(line))
-    .map((line) => line.split('|').slice(1, -1).map((cell) => cell.trim()))
-    .filter((cells) => !cells.every((cell) => /^:?-{3,}:?$/.test(cell)))
-    .filter((cells) => !cells.some((cell) => /^(?:需求|requirement)\s*(?:id|编号)?$/i.test(cell)))
+  const tableRows = traceabilityRows(rtm.content)
   if (tableRows.length === 0) {
-    return makeResult(checkId, false, 'error', '需求-规格追溯矩阵未识别到有效的 Markdown 表格行')
+    return makeResult(
+      checkId,
+      false,
+      'error',
+      '需求-规格追溯矩阵未识别到有效数据表；表头必须同时包含“需求 ID”和“规格 ID”列'
+    )
   }
 
   const requirements = inspectDocument(ctx, 'docs/02_requirements/product_requirements.md')
   const requiredIds = requirementIds(requirements.content)
-  const tracedIds = requirementIds(rtm.content)
+  const tracedIds = new Set(tableRows.flatMap((row) => [...requirementIds(row.requirementCell)]))
   const missing = [...requiredIds].filter((id) => !tracedIds.has(id))
   if (missing.length > 0) {
     return makeResult(
@@ -193,15 +253,15 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
       `需求-规格追溯矩阵缺少 ${missing.length} 个需求 ID 的追溯关系：${missing.join('、')}`
     )
   }
-  const rowsWithoutSpecification = tableRows.filter((cells) => {
-    const row = cells.join(' | ')
-    return requirementIds(row).size > 0 && (row.match(SPECIFICATION_ID) ?? []).length === 0
+  const rowsWithoutSpecification = tableRows.filter((row) => {
+    return requirementIds(row.requirementCell).size > 0 &&
+      (row.specificationCell.match(SPECIFICATION_ID) ?? []).length === 0
   })
   if (rowsWithoutSpecification.length > 0) {
     // 逐行列出需求 ID 与行内容摘要，便于 Agent 直接定位修复
-    const details = rowsWithoutSpecification.slice(0, 10).map((cells) => {
-      const row = cells.join(' | ')
-      const ids = [...requirementIds(row)].join('、')
+    const details = rowsWithoutSpecification.slice(0, 10).map((entry) => {
+      const row = entry.cells.join(' | ')
+      const ids = [...requirementIds(entry.requirementCell)].join('、')
       const preview = row.length > 80 ? `${row.slice(0, 80)}…` : row
       return `  - ${ids || '(未识别需求 ID)'}：${preview}`
     })

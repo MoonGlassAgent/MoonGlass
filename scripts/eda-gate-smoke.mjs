@@ -145,12 +145,17 @@ check(
 const reqSpecDir = join(root, 'req-spec-ready')
 mkdirSync(join(reqSpecDir, 'docs', '02_requirements'), { recursive: true })
 mkdirSync(join(reqSpecDir, 'docs', '03_design'), { recursive: true })
-writeFileSync(join(reqSpecDir, 'docs', '02_requirements', 'product_requirements.md'), '# 产品需求\n\nREQ-FUNC-001：计数器必须按时钟递增，并可通过复位清零。验收标准为连续十个周期计数结果正确。输入时钟必须稳定，复位信号有效期间输出保持为零，解除复位后的首个有效时钟沿开始计数。\n')
+writeFileSync(join(reqSpecDir, 'docs', '02_requirements', 'product_requirements.md'), '# 产品需求\n\nREQ-FUNC-001：计数器必须按时钟递增，并可通过复位清零。验收标准为连续十个周期计数结果正确。输入时钟必须稳定，复位信号有效期间输出保持为零，解除复位后的首个有效时钟沿开始计数。\n\nREQ-PERF-001、REQ-PERF-002、REQ-PERF-003：覆盖三级性能档位。\n')
 writeFileSync(join(reqSpecDir, 'docs', '02_requirements', 'module_specification.md'), '# 模块规格\n\nSPEC-FUNC-001：计数器模块接收时钟与复位，输出单调递增计数值；复位后输出必须为零。关联 REQ-FUNC-001。计数宽度固定为八位，达到最大值后自然回绕，所有输出仅在有效时钟沿更新。\n')
-writeFileSync(join(reqSpecDir, 'docs', '02_requirements', 'requirements_traceability.md'), '# 需求-规格追溯矩阵\n\n| 需求 ID | 需求摘要 | 规格 ID | 状态 |\n|---|---|---|---|\n| REQ-FUNC-001 | 计数递增 | SPEC-FUNC-001 | 已定义 |\n')
+writeFileSync(join(reqSpecDir, 'docs', '02_requirements', 'requirements_traceability.md'), '# 需求-规格追溯矩阵\n\n## 版本历史\n\n| 版本 | 日期 | 作者 | 变更 |\n|---|---|---|---|\n| 0.2 | 2026-08-20 | 设计团队 | 增加 P0/P1/P2 说明，提及 REQ-FUNC-001 |\n\n## 优先级说明\n\n| 优先级 | 含义 | 需求 |\n|---|---|---|\n| P0 | 必须实现 | REQ-FUNC-001、REQ-PERF-001~003 |\n| P1 | 应该实现 | 暂无 |\n| P2 | 可延后 | 暂无 |\n\n## 正式追溯矩阵\n\n| 需求 ID | 需求摘要 | 规格 ID | 状态 |\n|---|---|---|---|\n| REQ-FUNC-001 | 计数递增 | SPEC-FUNC-001 | 已定义 |\n| REQ-PERF-001~003 | 性能档位 | SPEC-PERF-001 | 已定义 |\n\n## 假设与 TBD\n\n| 编号 | 内容 | 关联需求 | 责任人 | 状态 |\n|---|---|---|---|---|\n| ASSUME-001 | 工艺频率未定 | REQ-PERF-002 | 架构师 | 开放 |\n')
 writeFileSync(join(reqSpecDir, 'docs', '03_design', 'interface_spec.md'), '# 接口规格\n\n| 信号 | 方向 | 位宽 | 时钟域 |\n|---|---|---|---|\n| i_clk | input | 1 | clk |\n| i_rst_n | input | 1 | clk |\n| o_count | output | 8 | clk |\n')
 const reqSpecResults = await engine.runGateChecks(fakeProject('REQ_SPEC'), 'ARCH', { workspaceDir: reqSpecDir })
 check('REQ_SPEC 完整交付物允许进入 ARCH', reqSpecResults.every((result) => result.passed), reqSpecResults.find((result) => !result.passed)?.message)
+check(
+  '追溯门禁忽略版本/优先级/TBD 表并支持需求 ID 范围',
+  reqSpecResults.find((result) => result.checkId === 'rtm-complete')?.passed === true,
+  reqSpecResults.find((result) => result.checkId === 'rtm-complete')?.message
+)
 
 const resolvedTbdResults = await engine.runGateChecks(
   fakeProject('ARCH'),
