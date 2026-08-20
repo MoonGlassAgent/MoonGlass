@@ -38,6 +38,7 @@ function resolveColorMode(mode: ColorMode): 'light' | 'dark' {
 function updateResolvedColorMode(mode: ColorMode): void {
   document.documentElement.dataset.colorMode = resolveColorMode(mode)
   document.documentElement.style.colorScheme = resolveColorMode(mode)
+  void window.moonglass.ui.setColorMode(mode).catch(() => undefined)
 }
 
 export function applyColorMode(mode: ColorMode): void {

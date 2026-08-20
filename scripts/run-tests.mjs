@@ -5,6 +5,7 @@ const suites = {
     'scripts/rtl-engine-smoke.mjs',
     'scripts/agent-interaction-smoke.mjs',
     'scripts/sram-generator-smoke.mjs',
+    'scripts/project-import-analyzer-smoke.mjs',
     'scripts/pi-tools-smoke.mjs'
   ],
   integration: [

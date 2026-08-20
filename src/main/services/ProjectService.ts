@@ -12,15 +12,60 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renam
 import { cp, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { eq, desc, sql } from 'drizzle-orm'
-import type { ChipProject, Phase, PhaseState, ProjectMigrationResult } from '@shared/types'
+import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase, type PhaseState, type ProjectImportAssessment, type ProjectMigrationResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import { createInitialPhases, markPhaseChanged } from './PhaseEngine.ts'
 import { projectWorkspaceDir } from '../core/paths.ts'
 import { chipProjects } from '../data/schema/moonglass.ts'
 import type { DbService } from './DbService.ts'
+import { analyzeExistingProject } from './ProjectImportAnalyzer.ts'
 
 interface LegacyProjectStoreFile {
   projects: ChipProject[]
+}
+
+interface CreateProjectInput {
+  name: string
+  description?: string
+  edaToolchain?: string
+  workspacePath?: string
+  initialPhase?: Phase
+}
+
+function createImportedPhases(currentPhase: Phase, now: string): Record<Phase, PhaseState> {
+  const phases = createInitialPhases()
+  const currentIndex = PHASE_ORDER.indexOf(currentPhase)
+  for (let index = 0; index < currentIndex; index += 1) {
+    const phase = PHASE_ORDER[index]
+    phases[phase] = {
+      ...phases[phase],
+      status: 'completed',
+      startedAt: now,
+      completedAt: now
+    }
+  }
+  phases[currentPhase] = {
+    ...phases[currentPhase],
+    status: 'active',
+    startedAt: now
+  }
+  return phases
+}
+
+function formatImportAssessment(assessment: ProjectImportAssessment, selectedPhase: Phase): string {
+  const evidence = PHASE_ORDER.map((phase) => {
+    const item = assessment.evidence[phase]
+    return `### ${phase} · ${PHASE_LABELS[phase]}\n\n- 证据分：${item.score}\n${item.paths.length > 0 ? item.paths.map((path) => `- \`${path}\``).join('\n') : '- 未识别到明确证据'}`
+  }).join('\n\n')
+  return `# 已有项目导入阶段评估\n\n` +
+    `- 扫描文件：${assessment.fileCount}\n` +
+    `- 自动建议阶段：${assessment.suggestedPhase} · ${PHASE_LABELS[assessment.suggestedPhase]}\n` +
+    `- 用户确认阶段：${selectedPhase} · ${PHASE_LABELS[selectedPhase]}\n` +
+    `- 识别置信度：${assessment.confidence}%\n` +
+    `- 扫描是否截断：${assessment.truncated ? '是' : '否'}\n\n` +
+    `## 兼容性说明\n\nMoonGlass 根据现有工程证据恢复流程阶段，不要求原项目采用 MoonGlass 文件树或追踪矩阵。此前阶段标记为“外部流程已完成”，并不代表已经通过 MoonGlass 门禁；进入后应逐步建立目录映射和需求追溯。\n\n` +
+    `${assessment.warnings.length > 0 ? `## 待适配项\n\n${assessment.warnings.map((warning) => `- ${warning}`).join('\n')}\n\n` : ''}` +
+    `## 阶段证据\n\n${evidence}\n`
 }
 
 /** ChipProject 转数据库行 */
@@ -291,7 +336,12 @@ export class ProjectService implements MoonGlassService {
     }
   }
 
-  create(input: { name: string; description?: string; edaToolchain?: string; workspacePath?: string }): ChipProject {
+  analyzeDirectory(path: string): ProjectImportAssessment {
+    if (!path.trim() || !isAbsolute(path)) throw new Error('项目目录必须是绝对路径')
+    return analyzeExistingProject(path)
+  }
+
+  create(input: CreateProjectInput): ChipProject {
     const requestedPath = input.workspacePath?.trim()
     if (requestedPath && !isAbsolute(requestedPath)) {
       throw new Error('项目目录必须是绝对路径')
@@ -301,19 +351,27 @@ export class ProjectService implements MoonGlassService {
       throw new Error('该项目目录已被另一个 MoonGlass 项目使用')
     }
     const now = new Date().toISOString()
+    const assessment = workspacePath && existsSync(workspacePath) ? analyzeExistingProject(workspacePath) : undefined
+    const initialPhase = assessment?.isExistingProject
+      ? input.initialPhase ?? assessment.suggestedPhase
+      : 'REQ_SPEC'
     const project: ChipProject = {
       id: randomUUID(),
       name: input.name,
       description: input.description,
       workspacePath,
-      currentPhase: 'REQ_SPEC',
-      phases: createInitialPhases(),
+      currentPhase: initialPhase,
+      phases: assessment?.isExistingProject ? createImportedPhases(initialPhase, now) : createInitialPhases(),
       edaToolchain: input.edaToolchain ?? 'verilator-yosys',
       createdAt: now,
       updatedAt: now
     }
     this.db.getDb().insert(chipProjects).values(projectToRow(project)).run()
     this.initWorkspace(project.id)
+    if (assessment?.isExistingProject) {
+      const reportPath = join(this.workspaceDir(project.id), 'docs', '01_project', 'import_assessment.md')
+      writeFileSync(reportPath, formatImportAssessment(assessment, initialPhase), 'utf-8')
+    }
     this.watchWorkspace(project.id)
     this.backupToJson()
     return project

@@ -1,6 +1,6 @@
 {
   "name": "moonglass",
-  "version": "0.4.3",
+  "version": "0.5.0",
   "description": "MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
@@ -22,6 +22,7 @@
     "typecheck:root": "tsc --noEmit -p tsconfig.json",
     "smoke:ip-library": "node scripts/ip-library-service-smoke.mjs",
     "smoke:sram-generator": "node scripts/sram-generator-smoke.mjs",
+    "smoke:project-import": "node scripts/project-import-analyzer-smoke.mjs",
     "smoke:axi-lite-timer": "node scripts/axi-lite-timer-smoke.mjs",
     "test": "node scripts/check-skills.mjs && node scripts/run-tests.mjs core",
     "test:integration": "node scripts/run-tests.mjs integration"

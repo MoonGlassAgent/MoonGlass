@@ -127,13 +127,12 @@ writeFileSync(join(appDir, 'README-ZH-CN.txt'), `MoonGlass ASIC Design Agent 绿
 - 详细条款见程序目录 LICENSE、NOTICE 和 COMMERCIAL-LICENSE.md。
 - 商务联系：moonglassagent@126.com
 
-${RELEASE} 修复：
-- 修复绿色版无法选择模型 / 对话无法启动的问题：
-  此前安装包只携带 pi-coding-agent 本体而缺失其全部运行依赖，
-  Agent 子进程（pi --mode rpc）启动即崩溃，报
-  “[pi-rpc] 等待就绪超时：[pi-rpc] 进程未启动”。
-  现在 pi 运行时及其依赖由 scripts/stage-pi-runtime.mjs 完整物化，
-  再封装为单一 pi-runtime.asar 随包分发，并通过打包内自检。
+v${VERSION} 主要更新：
+- 新增一键托管：自动完成所选阶段、处理推荐决策、修复门禁并生成完整报告。
+- 新增受控变更：支持需求、规格和第三方缺陷建立变更单并完成后续响应闭环。
+- 已有项目导入后自动扫描真实证据并恢复实际阶段，不再统一作为全新项目。
+- 项目文本查看升级为 Monaco，支持行号、定位、搜索、自动刷新和 Markdown 预览。
+- 完善深色模式、Agent 流式过程展示、IP 库发现与 SRAM 仿真视图生成。
 
 安全说明：
 - 未包含 API Key、模型账号配置和 Agent 会话。

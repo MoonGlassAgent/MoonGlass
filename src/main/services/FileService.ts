@@ -5,7 +5,7 @@
  * 供工作区左侧文件树使用。所有路径限制在工作目录内，防目录穿越。
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import type { FileContentResult, FileTreeNode } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
@@ -70,6 +70,16 @@ export class FileService implements MoonGlassService {
     }
     const truncated = buf.length > READ_MAX_BYTES
     return { content: buf.subarray(0, READ_MAX_BYTES).toString('utf-8'), truncated }
+  }
+
+  /** 安全写入项目内文本文件；拒绝绝对路径和目录穿越。 */
+  writeText(projectId: string, relPath: string, content: string): boolean {
+    const root = resolve(this.projects.workspaceDir(projectId))
+    const full = resolve(root, relPath)
+    if (full === root || !full.startsWith(root + sep)) return false
+    mkdirSync(resolve(full, '..'), { recursive: true })
+    writeFileSync(full, content, 'utf-8')
+    return true
   }
 
   /** 将项目相对路径安全解析为绝对文件路径，拒绝目录穿越与不存在的文件。 */

@@ -4,7 +4,7 @@
  * 依据 shared/ipc-contract.ts 的通道契约注册全部 handler。
  */
 
-import { BrowserWindow, dialog, ipcMain, shell } from 'electron'
+import { BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { IPC } from '@shared/ipc-contract'
 import type { IpLibraryImportInput, LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
@@ -14,14 +14,22 @@ import { generateProjectDashboard } from './services/ProjectDashboardService'
 export function registerIpcHandlers(services: ApplicationServices): void {
   const { projects, phaseEngine, python, eda, llm, agent, files, designBrowser, processLibraries, ipLibraries } = services
 
+  ipcMain.handle(IPC.Ui.SetColorMode, (event, mode: 'light' | 'dark' | 'system') => {
+    nativeTheme.themeSource = mode
+    const owner = BrowserWindow.fromWebContents(event.sender)
+    owner?.setBackgroundColor(nativeTheme.shouldUseDarkColors ? '#111316' : '#f4f5f7')
+  })
+
   // ==================== 项目 ====================
   ipcMain.handle(IPC.Project.List, () => projects.list())
 
   ipcMain.handle(
     IPC.Project.Create,
-    (_e, input: { name: string; description?: string; edaToolchain?: string; workspacePath?: string }) =>
+    (_e, input: { name: string; description?: string; edaToolchain?: string; workspacePath?: string; initialPhase?: Phase }) =>
       projects.create(input)
   )
+
+  ipcMain.handle(IPC.Project.AnalyzeDirectory, (_e, path: string) => projects.analyzeDirectory(path))
 
   ipcMain.handle(IPC.Project.ChooseDirectory, async (event) => {
     const owner = BrowserWindow.fromWebContents(event.sender)
@@ -238,6 +246,10 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(IPC.Fs.ReadFile, (_e, projectId: string, relPath: string) =>
     files.readFile(projectId, relPath)
+  )
+
+  ipcMain.handle(IPC.Fs.WriteText, (_e, projectId: string, relPath: string, content: string) =>
+    files.writeText(projectId, relPath, content)
   )
 
   ipcMain.handle(IPC.Fs.OpenExternal, async (_e, projectId: string, relPath: string) => {

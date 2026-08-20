@@ -16,6 +16,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import {
   AlertTriangle,
+  Bot,
   Box,
   ChevronDown,
   ChevronUp,
@@ -27,6 +28,7 @@ import {
   Plus,
   RefreshCw,
   RotateCw,
+  Square,
   TerminalSquare
 } from 'lucide-react'
 import {
@@ -34,8 +36,10 @@ import {
   PHASE_ORDER,
   type ChipProject,
   type GateCheckResult,
+  type AgentDecisionRequest,
   type Phase
 } from '@shared/types'
+import { serializeDecisionResponses } from '@shared/agent-interaction'
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
 import { ChatPanel, SessionTabs } from '../components/ChatPanel'
 import { FileTree } from '../components/FileTree'
@@ -55,6 +59,30 @@ const MIN_SIDEBAR = 140
 const MAX_SIDEBAR = 400
 const MIN_BOTTOM = 80
 const MAX_BOTTOM = 400
+
+interface ManagedStep {
+  phase: Phase
+  status: 'running' | 'completed' | 'failed'
+  detail: string
+}
+
+const MANAGED_PHASE_PROMPTS: Record<Phase, string> = {
+  REQ_SPEC: '完成需求-规格定义：审查项目目标，补齐产品需求、模块规格、接口规格和需求-规格追溯矩阵，消除占位内容并执行文档检查。',
+  ARCH: '完成架构设计：根据已批准需求规格更新总体架构、模块划分、接口、时钟复位、寄存器和微架构文档，并检查需求追溯。',
+  RTL: '完成 RTL 开发：依据架构实现或修复 RTL，维护 design.json/filelist，运行 Lint、可综合性和必要的 CDC 检查，修复全部 Error。',
+  VERIF: '完成验证闭环：更新验证计划和覆盖率计划，搭建或修复验证环境，执行相关回归，保存真实日志、JUnit、结果和波形，并更新追溯。',
+  QA: '完成质量检查：执行变更审查、代码 Review、检查清单、Lint/CDC/回归证据核对，修复阻断问题并形成 QA 报告。',
+  SYNTH: '完成综合评估：检查约束，生成 SDC，执行逻辑综合，汇总网表、单元、面积和时序估算及警告；明确区分估算与正式签核。'
+}
+
+function pendingDecisionRequests(): AgentDecisionRequest[] {
+  const messages = useChatStore.getState().messages
+  const answered = new Set(messages.flatMap((message) =>
+    message.decisionResponses ?? (message.decisionResponse ? [message.decisionResponse] : [])
+  ).map((response) => response.requestId))
+  return messages.flatMap((message) => message.decisionRequest ? [message.decisionRequest] : [])
+    .filter((request) => !answered.has(request.id))
+}
 
 // ============================================================
 // 可拖拽分隔条组件
@@ -194,12 +222,23 @@ export function WorkspacePage(): React.JSX.Element {
   const [treeTick, setTreeTick] = useState(0)
   const [verifLog, setVerifLog] = useState<string[]>([])
   const [fileNotice, setFileNotice] = useState<{ ok: boolean; text: string } | null>(null)
+  const [managedDialogOpen, setManagedDialogOpen] = useState(false)
+  const [managedEndPhase, setManagedEndPhase] = useState<Phase>('SYNTH')
+  const [managedRunning, setManagedRunning] = useState(false)
+  const [managedSteps, setManagedSteps] = useState<ManagedStep[]>([])
+  const [managedReportPath, setManagedReportPath] = useState('')
+  const managedStopRef = useRef(false)
+  const [changeDialogOpen, setChangeDialogOpen] = useState(false)
+  const [changeType, setChangeType] = useState<'requirement' | 'specification' | 'bug'>('bug')
+  const [changeSourcePhase, setChangeSourcePhase] = useState<Phase>('RTL')
+  const [changeDescription, setChangeDescription] = useState('')
   const [wordWrap, setWordWrap] = useState(() => localStorage.getItem('moonglass:viewer-word-wrap') === 'true')
   const [viewerFontSize, setViewerFontSize] = useState(() => Number(localStorage.getItem('moonglass:viewer-font-size')) || 13)
   const [markdownPreview, setMarkdownPreview] = useState(true)
   const agentStreaming = useChatStore((s) => s.streaming)
   const sendAgentPrompt = useChatStore((s) => s.send)
   const ensureAgent = useChatStore((s) => s.ensure)
+  const abortAgent = useChatStore((s) => s.abort)
 
   const reload = useCallback(async () => {
     setProject(await window.moonglass.project.get(projectId))
@@ -479,6 +518,167 @@ export function WorkspacePage(): React.JSX.Element {
     }
   }
 
+  const runManagedAgent = async (instruction: string): Promise<void> => {
+    await sendAgentPrompt(
+      `【MoonGlass 一键托管】\n${instruction}\n\n` +
+      '托管规则：直接检查并修改实际项目文件，调用本阶段适用工具完成验证，所有结论必须引用真实证据。' +
+      '不要等待人工确认；存在多个方案时优先采用明确标记的推荐方案，其次采用风险最低且可回退的方案，并在总结中记录选择。' +
+      '不得伪造 EDA 结果，不得把估算称为签核。完成后列出修改文件、执行命令、结果和遗留风险。'
+    )
+    for (let round = 0; round < 6; round += 1) {
+      const pending = pendingDecisionRequests()
+      if (pending.length === 0) return
+      const response = serializeDecisionResponses(pending.map((request) => {
+        const recommended = request.options.filter((option) => option.recommended)
+        const selected = recommended.length > 0 ? recommended : request.options.slice(0, 1)
+        return {
+          request,
+          selectedIds: selected.map((option) => option.id),
+          customText: '一键托管自动决策：采用推荐方案；无明确推荐时采用第一项，并要求保留可回退性。'
+        }
+      }))
+      await sendAgentPrompt(response)
+    }
+    throw new Error('Agent 连续产生过多待确认项，已停止托管以防止决策循环')
+  }
+
+  const writeManagedReport = async (
+    outcome: 'completed' | 'stopped' | 'failed',
+    startedAt: string,
+    steps: ManagedStep[],
+    error?: string
+  ): Promise<string> => {
+    const finishedAt = new Date().toISOString()
+    const latest = await window.moonglass.project.get(projectId)
+    const stamp = finishedAt.replace(/[:.]/g, '-').slice(0, 19)
+    const path = `docs/07_release/managed_run_${stamp}.md`
+    const gates = latest ? PHASE_ORDER.flatMap((phase) => latest.phases[phase].gateCheckResults.map((result) =>
+      `| ${PHASE_LABELS[phase]} | ${result.checkName} | ${result.passed ? '通过' : '失败'} | ${result.severity} | ${result.message.replace(/\r?\n/g, ' ')} |`
+    )) : []
+    const content = `# MoonGlass 一键托管报告\n\n` +
+      `- 项目：${latest?.name ?? project?.name ?? projectId}\n` +
+      `- 开始时间：${startedAt}\n- 结束时间：${finishedAt}\n` +
+      `- 结果：${outcome === 'completed' ? '已完成' : outcome === 'stopped' ? '用户停止' : '执行失败'}\n` +
+      `- 托管终点：${PHASE_LABELS[managedEndPhase]}\n` +
+      `- 最终阶段：${latest ? PHASE_LABELS[latest.currentPhase] : '未知'}\n` +
+      (error ? `- 停止原因：${error}\n` : '') +
+      `\n## 阶段执行记录\n\n${steps.map((step) => `- [${step.status === 'completed' ? 'x' : ' '}] ${PHASE_LABELS[step.phase]}：${step.detail}`).join('\n')}\n` +
+      `\n## 门禁与质量证据\n\n| 阶段 | 检查项 | 结果 | 级别 | 说明 |\n|---|---|---|---|---|\n${gates.join('\n') || '| - | 尚无门禁记录 | - | - | - |'}\n` +
+      `\n## 自动决策策略\n\n托管期间优先采用 Agent 明确标记的推荐项；无推荐项时采用第一项并要求保持可回退。所有自动选择保留在 Agent 会话历史中。\n` +
+      `\n## 遗留风险\n\n${outcome === 'completed' ? '请人工复核关键架构决策、第三方 IP 许可证，以及正式 PPA/CDC/STA 签核条件。' : `托管未完整结束，必须处理停止原因后再继续：${error ?? '用户主动停止'}。`}\n`
+    await window.moonglass.fs.writeText(projectId, path, content)
+    setTreeTick((tick) => tick + 1)
+    setManagedReportPath(path)
+    return path
+  }
+
+  const startManagedRun = async (): Promise<void> => {
+    if (!project || managedRunning) return
+    const startIndex = PHASE_ORDER.indexOf(project.currentPhase)
+    const endIndex = PHASE_ORDER.indexOf(managedEndPhase)
+    if (endIndex < startIndex) return
+    managedStopRef.current = false
+    setManagedDialogOpen(false)
+    setManagedRunning(true)
+    setManagedReportPath('')
+    setMainTab('chat')
+    const startedAt = new Date().toISOString()
+    const steps: ManagedStep[] = []
+    setManagedSteps([])
+    let outcome: 'completed' | 'stopped' | 'failed' = 'completed'
+    let failure = ''
+    try {
+      await ensureAgent(projectId)
+      if (!useChatStore.getState().sessionInfo?.providersReady) throw new Error('模型会话未就绪，请先配置并测试模型服务')
+      for (let index = startIndex; index <= endIndex; index += 1) {
+        const phase = PHASE_ORDER[index]
+        if (managedStopRef.current) throw new Error('用户停止托管')
+        const step: ManagedStep = { phase, status: 'running', detail: 'Agent 正在执行阶段任务' }
+        steps.push(step)
+        setManagedSteps([...steps])
+
+        let active = await window.moonglass.project.get(projectId)
+        if (!active) throw new Error('项目不存在')
+        if (active.currentPhase !== phase) {
+          active = await window.moonglass.phase.enter(projectId, phase)
+          if (!active) throw new Error(`无法进入 ${PHASE_LABELS[phase]}`)
+          await ensureAgent(projectId)
+        }
+        await ensureAgent(projectId)
+        if (active.phases[phase].changeNotice?.status === 'pending') {
+          await runManagedAgent(buildChangeResponsePrompt(active, phase))
+          await window.moonglass.phase.acknowledgeChange(projectId, phase, '一键托管已完成该阶段变更响应')
+        }
+        await runManagedAgent(MANAGED_PHASE_PROMPTS[phase])
+        if (managedStopRef.current) throw new Error('用户停止托管')
+
+        if (phase === 'SYNTH') {
+          const completed = await window.moonglass.phase.completeProject(projectId)
+          if (!completed) throw new Error('综合阶段无法完成项目收口')
+          setProject(completed)
+        } else {
+          const next = PHASE_ORDER[index + 1]
+          let advanced = false
+          for (let attempt = 0; attempt < 3 && !advanced; attempt += 1) {
+            const result = await window.moonglass.phase.advance(projectId, next)
+            if (!result) throw new Error(`推进到 ${PHASE_LABELS[next]} 失败`)
+            setProject(result.project)
+            setGate(result.gate)
+            if (!result.gate.blocked) {
+              advanced = true
+              break
+            }
+            const failed = result.gate.results.filter((item) => item.severity === 'error' && !item.passed)
+            if (attempt === 2) throw new Error(`${PHASE_LABELS[phase]} 门禁重试后仍有 ${failed.length} 个阻断项`)
+            await runManagedAgent(`修复以下门禁阻断项并重新执行相关检查：\n${failed.map((item) => `- ${item.checkName}：${item.message}`).join('\n')}`)
+          }
+        }
+        step.status = 'completed'
+        step.detail = '阶段任务及门禁已完成'
+        setManagedSteps([...steps])
+      }
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error)
+      outcome = failure === '用户停止托管' ? 'stopped' : 'failed'
+      const running = steps.findLast((step) => step.status === 'running')
+      if (running) {
+        running.status = 'failed'
+        running.detail = failure
+      }
+      setManagedSteps([...steps])
+    } finally {
+      const path = await writeManagedReport(outcome, startedAt, steps, failure)
+      appendLog(`${outcome === 'completed' ? '✅' : '⚠️'} 一键托管${outcome === 'completed' ? '完成' : '停止'}，报告：${path}`)
+      setManagedRunning(false)
+      await reload()
+    }
+  }
+
+  const stopManagedRun = async (): Promise<void> => {
+    managedStopRef.current = true
+    if (useChatStore.getState().streaming) await abortAgent()
+  }
+
+  const createChangeRequest = async (): Promise<void> => {
+    if (!project || !changeDescription.trim()) return
+    const now = new Date().toISOString()
+    const id = `CR-${now.replace(/\D/g, '').slice(0, 14)}`
+    const labels = { requirement: '需求变更', specification: '规格变更', bug: '缺陷修复' } as const
+    const path = `docs/01_project/change_requests/${id}.md`
+    const content = `# ${id} ${labels[changeType]}\n\n- 创建时间：${now}\n- 影响起点：${PHASE_LABELS[changeSourcePhase]}\n- 状态：处理中\n\n## 变更说明\n\n${changeDescription.trim()}\n\n## 影响分析\n\n待 Agent 分析需求、架构、RTL、验证、QA 和综合影响。\n\n## 验证与关闭条件\n\n待补充对应回归、质量审查和综合证据。\n`
+    const entered = await window.moonglass.phase.enter(projectId, changeSourcePhase)
+    if (!entered) return
+    await window.moonglass.fs.writeText(projectId, path, content)
+    setProject(entered)
+    setChangeDialogOpen(false)
+    setChangeDescription('')
+    setMainTab('chat')
+    setTreeTick((tick) => tick + 1)
+    await ensureAgent(projectId)
+    await sendAgentPrompt(`处理变更单 ${path}。先完成影响分析并修改 ${PHASE_LABELS[changeSourcePhase]} 阶段相关文件；保留已有有效成果，更新追溯矩阵和变更记录。完成本阶段修改后，后续阶段将通过黄色感叹号和一键托管完成响应、回归与质量闭环。`)
+    appendLog(`已创建${labels[changeType]} ${id}，进入 ${PHASE_LABELS[changeSourcePhase]}`)
+  }
+
   const handleRunSynthesis = async (): Promise<void> => {
     appendLog('⚙ 开始逻辑综合流程...')
     setActiveTab('synthesis')
@@ -518,6 +718,60 @@ export function WorkspacePage(): React.JSX.Element {
           {fileNotice.text}
         </div>
       )}
+      {managedDialogOpen && project && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-6">
+          <section className="w-full max-w-lg rounded-md border border-zinc-300 bg-white shadow-2xl">
+            <header className="border-b border-zinc-200 px-5 py-4">
+              <h2 className="text-base font-semibold text-zinc-900">一键托管</h2>
+              <p className="mt-1 text-xs leading-5 text-zinc-500">从当前阶段开始自动执行、修复门禁并推进。门禁重试失败时立即停止，不会强制越过。</p>
+            </header>
+            <div className="space-y-4 p-5">
+              <label className="block text-xs font-medium text-zinc-700">托管完成至</label>
+              <select value={managedEndPhase} onChange={(event) => setManagedEndPhase(event.target.value as Phase)} className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm">
+                {PHASE_ORDER.slice(PHASE_ORDER.indexOf(project.currentPhase)).map((phase) => (
+                  <option key={phase} value={phase}>{phase} · {PHASE_LABELS[phase]}</option>
+                ))}
+              </select>
+              <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
+                自动决策会优先选择推荐项并记录到报告。涉及正式签核、第三方许可证或不可逆操作时，托管结果仍需工程师复核。
+              </div>
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-3">
+              <button onClick={() => setManagedDialogOpen(false)} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600">取消</button>
+              <button onClick={() => void startManagedRun()} className="rounded bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-500">开始托管</button>
+            </footer>
+          </section>
+        </div>
+      )}
+      {changeDialogOpen && project && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-6">
+          <section className="w-full max-w-xl rounded-md border border-zinc-300 bg-white shadow-2xl">
+            <header className="border-b border-zinc-200 px-5 py-4">
+              <h2 className="text-base font-semibold text-zinc-900">发起受控变更</h2>
+              <p className="mt-1 text-xs text-zinc-500">保留已有成果，建立变更单，并从受影响的最早阶段开始处理。</p>
+            </header>
+            <div className="grid grid-cols-2 gap-4 p-5">
+              <label className="text-xs font-medium text-zinc-700">变更类型
+                <select value={changeType} onChange={(event) => setChangeType(event.target.value as typeof changeType)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm">
+                  <option value="requirement">需求变更</option><option value="specification">规格变更</option><option value="bug">第三方/测试缺陷</option>
+                </select>
+              </label>
+              <label className="text-xs font-medium text-zinc-700">影响起点
+                <select value={changeSourcePhase} onChange={(event) => setChangeSourcePhase(event.target.value as Phase)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm">
+                  {PHASE_ORDER.map((phase) => <option key={phase} value={phase}>{phase} · {PHASE_LABELS[phase]}</option>)}
+                </select>
+              </label>
+              <label className="col-span-2 text-xs font-medium text-zinc-700">变更或缺陷说明
+                <textarea value={changeDescription} onChange={(event) => setChangeDescription(event.target.value)} rows={5} placeholder="说明现象、期望行为、涉及接口、复现条件或新增规格..." className="mt-1 w-full resize-y rounded border border-zinc-300 bg-white px-3 py-2 text-sm" />
+              </label>
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-3">
+              <button onClick={() => setChangeDialogOpen(false)} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600">取消</button>
+              <button disabled={!changeDescription.trim()} onClick={() => void createChangeRequest()} className="rounded bg-blue-600 px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50">创建并进入处理</button>
+            </footer>
+          </section>
+        </div>
+      )}
       {/* ======== 顶部：项目信息 + 阶段看板 ======== */}
       <header className="workspace-header relative z-30 shrink-0 overflow-visible border-b border-zinc-200 bg-white px-6 py-4">
         <div className="mb-3 flex items-center gap-3">
@@ -525,11 +779,23 @@ export function WorkspacePage(): React.JSX.Element {
           <span className="text-sm text-zinc-500">
             当前阶段：{project.currentPhase} · {PHASE_LABELS[project.currentPhase]}
           </span>
+          {managedRunning ? (
+            <button type="button" onClick={() => void stopManagedRun()} className="ml-auto flex items-center gap-1.5 rounded border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700">
+              <Square size={12} /> 停止托管
+            </button>
+          ) : (
+            <button type="button" onClick={() => { setManagedEndPhase('SYNTH'); setManagedDialogOpen(true) }} disabled={agentStreaming} className="ml-auto flex items-center gap-1.5 rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50">
+              <Bot size={14} /> 一键托管
+            </button>
+          )}
+          <button type="button" onClick={() => setChangeDialogOpen(true)} disabled={managedRunning || agentStreaming} className="rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50">
+            发起变更
+          </button>
           <button
             type="button"
             onClick={() => void handleGenerateDashboard()}
             disabled={generatingDashboard}
-            className="ml-auto rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
+            className="rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
           >
             {generatingDashboard ? '正在生成…' : '生成总体报告'}
           </button>
@@ -541,6 +807,18 @@ export function WorkspacePage(): React.JSX.Element {
             RTL Design Browser
           </Link>
         </div>
+        {(managedRunning || managedSteps.length > 0) && (
+          <div className="mb-3 flex items-center gap-2 overflow-x-auto rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs">
+            <Bot size={14} className="shrink-0 text-blue-600" />
+            <span className="shrink-0 font-medium text-blue-800">{managedRunning ? '托管进行中' : '最近托管'}</span>
+            {managedSteps.map((step) => (
+              <span key={step.phase} className={`shrink-0 rounded px-2 py-1 ${step.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : step.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-white text-blue-700'}`} title={step.detail}>
+                {PHASE_LABELS[step.phase]} {step.status === 'completed' ? '✓' : step.status === 'failed' ? '!' : '…'}
+              </span>
+            ))}
+            {managedReportPath && <button onClick={() => void openFile(managedReportPath)} className="ml-auto shrink-0 text-blue-700 underline">查看托管报告</button>}
+          </div>
+        )}
         <PhaseBoard
           project={project}
           onEnterPhase={(phase) => void handleEnterPhase(phase)}
@@ -807,7 +1085,7 @@ export function WorkspacePage(): React.JSX.Element {
         <span>
           阶段处理: {PHASE_ORDER.filter((p) => ['completed', 'skipped'].includes(project.phases[p].status)).length}/{PHASE_ORDER.length}
         </span>
-        <span className="ml-auto">MoonGlass v0.4 · Phase 6 综合链</span>
+        <span className="ml-auto">MoonGlass v0.5 · 六阶段 ASIC 开发链</span>
       </footer>
     </div>
   )

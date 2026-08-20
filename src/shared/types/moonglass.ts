@@ -117,6 +117,17 @@ export interface ChipProject {
   updatedAt: string
 }
 
+/** 对外部工程目录的确定性阶段识别结果。 */
+export interface ProjectImportAssessment {
+  isExistingProject: boolean
+  suggestedPhase: Phase
+  confidence: number
+  fileCount: number
+  truncated: boolean
+  evidence: Record<Phase, { score: number; paths: string[] }>
+  warnings: string[]
+}
+
 export interface ProjectMigrationResult {
   project: ChipProject
   sourcePath: string

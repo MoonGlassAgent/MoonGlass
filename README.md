@@ -8,7 +8,7 @@ MoonGlass 是一个面向 ASIC/SoC 设计工程师的 AI 工作台：以 **6 阶
 
 MoonGlass 在**架构思想**上参考了 Electron 桌面应用的通用工程模式，包括主/渲染进程分层、侧边栏导航、服务生命周期管理与 IPC 契约中心。MoonGlass 第一方代码独立编写，不包含 Cherry Studio 源码，也不是其 Fork。第三方组件适用各自许可证。
 
-## 当前状态：v0.4.3
+## 当前状态：v0.5.0
 
 | 模块 | 状态 |
 |------|------|
@@ -18,7 +18,9 @@ MoonGlass 在**架构思想**上参考了 Electron 桌面应用的通用工程�
 | 项目 CRUD + 6 阶段状态机、双击进入与变更影响传播（IPC 全链路） | ✅ 可用（SQLite + JSON 备份） |
 | LLM Provider 配置与 Agent 对话闭环（Pi RPC） | ✅ 可用 |
 | EDA 工具探测与门禁检查（Lint / Yosys / 简单 CDC） | ✅ Phase 3 已接入 |
-| 工作区分栏 UI / 文件树 / 选项卡代码查看 / Prism 高亮 | ✅ Phase 4 已接入 |
+| 工作区分栏 UI / 文件树 / Monaco 代码查看 / Markdown 预览 | ✅ 可用 |
+| 一键托管（自动决策、门禁修复、阶段推进与报告） | ✅ v0.5.0 新增 |
+| 已有项目导入与实际阶段恢复 | ✅ v0.5.0 新增 |
 | Python 脚本引擎（spawn + 超时） | ✅ 最小可用 |
 | Agent 芯片专用工具集（lint / 综合 / 仿真 / CDC / 测试台生成） | ✅ 7 个工具已注册 |
 | RTL 解析与模板生成（`@moonglass/rtl-engine`） | ✅ Phase 4 已实现 |

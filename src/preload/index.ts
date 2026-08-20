@@ -8,9 +8,13 @@ import { IPC, type MoonGlassApi } from '@shared/ipc-contract'
 import type { AgentEventPayload, IpLibraryImportInput, LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
 
 const api: MoonGlassApi = {
+  ui: {
+    setColorMode: (mode) => ipcRenderer.invoke(IPC.Ui.SetColorMode, mode)
+  },
   project: {
     list: () => ipcRenderer.invoke(IPC.Project.List),
     create: (input) => ipcRenderer.invoke(IPC.Project.Create, input),
+    analyzeDirectory: (path) => ipcRenderer.invoke(IPC.Project.AnalyzeDirectory, path),
     chooseDirectory: () => ipcRenderer.invoke(IPC.Project.ChooseDirectory),
     get: (id) => ipcRenderer.invoke(IPC.Project.Get, id),
     update: (id, patch) => ipcRenderer.invoke(IPC.Project.Update, id, patch),
@@ -87,6 +91,8 @@ const api: MoonGlassApi = {
     tree: (projectId: string) => ipcRenderer.invoke(IPC.Fs.Tree, projectId),
     readFile: (projectId: string, relPath: string) =>
       ipcRenderer.invoke(IPC.Fs.ReadFile, projectId, relPath),
+    writeText: (projectId: string, relPath: string, content: string) =>
+      ipcRenderer.invoke(IPC.Fs.WriteText, projectId, relPath, content),
     openExternal: (projectId: string, relPath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, projectId, relPath)
   },
   designBrowser: {
