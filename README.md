@@ -6,6 +6,12 @@ MoonGlass 是面向 ASIC/SoC 设计工程师的 AI 工作台，以六阶段流�
 
 > 可直接运行的 Windows 完整绿色版请从 GitHub Releases 下载。绿色版包含 MIC_NPU Demo，但不包含模型 API Key。
 
+## 新手入口
+
+- [傻瓜式 HTML 使用说明书](./docs/QUICK-START-ZH-CN.html)：从解压启动、配置模型到完成六阶段开发，适合第一次使用 MoonGlass 的用户。
+- [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)：简明功能说明与工程注意事项。
+- [下载 MoonGlass v0.5.0 完整绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.5.0)
+
 ## 能做什么
 
 - 芯片设计工程师可快速完成 RTL 开发、代码检查、验证执行与回归闭环。
@@ -56,6 +62,7 @@ RTL Design Browser 用于解析 Top、展开设计层次并查看模块实例关
 - `src/renderer/`：React UI、项目面板、阶段看板、会话界面、文件树、设置和关于页面
 - `src/shared/`：公共领域类型、阶段数据结构、IPC 契约和 Provider 预设
 - `docs/USER-MANUAL-ZH-CN.md`：中文实用手册
+- `docs/QUICK-START-ZH-CN.html`：可离线打开和打印的中文新手说明书
 - 授权、隐私、安全与贡献说明
 
 暂未公开：
@@ -74,7 +81,7 @@ RTL Design Browser 用于解析 Top、展开设计层次并查看模块实例关
 
 v0.5.0 新增一键托管、受控变更流程、导入项目阶段恢复和带行号/语法高亮的文本查看器，并修正深色主题关键区域。完整功能请使用 Release 中的 Windows 绿色版。
 
-完整使用说明见 [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)。
+第一次使用建议先看 [傻瓜式 HTML 使用说明书](./docs/QUICK-START-ZH-CN.html)，工程说明见 [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)。
 
 ## 授权
 
