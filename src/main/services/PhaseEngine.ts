@@ -27,7 +27,7 @@ import type { DbService } from './DbService.ts'
 /** 阶段跳转门禁规则表（规格书 §3.1） */
 export const GATE_RULES: readonly GateRule[] = [
   { from: 'REQ_SPEC', to: 'ARCH', precondition: '需求、模块规格、接口规格与追溯矩阵可用于架构设计', autoChecks: ['requirements-usable', 'module-spec-usable', 'interface-spec-usable', 'rtm-complete'] },
-  { from: 'ARCH', to: 'RTL', precondition: '架构、接口、模块划分与时钟复位方案可用', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
+  { from: 'ARCH', to: 'RTL', precondition: '总体架构和接口可用；独立微架构与时钟复位文档按设计复杂度选配', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
   { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
   { from: 'VERIF', to: 'QA', precondition: '覆盖率报告', autoChecks: ['line-coverage-gte-90', 'func-coverage-gte-80', 'sim-passed'] },
   { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed'] }
@@ -49,9 +49,9 @@ const CHECK_NAMES: Record<string, string> = {
   'interface-spec-usable': '接口规格可用于架构设计',
   'rtm-complete': '需求-规格追溯矩阵完备',
   'interface-signals-nonempty': '接口信号清单非空',
-  'module-partition-sane': '模块划分合理性',
+  'module-partition-sane': '微架构文档（按复杂度选配）',
   'block-diagram-parsable': '架构框图可解析',
-  'clock-reset-defined': '时钟/复位方案定义',
+  'clock-reset-defined': '独立时钟/复位文档（按复杂度选配）',
   'verible-lint-zero-error': 'Lint 零 Error',
   'port-consistency': '端口一致性检查',
   'line-coverage-gte-90': '行覆盖率 ≥90%',
@@ -127,6 +127,29 @@ function requireFiles(paths: string[], severity: GateCheckResult['severity'] = '
     return failed.length === 0
       ? makeResult(checkId, true, severity, `通过：${paths.join('、')}`)
       : makeResult(checkId, false, severity, `检查发现 ${failed.length} 个文档问题：\n${details.join('\n')}`)
+  }
+}
+
+function optionalDocument(relativePath: string, simpleDesignReason: string) {
+  return async (ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> => {
+    const absolutePath = join(ctx.workspaceDir, ...relativePath.split('/'))
+    if (!existsSync(absolutePath)) {
+      return makeResult(
+        checkId,
+        true,
+        'info',
+        `可选文档未提供：${relativePath}。${simpleDesignReason}，不阻断进入 RTL；必要说明应在 architecture.md 中可追溯。`
+      )
+    }
+    const document = inspectDocument(ctx, relativePath)
+    return document.issues.length === 0
+      ? makeResult(checkId, true, 'info', `可选文档已提供且内容有效：${relativePath}`)
+      : makeResult(
+          checkId,
+          false,
+          'warning',
+          `可选文档已存在但内容不完整，不阻断推进：${relativePath}\n${document.issues.map((issue) => `  - ${issue}`).join('\n')}`
+        )
   }
 }
 
@@ -542,9 +565,15 @@ const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promi
   'interface-spec-usable': requireFiles(['docs/03_design/interface_spec.md']),
   'rtm-complete': rtmComplete,
   'interface-signals-nonempty': requireFiles(['docs/03_design/interface_spec.md']),
-  'module-partition-sane': requireFiles(['docs/03_design/microarchitecture.md']),
+  'module-partition-sane': optionalDocument(
+    'docs/03_design/microarchitecture.md',
+    '简单单模块或无需展开内部流水线/控制状态的设计可不单独创建微架构文档'
+  ),
   'block-diagram-parsable': architectureDiagramParsable,
-  'clock-reset-defined': requireFiles(['docs/03_design/clock_reset.md']),
+  'clock-reset-defined': optionalDocument(
+    'docs/03_design/clock_reset.md',
+    '单时钟、单复位且无 CDC/RDC 的设计可不单独创建时钟复位文档'
+  ),
   'port-consistency': requireFiles(['docs/03_design/interface_spec.md']),
   'line-coverage-gte-90': coverageAtLeast(['lineCoverage', 'line_coverage'], 90),
   'func-coverage-gte-80': coverageAtLeast(['functionalCoverage', 'functional_coverage', 'funcCoverage'], 80),

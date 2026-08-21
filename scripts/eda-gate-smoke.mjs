@@ -42,7 +42,8 @@ const goodDir = join(root, 'good')
 const badDir = join(root, 'bad')
 const emptyDir = join(root, 'empty')
 const resolvedTbdDir = join(root, 'resolved-tbd')
-mkdirSync(goodDir); mkdirSync(badDir); mkdirSync(emptyDir); mkdirSync(resolvedTbdDir)
+const simpleArchDir = join(root, 'simple-arch')
+mkdirSync(goodDir); mkdirSync(badDir); mkdirSync(emptyDir); mkdirSync(resolvedTbdDir); mkdirSync(simpleArchDir)
 writeFileSync(join(goodDir, 'counter.v'), GOOD_V)
 writeFileSync(join(badDir, 'broken.v'), BAD_V)
 mkdirSync(join(goodDir, 'rtl'), { recursive: true })
@@ -81,6 +82,20 @@ The control block accepts a registered command interface and returns a valid res
 writeFileSync(join(resolvedTbdDir, 'docs', '03_design', 'microarchitecture.md'), `# Microarchitecture
 
 The registered control block decodes commands and schedules datapath operations. The datapath captures operands, performs the selected operation, and registers the result before asserting response valid.
+`)
+mkdirSync(join(simpleArchDir, 'docs', '03_design'), { recursive: true })
+writeFileSync(join(simpleArchDir, 'docs', '03_design', 'architecture.md'), `# Simple Architecture
+
+This IP is a single registered counter block with one clock and one active-low reset. The concise internal behavior and reset policy are documented here because separate microarchitecture and clock/reset documents would add no review value.
+
+\`\`\`mermaid
+flowchart LR
+  Input --> Counter --> Output
+\`\`\`
+`)
+writeFileSync(join(simpleArchDir, 'docs', '03_design', 'interface_spec.md'), `# Interface Specification
+
+The block has one input clock, one active-low reset, one enable input, and one registered counter output. Every signal uses the same clock and reset domain, with no CDC or RDC path.
 `)
 
 let failures = 0
@@ -155,6 +170,15 @@ check(
   '追溯门禁忽略版本/优先级/TBD 表并支持需求 ID 范围',
   reqSpecResults.find((result) => result.checkId === 'rtm-complete')?.passed === true,
   reqSpecResults.find((result) => result.checkId === 'rtm-complete')?.message
+)
+
+const simpleArchResults = await engine.runGateChecks(fakeProject('ARCH'), 'RTL', { workspaceDir: simpleArchDir })
+check(
+  '简单设计缺少独立微架构/时钟复位文档不阻断 RTL',
+  !engine.isBlocked(simpleArchResults) &&
+    simpleArchResults.find((result) => result.checkId === 'module-partition-sane')?.passed === true &&
+    simpleArchResults.find((result) => result.checkId === 'clock-reset-defined')?.passed === true,
+  simpleArchResults.find((result) => !result.passed)?.message
 )
 
 const resolvedTbdResults = await engine.runGateChecks(

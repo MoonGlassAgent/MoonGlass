@@ -2,6 +2,13 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-08-21：微架构与时钟复位文档改为按复杂度选配
+
+- `docs/03_design/microarchitecture.md` 和 `docs/03_design/clock_reset.md` 不再是 ARCH → RTL 的强制门禁。
+- 简单单模块设计、单时钟单复位且无 CDC/RDC 的设计可以省略独立文档，并在 `architecture.md` 保留必要说明和省略理由。
+- 文件存在但内容不足时仅记录 Warning，不阻断推进；复杂流水线/控制、多时钟、多复位、CDC/RDC 等场景仍由 Agent 和 QA 要求补充。
+- 同步更新一键托管 Prompt、文档 Skill、文档检查脚本和门禁回归测试。
+
 ## 2026-08-21：修复 IP 库 Pi 语义分析并发冲突
 
 - IP 语义分析在每批 Prompt 后同时等待命令回执和 `agent_settled`，不再把“已接收”误判为“分析完成”；后续批次使用 `followUp` 排队保护。

@@ -111,6 +111,7 @@ class DocumentRepositoryValidator:
             'docs/02_requirements/requirements_traceability.md': '需求-规格追溯矩阵',
             'docs/03_design/register_map.md': '寄存器映射表',
             'docs/03_design/microarchitecture.md': '微架构设计',
+            'docs/03_design/clock_reset.md': '时钟复位设计',
             'docs/04_verification/test_plan.md': '测试计划'
         }
 

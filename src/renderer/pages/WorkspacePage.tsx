@@ -68,7 +68,7 @@ interface ManagedStep {
 
 const MANAGED_PHASE_PROMPTS: Record<Phase, string> = {
   REQ_SPEC: '完成需求-规格定义：审查项目目标，补齐产品需求、模块规格、接口规格和需求-规格追溯矩阵，消除占位内容并执行文档检查。',
-  ARCH: '完成架构设计：根据已批准需求规格更新总体架构、模块划分、接口、时钟复位、寄存器和微架构文档，并检查需求追溯。',
+  ARCH: '完成架构设计：根据已批准需求规格更新总体架构、模块划分、接口、时钟复位和寄存器设计，并检查需求追溯。简单单模块/单时钟复位设计可将说明合并在 architecture.md；仅在复杂微架构、多时钟、多复位或 CDC/RDC 场景单独创建 microarchitecture.md、clock_reset.md。',
   RTL: '完成 RTL 开发：依据架构实现或修复 RTL，维护 design.json/filelist，运行 Lint、可综合性和必要的 CDC 检查，修复全部 Error。',
   VERIF: '完成验证闭环：更新验证计划和覆盖率计划，搭建或修复验证环境，执行相关回归，保存真实日志、JUnit、结果和波形，并更新追溯。',
   QA: '完成质量检查：执行变更审查、代码 Review、检查清单、Lint/CDC/回归证据核对，修复阻断问题并形成 QA 报告。',
