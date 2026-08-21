@@ -212,7 +212,14 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [providerHint, setProviderHint] = useState('')
   const [ensuring, setEnsuring] = useState(false)
   const [decisionDrafts, setDecisionDrafts] = useState<Record<string, { selectedIds: string[]; customText: string }>>({})
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null)
+  const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  const inputHistory = messages
+    .filter((message) => message.role === 'user')
+    .map((message) => message.text.trim())
+    .filter((text) => text && !text.startsWith(DECISION_RESPONSE_PREFIX) && !text.startsWith('【MoonGlass 一键托管】'))
 
   useEffect(() => {
     setEnsuring(true)
@@ -245,11 +252,40 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  useEffect(() => {
+    setHistoryIndex(null)
+    historyDraftRef.current = input
+  }, [sessionInfo?.sessionName])
+
 
   const handleSend = (): void => {
     if (!input.trim() || streaming) return
     void send(input)
     setInput('')
+    setHistoryIndex(null)
+    historyDraftRef.current = ''
+  }
+
+  const recallInput = (direction: 'previous' | 'next'): void => {
+    if (inputHistory.length === 0) return
+    if (direction === 'previous') {
+      if (historyIndex === null) historyDraftRef.current = input
+      const nextIndex = historyIndex === null
+        ? inputHistory.length - 1
+        : Math.max(0, historyIndex - 1)
+      setHistoryIndex(nextIndex)
+      setInput(inputHistory[nextIndex])
+      return
+    }
+    if (historyIndex === null) return
+    if (historyIndex >= inputHistory.length - 1) {
+      setHistoryIndex(null)
+      setInput(historyDraftRef.current)
+      return
+    }
+    const nextIndex = historyIndex + 1
+    setHistoryIndex(nextIndex)
+    setInput(inputHistory[nextIndex])
   }
 
   const decisionResponses = new Map<string, AgentDecisionResponse>()
@@ -390,15 +426,35 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         <div className="flex w-full items-end gap-2">
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value)
+              setHistoryIndex(null)
+              historyDraftRef.current = e.target.value
+            }}
             onKeyDown={(e) => {
+              if (!e.nativeEvent.isComposing && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                const beforeCursor = e.currentTarget.value.slice(0, e.currentTarget.selectionStart)
+                const afterCursor = e.currentTarget.value.slice(e.currentTarget.selectionEnd)
+                const atFirstLine = !beforeCursor.includes('\n')
+                const atLastLine = !afterCursor.includes('\n')
+                if (e.key === 'ArrowUp' && (historyIndex !== null || !input || atFirstLine)) {
+                  e.preventDefault()
+                  recallInput('previous')
+                  return
+                }
+                if (e.key === 'ArrowDown' && historyIndex !== null && atLastLine) {
+                  e.preventDefault()
+                  recallInput('next')
+                  return
+                }
+              }
               if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
                 e.preventDefault()
                 handleSend()
               }
             }}
             rows={2}
-            placeholder={streaming ? 'Agent 回复中…' : '输入消息，Enter 发送，Ctrl/Alt/Shift+Enter 换行'}
+            placeholder={streaming ? 'Agent 回复中…' : '输入消息，Enter 发送，↑/↓ 回顾历史，Ctrl/Alt/Shift+Enter 换行'}
             disabled={streaming}
             className="flex-1 resize-none rounded border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-blue-500 disabled:opacity-60"
           />

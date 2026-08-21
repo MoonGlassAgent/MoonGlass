@@ -565,6 +565,7 @@ export function WorkspacePage(): React.JSX.Element {
       `\n## 阶段执行记录\n\n${steps.map((step) => `- [${step.status === 'completed' ? 'x' : ' '}] ${PHASE_LABELS[step.phase]}：${step.detail}`).join('\n')}\n` +
       `\n## 门禁与质量证据\n\n| 阶段 | 检查项 | 结果 | 级别 | 说明 |\n|---|---|---|---|---|\n${gates.join('\n') || '| - | 尚无门禁记录 | - | - | - |'}\n` +
       `\n## 自动决策策略\n\n托管期间优先采用 Agent 明确标记的推荐项；无推荐项时采用第一项并要求保持可回退。所有自动选择保留在 Agent 会话历史中。\n` +
+      `需求-规格定义和架构设计阶段的门禁在三次自动修复后仍失败时，不中断托管；失败项作为遗留风险保留并自动推进。RTL、验证、质量检查和综合实现阶段继续执行严格阻断。\n` +
       `\n## 遗留风险\n\n${outcome === 'completed' ? '请人工复核关键架构决策、第三方 IP 许可证，以及正式 PPA/CDC/STA 签核条件。' : `托管未完整结束，必须处理停止原因后再继续：${error ?? '用户主动停止'}。`}\n`
     await window.moonglass.fs.writeText(projectId, path, content)
     setTreeTick((tick) => tick + 1)
@@ -619,6 +620,7 @@ export function WorkspacePage(): React.JSX.Element {
         } else {
           const next = PHASE_ORDER[index + 1]
           let advanced = false
+          let carriedGateIssues = 0
           for (let attempt = 0; attempt < 3 && !advanced; attempt += 1) {
             const result = await window.moonglass.phase.advance(projectId, next)
             if (!result) throw new Error(`推进到 ${PHASE_LABELS[next]} 失败`)
@@ -629,12 +631,29 @@ export function WorkspacePage(): React.JSX.Element {
               break
             }
             const failed = result.gate.results.filter((item) => item.severity === 'error' && !item.passed)
-            if (attempt === 2) throw new Error(`${PHASE_LABELS[phase]} 门禁重试后仍有 ${failed.length} 个阻断项`)
+            if (attempt === 2) {
+              if (phase === 'REQ_SPEC' || phase === 'ARCH') {
+                const forced = await window.moonglass.phase.advance(projectId, next, { force: true })
+                if (!forced) throw new Error(`无法带遗留项推进到 ${PHASE_LABELS[next]}`)
+                carriedGateIssues = failed.length
+                setProject(forced.project)
+                setGate(forced.gate)
+                appendLog(
+                  `⚠️ 一键托管：${PHASE_LABELS[phase]} 门禁仍有 ${failed.length} 个阻断项，已记录遗留风险并继续推进`
+                )
+                advanced = true
+                break
+              }
+              throw new Error(`${PHASE_LABELS[phase]} 门禁重试后仍有 ${failed.length} 个阻断项`)
+            }
             await runManagedAgent(`修复以下门禁阻断项并重新执行相关检查：\n${failed.map((item) => `- ${item.checkName}：${item.message}`).join('\n')}`)
+          }
+          if (carriedGateIssues > 0) {
+            step.detail = `阶段任务已完成；${carriedGateIssues} 个门禁阻断项作为遗留风险带入后续阶段`
           }
         }
         step.status = 'completed'
-        step.detail = '阶段任务及门禁已完成'
+        if (!step.detail.includes('遗留风险')) step.detail = '阶段任务及门禁已完成'
         setManagedSteps([...steps])
       }
     } catch (error) {
