@@ -13,6 +13,7 @@ import { generateProjectDashboard } from './services/ProjectDashboardService'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
   const { projects, phaseEngine, python, eda, llm, agent, files, designBrowser, processLibraries, ipLibraries } = services
+  const ipEnhancementJobs = new Map<string, Promise<Awaited<ReturnType<typeof ipLibraries.applySemanticAnalysis>>>>()
 
   ipcMain.handle(IPC.Ui.SetColorMode, (event, mode: 'light' | 'dark' | 'system') => {
     nativeTheme.themeSource = mode
@@ -181,16 +182,26 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.IpLibrary.AddLocal, (_e, input: IpLibraryImportInput) => ipLibraries.addLocal(input))
   ipcMain.handle(IPC.IpLibrary.Reindex, (_e, id: string) => ipLibraries.reindex(id))
   ipcMain.handle(IPC.IpLibrary.Enhance, async (_e, id: string) => {
-    const record = await ipLibraries.get(id)
-    if (!record || record.source !== 'local') throw new Error('仅支持分析用户导入的 IP 库')
-    await ipLibraries.markSemanticAnalysis(id, 'running')
+    const existing = ipEnhancementJobs.get(id)
+    if (existing) return existing
+    const job = (async () => {
+      const record = await ipLibraries.get(id)
+      if (!record || record.source !== 'local') throw new Error('仅支持分析用户导入的 IP 库')
+      await ipLibraries.markSemanticAnalysis(id, 'running')
+      try {
+        const result = await agent.analyzeIpLibrary(record)
+        return await ipLibraries.applySemanticAnalysis(id, result)
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error)
+        await ipLibraries.markSemanticAnalysis(id, 'failed', message)
+        throw error
+      }
+    })()
+    ipEnhancementJobs.set(id, job)
     try {
-      const result = await agent.analyzeIpLibrary(record)
-      return await ipLibraries.applySemanticAnalysis(id, result)
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error)
-      await ipLibraries.markSemanticAnalysis(id, 'failed', message)
-      throw error
+      return await job
+    } finally {
+      if (ipEnhancementJobs.get(id) === job) ipEnhancementJobs.delete(id)
     }
   })
   ipcMain.handle(IPC.IpLibrary.Remove, (_e, id: string) => ipLibraries.remove(id))

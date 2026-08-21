@@ -767,9 +767,14 @@ argument-hint: "<模块名>"
       }
       const analyzeBatch = async (batch: typeof compact, singleRetry = false): Promise<void> => {
         responseText = ''
+        processError = ''
         const prompt = `你是 ASIC IP 库管理员。只分析下列确定性扫描结果，不修改任何文件，也不要调用工具。\n` +
           `为每个输入 id 返回一项。只输出 JSON 数组，不要 Markdown。字段：id、name、type、summary（中文一句话）、protocols（字符串数组）、interfaceRoles（master/slave/monitor/driver 等）、licenseStatus（identified/unknown/restricted）、confidence（0 到 1）。不能确定时保留原值或使用 unknown，不得编造。\n输入：${JSON.stringify(batch)}`
-        await client.command({ type: 'prompt', message: prompt }, 15 * 60_000)
+        const settled = client.waitForEvent((event) => event.type === 'agent_settled', 15 * 60_000)
+        await Promise.all([
+          client.command({ type: 'prompt', message: prompt, streamingBehavior: 'followUp' }, 15 * 60_000),
+          settled
+        ])
         if (processError) throw new Error(processError)
         const completeText = await finalAssistantText()
         const firstBracket = completeText.indexOf('[')

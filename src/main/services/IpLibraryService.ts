@@ -106,6 +106,14 @@ export class IpLibraryService implements MoonGlassService {
     } catch {
       this.records = []
     }
+    let recoveredInterruptedAnalysis = false
+    for (const record of this.records) {
+      if (record.semanticAnalysisStatus !== 'running') continue
+      record.semanticAnalysisStatus = 'failed'
+      record.semanticError = '上次 Pi 语义分析因程序退出而中断，请重新运行分析'
+      recoveredInterruptedAnalysis = true
+    }
+    if (recoveredInterruptedAnalysis) await this.persist()
     await this.refreshIndex()
   }
 

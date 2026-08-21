@@ -36,17 +36,28 @@ interface PendingEntry {
   timer: NodeJS.Timeout
 }
 
+interface EventWaiter {
+  predicate: (event: Record<string, unknown>) => boolean
+  resolve: (event: Record<string, unknown>) => void
+  reject: (error: Error) => void
+  timer: NodeJS.Timeout
+}
+
 const COMMAND_TIMEOUT_MS = 30_000
 
 export class PiRpcClient {
+  private readonly options: PiRpcClientOptions
   private child: ChildProcess | null = null
   private seq = 0
   private pending = new Map<string, PendingEntry>()
+  private eventWaiters = new Set<EventWaiter>()
   private buffer = ''
   private decoder = new StringDecoder('utf8')
   private stderrTail = ''
 
-  constructor(private readonly options: PiRpcClientOptions) {}
+  constructor(options: PiRpcClientOptions) {
+    this.options = options
+  }
 
   start(): void {
     const { binPath, args, cwd, env } = this.options
@@ -105,6 +116,25 @@ export class PiRpcClient {
     throw new Error(`[pi-rpc] 等待就绪超时: ${lastErr instanceof Error ? lastErr.message : String(lastErr)}`)
   }
 
+  /** 等待指定 Pi 事件；用于区分“命令已接收”和“Agent 真正执行完毕”。 */
+  waitForEvent(
+    predicate: (event: Record<string, unknown>) => boolean,
+    timeoutMs = COMMAND_TIMEOUT_MS
+  ): Promise<Record<string, unknown>> {
+    return new Promise((resolve, reject) => {
+      const waiter: EventWaiter = {
+        predicate,
+        resolve,
+        reject,
+        timer: setTimeout(() => {
+          this.eventWaiters.delete(waiter)
+          reject(new Error('[pi-rpc] 等待 Agent 事件超时'))
+        }, timeoutMs)
+      }
+      this.eventWaiters.add(waiter)
+    })
+  }
+
   dispose(): void {
     const child = this.child
     this.child = null
@@ -147,6 +177,12 @@ export class PiRpcClient {
       }
       return
     }
+    for (const waiter of this.eventWaiters) {
+      if (!waiter.predicate(msg)) continue
+      this.eventWaiters.delete(waiter)
+      clearTimeout(waiter.timer)
+      waiter.resolve(msg)
+    }
     this.options.onEvent(msg)
   }
 
@@ -156,5 +192,10 @@ export class PiRpcClient {
       entry.reject(err)
     }
     this.pending.clear()
+    for (const waiter of this.eventWaiters) {
+      clearTimeout(waiter.timer)
+      waiter.reject(err)
+    }
+    this.eventWaiters.clear()
   }
 }
