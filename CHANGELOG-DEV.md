@@ -143,3 +143,11 @@
 - 安全：目标目录必须为空且不能与其他项目冲突；复制后校验文件数量和总字节数，成功后才切换数据库路径。
 - 保留：迁移成功后保留原目录，避免不可逆误删；迁移前释放该项目的主会话和平行 Agent 进程，重新进入项目后从新目录恢复。
 - 验证：`pnpm typecheck`、核心测试和 `pnpm build` 全部通过。
+## 2026-08-21
+
+### 文档工具链与追溯门禁加固
+
+- `check_doc_repo.py` 增加阶段感知、双向 REQ/SPEC 覆盖、ID 范围/斜杠展开、状态值校验、UTF-8 安全 JSON、`--output` 和忽略规则。
+- 后续阶段文档不再提前报错，`microarchitecture.md` 与 `clock_reset.md` 保持按复杂度选用，模板和 `.gitkeep` 不再误报。
+- 新项目自动生成 `.gitattributes`，统一 HDL、Markdown、Python、Tcl、SDC 和 JSON/YAML 为 LF，二进制资料不参与换行转换。
+- 规范明确 ID 定义与引用边界、验证 ID 分段和 Windows 中文文档必须使用 Python 校验器。

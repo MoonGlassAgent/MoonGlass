@@ -1,416 +1,216 @@
 #!/usr/bin/env python3
-"""
-Document Repository Validator
-文档库完整性检查器
-
-用于检查芯片项目文档库是否符合规范。
-可作为项目启动时的检查工具，或 CI/CD 的一部分。
-
-Usage:
-    python check_doc_repo.py --path /path/to/project
-    python check_doc_repo.py --path /path/to/project --json
-"""
-
-import argparse
-import os
-import re
-import json
-from pathlib import Path
-from dataclasses import dataclass
-from typing import List, Dict, Optional
+"""MoonGlass 文档库、阶段和需求追溯校验器。"""
+import argparse, json, re, subprocess, sys
+from dataclasses import asdict, dataclass
 from datetime import datetime
+from fnmatch import fnmatch
+from pathlib import Path
 
+STAGES = ("req_spec", "arch", "rtl", "verif", "qa", "synth")
+ALIASES = {"req": "req_spec", "requirements": "req_spec", "architecture": "arch", "verification": "verif"}
+ORDER = {stage: i for i, stage in enumerate(STAGES)}
+DIRS = {"docs": "req_spec", "docs/01_project": "req_spec", "docs/02_requirements": "req_spec",
+        "docs/03_design": "arch", "rtl": "rtl", "docs/04_verification": "verif",
+        "docs/06_validation": "qa", "docs/05_implementation": "synth", "scripts": "req_spec"}
+DOCS = {
+    "docs/01_project/project_charter.md": ("项目章程", "req_spec", True),
+    "docs/02_requirements/product_requirements.md": ("产品需求", "req_spec", True),
+    "docs/02_requirements/module_specification.md": ("模块规格", "req_spec", True),
+    "docs/02_requirements/requirements_traceability.md": ("需求-规格追溯矩阵", "req_spec", True),
+    "docs/03_design/architecture.md": ("架构设计", "arch", True),
+    "docs/03_design/interface_spec.md": ("接口规格", "arch", True),
+    "docs/03_design/microarchitecture.md": ("微架构设计", "arch", False),
+    "docs/03_design/clock_reset.md": ("时钟复位设计", "arch", False),
+    "docs/04_verification/verification_plan.md": ("验证计划", "verif", True),
+    "docs/04_verification/test_plan.md": ("测试计划", "verif", True),
+    "docs/04_verification/coverage_plan.md": ("覆盖率计划", "verif", True),
+}
+IGNORES = ("templates/**", "**/.gitkeep", "**/__pycache__/**", "**/*.pyc")
+ALLOWED = {".md", ".png", ".jpg", ".jpeg", ".svg", ".pdf", ".csv", ".json", ".yaml", ".yml"}
+STATES = {"草稿", "冻结", "验证", "已验证", "已验收", "开放", "关闭", "draft", "frozen", "verified", "accepted", "open", "closed"}
 
 @dataclass
-class ValidationResult:
-    """验证结果"""
+class Result:
     passed: bool
     category: str
     item: str
     message: str
-    severity: str  # error, warning, info
+    severity: str
 
+def safe(value):
+    if isinstance(value, str): return value.encode("utf-8", "replace").decode("utf-8")
+    if isinstance(value, list): return [safe(v) for v in value]
+    if isinstance(value, dict): return {safe(k): safe(v) for k, v in value.items()}
+    return value
 
-class DocumentRepositoryValidator:
-    """文档库检查器"""
+def cells(line): return [v.strip() for v in line.strip().strip("|").split("|")]
 
-    def __init__(self, base_path: str):
-        self.base_path = Path(base_path)
-        self.results: List[ValidationResult] = []
-        self.project_name = self.base_path.name
+def tables(text):
+    lines, found, i = text.splitlines(), [], 0
+    while i + 1 < len(lines):
+        head, sep = cells(lines[i]), cells(lines[i + 1])
+        if len(head) >= 2 and len(head) == len(sep) and all(re.fullmatch(r":?-{3,}:?", v.replace(" ", "")) for v in sep):
+            rows, i = [], i + 2
+            while i < len(lines) and "|" in lines[i]:
+                row = cells(lines[i])
+                if len(row) == len(head): rows.append(row)
+                i += 1
+            found.append((head, rows)); continue
+        i += 1
+    return found
 
-    def validate(self) -> bool:
-        """执行所有验证"""
-        self.results.clear()
-
-        # 1. 检查目录结构
-        self._check_directory_structure()
-
-        # 2. 检查必需文档
-        self._check_required_documents()
-
-        # 3. 检查文档内容
-        self._check_document_content()
-
-        # 4. 检查版本控制
-        self._check_version_control()
-
-        # 5. 检查文档格式
-        self._check_document_format()
-
-        # 返回是否全部通过（忽略 warning）
-        return all(r.passed for r in self.results if r.severity == 'error')
-
-    def _check_directory_structure(self):
-        """检查目录结构"""
-        # 必需目录
-        required_dirs = [
-            'docs',
-            'docs/01_project',
-            'docs/02_requirements',
-            'docs/03_design',
-            'docs/04_verification',
-            'scripts'
-        ]
-
-        # 可选目录
-        optional_dirs = [
-            'docs/05_implementation',
-            'docs/06_validation',
-            'docs/07_release',
-            'templates'
-        ]
-
-        for dir_name in required_dirs:
-            dir_path = self.base_path / dir_name
-            if dir_path.exists() and dir_path.is_dir():
-                self._pass('structure', f'目录 {dir_name}/', '存在')
+def ids(text, namespace):
+    """展开 REQ-FUNC-001~003、SPEC-IF-001/002 等引用。"""
+    found = set()
+    pattern = re.compile(rf"\b(?P<p>{namespace}-[A-Z][A-Z0-9_-]*?-)(?P<n>\d+)(?P<t>(?:\s*(?:~|～|\.\.|至|/)\s*\d+)*)", re.I)
+    for match in pattern.finditer(text):
+        prefix, first, tail = match.group("p").upper(), match.group("n"), match.group("t")
+        width, numbers = len(first), [int(first)]
+        for op, raw in re.findall(r"(~|～|\.\.|至|/)\s*(\d+)", tail):
+            value = int(raw)
+            if op == "/": numbers.append(value)
             else:
-                self._error('structure', f'目录 {dir_name}/', '不存在')
+                step = 1 if value >= numbers[-1] else -1
+                numbers.extend(range(numbers[-1] + step, value + step, step))
+        found |= {f"{prefix}{n:0{width}d}" for n in numbers}
+    return found
 
-        for dir_name in optional_dirs:
-            dir_path = self.base_path / dir_name
-            if dir_path.exists() and dir_path.is_dir():
-                self._pass('structure', f'目录 {dir_name}/', '存在（可选）')
-            else:
-                self._warning('structure', f'目录 {dir_name}/', '不存在（建议创建）')
+def definitions(text, namespace):
+    found = set()
+    for line in text.splitlines():
+        if re.match(r"^#{1,6}\s+", line): found |= ids(line, namespace)
+    names = ("需求", "requirement", "req") if namespace == "REQ" else ("规格", "specification", "spec")
+    header = re.compile(rf"^(?:{'|'.join(names)})\s*(?:id|编号)$", re.I)
+    for heads, rows in tables(text):
+        for column, value in enumerate(heads):
+            if header.match(value.strip()):
+                for row in rows: found |= ids(row[column], namespace)
+    return found
 
-    def _check_required_documents(self):
-        """检查必需文档"""
-        # 必需文档
-        required_docs = {
-            'docs/01_project/project_charter.md': '项目章程',
-            'docs/02_requirements/product_requirements.md': '产品需求',
-            'docs/03_design/architecture.md': '架构设计',
-            'docs/04_verification/verification_plan.md': '验证计划'
-        }
+class Validator:
+    def __init__(self, root, stage, trace=True):
+        self.root, self.stage, self.trace = Path(root).resolve(), ALIASES.get(stage, stage), trace
+        self.results, self.ignores = [], list(IGNORES)
+        custom = self.root / ".check_doc_repo_ignore"
+        if custom.exists(): self.ignores += [v.strip() for v in custom.read_text("utf-8", errors="replace").splitlines() if v.strip() and not v.lstrip().startswith("#")]
 
-        # 可选文档
-        optional_docs = {
-            'docs/02_requirements/module_specification.md': '模块规格说明书',
-            'docs/02_requirements/requirements_traceability.md': '需求-规格追溯矩阵',
-            'docs/03_design/register_map.md': '寄存器映射表',
-            'docs/03_design/microarchitecture.md': '微架构设计',
-            'docs/03_design/clock_reset.md': '时钟复位设计',
-            'docs/04_verification/test_plan.md': '测试计划'
-        }
+    def add(self, severity, category, item, message):
+        self.results.append(Result(severity != "error", category, item, safe(message), severity))
 
-        for doc_path, doc_name in required_docs.items():
-            full_path = self.base_path / doc_path
-            if full_path.exists():
-                self._pass('documents', f'{doc_name} ({doc_path})', '存在')
-            else:
-                self._error('documents', f'{doc_name} ({doc_path})', '不存在')
+    def ignored(self, path):
+        rel = path.relative_to(self.root).as_posix()
+        return any(fnmatch(rel, pattern) for pattern in self.ignores)
 
-        for doc_path, doc_name in optional_docs.items():
-            full_path = self.base_path / doc_path
-            if full_path.exists():
-                self._pass('documents', f'{doc_name} ({doc_path})', '存在（可选）')
-            else:
-                self._info('documents', f'{doc_name} ({doc_path})', '不存在（建议创建）')
+    def validate(self):
+        current = ORDER[self.stage]
+        for rel, stage in DIRS.items():
+            exists, due = (self.root / rel).is_dir(), ORDER[stage] <= current
+            self.add("info" if exists or not due else "error", "structure", rel + "/", "存在" if exists else ("后续阶段目录尚未创建" if not due else "当前阶段需要该目录"))
+        for rel, (name, stage, required) in DOCS.items():
+            exists, due = (self.root / rel).is_file(), ORDER[stage] <= current
+            if exists: severity, message = "info", "存在"
+            elif not due: severity, message = "info", "属于后续阶段，当前不要求"
+            elif required: severity, message = "error", "当前阶段必需文档缺失"
+            else: severity, message = "info", "按设计复杂度选用，不作为强制门禁"
+            self.add(severity, "documents", f"{name} ({rel})", message)
+        self.content()
+        if self.trace: self.traceability()
+        self.version_control(); self.formats()
+        return not any(r.severity == "error" for r in self.results)
 
-    def _check_document_content(self):
-        """检查文档内容"""
-        docs_dir = self.base_path / 'docs'
-        if not docs_dir.exists():
-            self._error('content', '文档目录', 'docs/ 目录不存在，无法检查内容')
-            return
+    def content(self):
+        base = self.root / "docs"
+        files = [] if not base.exists() else [p for p in base.rglob("*.md") if not self.ignored(p)]
+        if not files: self.add("error", "content", "Markdown 文档", "未找到可检查文档"); return
+        for path in files:
+            text, rel = path.read_text("utf-8", errors="replace"), path.relative_to(self.root).as_posix()
+            titled = text.lstrip().startswith("#")
+            self.add("info" if titled else "error", "content", rel + " 标题", "存在" if titled else "缺少 Markdown 标题")
+            if not ("版本历史" in text or re.search(r"version\s+history", text, re.I)):
+                self.add("warning", "content", rel + " 版本历史", "建议增加版本历史")
 
-        # 查找所有 Markdown 文件
-        md_files = list(docs_dir.rglob('*.md'))
+    def traceability(self):
+        reqdir, matrix = self.root / "docs/02_requirements", self.root / "docs/02_requirements/requirements_traceability.md"
+        reqs, specs = set(), set()
+        if reqdir.exists():
+            for path in reqdir.rglob("*.md"):
+                if path != matrix and not self.ignored(path):
+                    text = path.read_text("utf-8", errors="replace"); reqs |= definitions(text, "REQ"); specs |= definitions(text, "SPEC")
+        design = self.root / "docs/03_design"
+        if design.exists():
+            for path in design.rglob("*.md"):
+                if not self.ignored(path): specs |= definitions(path.read_text("utf-8", errors="replace"), "SPEC")
+        if not matrix.exists(): self.add("error", "traceability", "需求-规格追溯矩阵", "文件不存在"); return
+        selected = []
+        for heads, rows in tables(matrix.read_text("utf-8", errors="replace")):
+            norm = [re.sub(r"\s+", "", h).lower() for h in heads]
+            rc = next((i for i, h in enumerate(norm) if h.startswith(("需求id", "关联需求id", "requirementid", "reqid"))), None)
+            sc = next((i for i, h in enumerate(norm) if h.startswith(("规格id", "specificationid", "specid"))), None)
+            if rc is not None and sc is not None: selected.append((heads, rows, rc, sc))
+        if not selected: self.add("error", "traceability", "矩阵格式", "未找到同时包含“需求 ID”和“规格 ID”的表格"); return
+        mapped_req, mapped_spec = set(), set()
+        for heads, rows, rc, sc in selected:
+            state_col = next((i for i, h in enumerate(heads) if re.sub(r"\s+", "", h).lower() in {"状态", "state", "status"}), None)
+            for n, row in enumerate(rows, 1):
+                mapped_req |= ids(row[rc], "REQ"); mapped_spec |= ids(row[sc], "SPEC")
+                if state_col is not None and row[state_col].strip().lower() not in STATES:
+                    self.add("error", "traceability", f"矩阵状态（数据行 {n}）", "不受支持的状态：" + row[state_col])
+        self.compare("需求", reqs, mapped_req); self.compare("规格", specs, mapped_spec)
 
-        if not md_files:
-            self._error('content', 'Markdown 文档', '未找到任何.md 文档')
-            return
+    def compare(self, name, defined, mapped):
+        if not defined: self.add("warning", "traceability", name + " ID 定义", "未从标题或 ID 定义列识别到 ID"); return
+        missing, unknown = sorted(defined - mapped), sorted(mapped - defined)
+        self.add("error" if missing else "info", "traceability", name + "双向覆盖", "缺少映射：" + ", ".join(missing) if missing else f"{len(defined)} 个已定义 ID 均有映射")
+        if unknown: self.add("error", "traceability", "未知" + name + " ID", "矩阵引用了未定义 ID：" + ", ".join(unknown))
 
-        missing_version_history = []
-        missing_revision_history = []
-        missing_approval = []
+    def version_control(self):
+        git = (self.root / ".git").exists()
+        self.add("info" if git else "warning", "version_control", ".git", "存在" if git else "未初始化 Git")
+        attrs = (self.root / ".gitattributes").exists()
+        self.add("info" if attrs else "warning", "version_control", ".gitattributes", "存在" if attrs else "建议固定文本文件 LF 策略")
+        if git:
+            for key in ("user.name", "user.email"):
+                p = subprocess.run(["git", "-C", str(self.root), "config", "--local", "--get", key], capture_output=True, text=True, encoding="utf-8", errors="replace")
+                self.add("info" if p.stdout.strip() else "warning", "version_control", key, p.stdout.strip() or "仓库本地配置缺失")
 
-        for md_file in md_files:
-            content = md_file.read_text(encoding='utf-8', errors='ignore')
-            rel_path = md_file.relative_to(self.base_path)
+    def formats(self):
+        base = self.root / "docs"
+        if not base.exists(): return
+        for path in base.rglob("*"):
+            if not path.is_file() or self.ignored(path): continue
+            rel = path.relative_to(self.root).as_posix()
+            if path.suffix.lower() not in ALLOWED: self.add("warning", "format", rel, "非常用文档格式：" + (path.suffix or "无扩展名"))
+            if path.suffix.lower() == ".md":
+                try: path.read_text("utf-8")
+                except UnicodeError as e: self.add("error", "format", rel + " 编码", "不是有效 UTF-8：" + str(e))
 
-            # 检查文档标题
-            has_title = content.strip().startswith('#')
-            if has_title:
-                self._pass('content', f'{rel_path} 标题', '有文档标题')
-            else:
-                self._error('content', f'{rel_path} 标题', '缺少文档标题')
+    def payload(self):
+        errors = sum(r.severity == "error" for r in self.results)
+        return safe({"passed": errors == 0, "project": self.root.name, "stage": self.stage, "check_time": datetime.now().isoformat(timespec="seconds"),
+                     "summary": {"errors": errors, "warnings": sum(r.severity == "warning" for r in self.results), "checks": len(self.results)},
+                     "results": [asdict(r) for r in self.results]})
 
-            # 检查版本历史
-            has_version = ('版本历史' in content or 
-                          'Version History' in content.lower() or
-                          re.search(r'\|\s*版本\s*\|', content))
-            if has_version:
-                self._pass('content', f'{rel_path} 版本历史', '包含版本历史')
-            else:
-                missing_version_history.append(rel_path)
-
-            # 检查修订记录
-            has_revision = ('修订' in content or 
-                           'Revision' in content or
-                           '变更' in content or
-                           re.search(r'\|\s*变更\s*\|', content))
-            if has_revision:
-                self._pass('content', f'{rel_path} 修订记录', '包含修订记录')
-            else:
-                missing_revision_history.append(rel_path)
-
-            # 检查审批签名（关键文档）
-            critical_docs = ['project_charter.md', 'product_requirements.md', 'module_specification.md',
-                           'architecture.md', 'verification_plan.md']
-            if md_file.name in critical_docs:
-                has_approval = ('审批' in content or 
-                               'Approval' in content.lower() or
-                               '签名' in content or
-                               re.search(r'\|\s*签名\s*\|', content))
-                if has_approval:
-                    self._pass('content', f'{rel_path} 审批签名', '包含审批栏')
-                else:
-                    missing_approval.append(rel_path)
-
-        # 汇总报告
-        if missing_version_history:
-            for f in missing_version_history:
-                self._warning('content', f'{f} 版本历史', '缺少版本历史表')
-        
-        if missing_revision_history:
-            for f in missing_revision_history:
-                self._info('content', f'{f} 修订记录', '建议添加修订记录')
-        
-        if missing_approval:
-            for f in missing_approval:
-                self._error('content', f'{f} 审批签名', '缺少审批签名栏')
-
-    def _check_version_control(self):
-        """检查版本控制"""
-        # 检查 Git 目录
-        git_dir = self.base_path / '.git'
-        if git_dir.exists() and git_dir.is_dir():
-            self._pass('version_control', '.git 目录', '存在')
-        else:
-            self._error('version_control', '.git 目录', '不存在，未使用 Git 版本控制')
-
-        # 检查 .gitignore
-        gitignore = self.base_path / '.gitignore'
-        if gitignore.exists():
-            content = gitignore.read_text(encoding='utf-8', errors='ignore')
-            
-            # 检查是否忽略常见临时文件
-            has_doc_ignore = 'docs/' in content or '!docs/' in content
-            if has_doc_ignore:
-                self._pass('version_control', '.gitignore', '配置正确')
-            else:
-                self._warning('version_control', '.gitignore', '建议明确文档目录策略')
-        else:
-            self._error('version_control', '.gitignore', '不存在')
-
-    def _check_document_format(self):
-        """检查文档格式"""
-        docs_dir = self.base_path / 'docs'
-        if not docs_dir.exists():
-            return
-
-        # 查找所有文件
-        all_files = list(docs_dir.rglob('*'))
-        
-        # 检查非 Markdown 文件
-        non_md_docs = [f for f in all_files 
-                       if f.is_file() and 
-                       f.suffix.lower() not in ['.md', '.gitkeep', '.png', '.jpg', '.svg']]
-        
-        if non_md_docs:
-            for f in non_md_docs:
-                rel_path = f.relative_to(self.base_path)
-                self._warning('format', f'{rel_path}', 
-                             f'非标准格式 ({f.suffix})，建议使用 Markdown')
-        else:
-            self._pass('format', '文档格式', '所有文档都是 Markdown 格式')
-
-        # 检查 Markdown 文件编码 - 使用更宽松的检查
-        md_files = list(docs_dir.rglob('*.md'))
-        encoding_issues = []
-
-        for md_file in md_files:
-            try:
-                # 尝试多种编码读取
-                content = None
-                for encoding in ['utf-8', 'gbk', 'gb2312', 'utf-8-sig']:
-                    try:
-                        content = md_file.read_text(encoding=encoding)
-                        break
-                    except UnicodeDecodeError:
-                        continue
-                
-                if content is None:
-                    encoding_issues.append(md_file)
-                    continue
-                    
-                # 检查是否有常见乱码特征（空字符）
-                if '\x00' in content:
-                    encoding_issues.append(md_file)
-            except Exception:
-                encoding_issues.append(md_file)
-
-        if encoding_issues:
-            for f in encoding_issues:
-                rel_path = f.relative_to(self.base_path)
-                self._error('format', f'{rel_path} 编码', '非 UTF-8 编码或包含乱码')
-        else:
-            self._pass('format', 'UTF-8 编码', '所有文档编码正确')
-
-    def _pass(self, category: str, item: str, message: str):
-        self.results.append(ValidationResult(True, category, item, message, 'info'))
-
-    def _error(self, category: str, item: str, message: str):
-        self.results.append(ValidationResult(False, category, item, message, 'error'))
-
-    def _warning(self, category: str, item: str, message: str):
-        self.results.append(ValidationResult(True, category, item, message, 'warning'))
-
-    def _info(self, category: str, item: str, message: str):
-        self.results.append(ValidationResult(True, category, item, message, 'info'))
-
-    def report(self) -> str:
-        """生成报告"""
-        lines = []
-        lines.append("=" * 60)
-        lines.append("        文档库完整性检查报告")
-        lines.append("=" * 60)
-        lines.append(f"项目：{self.project_name}")
-        lines.append(f"检查时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        lines.append("=" * 60)
-
-        # 按类别分组
-        categories = {}
-        for r in self.results:
-            if r.category not in categories:
-                categories[r.category] = []
-            categories[r.category].append(r)
-
-        # 输出各类别
-        category_order = ['structure', 'documents', 'content', 'version_control', 'format']
-        for cat in category_order:
-            if cat not in categories:
-                continue
-            results = categories[cat]
-            lines.append(f"\n[{cat.upper()}]")
-            for r in results:
-                if r.severity == 'error':
-                    status = "[ERROR]"
-                elif r.severity == 'warning':
-                    status = "[WARN]"
-                else:
-                    status = "[OK]"
-                lines.append(f"  {status} {r.item}: {r.message}")
-
-        # 统计
-        errors = sum(1 for r in self.results if r.severity == 'error')
-        warnings = sum(1 for r in self.results if r.severity == 'warning')
-        passed = sum(1 for r in self.results if r.passed)
-
-        lines.append("\n" + "=" * 60)
-        lines.append(f"总计：{passed} 通过，{warnings} 警告，{errors} 错误")
-        
-        if errors == 0:
-            lines.append("结果：[PASS] 通过")
-        else:
-            lines.append("结果：[FAIL] 未通过（有 ERROR 级别问题）")
-            lines.append("\n需要修复的问题:")
-            for r in self.results:
-                if r.severity == 'error':
-                    lines.append(f"  {r.category}: {r.item} - {r.message}")
-        
-        lines.append("=" * 60)
-
+    def report(self):
+        data = self.payload(); lines = ["=" * 64, "MoonGlass 文档库与追溯关系检查报告", f"项目：{data['project']}", f"阶段：{data['stage']}", "=" * 64]
+        labels = {"error": "错误", "warning": "警告", "info": "通过"}
+        lines += [f"[{labels[r.severity]}] {r.category} / {r.item}：{r.message}" for r in self.results]
+        lines += ["=" * 64, f"结果：{'通过' if data['passed'] else '未通过'}；{data['summary']['errors']} 错误，{data['summary']['warnings']} 警告"]
         return "\n".join(lines)
 
-    def to_json(self) -> str:
-        """输出 JSON 格式结果"""
-        errors = sum(1 for r in self.results if r.severity == 'error')
-
-        return json.dumps({
-            'passed': errors == 0,
-            'project': self.project_name,
-            'check_time': datetime.now().isoformat(),
-            'summary': {
-                'passed': sum(1 for r in self.results if r.passed),
-                'warnings': sum(1 for r in self.results if r.severity == 'warning'),
-                'errors': errors
-            },
-            'results': [
-                {
-                    'passed': r.passed,
-                    'category': r.category,
-                    'item': r.item,
-                    'message': r.message,
-                    'severity': r.severity
-                }
-                for r in self.results
-            ]
-        }, indent=2, ensure_ascii=False)
-
-
 def main():
-    parser = argparse.ArgumentParser(
-        description='文档库完整性检查器',
-        formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog="""
-示例:
-    python check_doc_repo.py --path ./my_chip_project
-    python check_doc_repo.py --path ./my_chip_project --json
-    python check_doc_repo.py --path ./my_chip_project --verbose
-        """
-    )
-    parser.add_argument('--path', '-p', required=True,
-                        help='项目根路径')
-    parser.add_argument('--json', '-j', action='store_true',
-                        help='输出 JSON 格式')
-    parser.add_argument('--verbose', '-v', action='store_true',
-                        help='输出详细报告')
-    parser.add_argument('--quiet', '-q', action='store_true',
-                        help='静默模式，仅返回退出码')
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"): stream.reconfigure(encoding="utf-8", errors="replace")
+    parser = argparse.ArgumentParser(description="MoonGlass ASIC 文档库与追溯关系校验器")
+    parser.add_argument("--path", "-p", required=True); parser.add_argument("--stage", choices=STAGES + tuple(ALIASES), default="req_spec")
+    parser.add_argument("--json", "-j", action="store_true"); parser.add_argument("--output", "-o"); parser.add_argument("--quiet", "-q", action="store_true")
+    parser.add_argument("--no-traceability", action="store_true")
+    args = parser.parse_args(); root = Path(args.path)
+    if not root.exists(): parser.error(f"路径不存在：{root}")
+    validator = Validator(root, args.stage, not args.no_traceability); passed = validator.validate()
+    output = json.dumps(validator.payload(), ensure_ascii=False, indent=2) if args.json else validator.report()
+    if args.output:
+        target = Path(args.output); target.parent.mkdir(parents=True, exist_ok=True); target.write_text(output + "\n", "utf-8", errors="replace")
+    if not args.quiet: print(output)
+    return 0 if passed else 1
 
-    args = parser.parse_args()
-
-    if not Path(args.path).exists():
-        print(f"错误：路径不存在：{args.path}")
-        exit(1)
-
-    validator = DocumentRepositoryValidator(args.path)
-    passed = validator.validate()
-
-    if args.quiet:
-        exit(0 if passed else 1)
-
-    if args.json:
-        print(validator.to_json())
-    else:
-        print(validator.report())
-
-    exit(0 if passed else 1)
-
-
-if __name__ == '__main__':
-    main()
+if __name__ == "__main__": raise SystemExit(main())

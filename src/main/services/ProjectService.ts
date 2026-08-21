@@ -334,6 +334,15 @@ export class ProjectService implements MoonGlassService {
         'utf-8'
       )
     }
+
+    const gitattributes = join(root, '.gitattributes')
+    if (!existsSync(gitattributes)) {
+      writeFileSync(
+        gitattributes,
+        '* text=auto\n*.md text eol=lf\n*.v text eol=lf\n*.sv text eol=lf\n*.vh text eol=lf\n*.svh text eol=lf\n*.py text eol=lf\n*.tcl text eol=lf\n*.sdc text eol=lf\n*.json text eol=lf\n*.yml text eol=lf\n*.yaml text eol=lf\n*.png binary\n*.jpg binary\n*.jpeg binary\n*.pdf binary\n',
+        'utf-8'
+      )
+    }
   }
 
   analyzeDirectory(path: string): ProjectImportAssessment {
