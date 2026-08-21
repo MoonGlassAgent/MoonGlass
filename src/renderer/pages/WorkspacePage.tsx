@@ -28,6 +28,7 @@ import {
   Plus,
   RefreshCw,
   RotateCw,
+  Search,
   Square,
   TerminalSquare
 } from 'lucide-react'
@@ -230,6 +231,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [changeSourcePhase, setChangeSourcePhase] = useState<Phase>('RTL')
   const [changeDescription, setChangeDescription] = useState('')
   const [wordWrap, setWordWrap] = useState(() => localStorage.getItem('moonglass:viewer-word-wrap') === 'true')
+  const [findRequestKey, setFindRequestKey] = useState(0)
   const [viewerFontSize, setViewerFontSize] = useState(() => Number(localStorage.getItem('moonglass:viewer-font-size')) || 13)
   const [markdownPreview, setMarkdownPreview] = useState(true)
   const agentStreaming = useChatStore((s) => s.streaming)
@@ -309,6 +311,21 @@ export function WorkspacePage(): React.JSX.Element {
   useEffect(() => {
     localStorage.setItem('moonglass:viewer-word-wrap', String(wordWrap))
   }, [wordWrap])
+  const requestFileFind = useCallback((): void => {
+    if (mainTab === 'chat') return
+    setMarkdownPreview(false)
+    setFindRequestKey((key) => key + 1)
+  }, [mainTab])
+  useEffect(() => {
+    const listener = (event: KeyboardEvent): void => {
+      if (mainTab === 'chat' || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return
+      event.preventDefault()
+      event.stopPropagation()
+      requestFileFind()
+    }
+    window.addEventListener('keydown', listener, true)
+    return () => window.removeEventListener('keydown', listener, true)
+  }, [mainTab, requestFileFind])
   useEffect(() => {
     localStorage.setItem('moonglass:viewer-font-size', String(viewerFontSize))
   }, [viewerFontSize])
@@ -970,6 +987,12 @@ export function WorkspacePage(): React.JSX.Element {
                       </span>
                     </div>
                     <div className="flex shrink-0 gap-1">
+                      <button
+                        onClick={requestFileFind}
+                        className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
+                        title="查找（Ctrl+F）"
+                        aria-label="查找文件内容"
+                      ><Search size={12} /></button>
                       {/\.md$/i.test(activeFile.path) && (
                         <button
                           onClick={() => setMarkdownPreview((value) => !value)}
@@ -1025,6 +1048,7 @@ export function WorkspacePage(): React.JSX.Element {
                         line={activeFile.line}
                         column={activeFile.column}
                         revealKey={activeFile.revealKey}
+                        findRequestKey={findRequestKey}
                         wordWrap={wordWrap}
                         fontSize={viewerFontSize}
                       />

@@ -65,11 +65,12 @@ interface CodeViewerProps {
   line?: number
   column?: number
   revealKey?: number
+  findRequestKey?: number
   wordWrap?: boolean
   fontSize?: number
 }
 
-export function CodeViewer({ path, content, line, column, revealKey, wordWrap = false, fontSize = 13 }: CodeViewerProps): React.JSX.Element {
+export function CodeViewer({ path, content, line, column, revealKey, findRequestKey = 0, wordWrap = false, fontSize = 13 }: CodeViewerProps): React.JSX.Element {
   const [theme, setTheme] = useState<'vs' | 'vs-dark'>(() =>
     document.documentElement.dataset.colorMode === 'dark' ? 'vs-dark' : 'vs'
   )
@@ -93,6 +94,12 @@ export function CodeViewer({ path, content, line, column, revealKey, wordWrap = 
     editorRef.current.focus()
   }, [line, column, path, revealKey])
 
+  useEffect(() => {
+    if (!findRequestKey || !editorRef.current) return
+    editorRef.current.focus()
+    void editorRef.current.getAction('actions.find')?.run()
+  }, [findRequestKey])
+
   return (
     <Editor
       path={path}
@@ -106,6 +113,7 @@ export function CodeViewer({ path, content, line, column, revealKey, wordWrap = 
           editor.revealLineInCenter(line)
           editor.setPosition({ lineNumber: line, column: column ?? 1 })
         }
+        if (findRequestKey) void editor.getAction('actions.find')?.run()
       }}
       loading={<div className="flex h-full items-center justify-center text-xs text-zinc-400">正在加载代码查看器...</div>}
       options={{
