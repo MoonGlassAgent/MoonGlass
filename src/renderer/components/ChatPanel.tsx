@@ -10,6 +10,7 @@ import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
 import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
+import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
 import { useChatStore } from '../store/chatStore'
 
 interface SessionInfo {
@@ -588,12 +589,11 @@ function MessageBubble({
 }
 
 function FileReferenceText({ text }: { text: string }): React.JSX.Element {
-  const pattern = /((?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?)/g
-  const exactReference = /^(?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?$/
+  const pattern = new RegExp(`(${FILE_REFERENCE_SOURCE})`, 'g')
   const parts = text.split(pattern)
   return (
     <>
-      {parts.map((part, index) => exactReference.test(part) ? (
+      {parts.map((part, index) => isFileReference(part) ? (
         <button
           key={`${part}-${index}`}
           type="button"

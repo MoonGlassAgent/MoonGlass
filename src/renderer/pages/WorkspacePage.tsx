@@ -40,6 +40,7 @@ import {
   type Phase
 } from '@shared/types'
 import { serializeDecisionResponses } from '@shared/agent-interaction'
+import { extractFileReference } from '@shared/file-reference'
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
 import { ChatPanel, SessionTabs } from '../components/ChatPanel'
 import { FileTree } from '../components/FileTree'
@@ -160,10 +161,6 @@ function parseFileLocation(reference: string): { path: string; line?: number; co
     line: match[2] ? Number(match[2]) : undefined,
     column: match[3] ? Number(match[3]) : undefined
   }
-}
-
-function extractFileReference(text: string): string | null {
-  return text.match(/(?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?/)?.[0] ?? null
 }
 
 function flattenFiles(nodes: Array<{ name: string; path: string; type: 'file' | 'dir'; children?: unknown[] }>): string[] {
