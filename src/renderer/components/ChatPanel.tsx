@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
-import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
+import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
 import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
 import { useChatStore } from '../store/chatStore'
@@ -26,6 +26,25 @@ interface SessionInfo {
 interface ChatPanelProps {
   projectId: string
   phase: Phase
+}
+
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}k`
+  return String(value)
+}
+
+function statsTitle(stats: AgentSessionStats): string {
+  const lines = [
+    `输入 Token：${stats.tokens.input.toLocaleString()}`,
+    `输出 Token：${stats.tokens.output.toLocaleString()}`
+  ]
+  if (stats.tokens.cacheRead) lines.push(`缓存读取：${stats.tokens.cacheRead.toLocaleString()}`)
+  if (stats.tokens.cacheWrite) lines.push(`缓存写入：${stats.tokens.cacheWrite.toLocaleString()}`)
+  lines.push(`会话累计：${stats.tokens.total.toLocaleString()}`)
+  if (typeof stats.cost === 'number' && stats.cost > 0) lines.push(`估算费用：$${stats.cost.toFixed(4)}`)
+  lines.push(`消息：${stats.userMessages} 用户 / ${stats.assistantMessages} Agent / ${stats.toolCalls} 工具调用`)
+  return lines.join('\n')
 }
 
 export function SessionTabs({ projectId, onActivate }: { projectId: string; onActivate?: () => void }): React.JSX.Element {
@@ -214,6 +233,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [ensuring, setEnsuring] = useState(false)
   const [decisionDrafts, setDecisionDrafts] = useState<Record<string, { selectedIds: string[]; customText: string }>>({})
   const [historyIndex, setHistoryIndex] = useState<number | null>(null)
+  const [sessionStats, setSessionStats] = useState<AgentSessionStats | null>(null)
   const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -257,6 +277,23 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     setHistoryIndex(null)
     historyDraftRef.current = input
   }, [sessionInfo?.sessionName])
+
+  const refreshSessionStats = useCallback(async (): Promise<void> => {
+    if (!sessionInfo?.providersReady) {
+      setSessionStats(null)
+      return
+    }
+    const requestedSession = sessionInfo.sessionName
+    const stats = await window.moonglass.agent.getSessionStats(projectId).catch(() => null)
+    if (useChatStore.getState().sessionInfo?.sessionName === requestedSession) setSessionStats(stats)
+  }, [projectId, sessionInfo?.providersReady, sessionInfo?.sessionName])
+
+  useEffect(() => {
+    setSessionStats(null)
+    void refreshSessionStats()
+    const timer = streaming ? window.setInterval(() => void refreshSessionStats(), 5_000) : undefined
+    return () => { if (timer) window.clearInterval(timer) }
+  }, [refreshSessionStats, streaming])
 
 
   const handleSend = (): void => {
@@ -355,6 +392,23 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         </div>
 
         <div className="flex items-center gap-2">
+          {sessionStats && (
+            <span
+              className={`whitespace-nowrap rounded border px-2 py-1 text-[11px] ${
+                (sessionStats.contextUsage?.percent ?? 0) >= 90
+                  ? 'border-red-300 bg-red-50 text-red-700'
+                  : (sessionStats.contextUsage?.percent ?? 0) >= 70
+                    ? 'border-amber-300 bg-amber-50 text-amber-700'
+                    : 'border-zinc-200 bg-zinc-50 text-zinc-500'
+              }`}
+              title={statsTitle(sessionStats)}
+            >
+              {sessionStats.contextUsage?.tokens != null
+                ? `上下文 ${formatTokens(sessionStats.contextUsage.tokens)}/${formatTokens(sessionStats.contextUsage.contextWindow)} · ${Math.round(sessionStats.contextUsage.percent ?? 0)}%`
+                : `会话 ${formatTokens(sessionStats.tokens.total)} Token`}
+              {typeof sessionStats.cost === 'number' && sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(3)}` : ''}
+            </span>
+          )}
           <span className="text-[11px] text-zinc-400">当前会话模型</span>
           <select
           value={sessionInfo?.selectedModel ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId]) : ''}

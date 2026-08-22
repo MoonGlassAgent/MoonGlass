@@ -76,6 +76,7 @@ const api: MoonGlassApi = {
     setModel: (projectId: string, providerId: string, modelId: string) =>
       ipcRenderer.invoke(IPC.Agent.SetModel, projectId, providerId, modelId),
     getMessages: (projectId: string) => ipcRenderer.invoke(IPC.Agent.GetMessages, projectId),
+    getSessionStats: (projectId: string) => ipcRenderer.invoke(IPC.Agent.GetSessionStats, projectId),
     resetSession: (projectId: string, sessionName?: string) => ipcRenderer.invoke(IPC.Agent.ResetSession, projectId, sessionName),
     listSessions: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ListSessions, projectId),
     switchSession: (projectId: string, sessionName: string) => ipcRenderer.invoke(IPC.Agent.SwitchSession, projectId, sessionName),

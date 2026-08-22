@@ -20,7 +20,7 @@ import { randomUUID } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
-import type { AgentSessionInfo, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase } from '@shared/types'
+import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase } from '@shared/types'
 import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import type { ProjectService } from './ProjectService.ts'
@@ -1051,6 +1051,17 @@ argument-hint: "<模块名>"
       }
     }
     return data.messages.flatMap((message, index) => this.mapMessage(message, index, toolInputs))
+  }
+
+  async getSessionStats(projectId: string): Promise<AgentSessionStats | null> {
+    const session = this.sessions.get(projectId)
+    if (!session) return null
+    try {
+      return await session.client.command<AgentSessionStats>({ type: 'get_session_stats' }, 5_000)
+    } catch (error) {
+      console.warn('[agent-service] 获取会话用量失败', error)
+      return null
+    }
   }
 
   private readSessionMessages(sessionFile: string): PiMessage[] {

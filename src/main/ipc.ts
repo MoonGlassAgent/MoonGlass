@@ -238,6 +238,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   )
 
   ipcMain.handle(IPC.Agent.GetMessages, (_e, projectId: string) => agent.getMessages(projectId))
+  ipcMain.handle(IPC.Agent.GetSessionStats, (_e, projectId: string) => agent.getSessionStats(projectId))
 
   ipcMain.handle(IPC.Agent.ResetSession, (_e, projectId: string, sessionName?: string) =>
     agent.resetSession(projectId, sessionName)
