@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { Cpu, FolderOpen, Plus, ScanSearch } from 'lucide-react'
-import { PHASE_LABELS, PHASE_ORDER, type Phase, type ProjectImportAssessment } from '@shared/types'
+import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase, type ProjectImportAssessment } from '@shared/types'
 import { ProjectCard } from '../components/ProjectCard'
 import { useAppStore } from '../store/appStore'
 
@@ -23,6 +23,10 @@ export function ProjectsPage(): React.JSX.Element {
   const [migrationMessage, setMigrationMessage] = useState('')
   const [migrationError, setMigrationError] = useState('')
   const [migratingProjectId, setMigratingProjectId] = useState<string | null>(null)
+  const [editingProject, setEditingProject] = useState<ChipProject | null>(null)
+  const [editName, setEditName] = useState('')
+  const [editDescription, setEditDescription] = useState('')
+  const [editError, setEditError] = useState('')
 
   useEffect(() => {
     void refreshProjects()
@@ -86,6 +90,27 @@ export function ProjectsPage(): React.JSX.Element {
   const handleDelete = async (id: string): Promise<void> => {
     await window.moonglass.project.delete(id)
     await refreshProjects()
+  }
+
+  const beginEdit = (project: ChipProject): void => {
+    setEditingProject(project)
+    setEditName(project.name)
+    setEditDescription(project.description ?? '')
+    setEditError('')
+  }
+
+  const saveEdit = async (): Promise<void> => {
+    if (!editingProject || !editName.trim()) return
+    try {
+      await window.moonglass.project.update(editingProject.id, {
+        name: editName.trim(),
+        description: editDescription.trim() || undefined
+      })
+      setEditingProject(null)
+      await refreshProjects()
+    } catch (error) {
+      setEditError(error instanceof Error ? error.message : String(error))
+    }
   }
 
   const handleMigrate = async (project: (typeof projects)[number]): Promise<void> => {
@@ -234,6 +259,24 @@ export function ProjectsPage(): React.JSX.Element {
         </div>
       )}
 
+      {editingProject && (
+        <div className="fixed inset-0 z-[200] flex items-center justify-center bg-black/40 p-4" onMouseDown={(event) => { if (event.target === event.currentTarget) setEditingProject(null) }}>
+          <section role="dialog" aria-modal="true" aria-labelledby="edit-project-title" className="w-full max-w-lg rounded-md border border-zinc-300 bg-white p-5 shadow-xl">
+            <h2 id="edit-project-title" className="text-base font-semibold text-zinc-900">编辑项目信息</h2>
+            <label className="mt-4 block text-xs font-medium text-zinc-600">项目名称</label>
+            <input autoFocus value={editName} onChange={(event) => setEditName(event.target.value)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm outline-none focus:border-blue-500" />
+            <label className="mt-3 block text-xs font-medium text-zinc-600">项目描述</label>
+            <textarea value={editDescription} onChange={(event) => setEditDescription(event.target.value)} rows={5} placeholder="说明项目目标、主要接口、应用场景和关键约束" className="mt-1 w-full resize-y rounded border border-zinc-300 bg-white px-3 py-2 text-sm leading-6 outline-none focus:border-blue-500" />
+            <p className="mt-2 text-xs text-zinc-500">项目目录和开发阶段不会因此改变。</p>
+            {editError && <p className="mt-2 text-xs text-red-600">{editError}</p>}
+            <div className="mt-5 flex justify-end gap-2">
+              <button onClick={() => setEditingProject(null)} className="rounded border border-zinc-300 px-3 py-1.5 text-sm text-zinc-600 hover:bg-zinc-100">取消</button>
+              <button disabled={!editName.trim()} onClick={() => void saveEdit()} className="rounded bg-blue-600 px-3 py-1.5 text-sm text-white hover:bg-blue-500 disabled:opacity-40">保存</button>
+            </div>
+          </section>
+        </div>
+      )}
+
       {projects.length === 0 ? (
         <div className="mt-20 text-center text-zinc-400">
           <Cpu className="mx-auto mb-3" size={38} strokeWidth={1.3} />
@@ -247,6 +290,7 @@ export function ProjectsPage(): React.JSX.Element {
               project={p}
               onDelete={handleDelete}
               onMigrate={migratingProjectId ? undefined : handleMigrate}
+              onEdit={beginEdit}
             />
           ))}
         </div>

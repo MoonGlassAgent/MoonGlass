@@ -5,16 +5,17 @@
  */
 
 import { Link } from '@tanstack/react-router'
-import { Folder, FolderInput, Trash2 } from 'lucide-react'
+import { Folder, FolderInput, Pencil, Trash2 } from 'lucide-react'
 import { PHASE_LABELS, PHASE_ORDER, type ChipProject } from '@shared/types'
 
 interface ProjectCardProps {
   project: ChipProject
   onDelete?: (id: string) => void
   onMigrate?: (project: ChipProject) => void
+  onEdit?: (project: ChipProject) => void
 }
 
-export function ProjectCard({ project, onDelete, onMigrate }: ProjectCardProps): React.JSX.Element {
+export function ProjectCard({ project, onDelete, onMigrate, onEdit }: ProjectCardProps): React.JSX.Element {
   const resolvedCount = PHASE_ORDER.filter((p) =>
     ['completed', 'skipped'].includes(project.phases[p].status)
   ).length
@@ -52,6 +53,15 @@ export function ProjectCard({ project, onDelete, onMigrate }: ProjectCardProps):
           <span>更新于 {new Date(project.updatedAt).toLocaleString()}</span>
         </div>
       </Link>
+      {onEdit && (
+        <button
+          onClick={(event) => { event.preventDefault(); onEdit(project) }}
+          className="absolute right-[4.5rem] top-2 hidden size-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-blue-600 group-hover:flex"
+          title="编辑项目信息"
+        >
+          <Pencil size={14} />
+        </button>
+      )}
       {onMigrate && (
         <button
           onClick={(event) => {
