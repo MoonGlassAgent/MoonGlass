@@ -175,3 +175,8 @@
 - 后续阶段文档不再提前报错，`microarchitecture.md` 与 `clock_reset.md` 保持按复杂度选用，模板和 `.gitkeep` 不再误报。
 - 新项目自动生成 `.gitattributes`，统一 HDL、Markdown、Python、Tcl、SDC 和 JSON/YAML 为 LF，二进制资料不参与换行转换。
 - 规范明确 ID 定义与引用边界、验证 ID 分段和 Windows 中文文档必须使用 Python 校验器。
+# 2026-08-23 - 修正 Pi 模型上下文窗口
+
+- 移除所有模型统一按 128K 计算的错误逻辑，按模型匹配上下文窗口与最大输出。
+- 会话统计区分官方核实、服务商估计和未知模型；未知模型不再显示虚假占用率。
+- Pi 注册与 MoonGlass 状态栏使用同一套模型窗口规则，避免显示和上下文压缩行为不一致。

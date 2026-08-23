@@ -42,6 +42,9 @@ function statsTitle(stats: AgentSessionStats): string {
   if (stats.tokens.cacheRead) lines.push(`缓存读取：${stats.tokens.cacheRead.toLocaleString()}`)
   if (stats.tokens.cacheWrite) lines.push(`缓存写入：${stats.tokens.cacheWrite.toLocaleString()}`)
   lines.push(`会话累计：${stats.tokens.total.toLocaleString()}`)
+  if (stats.contextWindowStatus === 'verified') lines.push(`上下文上限：已核实（${stats.contextWindowSource ?? '官方资料'}）`)
+  if (stats.contextWindowStatus === 'estimated') lines.push(`上下文上限：服务商估计（${stats.contextWindowSource ?? '待复核'}）`)
+  if (stats.contextWindowStatus === 'unknown') lines.push('上下文上限：未核实，不计算占用率')
   if (typeof stats.cost === 'number' && stats.cost > 0) lines.push(`估算费用：$${stats.cost.toFixed(4)}`)
   lines.push(`消息：${stats.userMessages} 用户 / ${stats.assistantMessages} Agent / ${stats.toolCalls} 工具调用`)
   return lines.join('\n')
@@ -405,7 +408,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
             >
               {sessionStats.contextUsage?.tokens != null
                 ? `上下文 ${formatTokens(sessionStats.contextUsage.tokens)}/${formatTokens(sessionStats.contextUsage.contextWindow)} · ${Math.round(sessionStats.contextUsage.percent ?? 0)}%`
-                : `会话 ${formatTokens(sessionStats.tokens.total)} Token`}
+                : `会话 ${formatTokens(sessionStats.tokens.total)} Token · 上下文上限待核实`}
               {typeof sessionStats.cost === 'number' && sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(3)}` : ''}
             </span>
           )}

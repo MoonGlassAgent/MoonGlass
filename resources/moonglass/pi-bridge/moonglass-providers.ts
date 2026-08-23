@@ -6,6 +6,7 @@
  */
 
 import { readFileSync, rmSync } from 'node:fs'
+import { FALLBACK_MODEL_CONTEXT, resolveModelContext } from './model-context.ts'
 
 interface MoonGlassProvider {
   id: string
@@ -45,14 +46,15 @@ export default function (pi: {
       api: p.protocol === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
       models: p.models.map((m) => {
         const isDeepSeekReasoner = p.id === 'deepseek' && m === 'deepseek-reasoner'
+        const metadata = resolveModelContext(m) ?? FALLBACK_MODEL_CONTEXT
         return {
           id: m,
           name: m,
           reasoning: isDeepSeekReasoner,
           input: ['text'],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
-          contextWindow: 128000,
-          maxTokens: 8192,
+          contextWindow: metadata.contextWindow,
+          maxTokens: metadata.maxTokens,
           ...(isDeepSeekReasoner
             ? {
                 compat: {

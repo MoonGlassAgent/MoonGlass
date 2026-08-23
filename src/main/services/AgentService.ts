@@ -21,6 +21,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync,
 import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase } from '@shared/types'
+import { resolveModelContext } from '@shared/model-context'
 import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import type { ProjectService } from './ProjectService.ts'
@@ -226,6 +227,7 @@ export class AgentService implements MoonGlassService {
     }
 
     copyExt('moonglass-providers.ts')
+    copyExt('model-context.ts')
     copyExt('moonglass-tools.ts') // Phase 4：芯片专用工具集
 
     // Phase 4：将 eda-bridge 共享实现复制到 pi-bridge 目录，供 moonglass-tools.ts 相对导入
@@ -1057,7 +1059,22 @@ argument-hint: "<模块名>"
     const session = this.sessions.get(projectId)
     if (!session) return null
     try {
-      return await session.client.command<AgentSessionStats>({ type: 'get_session_stats' }, 5_000)
+      const stats = await session.client.command<AgentSessionStats>({ type: 'get_session_stats' }, 5_000)
+      const metadata = session.selectedModel ? resolveModelContext(session.selectedModel.modelId) : null
+      if (!metadata) {
+        delete stats.contextUsage
+        stats.contextWindowStatus = 'unknown'
+        return stats
+      }
+      stats.contextWindowStatus = metadata.verified ? 'verified' : 'estimated'
+      stats.contextWindowSource = metadata.source
+      if (stats.contextUsage) {
+        stats.contextUsage.contextWindow = metadata.contextWindow
+        stats.contextUsage.percent = stats.contextUsage.tokens == null
+          ? null
+          : Math.min(100, (stats.contextUsage.tokens / metadata.contextWindow) * 100)
+      }
+      return stats
     } catch (error) {
       console.warn('[agent-service] 获取会话用量失败', error)
       return null

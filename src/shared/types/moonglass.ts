@@ -492,6 +492,8 @@ export interface AgentSessionStats {
     total: number
   }
   cost?: number
+  contextWindowStatus?: 'verified' | 'estimated' | 'unknown'
+  contextWindowSource?: string
   contextUsage?: {
     tokens: number | null
     contextWindow: number

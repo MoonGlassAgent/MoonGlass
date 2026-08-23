@@ -8,8 +8,8 @@ import { tmpdir } from 'node:os'
 const bin = join(process.cwd(), 'node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js')
 const bridgeDir = join(tmpdir(), 'moonglass-tools-smoke')
 mkdirSync(bridgeDir, { recursive: true })
-// 模拟 AgentService：把两个扩展复制到独立目录（与 userData 场景一致——目录下无 node_modules）
-for (const f of ['moonglass-providers.ts', 'moonglass-tools.ts']) {
+// 模拟 AgentService：把扩展及模型元数据复制到独立目录（与 userData 场景一致——目录下无 node_modules）
+for (const f of ['moonglass-providers.ts', 'model-context.ts', 'moonglass-tools.ts']) {
   writeFileSync(
     join(bridgeDir, f),
     (await import('node:fs')).readFileSync(join(process.cwd(), 'resources', 'moonglass', 'pi-bridge', f), 'utf-8')
