@@ -340,6 +340,12 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     .filter((request) => !decisionResponses.has(request.id))
   const completedDraftCount = pendingDecisions.filter((request) => Boolean(decisionDrafts[request.id])).length
   const allDecisionsReady = pendingDecisions.length > 0 && completedDraftCount === pendingDecisions.length
+  const selectedModelValue = sessionInfo?.selectedModel
+    ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId])
+    : ''
+  const selectedModelAvailable = sessionInfo?.selectedModel
+    ? providers.some((provider) => provider.id === sessionInfo.selectedModel?.providerId && provider.models.includes(sessionInfo.selectedModel.modelId))
+    : false
 
   const submitAllDecisions = (): void => {
     if (!allDecisionsReady || streaming) return
@@ -414,7 +420,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           )}
           <span className="text-[11px] text-zinc-400">当前会话模型</span>
           <select
-          value={sessionInfo?.selectedModel ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId]) : ''}
+          value={selectedModelValue}
           onChange={(e) => {
             const parsed = JSON.parse(e.target.value) as [string, string]
             if (Array.isArray(parsed) && parsed.length === 2) {
@@ -426,6 +432,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           <option value="" disabled>
             {sessionInfo ? '选择模型…' : '加载中…'}
           </option>
+          {sessionInfo?.selectedModel && !selectedModelAvailable && (
+            <option value={selectedModelValue}>
+              {sessionInfo.modelLabel || `${sessionInfo.selectedModel.providerId} / ${sessionInfo.selectedModel.modelId}`}（已恢复）
+            </option>
+          )}
           {providers.flatMap((p) =>
             p.models.map((m) => (
               <option key={`${p.id} / ${m}`} value={JSON.stringify([p.id, m])}>

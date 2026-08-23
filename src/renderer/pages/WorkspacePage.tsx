@@ -313,9 +313,13 @@ export function WorkspacePage(): React.JSX.Element {
   }, [wordWrap])
   const requestFileFind = useCallback((): void => {
     if (mainTab === 'chat') return
-    setMarkdownPreview(false)
+    if (/\.md$/i.test(mainTab) && markdownPreview) {
+      setMarkdownPreview(false)
+      window.setTimeout(() => setFindRequestKey((key) => key + 1), 0)
+      return
+    }
     setFindRequestKey((key) => key + 1)
-  }, [mainTab])
+  }, [mainTab, markdownPreview])
   useEffect(() => {
     const listener = (event: KeyboardEvent): void => {
       if (mainTab === 'chat' || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return
