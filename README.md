@@ -11,13 +11,14 @@ MoonGlass 是面向 ASIC/SoC 设计工程师的 AI 工作台，以六阶段流�
 - [在线网页版说明书](https://moonglassagent.github.io/MoonGlass/)：适合直接打开和分享，支持标题、摘要和封面卡片。
 - [傻瓜式 HTML 使用说明书](./docs/QUICK-START-ZH-CN.html)：从解压启动、配置模型到完成六阶段开发，适合第一次使用 MoonGlass 的用户。
 - [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)：简明功能说明与工程注意事项。
-- [下载 MoonGlass v0.5.0 完整绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.5.0)
+- [下载 MoonGlass v0.6.0 完整绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.6.0)
 
 ## 能做什么
 
 - 芯片设计工程师可快速完成 RTL 开发、代码检查、验证执行与回归闭环。
 - 架构师可根据需求和规格快速形成设计 Demo，并进入综合评估面积与时序。
 - 验证工程师可基于规格、架构和需求-规格矩阵搭建验证环境、生成用例并整理质量证据。
+- 主会话可完成 Cocotb + Icarus 功能回归、Verilator RTL 覆盖率签核，并通过独立证据 Review 核验测试、JUnit、日志和覆盖率。
 - 主会话与平行会话可独立选择模型，用不同模型交叉 Review。
 - 前序阶段发生变更时，对已完成的后续阶段产生变更响应提醒。
 - 可选择后续若干阶段一键托管，自动处理推荐项、质量门禁和修复重试，结束后形成托管报告。
@@ -78,9 +79,9 @@ RTL Design Browser 用于解析 Top、展开设计层次并查看模块实例关
 
 ## 版本
 
-当前版本：`v0.5.0`
+当前版本：`v0.6.0`
 
-v0.5.0 新增一键托管、受控变更流程、导入项目阶段恢复和带行号/语法高亮的文本查看器，并修正深色主题关键区域。完整功能请使用 Release 中的 Windows 绿色版。
+v0.6.0 重点增强主会话端到端验证能力，加入功能覆盖率、RTL 覆盖率、双通道结果合并、独立证据 Review 和验证签核门禁；同时增强总体报告、项目信息编辑、模型恢复显示和文件查找。完整功能请使用 Release 中的 Windows 绿色版。
 
 第一次使用建议先看 [傻瓜式 HTML 使用说明书](./docs/QUICK-START-ZH-CN.html)，工程说明见 [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)。
 

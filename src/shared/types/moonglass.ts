@@ -476,3 +476,27 @@ export interface AgentSessionInfo {
   /** 是否存在已启用且配置了 API Key 的 Provider */
   providersReady: boolean
 }
+
+/** Pi 当前会话累计用量；不同 Provider 可能省略费用或上下文估算。 */
+export interface AgentSessionStats {
+  sessionId?: string
+  userMessages: number
+  assistantMessages: number
+  toolCalls: number
+  totalMessages: number
+  tokens: {
+    input: number
+    output: number
+    cacheRead: number
+    cacheWrite: number
+    total: number
+  }
+  cost?: number
+  contextWindowStatus?: 'verified' | 'estimated' | 'unknown'
+  contextWindowSource?: string
+  contextUsage?: {
+    tokens: number | null
+    contextWindow: number
+    percent: number | null
+  }
+}

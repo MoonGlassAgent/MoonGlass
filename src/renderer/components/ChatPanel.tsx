@@ -8,8 +8,9 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
-import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
+import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
+import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
 import { useChatStore } from '../store/chatStore'
 
 interface SessionInfo {
@@ -25,6 +26,28 @@ interface SessionInfo {
 interface ChatPanelProps {
   projectId: string
   phase: Phase
+}
+
+function formatTokens(value: number): string {
+  if (value >= 1_000_000) return `${(value / 1_000_000).toFixed(value >= 10_000_000 ? 0 : 1)}M`
+  if (value >= 1_000) return `${(value / 1_000).toFixed(value >= 100_000 ? 0 : 1)}k`
+  return String(value)
+}
+
+function statsTitle(stats: AgentSessionStats): string {
+  const lines = [
+    `输入 Token：${stats.tokens.input.toLocaleString()}`,
+    `输出 Token：${stats.tokens.output.toLocaleString()}`
+  ]
+  if (stats.tokens.cacheRead) lines.push(`缓存读取：${stats.tokens.cacheRead.toLocaleString()}`)
+  if (stats.tokens.cacheWrite) lines.push(`缓存写入：${stats.tokens.cacheWrite.toLocaleString()}`)
+  lines.push(`会话累计：${stats.tokens.total.toLocaleString()}`)
+  if (stats.contextWindowStatus === 'verified') lines.push(`上下文上限：已核实（${stats.contextWindowSource ?? '官方资料'}）`)
+  if (stats.contextWindowStatus === 'estimated') lines.push(`上下文上限：服务商估计（${stats.contextWindowSource ?? '待复核'}）`)
+  if (stats.contextWindowStatus === 'unknown') lines.push('上下文上限：未核实，不计算占用率')
+  if (typeof stats.cost === 'number' && stats.cost > 0) lines.push(`估算费用：$${stats.cost.toFixed(4)}`)
+  lines.push(`消息：${stats.userMessages} 用户 / ${stats.assistantMessages} Agent / ${stats.toolCalls} 工具调用`)
+  return lines.join('\n')
 }
 
 export function SessionTabs({ projectId, onActivate }: { projectId: string; onActivate?: () => void }): React.JSX.Element {
@@ -212,7 +235,15 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [providerHint, setProviderHint] = useState('')
   const [ensuring, setEnsuring] = useState(false)
   const [decisionDrafts, setDecisionDrafts] = useState<Record<string, { selectedIds: string[]; customText: string }>>({})
+  const [historyIndex, setHistoryIndex] = useState<number | null>(null)
+  const [sessionStats, setSessionStats] = useState<AgentSessionStats | null>(null)
+  const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
+
+  const inputHistory = messages
+    .filter((message) => message.role === 'user')
+    .map((message) => message.text.trim())
+    .filter((text) => text && !text.startsWith(DECISION_RESPONSE_PREFIX) && !text.startsWith('【MoonGlass 一键托管】'))
 
   useEffect(() => {
     setEnsuring(true)
@@ -245,11 +276,57 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
   }, [messages])
 
+  useEffect(() => {
+    setHistoryIndex(null)
+    historyDraftRef.current = input
+  }, [sessionInfo?.sessionName])
+
+  const refreshSessionStats = useCallback(async (): Promise<void> => {
+    if (!sessionInfo?.providersReady) {
+      setSessionStats(null)
+      return
+    }
+    const requestedSession = sessionInfo.sessionName
+    const stats = await window.moonglass.agent.getSessionStats(projectId).catch(() => null)
+    if (useChatStore.getState().sessionInfo?.sessionName === requestedSession) setSessionStats(stats)
+  }, [projectId, sessionInfo?.providersReady, sessionInfo?.sessionName])
+
+  useEffect(() => {
+    setSessionStats(null)
+    void refreshSessionStats()
+    const timer = streaming ? window.setInterval(() => void refreshSessionStats(), 5_000) : undefined
+    return () => { if (timer) window.clearInterval(timer) }
+  }, [refreshSessionStats, streaming])
+
 
   const handleSend = (): void => {
     if (!input.trim() || streaming) return
     void send(input)
     setInput('')
+    setHistoryIndex(null)
+    historyDraftRef.current = ''
+  }
+
+  const recallInput = (direction: 'previous' | 'next'): void => {
+    if (inputHistory.length === 0) return
+    if (direction === 'previous') {
+      if (historyIndex === null) historyDraftRef.current = input
+      const nextIndex = historyIndex === null
+        ? inputHistory.length - 1
+        : Math.max(0, historyIndex - 1)
+      setHistoryIndex(nextIndex)
+      setInput(inputHistory[nextIndex])
+      return
+    }
+    if (historyIndex === null) return
+    if (historyIndex >= inputHistory.length - 1) {
+      setHistoryIndex(null)
+      setInput(historyDraftRef.current)
+      return
+    }
+    const nextIndex = historyIndex + 1
+    setHistoryIndex(nextIndex)
+    setInput(inputHistory[nextIndex])
   }
 
   const decisionResponses = new Map<string, AgentDecisionResponse>()
@@ -263,6 +340,12 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     .filter((request) => !decisionResponses.has(request.id))
   const completedDraftCount = pendingDecisions.filter((request) => Boolean(decisionDrafts[request.id])).length
   const allDecisionsReady = pendingDecisions.length > 0 && completedDraftCount === pendingDecisions.length
+  const selectedModelValue = sessionInfo?.selectedModel
+    ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId])
+    : ''
+  const selectedModelAvailable = sessionInfo?.selectedModel
+    ? providers.some((provider) => provider.id === sessionInfo.selectedModel?.providerId && provider.models.includes(sessionInfo.selectedModel.modelId))
+    : false
 
   const submitAllDecisions = (): void => {
     if (!allDecisionsReady || streaming) return
@@ -318,9 +401,26 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         </div>
 
         <div className="flex items-center gap-2">
+          {sessionStats && (
+            <span
+              className={`whitespace-nowrap rounded border px-2 py-1 text-[11px] ${
+                (sessionStats.contextUsage?.percent ?? 0) >= 90
+                  ? 'border-red-300 bg-red-50 text-red-700'
+                  : (sessionStats.contextUsage?.percent ?? 0) >= 70
+                    ? 'border-amber-300 bg-amber-50 text-amber-700'
+                    : 'border-zinc-200 bg-zinc-50 text-zinc-500'
+              }`}
+              title={statsTitle(sessionStats)}
+            >
+              {sessionStats.contextUsage?.tokens != null
+                ? `上下文 ${formatTokens(sessionStats.contextUsage.tokens)}/${formatTokens(sessionStats.contextUsage.contextWindow)} · ${Math.round(sessionStats.contextUsage.percent ?? 0)}%`
+                : `会话 ${formatTokens(sessionStats.tokens.total)} Token · 上下文上限待核实`}
+              {typeof sessionStats.cost === 'number' && sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(3)}` : ''}
+            </span>
+          )}
           <span className="text-[11px] text-zinc-400">当前会话模型</span>
           <select
-          value={sessionInfo?.selectedModel ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId]) : ''}
+          value={selectedModelValue}
           onChange={(e) => {
             const parsed = JSON.parse(e.target.value) as [string, string]
             if (Array.isArray(parsed) && parsed.length === 2) {
@@ -332,6 +432,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           <option value="" disabled>
             {sessionInfo ? '选择模型…' : '加载中…'}
           </option>
+          {sessionInfo?.selectedModel && !selectedModelAvailable && (
+            <option value={selectedModelValue}>
+              {sessionInfo.modelLabel || `${sessionInfo.selectedModel.providerId} / ${sessionInfo.selectedModel.modelId}`}（已恢复）
+            </option>
+          )}
           {providers.flatMap((p) =>
             p.models.map((m) => (
               <option key={`${p.id} / ${m}`} value={JSON.stringify([p.id, m])}>
@@ -390,15 +495,35 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         <div className="flex w-full items-end gap-2">
           <textarea
             value={input}
-            onChange={(e) => setInput(e.target.value)}
+            onChange={(e) => {
+              setInput(e.target.value)
+              setHistoryIndex(null)
+              historyDraftRef.current = e.target.value
+            }}
             onKeyDown={(e) => {
+              if (!e.nativeEvent.isComposing && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
+                const beforeCursor = e.currentTarget.value.slice(0, e.currentTarget.selectionStart)
+                const afterCursor = e.currentTarget.value.slice(e.currentTarget.selectionEnd)
+                const atFirstLine = !beforeCursor.includes('\n')
+                const atLastLine = !afterCursor.includes('\n')
+                if (e.key === 'ArrowUp' && (historyIndex !== null || !input || atFirstLine)) {
+                  e.preventDefault()
+                  recallInput('previous')
+                  return
+                }
+                if (e.key === 'ArrowDown' && historyIndex !== null && atLastLine) {
+                  e.preventDefault()
+                  recallInput('next')
+                  return
+                }
+              }
               if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
                 e.preventDefault()
                 handleSend()
               }
             }}
             rows={2}
-            placeholder={streaming ? 'Agent 回复中…' : '输入消息，Enter 发送，Ctrl/Alt/Shift+Enter 换行'}
+            placeholder={streaming ? 'Agent 回复中…' : '输入消息，Enter 发送，↑/↓ 回顾历史，Ctrl/Alt/Shift+Enter 换行'}
             disabled={streaming}
             className="flex-1 resize-none rounded border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-blue-500 disabled:opacity-60"
           />
@@ -532,12 +657,11 @@ function MessageBubble({
 }
 
 function FileReferenceText({ text }: { text: string }): React.JSX.Element {
-  const pattern = /((?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?)/g
-  const exactReference = /^(?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?$/
+  const pattern = new RegExp(`(${FILE_REFERENCE_SOURCE})`, 'g')
   const parts = text.split(pattern)
   return (
     <>
-      {parts.map((part, index) => exactReference.test(part) ? (
+      {parts.map((part, index) => isFileReference(part) ? (
         <button
           key={`${part}-${index}`}
           type="button"

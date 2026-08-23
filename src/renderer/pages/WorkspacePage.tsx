@@ -28,6 +28,7 @@ import {
   Plus,
   RefreshCw,
   RotateCw,
+  Search,
   Square,
   TerminalSquare
 } from 'lucide-react'
@@ -40,6 +41,7 @@ import {
   type Phase
 } from '@shared/types'
 import { serializeDecisionResponses } from '@shared/agent-interaction'
+import { extractFileReference } from '@shared/file-reference'
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
 import { ChatPanel, SessionTabs } from '../components/ChatPanel'
 import { FileTree } from '../components/FileTree'
@@ -68,7 +70,7 @@ interface ManagedStep {
 
 const MANAGED_PHASE_PROMPTS: Record<Phase, string> = {
   REQ_SPEC: '完成需求-规格定义：审查项目目标，补齐产品需求、模块规格、接口规格和需求-规格追溯矩阵，消除占位内容并执行文档检查。',
-  ARCH: '完成架构设计：根据已批准需求规格更新总体架构、模块划分、接口、时钟复位、寄存器和微架构文档，并检查需求追溯。',
+  ARCH: '完成架构设计：根据已批准需求规格更新总体架构、模块划分、接口、时钟复位和寄存器设计，并检查需求追溯。简单单模块/单时钟复位设计可将说明合并在 architecture.md；仅在复杂微架构、多时钟、多复位或 CDC/RDC 场景单独创建 microarchitecture.md、clock_reset.md。',
   RTL: '完成 RTL 开发：依据架构实现或修复 RTL，维护 design.json/filelist，运行 Lint、可综合性和必要的 CDC 检查，修复全部 Error。',
   VERIF: '完成验证闭环：更新验证计划和覆盖率计划，搭建或修复验证环境，执行相关回归，保存真实日志、JUnit、结果和波形，并更新追溯。',
   QA: '完成质量检查：执行变更审查、代码 Review、检查清单、Lint/CDC/回归证据核对，修复阻断问题并形成 QA 报告。',
@@ -162,10 +164,6 @@ function parseFileLocation(reference: string): { path: string; line?: number; co
   }
 }
 
-function extractFileReference(text: string): string | null {
-  return text.match(/(?:[\w.-]+[\\/])+[\w.@+()-]+\.[a-zA-Z0-9_+-]+(?::\d+)?(?::\d+)?/)?.[0] ?? null
-}
-
 function flattenFiles(nodes: Array<{ name: string; path: string; type: 'file' | 'dir'; children?: unknown[] }>): string[] {
   const out: string[] = []
   for (const n of nodes) {
@@ -233,6 +231,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [changeSourcePhase, setChangeSourcePhase] = useState<Phase>('RTL')
   const [changeDescription, setChangeDescription] = useState('')
   const [wordWrap, setWordWrap] = useState(() => localStorage.getItem('moonglass:viewer-word-wrap') === 'true')
+  const [findRequestKey, setFindRequestKey] = useState(0)
   const [viewerFontSize, setViewerFontSize] = useState(() => Number(localStorage.getItem('moonglass:viewer-font-size')) || 13)
   const [markdownPreview, setMarkdownPreview] = useState(true)
   const agentStreaming = useChatStore((s) => s.streaming)
@@ -312,6 +311,25 @@ export function WorkspacePage(): React.JSX.Element {
   useEffect(() => {
     localStorage.setItem('moonglass:viewer-word-wrap', String(wordWrap))
   }, [wordWrap])
+  const requestFileFind = useCallback((): void => {
+    if (mainTab === 'chat') return
+    if (/\.md$/i.test(mainTab) && markdownPreview) {
+      setMarkdownPreview(false)
+      window.setTimeout(() => setFindRequestKey((key) => key + 1), 0)
+      return
+    }
+    setFindRequestKey((key) => key + 1)
+  }, [mainTab, markdownPreview])
+  useEffect(() => {
+    const listener = (event: KeyboardEvent): void => {
+      if (mainTab === 'chat' || !(event.ctrlKey || event.metaKey) || event.key.toLowerCase() !== 'f') return
+      event.preventDefault()
+      event.stopPropagation()
+      requestFileFind()
+    }
+    window.addEventListener('keydown', listener, true)
+    return () => window.removeEventListener('keydown', listener, true)
+  }, [mainTab, requestFileFind])
   useEffect(() => {
     localStorage.setItem('moonglass:viewer-font-size', String(viewerFontSize))
   }, [viewerFontSize])
@@ -565,6 +583,7 @@ export function WorkspacePage(): React.JSX.Element {
       `\n## 阶段执行记录\n\n${steps.map((step) => `- [${step.status === 'completed' ? 'x' : ' '}] ${PHASE_LABELS[step.phase]}：${step.detail}`).join('\n')}\n` +
       `\n## 门禁与质量证据\n\n| 阶段 | 检查项 | 结果 | 级别 | 说明 |\n|---|---|---|---|---|\n${gates.join('\n') || '| - | 尚无门禁记录 | - | - | - |'}\n` +
       `\n## 自动决策策略\n\n托管期间优先采用 Agent 明确标记的推荐项；无推荐项时采用第一项并要求保持可回退。所有自动选择保留在 Agent 会话历史中。\n` +
+      `需求-规格定义和架构设计阶段的门禁在三次自动修复后仍失败时，不中断托管；失败项作为遗留风险保留并自动推进。RTL、验证、质量检查和综合实现阶段继续执行严格阻断。\n` +
       `\n## 遗留风险\n\n${outcome === 'completed' ? '请人工复核关键架构决策、第三方 IP 许可证，以及正式 PPA/CDC/STA 签核条件。' : `托管未完整结束，必须处理停止原因后再继续：${error ?? '用户主动停止'}。`}\n`
     await window.moonglass.fs.writeText(projectId, path, content)
     setTreeTick((tick) => tick + 1)
@@ -619,6 +638,7 @@ export function WorkspacePage(): React.JSX.Element {
         } else {
           const next = PHASE_ORDER[index + 1]
           let advanced = false
+          let carriedGateIssues = 0
           for (let attempt = 0; attempt < 3 && !advanced; attempt += 1) {
             const result = await window.moonglass.phase.advance(projectId, next)
             if (!result) throw new Error(`推进到 ${PHASE_LABELS[next]} 失败`)
@@ -629,12 +649,29 @@ export function WorkspacePage(): React.JSX.Element {
               break
             }
             const failed = result.gate.results.filter((item) => item.severity === 'error' && !item.passed)
-            if (attempt === 2) throw new Error(`${PHASE_LABELS[phase]} 门禁重试后仍有 ${failed.length} 个阻断项`)
+            if (attempt === 2) {
+              if (phase === 'REQ_SPEC' || phase === 'ARCH') {
+                const forced = await window.moonglass.phase.advance(projectId, next, { force: true })
+                if (!forced) throw new Error(`无法带遗留项推进到 ${PHASE_LABELS[next]}`)
+                carriedGateIssues = failed.length
+                setProject(forced.project)
+                setGate(forced.gate)
+                appendLog(
+                  `⚠️ 一键托管：${PHASE_LABELS[phase]} 门禁仍有 ${failed.length} 个阻断项，已记录遗留风险并继续推进`
+                )
+                advanced = true
+                break
+              }
+              throw new Error(`${PHASE_LABELS[phase]} 门禁重试后仍有 ${failed.length} 个阻断项`)
+            }
             await runManagedAgent(`修复以下门禁阻断项并重新执行相关检查：\n${failed.map((item) => `- ${item.checkName}：${item.message}`).join('\n')}`)
+          }
+          if (carriedGateIssues > 0) {
+            step.detail = `阶段任务已完成；${carriedGateIssues} 个门禁阻断项作为遗留风险带入后续阶段`
           }
         }
         step.status = 'completed'
-        step.detail = '阶段任务及门禁已完成'
+        if (!step.detail.includes('遗留风险')) step.detail = '阶段任务及门禁已完成'
         setManagedSteps([...steps])
       }
     } catch (error) {
@@ -954,6 +991,12 @@ export function WorkspacePage(): React.JSX.Element {
                       </span>
                     </div>
                     <div className="flex shrink-0 gap-1">
+                      <button
+                        onClick={requestFileFind}
+                        className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
+                        title="查找（Ctrl+F）"
+                        aria-label="查找文件内容"
+                      ><Search size={12} /></button>
                       {/\.md$/i.test(activeFile.path) && (
                         <button
                           onClick={() => setMarkdownPreview((value) => !value)}
@@ -1009,6 +1052,7 @@ export function WorkspacePage(): React.JSX.Element {
                         line={activeFile.line}
                         column={activeFile.column}
                         revealKey={activeFile.revealKey}
+                        findRequestKey={findRequestKey}
                         wordWrap={wordWrap}
                         fontSize={viewerFontSize}
                       />

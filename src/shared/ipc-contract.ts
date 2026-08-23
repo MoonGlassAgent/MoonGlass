@@ -6,6 +6,7 @@
 import type {
   AgentEventPayload,
   AgentSessionInfo,
+  AgentSessionStats,
   AgentUiMessage,
   ChipProject,
   FileContentResult,
@@ -73,6 +74,7 @@ export const IPC = {
     Abort: 'agent:abort',
     SetModel: 'agent:set-model',
     GetMessages: 'agent:get-messages',
+    GetSessionStats: 'agent:get-session-stats',
     ResetSession: 'agent:reset-session',
     /** 主进程 → 渲染进程的事件推送通道（send，非 invoke） */
     Event: 'agent:event',
@@ -172,6 +174,8 @@ export interface MoonGlassApi {
     abort(projectId: string): Promise<void>
     setModel(projectId: string, providerId: string, modelId: string): Promise<AgentSessionInfo>
     getMessages(projectId: string): Promise<AgentUiMessage[]>
+    /** 当前活动会话的 Token、费用和上下文窗口统计。 */
+    getSessionStats(projectId: string): Promise<AgentSessionStats | null>
     /** 创建平行会话（不关闭当前会话）。name 可选，默认自动生成 review-<时间戳> */
     resetSession(projectId: string, sessionName?: string): Promise<AgentSessionInfo>
     /** 列出项目所有可用会话 */

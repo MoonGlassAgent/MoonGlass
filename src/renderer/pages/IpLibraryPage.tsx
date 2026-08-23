@@ -274,7 +274,7 @@ export function IpLibraryPage(): React.JSX.Element {
                     <button type="button" className="icon-button" title="重新建立索引" disabled={busy !== null} onClick={() => void run(`index-${library.id}`, () => getIpLibraryApi().reindex(library.id))}><RefreshCw className={busy === `index-${library.id}` ? 'animate-spin' : ''} size={15} /></button>
                     {library.source === 'local' && (
                       <>
-                        <button type="button" className="icon-button" title="使用 Pi 补充功能、协议与许可证语义" disabled={busy !== null || library.ipCount === 0} onClick={() => void run(`enhance-${library.id}`, async () => {
+                        <button type="button" className="icon-button" title={library.semanticAnalysisStatus === 'running' ? 'Pi 语义分析正在运行' : '使用 Pi 补充功能、协议与许可证语义'} disabled={busy !== null || library.ipCount === 0 || library.semanticAnalysisStatus === 'running'} onClick={() => void run(`enhance-${library.id}`, async () => {
                           const analyzed = await getIpLibraryApi().enhance(library.id)
                           setTip(`Pi 已完成 ${analyzed.name} 的语义分析，共更新 ${analyzed.ips.filter((ip) => ip.analysisSource === 'pi').length} 个 IP`)
                         })}><Sparkles className={busy === `enhance-${library.id}` ? 'animate-pulse' : ''} size={15} /></button>
