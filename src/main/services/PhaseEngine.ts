@@ -29,7 +29,7 @@ export const GATE_RULES: readonly GateRule[] = [
   { from: 'REQ_SPEC', to: 'ARCH', precondition: '需求、模块规格、接口规格与追溯矩阵可用于架构设计', autoChecks: ['requirements-usable', 'module-spec-usable', 'interface-spec-usable', 'rtm-complete'] },
   { from: 'ARCH', to: 'RTL', precondition: '总体架构和接口可用；独立微架构与时钟复位文档按设计复杂度选配', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
   { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
-  { from: 'VERIF', to: 'QA', precondition: '覆盖率报告', autoChecks: ['line-coverage-gte-90', 'func-coverage-gte-80', 'sim-passed'] },
+  { from: 'VERIF', to: 'QA', precondition: '覆盖率与独立证据审查报告', autoChecks: ['line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'sim-passed', 'verification-evidence-review'] },
   { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed'] }
 ] as const
 
@@ -55,7 +55,9 @@ const CHECK_NAMES: Record<string, string> = {
   'verible-lint-zero-error': 'Lint 零 Error',
   'port-consistency': '端口一致性检查',
   'line-coverage-gte-90': '行覆盖率 ≥90%',
+  'branch-coverage-gte-85': '条件/分支覆盖率 ≥85%',
   'func-coverage-gte-80': '功能覆盖率 ≥80%',
+  'verification-evidence-review': '验证原始证据独立审查',
   'sim-passed': '仿真通过',
   'verible-zero-error': 'Lint 零 Error',
   'yosys-synthesizable': 'Yosys 可综合性',
@@ -396,6 +398,16 @@ function coverageAtLeast(keys: string[], threshold: number) {
   }
 }
 
+async function verificationEvidenceReview(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  const path = join(ctx.workspaceDir, 'verification', 'results', 'verification_signoff_review.json')
+  if (!existsSync(path)) return makeResult(checkId, false, 'error', '尚未调用 review_verification_evidence 生成独立证据审查')
+  try {
+    const review = JSON.parse(readFileSync(path, 'utf-8')) as { verdict?: string; blockers?: unknown[] }
+    const blockers = Array.isArray(review.blockers) ? review.blockers.length : 0
+    return makeResult(checkId, review.verdict === 'passed' && blockers === 0, 'error', `审查结论：${review.verdict ?? '未知'}，阻断项 ${blockers}`)
+  } catch { return makeResult(checkId, false, 'error', 'verification_signoff_review.json 无法解析') }
+}
+
 /** Lint 零 Error：逐文件 runLint（verible 优先，verilator 回退），任一 Error 即失败 */
 async function lintZeroError(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
   const files = collectDesignRtlFiles(ctx.workspaceDir)
@@ -576,7 +588,9 @@ const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promi
   ),
   'port-consistency': requireFiles(['docs/03_design/interface_spec.md']),
   'line-coverage-gte-90': coverageAtLeast(['lineCoverage', 'line_coverage'], 90),
+  'branch-coverage-gte-85': coverageAtLeast(['branchCoverage', 'branch_coverage', 'expressionCoverage'], 85),
   'func-coverage-gte-80': coverageAtLeast(['functionalCoverage', 'functional_coverage', 'funcCoverage'], 80),
+  'verification-evidence-review': verificationEvidenceReview,
   'sim-passed': simPassed,
   'verible-lint-zero-error': lintZeroError,
   'verible-zero-error': lintZeroError,

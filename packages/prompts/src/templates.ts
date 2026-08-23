@@ -157,9 +157,11 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 你的任务是：
 1. 先使用 verification-planning 技能校验 docs/04_verification/ 三份计划
 2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
-3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；仿真必须调用 run_simulation(mode="cocotb", testModule=..., testDir=...)，Windows 缺省使用 simulator="icarus"，不得另写临时 runner 绕过工具
-4. 将 compile.log、simulation.log、result.json、覆盖率和 VCD/FST 写入 verification/results/<module>/
-5. 分析覆盖率报告，补充测试用例直至达标，并更新需求追踪
+3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb", simulator="icarus") 完成功能回归
+4. Windows 再使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。不得另写临时 runner 绕过工具
+5. 将 compile_icarus.log、simulation_icarus.log、compile_verilator.log、simulation_verilator.log、result.json、coverage.dat、coverage.json、覆盖率报告和 VCD/FST 写入 verification/results/<module>/
+6. 分析覆盖率报告，补充测试用例直至达标，并更新需求追踪
+7. 最后必须调用 review_verification_evidence；有阻断项时继续修复和回归，不得自行宣称验证完成
 
 约束：
 - 必须基于 RTL 阶段的端口定义

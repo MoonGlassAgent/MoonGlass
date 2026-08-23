@@ -303,6 +303,17 @@ function formatIssues(issues: LintIssue[] | SynthIssue[]): string {
   }).join('\n') + more
 }
 
+function collectEvidenceFiles(dir: string, predicate: (name: string) => boolean): string[] {
+  if (!existsSync(dir)) return []
+  const files: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) files.push(...collectEvidenceFiles(full, predicate))
+    else if (predicate(entry.name)) files.push(full)
+  }
+  return files
+}
+
 export default function (pi: ExtensionAPI): void {
   const loadIpLibraries = (): Array<{ name: string; type: string; ips: Array<Record<string, unknown>> }> => {
     const indexPath = process.env.MOONGLASS_IP_LIBRARY_INDEX
@@ -917,6 +928,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       simulator: Type.Optional(Type.Union([Type.Literal('icarus'), Type.Literal('verilator')], { description: 'Cocotb 后端；Windows 缺省 icarus' })),
       tbCpp: Type.Optional(Type.String({ description: 'mode=cpp 时的 C++ 测试台路径' })),
       trace: Type.Optional(Type.Boolean({ description: '是否生成波形，缺省 true' })),
+      rtlCoverage: Type.Optional(Type.Boolean({ description: 'Verilator 后端是否采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率；缺省 true' })),
+      functionalCoverageFile: Type.Optional(Type.String({ description: '功能覆盖率 JSON 路径；测试也可读取 MOONGLASS_FUNCTIONAL_COVERAGE_FILE 环境变量写入默认路径' })),
       timeoutSec: Type.Optional(Type.Number({ description: '编译和仿真总超时秒数，缺省 300' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
@@ -959,6 +972,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
               testcase: params.testcase as string | undefined,
               simulator: params.simulator as 'icarus' | 'verilator' | undefined,
               waves: trace,
+              rtlCoverage: params.rtlCoverage as boolean | undefined,
+              functionalCoverageFile: params.functionalCoverageFile ? resolve(ctx.cwd, params.functionalCoverageFile as string) : undefined,
               signal,
               timeoutSec: params.timeoutSec as number | undefined,
               buildDir: resolve(ctx.cwd, 'verification', `${topModule}_tb`, 'sim', 'sim_build'),
@@ -969,6 +984,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
               tbCpp: tbCpp!,
               rtlFiles,
               trace,
+              rtlCoverage: params.rtlCoverage as boolean | undefined,
               signal,
               buildDir: resolve(ctx.cwd, 'verification', `${topModule}_tb`, 'sim', 'obj_dir'),
               resultDir
@@ -983,6 +999,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           `**编译日志**: ${result.compileLogPath}`,
           `**仿真日志**: ${result.simulationLogPath}`,
           `**结构化结果**: ${result.resultPath}`,
+          `**RTL 覆盖率**: ${result.coverage?.lineCoverage === undefined ? '未采集' : `行 ${result.coverage.lineCoverage}% / 条件 ${result.coverage.branchCoverage ?? '暂无'}%`}`,
+          `**功能覆盖率**: ${result.coverage?.functionalCoverage === undefined ? '未提供' : `${result.coverage.functionalCoverage}%`}`,
           '',
           '### 输出日志',
           '```',
@@ -1006,7 +1024,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
             vcdPath: result.vcdPath,
             compileLogPath: result.compileLogPath,
             simulationLogPath: result.simulationLogPath,
-            resultPath: result.resultPath
+            resultPath: result.resultPath,
+            coverage: result.coverage,
+            coverageReportPath: result.coverageReportPath
           },
           isError: !result.passed
         }
@@ -1293,6 +1313,82 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           resets: [...resetSignals]
         }
       }
+    }
+  })
+
+  pi.registerTool({
+    name: 'review_verification_evidence',
+    label: 'Review Verification Evidence',
+    description: '独立读取验证源码、原始 result.json、JUnit、日志和覆盖率证据，检查测试有效性与签核条件；不得以 Agent 自述替代证据。',
+    promptSnippet: 'Review raw verification evidence before declaring verification complete',
+    promptGuidelines: 'Call after regressions and coverage collection. Resolve every blocking issue or record an approved waiver before claiming verification signoff.',
+    parameters: Type.Object({
+      lineThreshold: Type.Optional(Type.Number({ description: '行覆盖率门限，缺省 90' })),
+      branchThreshold: Type.Optional(Type.Number({ description: '条件/分支覆盖率门限，缺省 85' })),
+      functionalThreshold: Type.Optional(Type.Number({ description: '功能覆盖率门限，缺省 80' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const resultsDir = resolve(ctx.cwd, 'verification', 'results')
+      const resultFiles = collectEvidenceFiles(resultsDir, (name) => name === 'result.json')
+      const testFiles = collectEvidenceFiles(resolve(ctx.cwd, 'verification'), (name) => /^(?:test_.+|.+_test)\.py$/i.test(name))
+      const blockers: string[] = []
+      const warnings: string[] = []
+      let minimumLine: number | undefined
+      let minimumBranch: number | undefined
+      let minimumFunctional: number | undefined
+      let totalTests = 0
+      let passedTests = 0
+      let skippedTests = 0
+      for (const file of resultFiles) {
+        try {
+          const data = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>
+          if (data.passed !== true) blockers.push(`回归未通过：${relative(ctx.cwd, file)}`)
+          totalTests += Number(data.testsTotal ?? 0)
+          passedTests += Number(data.testsPassed ?? 0)
+          skippedTests += Number(data.testsSkipped ?? 0)
+          const coverage = (data.coverage ?? {}) as Record<string, unknown>
+          const values = {
+            line: data.lineCoverage ?? coverage.lineCoverage,
+            branch: data.branchCoverage ?? coverage.branchCoverage,
+            functional: data.functionalCoverage ?? coverage.functionalCoverage
+          }
+          if (typeof values.line === 'number') minimumLine = Math.min(minimumLine ?? values.line, values.line)
+          if (typeof values.branch === 'number') minimumBranch = Math.min(minimumBranch ?? values.branch, values.branch)
+          if (typeof values.functional === 'number') minimumFunctional = Math.min(minimumFunctional ?? values.functional, values.functional)
+          const requiredEvidence = data.functionalPassed !== undefined && data.rtlCoveragePassed !== undefined
+            ? ['functionalCompileLogPath', 'functionalSimulationLogPath', 'rtlCompileLogPath', 'rtlSimulationLogPath', 'resultsXml', 'coverageDataPath', 'coverageReportPath']
+            : ['compileLogPath', 'simulationLogPath', ...(data.framework === 'cocotb' ? ['resultsXml'] : [])]
+          for (const evidence of requiredEvidence) {
+            const path = typeof data[evidence] === 'string' ? data[evidence] as string : ''
+            if (!path || !existsSync(path) || statSync(path).size === 0) blockers.push(`${relative(ctx.cwd, file)} 缺少有效 ${evidence}`)
+          }
+        } catch { blockers.push(`结果文件无法解析：${relative(ctx.cwd, file)}`) }
+      }
+      if (resultFiles.length === 0) blockers.push('未找到 verification/results/**/result.json')
+      if (totalTests === 0) blockers.push('没有可核验的 Cocotb/JUnit 测试数量')
+      if (skippedTests > 0) warnings.push(`${skippedTests} 个测试被跳过，签核前需说明原因`)
+      const lineThreshold = Number(params.lineThreshold ?? 90)
+      const branchThreshold = Number(params.branchThreshold ?? 85)
+      const functionalThreshold = Number(params.functionalThreshold ?? 80)
+      if (minimumLine === undefined) blockers.push('未找到 RTL 行覆盖率')
+      else if (minimumLine < lineThreshold) blockers.push(`RTL 行覆盖率 ${minimumLine}% 低于 ${lineThreshold}%`)
+      if (minimumBranch === undefined) blockers.push('未找到条件/分支覆盖率')
+      else if (minimumBranch < branchThreshold) blockers.push(`条件/分支覆盖率 ${minimumBranch}% 低于 ${branchThreshold}%`)
+      if (minimumFunctional === undefined) blockers.push('未找到功能覆盖率')
+      else if (minimumFunctional < functionalThreshold) blockers.push(`功能覆盖率 ${minimumFunctional}% 低于 ${functionalThreshold}%`)
+      for (const file of testFiles) {
+        const code = readFileSync(file, 'utf-8')
+        if (!/@cocotb\.test/.test(code)) warnings.push(`${relative(ctx.cwd, file)} 未发现 @cocotb.test`)
+        if (!/\b(assert|scoreboard|compare|expected|check)\b/i.test(code)) blockers.push(`${relative(ctx.cwd, file)} 未发现有效检查点/Scoreboard`)
+      }
+      const verdict = blockers.length === 0 ? (warnings.length === 0 ? 'passed' : 'conditional') : 'rejected'
+      const review = { verdict, reviewedAt: new Date().toISOString(), evidence: { resultFiles: resultFiles.map((file) => relative(ctx.cwd, file)), testFiles: testFiles.map((file) => relative(ctx.cwd, file)), totalTests, passedTests, skippedTests }, coverage: { lineCoverage: minimumLine ?? null, branchCoverage: minimumBranch ?? null, functionalCoverage: minimumFunctional ?? null }, thresholds: { line: lineThreshold, branch: branchThreshold, functional: functionalThreshold }, blockers, warnings }
+      mkdirSync(resultsDir, { recursive: true })
+      const jsonPath = join(resultsDir, 'verification_signoff_review.json')
+      const reportPath = join(resultsDir, 'verification_signoff_review.md')
+      writeFileSync(jsonPath, JSON.stringify(review, null, 2), 'utf-8')
+      writeFileSync(reportPath, `# 验证证据独立审查\n\n- 结论：${verdict === 'passed' ? '通过' : verdict === 'conditional' ? '有限通过' : '拒绝签核'}\n- 回归：${passedTests}/${totalTests}\n- 行覆盖率：${minimumLine ?? '暂无'}%\n- 条件/分支覆盖率：${minimumBranch ?? '暂无'}%\n- 功能覆盖率：${minimumFunctional ?? '暂无'}%\n\n## 阻断项\n${blockers.length ? blockers.map((item) => `- ${item}`).join('\n') : '- 无'}\n\n## 警告\n${warnings.length ? warnings.map((item) => `- ${item}`).join('\n') : '- 无'}\n`, 'utf-8')
+      return { content: [{ type: 'text', text: `## 验证证据审查\n\n**结论**：${verdict === 'passed' ? '通过' : verdict === 'conditional' ? '有限通过' : '拒绝签核'}\n\n${blockers.length ? `### 阻断项\n${blockers.map((item) => `- ${item}`).join('\n')}` : '无阻断项。'}\n\n报告：${reportPath}` }], details: { ...review, jsonPath, reportPath }, isError: verdict === 'rejected' }
     }
   })
 }

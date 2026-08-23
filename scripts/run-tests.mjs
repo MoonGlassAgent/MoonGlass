@@ -15,6 +15,7 @@ const suites = {
     'scripts/design-browser-smoke.mjs',
     'scripts/eda-gate-smoke.mjs',
     'scripts/simulation-artifacts-smoke.mjs',
+    'scripts/verilator-coverage-smoke.mjs',
     'scripts/synthesis-flow-smoke.mjs'
   ]
 }
