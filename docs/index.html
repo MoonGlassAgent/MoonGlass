@@ -23,9 +23,10 @@
 </head>
 <body>
 <header><div class="inner"><h1>MoonGlass 傻瓜式使用说明书</h1><div class="subtitle">从第一次启动，到完成 ASIC IP 六阶段开发</div><span class="version">适用版本：MoonGlass v0.6.0 · Windows x64</span></div></header>
-<nav><a href="#fast">5 分钟上手</a><a href="#model">配置模型</a><a href="#project">创建/导入项目</a><a href="#workflow">六阶段开发</a><a href="#agent">Agent 会话</a><a href="#autopilot">一键托管</a><a href="#change">需求变更</a><a href="#ip">IP 库</a><a href="#files">文件与波形</a><a href="#faq">故障排查</a></nav>
+<nav><a href="#fast">5 分钟上手</a><a href="#model">配置模型</a><a href="#project">创建/导入项目</a><a href="#workflow">六阶段开发</a><a href="#agent">Agent 会话</a><a href="#autopilot">一键托管</a><a href="#change">需求变更</a><a href="#ip">IP 库</a><a href="#files">文件与波形</a><a href="#faq">故障排查</a><a href="paper.html">学术讨论稿</a></nav>
 <main>
   <div class="lead"><b>一句话理解 MoonGlass：</b>你告诉 Agent 要做什么，MoonGlass 负责把规格、架构、RTL、验证、质量检查和综合结果组织在同一个项目里，并保留每一步的过程与证据。</div>
+  <div class="do"><b>开放研究与社区讨论：</b>阅读<a href="paper.html">《从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流》</a>，了解 MoonGlass 开发中发现的问题、当前方法、评价指标与开放研究议程。</div>
   <section id="fast"><h2>一、5 分钟上手</h2><div class="steps">
     <div class="step"><b>1. 解压</b>完整解压绿色版 ZIP，不要直接在压缩包里运行。</div><div class="step"><b>2. 启动</b>双击 <code>MoonGlass.exe</code> 或 <code>Start-MoonGlass.bat</code>。</div><div class="step"><b>3. 配模型</b>进入“设置”，添加 Provider、API Key 和模型，点击测试。</div><div class="step"><b>4. 建项目</b>选择“新建项目”，填写名称并指定工程目录。</div><div class="step"><b>5. 说需求</b>在主会话输入 IP 目标、接口、性能、时钟复位和交付要求。</div><div class="step"><b>6. 推阶段</b>检查本阶段产物，点击推进；也可使用“一键托管”。</div>
   </div><div class="stop"><b>最容易犯的错误：</b>只打开 ZIP、不完整解压；模型填完却没有点击“测试”；让 Agent 开发但没有提供时钟、复位、接口和验收标准。</div></section>

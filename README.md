@@ -9,6 +9,7 @@ MoonGlass 是面向 ASIC/SoC 设计工程师的 AI 工作台，以六阶段流�
 ## 新手入口
 
 - [在线网页版说明书](https://moonglassagent.github.io/MoonGlass/)：适合直接打开和分享，支持标题、摘要和封面卡片。
+- [ASIC Agent 学术讨论稿](https://moonglassagent.github.io/MoonGlass/paper.html)：从代码生成到工程签核，系统讨论流程控制、验证证据和开放研究议程。
 - [傻瓜式 HTML 使用说明书](./docs/QUICK-START-ZH-CN.html)：从解压启动、配置模型到完成六阶段开发，适合第一次使用 MoonGlass 的用户。
 - [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)：简明功能说明与工程注意事项。
 - [下载 MoonGlass v0.6.0 完整绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.6.0)
