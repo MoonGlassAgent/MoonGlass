@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流</title>
+  <meta name="description" content="基于 MoonGlass 开发实践，系统讨论 ASIC IP Agent 在需求、架构、RTL、验证、质量门禁、变更控制和工程证据方面的关键问题、方法与研究议程。">
+  <meta name="author" content="MoonGlass Contributors">
+  <meta property="og:type" content="article">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:title" content="从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流">
+  <meta property="og:description" content="一份基于 MoonGlass 实践的 ASIC Agent 工程综述、方法框架与开放研究议程。">
+  <style>
+    :root{--ink:#20242b;--muted:#667085;--line:#d9dee7;--paper:#fff;--soft:#f5f7fa;--blue:#155fa0;--green:#14765a;--orange:#a65314;--red:#b93838;--code:#17202b}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#e9edf2;color:var(--ink);font:16px/1.82 Georgia,"Noto Serif SC","Source Han Serif SC","Microsoft YaHei",serif;letter-spacing:0}.paper{width:min(1120px,calc(100% - 28px));margin:28px auto;background:var(--paper);box-shadow:0 4px 24px #1f29371c}.masthead{padding:54px 72px 38px;border-top:8px solid #17202b;border-bottom:1px solid var(--line)}.kicker{color:var(--blue);font:700 13px/1.4 system-ui,sans-serif;text-transform:uppercase}.masthead h1{max-width:940px;margin:13px 0 18px;font-size:38px;line-height:1.3}.subtitle{max-width:920px;color:#44505f;font-size:20px}.meta{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:28px;color:var(--muted);font:14px/1.6 system-ui,sans-serif}.notice{margin-top:24px;padding:13px 16px;border-left:4px solid var(--orange);background:#fff8ec;color:#65411f;font-size:14px}.layout{display:grid;grid-template-columns:240px minmax(0,1fr);gap:0}.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:30px 22px;border-right:1px solid var(--line);font:13px/1.5 system-ui,sans-serif}.toc b{display:block;margin-bottom:10px}.toc a{display:block;padding:5px 7px;border-left:2px solid transparent;color:#4a5565;text-decoration:none}.toc a:hover{border-color:var(--blue);background:#eef5fb;color:var(--blue)}article{min-width:0;padding:38px 64px 72px}h2{margin:54px 0 18px;padding-bottom:8px;border-bottom:2px solid #27313d;font-size:27px;line-height:1.35}h2:first-child{margin-top:0}h3{margin:32px 0 12px;font-size:20px}h4{margin:24px 0 8px;font-size:16px}p{margin:9px 0 15px}.abstract{padding:22px 24px;border:1px solid var(--line);background:var(--soft)}.keywords{margin-top:15px;font-size:14px}.lead{font-size:18px;color:#303b48}.callout{margin:20px 0;padding:16px 18px;border-left:4px solid var(--blue);background:#eef6fc}.callout.green{border-color:var(--green);background:#edf8f4}.callout.orange{border-color:var(--orange);background:#fff7eb}.callout.red{border-color:var(--red);background:#fff1f1}.claim{margin:22px 0;padding:18px;border:1px solid #bbd0e3;background:#f2f8fd}.claim b{color:var(--blue)}table{width:100%;margin:18px 0 26px;border-collapse:collapse;font-size:14px;line-height:1.65}th,td{padding:10px 12px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf1f5;font-family:system-ui,sans-serif}tr:nth-child(even) td{background:#fafbfc}.flow{margin:22px 0;padding:20px;overflow:auto;border:1px solid #303b47;background:var(--code);color:#e9eef5;font:14px/1.8 Consolas,monospace;white-space:pre}.figure{margin:24px 0;padding:20px;border:1px solid var(--line);background:#fbfcfd}.figure-title{margin-top:12px;color:var(--muted);font-size:13px;text-align:center}.architecture{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.architecture div{min-height:92px;padding:13px;border:1px solid #cfd8e3;background:#fff;font:14px/1.55 system-ui,sans-serif}.architecture b{display:block;margin-bottom:5px;color:var(--blue)}code{padding:2px 5px;border:1px solid #d7dde5;border-radius:3px;background:#f2f4f7;font:13px Consolas,monospace}pre code{border:0;background:none}.equation{margin:16px 0;padding:14px 18px;background:#f5f7fa;text-align:center;font:16px Consolas,monospace}ol,ul{padding-left:25px}li{margin:6px 0}.term{font-weight:700;color:#273b51}.refs{font-size:14px}.refs li{margin-bottom:10px}.refs a{color:var(--blue);overflow-wrap:anywhere}.questions li{margin-bottom:12px}.footer{padding:24px 64px 38px;border-top:1px solid var(--line);color:var(--muted);font:13px/1.65 system-ui,sans-serif}@media(max-width:850px){.paper{width:100%;margin:0;box-shadow:none}.masthead{padding:34px 24px}.masthead h1{font-size:30px}.layout{display:block}.toc{position:relative;max-height:none;border-right:0;border-bottom:1px solid var(--line)}.toc a{display:inline-block}article{padding:30px 24px}.architecture{grid-template-columns:1fr}.footer{padding:22px 24px}}@media print{body{background:#fff}.paper{width:100%;margin:0;box-shadow:none}.toc{display:none}.layout{display:block}.masthead,article{padding-left:18mm;padding-right:18mm}.figure,.claim,.callout,table{break-inside:avoid}h2,h3{break-after:avoid}a{color:inherit;text-decoration:none}.paper{font-size:10.5pt}}
+  </style>
+</head>
+<body>
+<main class="paper">
+  <header class="masthead">
+    <div class="kicker">Engineering Review · Open Discussion Draft</div>
+    <h1>从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流</h1>
+    <div class="subtitle">基于 MoonGlass 开发实践的问题综述、系统方法与开放研究议程</div>
+    <div class="meta"><span>作者：MoonGlass Contributors</span><span>版本：讨论稿 0.1</span><span>日期：2026-08-24</span><span>联系：moonglassagent@126.com</span></div>
+    <div class="notice"><b>文档性质：</b>本文是工程经验驱动的综述与立场论文，不是已经完成同行评审的实验论文。文中的“观察”来自 MoonGlass 的实际研发过程；“方法”是当前系统设计；“假设”和“评价指标”用于推动后续可复现实验与开源社区讨论。</div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="目录"><b>目录</b>
+      <a href="#abstract">摘要</a><a href="#intro">1. 引言</a><a href="#method">2. 研究方法与边界</a><a href="#problems">3. 问题分类</a><a href="#workflow">4. 流程状态模型</a><a href="#control">5. Agent 控制</a><a href="#verification">6. 验证闭环</a><a href="#traceability">7. 追溯与门禁</a><a href="#reuse">8. IP 与 SRAM 复用</a><a href="#toolchain">9. 工具链工程</a><a href="#architecture">10. 系统架构</a><a href="#evaluation">11. 评价框架</a><a href="#threats">12. 局限性</a><a href="#agenda">13. 研究议程</a><a href="#discussion">14. 开放问题</a><a href="#conclusion">15. 结论</a><a href="#references">参考资料</a>
+    </nav>
+
+    <article>
+      <section id="abstract">
+        <h2>摘要</h2>
+        <div class="abstract">
+          <p>大语言模型已经能够生成具有一定复杂度的 RTL、测试代码和设计文档，但“能生成代码”与“能交付 ASIC IP”之间仍存在显著距离。真实芯片工程要求需求可追踪、架构决策可解释、RTL 可综合、验证可复现、变更可传播、质量门禁可核验，并要求工具失败、模型漂移与人工决策能够在统一流程中被控制。本文基于 MoonGlass ASIC Design Agent 的持续开发实践，归纳需求与规格融合、非线性阶段推进、Agent 会话隔离、验证证据独立审查、双通道覆盖率、已有工程接续、IP 库语义索引、SRAM 多视图建模、Windows 开源 EDA 工具链兼容等问题。</p>
+          <p>本文提出一种证据驱动型人机协同 Agent 工作流：以确定性状态机管理项目阶段，以结构化追溯矩阵连接需求、规格、设计、测试和签核证据；以主 Agent 承担端到端交付，以独立 Review 读取原始工程产物；以 Cocotb + Icarus 承担功能回归，以 Verilator 承担 RTL 覆盖率签核；以事件、日志、JUnit、覆盖率和综合报告构成可核验证据链。文章进一步给出评价指标、有效性威胁和开放研究议程，为开源社区讨论“如何从 AI 辅助编码走向可控芯片工程交付”提供一个可检验框架。</p>
+          <div class="keywords"><b>关键词：</b>ASIC IP；RTL；Coding Agent；人机协同；设计验证；覆盖率；需求追溯；质量门禁；开源 EDA；证据驱动工程</div>
+        </div>
+      </section>
+
+      <section id="intro">
+        <h2>1. 引言</h2>
+        <p class="lead">芯片开发 Agent 面临的首要问题并不是“如何写出更多 RTL”，而是“如何证明生成结果满足需求，并能在变更、回归和签核中持续成立”。</p>
+        <p>通用 Coding Agent 的交互范式通常是：用户描述任务，模型读取代码，调用工具，修改文件并返回总结。这一范式对软件仓库十分有效，但 ASIC IP 开发增加了若干强约束：行为必须与周期、复位、协议和异常语义一致；RTL 必须通过编译、Lint、仿真和综合；设计与验证资产需要跨阶段追踪；工艺库、存储器宏和第三方 IP 具有多视图与授权约束；后期需求变更会触发架构、RTL、验证、质量和综合的级联响应。</p>
+        <p>如果系统只优化代码生成质量，容易出现四种“虚假完成”：第一，Agent 声称功能完成，但没有原始日志与回归结果；第二，仿真通过，但测试没有有效检查点；第三，覆盖率较高，但需求和异常场景没有对应测试；第四，前序规格已经变化，后序结果仍显示完成。MoonGlass 的开发过程反复遇到这些问题，并由此逐步从“流程看板 + 对话”演化为“状态控制 + 工具执行 + 证据审查”的工程系统。</p>
+        <div class="claim"><b>核心立场：</b>ASIC Agent 的完成条件不应由自然语言总结定义，而应由可追踪需求、可复现工具运行、结构化质量门禁和人工签核共同定义。</div>
+        <h3>1.1 本文贡献</h3>
+        <ol><li>给出 ASIC IP Agent 开发中流程、控制、验证、复用、工具链和交互问题的系统分类。</li><li>提出确定性流程控制与概率性 Agent 推理相结合的证据驱动架构。</li><li>给出适用于 Windows 开源工具链的功能验证与 RTL 覆盖率双通道方案。</li><li>提出可用于后续实验的指标体系、基准任务和研究假设。</li><li>明确系统当前能力边界，避免将工程原型结论泛化为产业签核能力。</li></ol>
+      </section>
+
+      <section id="method">
+        <h2>2. 研究方法与适用边界</h2>
+        <p>本文采用设计科学与工程案例研究相结合的方法。问题来自 MoonGlass 从流程原型、Agent 会话、项目管理、IP 库、RTL Design Browser，到验证覆盖率闭环的连续迭代。每次问题通常经历“用户现场观察—代码定位—确定性修复—工具链测试—流程规则修订”的循环。</p>
+        <table><thead><tr><th>材料类型</th><th>典型内容</th><th>本文用途</th></tr></thead><tbody>
+          <tr><td>交互观察</td><td>模型恢复显示错误、长任务阻塞、会话切换延迟、确认项过早提交</td><td>识别控制与可用性问题</td></tr>
+          <tr><td>工程产物</td><td>需求矩阵、RTL、Cocotb 测试、JUnit、覆盖率、综合报告</td><td>建立证据链模型</td></tr>
+          <tr><td>工具失败</td><td>Icarus 崩溃、Verilator Windows 依赖、GTKWave FST 打开失败</td><td>分析环境可重复性</td></tr>
+          <tr><td>规则误报</td><td>版本表和优先级表被误判为追溯矩阵缺失</td><td>改进门禁语义</td></tr>
+          <tr><td>系统迭代</td><td>阶段合并、变更传播、自动托管、证据 Review</td><td>形成方法框架</td></tr>
+        </tbody></table>
+        <div class="callout orange"><b>边界声明：</b>当前观察主要来自中小规模数字 IP、Windows 主机、开源 EDA 工具和若干云模型服务。本文不声称替代商业仿真器、形式验证平台、CDC/RDC 签核、DFT、低功耗验证或物理实现签核。</div>
+      </section>
+
+      <section id="problems">
+        <h2>3. ASIC Agent 工程问题分类</h2>
+        <table><thead><tr><th>问题域</th><th>核心矛盾</th><th>失败表现</th><th>设计原则</th></tr></thead><tbody>
+          <tr><td>流程建模</td><td>阶段规范化与真实迭代性冲突</td><td>回改前序阶段后，后序状态失真</td><td>保留产物、传播影响、逐阶段响应</td></tr>
+          <tr><td>Agent 控制</td><td>自主执行与人工决策冲突</td><td>自动化频繁中断，或未经确认强行推进</td><td>区分交互模式与托管模式</td></tr>
+          <tr><td>验证完备性</td><td>“测试通过”与“需求已验证”不等价</td><td>弱断言、无覆盖率、无异常用例</td><td>功能、结构、追溯和独立证据共同签核</td></tr>
+          <tr><td>质量门禁</td><td>规则严格性与项目差异冲突</td><td>简单设计被不必要文档阻断</td><td>门禁分级、条件适用、可审计豁免</td></tr>
+          <tr><td>工具链</td><td>声明安装与真实可执行不等价</td><td>PATH、DLL、wrapper、格式支持失败</td><td>最小自检、缓存、失败诊断</td></tr>
+          <tr><td>IP 复用</td><td>目录存在与工程可用不等价</td><td>接口不匹配、缺少仿真或物理视图</td><td>结构化索引、语义增强、多视图审查</td></tr>
+          <tr><td>产品交互</td><td>长任务与用户持续观察冲突</td><td>无法切会话、打不开文件、状态不透明</td><td>异步执行、流式事件、操作解耦</td></tr>
+        </tbody></table>
+      </section>
+
+      <section id="workflow">
+        <h2>4. 非线性六阶段流程与变更传播</h2>
+        <h3>4.1 需求与规格的协同形成</h3>
+        <p>传统流程可以将需求定义与规格定义视作不同活动，但在 Agent 对话中，用户描述功能的同时往往会确定接口宽度、时序语义、异常行为和验收标准。强行分成两个阶段会产生重复对话和文档漂移。因此 MoonGlass 将两者合并为 <code>REQ_SPEC</code>，同时保留需求与规格的双向矩阵，使阶段合并不等于追溯关系消失。</p>
+        <div class="flow">REQ_SPEC 需求-规格定义 → ARCH 架构设计 → RTL RTL 开发
+        → VERIF 验证完备 → QA 质量检查 → SYNTH 综合实现</div>
+        <h3>4.2 阶段状态不是文件夹状态</h3>
+        <p>阶段完成不能只由目录或文件存在决定。一个可信阶段状态至少应包含：阶段产物、工具运行、门禁结果、变更响应、人工确认和时间戳。对于已有工程，还需要根据真实证据恢复阶段，而不是因为目录不符合 MoonGlass 模板就回到起点。</p>
+        <h3>4.3 回退、修改与影响传播</h3>
+        <p>用户可以双击进入任意阶段而不删除后续产物。只有当前序阶段发生实质修改，而且某个后序阶段此前已经完成时，后序阶段才出现影响提醒。该规则避免了“一推进后面全黄”的误报，也避免了“回看文档就破坏状态”的过度反应。</p>
+        <div class="equation">Impact(Pᵢ → Pⱼ) = Changed(Pᵢ) ∧ Completed(Pⱼ) ∧ (j &gt; i)</div>
+        <p>影响响应可以采用两种路径：从变更起点重新托管到终点，或由用户逐阶段处理。规格变化通常要求架构影响分析、RTL 修改、验证回归、QA 变更审查和重新综合；Bug 修复则可能从 RTL 或 VERIF 开始。系统应保留旧证据，形成变更前后可比较的审计链。</p>
+        <h3>4.4 条件性交付物</h3>
+        <p>简单单时钟模块可能无需独立 <code>clock_reset.md</code>，小型组合或浅流水设计也未必需要专门的 <code>microarchitecture.md</code>。门禁应判断复杂度和风险，而不是把所有文件模板变成绝对要求。建议将交付物分为“必需、条件必需、推荐、可选”四级。</p>
+      </section>
+
+      <section id="control">
+        <h2>5. Agent 自主性、会话隔离与人工控制</h2>
+        <h3>5.1 主会话的端到端责任</h3>
+        <p>用户未必创建平行会话，因此主 Agent 不能依赖“另一个 Agent 会替我 Review”。主会话应以最终交付为目标：理解需求、产生设计、调用工具、读取失败、修复问题、补齐验证、生成报告，并在无法完成时明确列出阻断证据。</p>
+        <h3>5.2 平行会话不是弱化副本</h3>
+        <p>平行会话应拥有独立模型、独立上下文和完整工具能力。它可以用于架构 Review、RTL Review、覆盖率补充、Bug 定位，也可以执行完全不同的探索任务。其价值取决于用户安排，不应被硬编码为单一“审查角色”。</p>
+        <h3>5.3 模型选择和会话恢复</h3>
+        <p>模型选择必须以项目和会话为键持久化。软件重启时不仅要恢复消息历史，还要恢复 Provider、模型 ID、活动会话和运行状态。界面显示必须以结构化会话状态为准，不能因为 Provider 列表加载较慢而显示“未选择模型”。</p>
+        <h3>5.4 人工确认与批量决策</h3>
+        <p>当 Agent 一轮提出多个决策时，任意一项确认都触发下一轮，会造成其余决策丢失。更合理的交互是：记录每项选择，全部完成后一次提交。托管模式则可以根据预设政策自动选择推荐项，但关键风险项仍应中断或形成显式豁免。</p>
+        <h3>5.5 中止语义</h3>
+        <p>中止需要跨越四层：UI 状态、Agent RPC、模型请求和 EDA 子进程树。仅取消前端等待会造成“按钮显示停止但后台仍执行”。可靠实现应传播取消信号、回收进程、清空等待者，并保留已完成工具证据。</p>
+      </section>
+
+      <section id="verification">
+        <h2>6. 从仿真通过到验证证据闭环</h2>
+        <h3>6.1 四个不等价命题</h3>
+        <div class="callout red"><b>必须区分：</b>编译成功 ≠ 仿真通过；仿真通过 ≠ 覆盖充分；覆盖充分 ≠ 需求已验证；需求已验证 ≠ IP 已具备流片签核条件。</div>
+        <p>Agent 容易把工具的局部成功概括成整体完成。为抑制这种偏差，验证状态需要直接读取机器可读结果，而不是解析自然语言总结。每个模块至少需要测试总数、通过数、失败数、跳过数、退出码、JUnit、日志、波形和覆盖率。</p>
+        <h3>6.2 Windows 双通道验证架构</h3>
+        <p>MoonGlass 当前采用双通道方案。Cocotb + Icarus 用于 Python 驱动的功能回归、参考模型检查和功能覆盖率；Verilator C++ 回归用于 RTL 行、条件或表达式、翻转和 FSM 覆盖率。这样绕开 Windows 环境中 Cocotb-Verilator VPI 组合的库与 wrapper 限制，同时保留两类证据。</p>
+        <div class="figure">
+          <div class="architecture"><div><b>功能通道</b>Cocotb + Icarus<br>定向测试、随机激励、Scoreboard、功能覆盖点</div><div><b>结构通道</b>Verilator C++<br>行、条件/表达式、翻转、FSM 覆盖率</div><div><b>证据合并</b>result.json<br>JUnit、日志、波形、coverage.dat、中文报告</div></div>
+          <div class="figure-title">图 1　功能正确性与 RTL 结构覆盖率的双通道证据合并</div>
+        </div>
+        <h3>6.3 建议覆盖率门限</h3>
+        <p>MoonGlass 当前把行覆盖率 90%、条件或表达式覆盖率 85%、功能覆盖率 80% 作为基础门限。这些数值是工程默认值，不是普遍适用的行业签核标准。复杂控制器、安全模块或高可靠场景需要更严格目标；不可达代码、第三方黑盒和防御性分支则需要有理由的豁免。</p>
+        <table><thead><tr><th>证据</th><th>回答的问题</th><th>主要盲点</th></tr></thead><tbody>
+          <tr><td>行覆盖率</td><td>哪些可执行 RTL 被运行过</td><td>运行不等于结果被检查</td></tr>
+          <tr><td>条件/表达式覆盖率</td><td>逻辑真假组合是否被激活</td><td>未证明端到端需求</td></tr>
+          <tr><td>翻转覆盖率</td><td>位级活动是否出现</td><td>无语义保证，数据总线容易虚高</td></tr>
+          <tr><td>FSM 覆盖率</td><td>状态与迁移是否被访问</td><td>状态编码识别和不可达迁移</td></tr>
+          <tr><td>功能覆盖率</td><td>规格场景、边界和交叉组合是否命中</td><td>覆盖模型本身可能遗漏需求</td></tr>
+          <tr><td>断言</td><td>协议和时序不变量是否保持</td><td>断言完整性与 vacuity</td></tr>
+        </tbody></table>
+        <h3>6.4 独立证据 Review</h3>
+        <p>Review 不接受主 Agent 的“验证完成”结论，而是重新读取测试源码、原始结果、JUnit、编译日志、仿真日志和覆盖率。确定性审查器检查：是否存在有效测试数量、是否有跳过测试、是否存在断言或 Scoreboard、覆盖率是否达标、两条通道的证据路径是否存在且非空。</p>
+        <p>这一机制仍不是完整的模型独立审查。后续可以让另一模型在确定性审查结果之上，对需求遗漏、弱检查点、参考模型同源错误和覆盖模型缺口进行语义 Review。但第二模型也必须引用原始证据，不能只评价主 Agent 的总结。</p>
+      </section>
+
+      <section id="traceability">
+        <h2>7. 追溯矩阵、门禁语义与质量控制</h2>
+        <h3>7.1 追溯矩阵的角色</h3>
+        <p>追溯矩阵应连接 <code>REQ</code>、<code>SPEC</code>、设计项、测试项和质量证据，使系统能够回答：某条需求在哪里实现、由哪些测试验证、当前证据是否有效、变更后哪些结果需要重跑。矩阵不是为了增加文档数量，而是为了支持影响分析和签核解释。</p>
+        <h3>7.2 定义与引用必须分离</h3>
+        <p>版本历史、优先级说明和 TBD 表可能引用需求 ID，但它们不是正式映射行。若校验器只用正则扫描所有表格，就会把辅助内容误判为缺少规格映射。正确方法是识别规范表头、展开范围 ID、验证状态值，并忽略模板和后续阶段尚未生效的文档。</p>
+        <h3>7.3 门禁应具备五态语义</h3>
+        <table><thead><tr><th>状态</th><th>含义</th><th>推进策略</th></tr></thead><tbody>
+          <tr><td>通过</td><td>证据满足要求</td><td>允许推进</td></tr><tr><td>警告</td><td>存在风险但不构成当前阻断</td><td>记录后推进</td></tr><tr><td>条件通过</td><td>满足条件或存在受控限制</td><td>需责任人确认</td></tr><tr><td>阻断</td><td>关键证据缺失或工具失败</td><td>修复后重试</td></tr><tr><td>不适用</td><td>经复杂度和场景判断无需执行</td><td>记录理由</td></tr>
+        </tbody></table>
+        <p>一键托管模式下，需求和架构早期的格式类门禁可以转为自动修复或延后审查，避免频繁中断；但 RTL 编译失败、测试失败、覆盖率严重不足和综合失败仍应阻断。强制推进必须形成显式事件，而不是静默改绿。</p>
+      </section>
+
+      <section id="reuse">
+        <h2>8. IP 库发现、语义增强与 SRAM 多视图建模</h2>
+        <h3>8.1 从目录导入到可检索资产</h3>
+        <p>用户可能只提供一个包含数十个 IP 的根目录。确定性扫描器应递归识别 RTL、Top、模块、测试、VIP、BFM、文档和清单，生成结构化索引；Pi 只负责补充协议角色、用途、参数含义、适用场景和置信度。这样即使语义分析返回截断 JSON 或 Agent 正忙，基础索引仍可用。</p>
+        <h3>8.2 复用决策需要多因素检查</h3>
+        <p>架构和 RTL 阶段可以优先搜索 IP 库，但不得强制使用不符合需求的模板。候选 IP 至少需要检查接口协议、参数范围、时钟复位、异常语义、验证状态、许可证和工艺视图。验证阶段还可复用 AXI Master VIP、AXI Slave VIP 等组件，但应防止测试环境与 DUT 共享同源缺陷。</p>
+        <h3>8.3 SRAM 不是单一 Verilog 文件</h3>
+        <p>项目希望的逻辑尺寸常由 Wrapper 暴露，内部实例化实际可生成的 Macro。一个可靠 SRAM 资产应同时描述：项目 Wrapper、仿真行为模型、综合 Blackbox、Liberty、LEF/GDS 和生成参数。若仅生成通用寄存器数组，功能仿真可能通过，但面积、时序和低功耗语义没有工艺意义。</p>
+        <div class="flow">Architecture size request
+  → SRAM wrapper (logical interface and polarity)
+  → foundry macro instance (available physical size)
+  ├─ simulation model
+  ├─ synthesis blackbox
+  ├─ Liberty timing/power
+  └─ LEF/GDS physical views</div>
+      </section>
+
+      <section id="toolchain">
+        <h2>9. 开源 EDA 工具链的可执行性工程</h2>
+        <h3>9.1 安装成功不是可用成功</h3>
+        <p>工具安装后可能没有刷新 PATH，或者受到冲突 DLL、缺失编译器、Perl wrapper、Make 名称和文件格式支持的影响。因此每个工具需要四级状态：已配置、已发现、最小自检通过、项目任务通过。环境检测结果应缓存，并在路径变化、版本变化或用户主动刷新时重新执行。</p>
+        <h3>9.2 Windows 特有问题</h3>
+        <ul><li>Icarus 可能受其他 MinGW DLL 污染，需要隔离运行环境并执行最小编译与 <code>vvp</code> 自检。</li><li>Verilator Windows 包可能提供 <code>verilator_bin.exe</code> 而非预期 Perl wrapper，并依赖外部 <code>g++</code> 与 Make。</li><li>GTKWave 能启动 GUI 不代表指定 FST 能打开，需检查版本、格式、路径与退出码。</li><li>工具输出中的 <code>D:\...</code> 必须被识别为完整绝对路径，不能漏掉盘符。</li></ul>
+        <h3>9.3 工具输出的结构化</h3>
+        <p>Agent 工具不应只返回长文本。推荐同时返回状态、退出码、时间、文件路径、诊断数组和可点击位置。大输出应保存到文件并在界面标记“截断”，避免用户误以为文件内容本身不完整。</p>
+      </section>
+
+      <section id="architecture">
+        <h2>10. 证据驱动型 ASIC Agent 参考架构</h2>
+        <div class="figure"><div class="architecture">
+          <div><b>交互层</b>中文工作区、会话、文件查看、决策表单、状态提示</div><div><b>流程层</b>六阶段状态机、变更传播、托管策略、门禁与豁免</div><div><b>Agent 层</b>主会话、平行会话、模型隔离、上下文与中止控制</div>
+          <div><b>工具层</b>文档校验、Lint、仿真、覆盖率、综合、波形和层次解析</div><div><b>证据层</b>矩阵、日志、JUnit、result.json、coverage、报告和产物索引</div><div><b>资产层</b>项目目录、IP 库、VIP、SRAM、工艺库和版本元数据</div>
+        </div><div class="figure-title">图 2　MoonGlass 所代表的六层参考架构</div></div>
+        <h3>10.1 确定性与概率性的职责边界</h3>
+        <table><thead><tr><th>任务</th><th>优先机制</th><th>理由</th></tr></thead><tbody>
+          <tr><td>文件扫描、ID 校验、状态计算</td><td>确定性程序</td><td>需要可重复、可测试</td></tr><tr><td>需求澄清、架构权衡、缺口解释</td><td>Agent 推理</td><td>需要语义理解与开放探索</td></tr><tr><td>工具调用和结果归档</td><td>结构化工具接口</td><td>减少自然语言歧义</td></tr><tr><td>质量签核</td><td>确定性门禁 + 独立 Review + 人工确认</td><td>单一机制不足以覆盖全部风险</td></tr>
+        </tbody></table>
+        <h3>10.2 证据对象模型</h3>
+        <p>每项关键结论都应关联证据对象。证据对象至少包括：产生者、工具与版本、命令或参数、输入哈希、输出路径、退出状态、时间、适用阶段和关联需求。这样才能判断证据是否因 RTL、测试、约束或工具版本变化而失效。</p>
+      </section>
+
+      <section id="evaluation">
+        <h2>11. 可复现实验与评价指标</h2>
+        <p>要把工程经验推进为学术研究，需要建立公开基准任务和对照实验。可选任务包括 APB 寄存器块、异步 FIFO、AXI-Lite Bridge、DMA 子模块、时钟分频器和带 SRAM Wrapper 的控制器。每个任务提供冻结需求、隐藏缺陷、参考测试和预期综合边界。</p>
+        <table><thead><tr><th>指标</th><th>定义示例</th><th>研究意义</th></tr></thead><tbody>
+          <tr><td>需求一次满足率</td><td>首次交付即通过的需求数 / 总需求数</td><td>衡量生成质量</td></tr><tr><td>追溯完整率</td><td>同时关联 SPEC、设计、测试和证据的需求比例</td><td>衡量可解释交付</td></tr><tr><td>门禁误报率</td><td>被专家判为误报的阻断项 / 全部阻断项</td><td>衡量流程可用性</td></tr><tr><td>缺陷逃逸率</td><td>签核后仍被隐藏测试发现的缺陷比例</td><td>衡量真实验证能力</td></tr><tr><td>证据一致率</td><td>Agent 完成声明与机器证据一致的任务比例</td><td>衡量可信度</td></tr><tr><td>修复闭环时间</td><td>从失败证据产生到回归通过的时间</td><td>衡量 Agent 调试效率</td></tr><tr><td>人工决策负担</td><td>每阶段必要确认次数及平均耗时</td><td>衡量人机协同成本</td></tr><tr><td>回归可重复率</td><td>另一机器上相同输入得到一致结果的比例</td><td>衡量环境工程质量</td></tr><tr><td>Token/成本效率</td><td>单位通过需求或单位修复所需 Token 与费用</td><td>衡量经济性</td></tr>
+        </tbody></table>
+        <h3>11.1 建议对照组</h3>
+        <ol><li>仅聊天模型，不允许工具调用。</li><li>通用 Coding Agent，可修改仓库但无阶段和门禁。</li><li>MoonGlass 主会话，无独立证据 Review。</li><li>MoonGlass 完整流程，含证据 Review 和覆盖率门禁。</li><li>资深工程师传统流程，作为时间与质量参考而非绝对真值。</li></ol>
+        <h3>11.2 消融实验</h3>
+        <p>可以分别移除追溯矩阵、功能覆盖率、RTL 覆盖率、独立 Review、阶段变更传播或平行模型 Review，观察缺陷逃逸、误报、时间和 Token 成本变化。该设计有助于回答“复杂流程机制是否真正提高质量，还是只增加形式负担”。</p>
+      </section>
+
+      <section id="threats">
+        <h2>12. 有效性威胁与当前局限</h2>
+        <h3>12.1 内部有效性</h3><p>MoonGlass 与测试项目共同演进，部分改进可能针对已知案例过拟合。Agent 模型、Prompt 和工具版本变化也可能影响结果。需要固定版本、保存运行记录并使用隐藏测试。</p>
+        <h3>12.2 外部有效性</h3><p>中小型数字 IP 的经验不能直接泛化到大型 SoC、模拟混合信号、NoC、GPU、复杂一致性协议或安全认证项目。Windows 开源工具链的结论也不能代表 Linux 和商业 EDA 环境。</p>
+        <h3>12.3 构念有效性</h3><p>覆盖率和门禁通过只是验证完备性的代理指标。高覆盖率可能由弱测试产生，追溯矩阵也可能形式完整但语义错误。因此必须引入缺陷注入、变异测试、隐藏场景和专家 Review。</p>
+        <h3>12.4 结论有效性</h3><p>当前尚无大样本统计，本文的“有效”主要指工程功能已经运行，而非已经证明优于其他方法。公开论文版本应报告样本数量、置信区间、失败案例和负面结果。</p>
+        <div class="callout orange"><b>重要限制：</b>当前 MoonGlass 的证据 Review 以确定性审查为基础，能够发现证据缺失和门限不足，但还不能证明参考模型正确、断言无 vacuity、CDC/RDC 安全、低功耗语义正确或时序已经达到商业签核标准。</div>
+      </section>
+
+      <section id="agenda">
+        <h2>13. 开放研究议程</h2>
+        <ol>
+          <li><b>语义级需求覆盖：</b>如何判断测试真正验证了需求，而不是仅在文件中引用了同一 ID？</li>
+          <li><b>独立 Review 的独立性：</b>不同模型、不同 Prompt、不同工具证据如何降低同源错误？</li>
+          <li><b>变异测试驱动的测试质量：</b>通过自动注入 RTL 缺陷，衡量 Agent 生成测试的故障检出能力。</li>
+          <li><b>形式验证协同：</b>自动从规格生成属性，使用 SymbiYosys 等工具验证控制不变量和边界条件。</li>
+          <li><b>CDC/RDC 与低功耗：</b>将结构检查、UPF 意图和跨域协议纳入阶段门禁。</li>
+          <li><b>覆盖率闭环策略：</b>如何避免 Agent 为追求数字而生成无价值激励或不可维护测试？</li>
+          <li><b>证据新鲜度：</b>文件、参数、工具或模型变化后，哪些旧证据应自动失效？</li>
+          <li><b>工艺感知生成：</b>如何将真实 Liberty、SRAM Compiler 和物理约束纳入架构选择？</li>
+          <li><b>安全与隐私：</b>如何防止 API Key、专有 RTL、工艺库和客户需求进入不受控模型上下文？</li>
+          <li><b>可移植性：</b>如何在 Windows 桌面、Linux 工作站和服务器多租户环境中保持一致工具语义？</li>
+        </ol>
+      </section>
+
+      <section id="discussion">
+        <h2>14. 面向开源社区的讨论问题</h2>
+        <ul class="questions">
+          <li>对不同类型 IP，哪些文件和门禁应当是必需、条件必需或可选？</li>
+          <li>覆盖率门限应该由组织统一规定，还是根据模块风险动态生成？</li>
+          <li>独立 Review Agent 是否必须使用不同模型，还是不同上下文与证据输入已经足够？</li>
+          <li>如何设计公开、合法且具有代表性的 RTL Agent 基准，避免只测玩具模块？</li>
+          <li>Agent 自动豁免哪些问题是可以接受的？哪些必须由具名工程师确认？</li>
+          <li>需求、RTL、验证和综合证据应采用怎样的开放数据格式，才能跨工具迁移？</li>
+          <li>对于商业 EDA，MoonGlass 应只做编排层，还是需要统一诊断与结果模型？</li>
+          <li>开源社区应如何记录失败案例，避免只发布成功 Demo 所造成的选择偏差？</li>
+        </ul>
+      </section>
+
+      <section id="conclusion">
+        <h2>15. 结论</h2>
+        <p>MoonGlass 的迭代表明，把大语言模型放进 ASIC IP 开发流程后，最困难的问题会从“生成语法正确的 RTL”迅速转向“管理状态、变化、工具和证据”。需求与规格需要协同形成但保持追溯；阶段需要允许回访但准确传播影响；主 Agent 需要具备端到端能力，但不能自我签核；验证需要同时关注功能场景、RTL 结构和测试有效性；IP 与 SRAM 需要多视图；工具链需要用最小自检证明真实可用。</p>
+        <p>因此，可信 ASIC Agent 更接近一个由 Agent 驱动的工程操作系统，而不是嵌入聊天框的代码生成器。它应当把概率性推理用于理解、设计和调试，把确定性程序用于扫描、执行、状态和门禁，把原始工程证据用于 Review，把最终风险决策留给能够承担责任的人。</p>
+        <div class="claim"><b>最终命题：</b>芯片开发中的 Agent 自主性，不应以减少用户点击次数衡量，而应以在更少人工操作下仍保持需求可追踪、工具可复现、变更可响应和结论可审计的能力衡量。</div>
+      </section>
+
+      <section id="references" class="refs">
+        <h2>参考资料与进一步阅读</h2>
+        <ol>
+          <li>Accellera Systems Initiative. <i>Universal Verification Methodology (UVM)</i>. <a href="https://www.accellera.org/downloads/standards/uvm" target="_blank" rel="noreferrer">https://www.accellera.org/downloads/standards/uvm</a></li>
+          <li>IEEE Standards Association. <i>IEEE 1800 SystemVerilog Standard</i>. <a href="https://standards.ieee.org/ieee/1800/7743/" target="_blank" rel="noreferrer">https://standards.ieee.org/ieee/1800/7743/</a></li>
+          <li>cocotb Project. <i>cocotb Documentation</i>. <a href="https://docs.cocotb.org/" target="_blank" rel="noreferrer">https://docs.cocotb.org/</a></li>
+          <li>Verilator Project. <i>Verilator User Guide: Coverage Analysis</i>. <a href="https://verilator.org/guide/latest/simulating.html#coverage-analysis" target="_blank" rel="noreferrer">https://verilator.org/guide/latest/simulating.html#coverage-analysis</a></li>
+          <li>Icarus Verilog. <i>Documentation and Usage</i>. <a href="https://steveicarus.github.io/iverilog/" target="_blank" rel="noreferrer">https://steveicarus.github.io/iverilog/</a></li>
+          <li>YosysHQ. <i>Yosys Open SYnthesis Suite Documentation</i>. <a href="https://yosyshq.readthedocs.io/" target="_blank" rel="noreferrer">https://yosyshq.readthedocs.io/</a></li>
+          <li>SymbiYosys. <i>Formal Verification Front-end Documentation</i>. <a href="https://symbiyosys.readthedocs.io/" target="_blank" rel="noreferrer">https://symbiyosys.readthedocs.io/</a></li>
+          <li>GTKWave Project. <i>GTKWave Documentation</i>. <a href="https://gtkwave.github.io/gtkwave/" target="_blank" rel="noreferrer">https://gtkwave.github.io/gtkwave/</a></li>
+          <li>MoonGlassAgent. <i>MoonGlass ASIC Design Agent</i>. <a href="https://github.com/MoonGlassAgent/MoonGlass" target="_blank" rel="noreferrer">https://github.com/MoonGlassAgent/MoonGlass</a></li>
+        </ol>
+      </section>
+    </article>
+  </div>
+  <footer class="footer">本文档可用于非商业学术讨论、工程评审和开源社区交流。引用时建议注明文档标题、版本、日期和 MoonGlass 项目链接。反馈与合作：moonglassagent@126.com。</footer>
+</main>
+</body>
+</html>
