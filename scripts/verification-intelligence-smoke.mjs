@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, readdirSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { buildVerificationIntelligence, registerVerificationHypotheses, reviewScenarioClosure } from '../packages/verification-intelligence-engine/src/index.ts'
@@ -90,5 +90,6 @@ if (!review.passed) throw new Error(`Scenario Closure 应通过：${review.block
 
 const state = JSON.parse(readFileSync(second.paths.verificationState, 'utf-8'))
 if (state.rtlHash !== second.structuralModel.rtlHash) throw new Error('Verification State RTL Hash 不一致')
+if (readdirSync(join(root, 'verification', 'intelligence')).some((name) => name.endsWith('.tmp'))) throw new Error('原子写入遗留临时文件')
 
 console.log(`Verification Intelligence smoke passed: ${second.risks.length} risks, ${second.verificationState.scenarioCount} scenarios`)

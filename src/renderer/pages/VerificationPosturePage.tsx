@@ -22,6 +22,7 @@ interface VerificationState {
 }
 
 const CLOSED = new Set(['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'])
+const pause = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 const HOLE_LABELS: Record<string, string> = {
   C1_UNREACHABLE: '不可达', C2_CONSTRAINT_BLOCKED: '约束阻断', C3_STIMULUS_MISSING: '激励缺失',
   C4_OBSERVATION_MISSING: '观察缺失', C5_SPEC_UNDEFINED: '规格未定义', C6_TOOL_INSTRUMENTATION: '工具/插桩'
@@ -53,8 +54,18 @@ export function VerificationPosturePage(): React.JSX.Element {
     try {
       const current = await window.moonglass.project.get(projectId)
       setProject(current)
-      const stateFile = await window.moonglass.fs.readFile(projectId, 'verification/intelligence/verification-state.json')
-      const parsed = JSON.parse(stateFile.content) as Partial<VerificationState>
+      let parsed: Partial<VerificationState> | null = null
+      let parseError: unknown
+      for (let attempt = 0; attempt < 4 && !parsed; attempt += 1) {
+        try {
+          const stateFile = await window.moonglass.fs.readFile(projectId, 'verification/intelligence/verification-state.json')
+          parsed = JSON.parse(stateFile.content) as Partial<VerificationState>
+        } catch (caught) {
+          parseError = caught
+          if (attempt < 3) await pause(200 * (attempt + 1))
+        }
+      }
+      if (!parsed) throw parseError instanceof Error ? parseError : new Error('验证态势数据读取失败')
       setState({
         generatedAt: parsed.generatedAt ?? new Date(0).toISOString(), rtlHash: parsed.rtlHash ?? '', scenarioCount: parsed.scenarioCount ?? 0,
         criticalOpen: parsed.criticalOpen ?? [], verificationIntents: parsed.verificationIntents ?? [], specGaps: parsed.specGaps ?? [], coverageHoles: parsed.coverageHoles ?? [],
@@ -109,7 +120,7 @@ export function VerificationPosturePage(): React.JSX.Element {
     {!state ? <div className="flex flex-1 items-center justify-center p-8"><div className="max-w-lg border border-dashed border-zinc-300 bg-white p-8 text-center">
       <FileSearch className="mx-auto text-zinc-400" size={30} /><h2 className="mt-3 text-base font-semibold">尚未生成验证态势数据</h2>
       <p className="mt-2 text-sm text-zinc-500">{error || '在项目主会话中调用 build_verification_intelligence 后，此页面会展示完整 AIGV 状态。'}</p>
-      <Link to="/workspace/$projectId" params={{ projectId }} className="mt-4 inline-flex rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500">返回工作区生成</Link>
+      <div className="mt-4 flex justify-center gap-2"><button onClick={() => void load()} className="rounded border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700 hover:border-emerald-500">重新读取</button><Link to="/workspace/$projectId" params={{ projectId }} className="inline-flex rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500">返回工作区生成</Link></div>
     </div></div> : <main className="min-h-0 flex-1 overflow-auto">
       <section className="grid grid-cols-7 border-b border-zinc-200 bg-white py-4">
         <Metric label="总体结论" value={signoff.label} detail={signoff.detail} tone={signoff.tone} />

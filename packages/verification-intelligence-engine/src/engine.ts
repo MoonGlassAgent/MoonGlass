@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import type {
   Confidence,
@@ -77,6 +77,12 @@ function walk(dir: string, accept: (path: string) => boolean): string[] {
 
 function featuresOf(text: string): string[] {
   return FEATURE_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([feature]) => feature)
+}
+
+function writeJsonAtomic(path: string, value: unknown): void {
+  const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`)
+  writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf-8')
+  renameSync(temporary, path)
 }
 
 function sourceLine(text: string, pattern: RegExp): number {
@@ -365,17 +371,17 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const criticalOpen = scenarios.filter((item) => item.priority >= 0.2 && !['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'].includes(item.status)).map((item) => item.id)
   const structuralSummary = { fsm: structure.stateMachines.length, cfgNodes: structure.controlFlow.nodes.length, dependencies: structure.temporalDependencies.length, cones: structure.conesOfInfluence.length, protocols: structure.protocols.map((item) => ({ protocol: item.protocol, module: item.module })) }
   const verificationState: VerificationStateModel = { version: 3, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, hypotheses, formalResults, specGaps, verificationIntents, coverageHoles, structuralSummary }
-  writeFileSync(paths.requirementModel, JSON.stringify(requirements, null, 2), 'utf-8')
-  writeFileSync(paths.structuralModel, JSON.stringify(structure, null, 2), 'utf-8')
-  writeFileSync(paths.riskRegister, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), risks }, null, 2), 'utf-8')
-  writeFileSync(paths.scenarioRegistry, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarios }, null, 2), 'utf-8')
-  writeFileSync(paths.verificationState, JSON.stringify(verificationState, null, 2), 'utf-8')
-  writeFileSync(paths.interactionGraph, JSON.stringify(interactionGraph, null, 2), 'utf-8')
-  writeFileSync(paths.executionPlan, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), plans: executionPlan }, null, 2), 'utf-8')
-  writeFileSync(paths.specGaps, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), gaps: specGaps }, null, 2), 'utf-8')
-  writeFileSync(paths.verificationIntents, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), intents: verificationIntents }, null, 2), 'utf-8')
-  writeFileSync(paths.coverageHoles, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), holes: coverageHoles }, null, 2), 'utf-8')
-  if (!existsSync(paths.hypotheses)) writeFileSync(paths.hypotheses, JSON.stringify({ version: 1, hypotheses: [] }, null, 2), 'utf-8')
+  writeJsonAtomic(paths.requirementModel, requirements)
+  writeJsonAtomic(paths.structuralModel, structure)
+  writeJsonAtomic(paths.riskRegister, { version: 1, generatedAt: new Date().toISOString(), risks })
+  writeJsonAtomic(paths.scenarioRegistry, { version: 1, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarios })
+  writeJsonAtomic(paths.verificationState, verificationState)
+  writeJsonAtomic(paths.interactionGraph, interactionGraph)
+  writeJsonAtomic(paths.executionPlan, { version: 1, generatedAt: new Date().toISOString(), plans: executionPlan })
+  writeJsonAtomic(paths.specGaps, { version: 1, generatedAt: new Date().toISOString(), gaps: specGaps })
+  writeJsonAtomic(paths.verificationIntents, { version: 1, generatedAt: new Date().toISOString(), intents: verificationIntents })
+  writeJsonAtomic(paths.coverageHoles, { version: 1, generatedAt: new Date().toISOString(), holes: coverageHoles })
+  if (!existsSync(paths.hypotheses)) writeJsonAtomic(paths.hypotheses, { version: 1, hypotheses: [] })
   writeReport(paths.report, verificationState, risks)
   return { requirementModel: requirements, structuralModel: structure, risks, verificationState, paths }
 }
@@ -395,7 +401,7 @@ export function registerVerificationHypotheses(workspaceDir: string, proposed: A
     if (item.claims.some((claim) => ['SPEC_FACT', 'RTL_FACT'].includes(claim.kind) && claim.references.length === 0)) reasons.push('事实 claim 必须提供引用')
     return { ...item, id: `HYP-${createHash('sha1').update(`${item.title}\0${index}`).digest('hex').slice(0, 8).toUpperCase()}`, status: reasons.length ? 'REJECTED' : 'ACCEPTED', rejectionReasons: reasons, createdAt: new Date().toISOString() }
   })
-  writeFileSync(artifacts.paths.hypotheses, JSON.stringify({ version: 1, hypotheses: validated }, null, 2), 'utf-8')
+  writeJsonAtomic(artifacts.paths.hypotheses, { version: 1, hypotheses: validated })
   return validated
 }
 
