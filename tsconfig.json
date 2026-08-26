@@ -11,6 +11,7 @@
       "@renderer/*": ["./src/renderer/*"],
       "@moonglass/prompts": ["./packages/prompts/src/index.ts"],
       "@moonglass/eda-bridge": ["./packages/eda-bridge/src/index.ts"],
+      "@moonglass/verification-intelligence-engine": ["./packages/verification-intelligence-engine/src/index.ts"],
       "@moonglass/rtl-engine": ["./packages/rtl-engine/src/index.ts"]
     }
   },

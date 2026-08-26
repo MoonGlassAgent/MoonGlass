@@ -25,6 +25,7 @@ import {
 import { runCocotbSimulation, runVerilatorSimulation } from './eda-bridge/simulation'
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
+import { buildVerificationIntelligence, reviewScenarioClosure } from './verification-intelligence/engine.ts'
 
 // ============================================================
 // 工具特定逻辑
@@ -1317,6 +1318,39 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   })
 
   pi.registerTool({
+    name: 'build_verification_intelligence',
+    label: 'Build Verification Intelligence',
+    description: '从需求/规格、RTL 结构事实和回归反馈生成 Requirement Model、Structural Model、Risk Register、Scenario Registry 与 Verification State。风险标记不等同于 RTL Bug。',
+    promptSnippet: 'Build deterministic verification models before choosing verification scenarios',
+    promptGuidelines: 'Use ranked scenarios to choose tests. Do not invent RTL facts or generate arbitrary Cartesian products.',
+    parameters: Type.Object({}),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const artifacts = buildVerificationIntelligence(ctx.cwd)
+      const state = artifacts.verificationState
+      const top = state.scenarios.slice(0, 10)
+      return {
+        content: [{ type: 'text', text: `## Verification Intelligence\n\n- Requirement：${artifacts.requirementModel.requirements.length}\n- RTL Structural Fact：${artifacts.structuralModel.facts.length}\n- Risk Marker：${artifacts.risks.length}\n- Scenario：${state.scenarioCount}\n- Critical Open：${state.criticalOpen.length}\n- RTL Hash：${state.rtlHash}\n\n### 当前最高优先级\n${top.length ? top.map((item) => `- ${item.id} [${item.status}] priority=${item.priority}：${item.title}`).join('\n') : '- 未识别到 Scenario'}\n\n报告：${artifacts.paths.report}` }],
+        details: { paths: artifacts.paths, scenarioCount: state.scenarioCount, criticalOpen: state.criticalOpen, topScenarios: top },
+        isError: false
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'review_verification_scenarios',
+    label: 'Review Verification Scenarios',
+    description: '确定性检查 Verification State 中关键 Scenario、回归证据和闭环状态。',
+    promptSnippet: 'Review scenario closure using machine-readable verification state',
+    promptGuidelines: 'Resolve critical scenarios with simulation, formal/static evidence, approved waiver, or explicit specification blocker.',
+    parameters: Type.Object({}),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const result = reviewScenarioClosure(ctx.cwd)
+      const text = `## Scenario Closure Review\n\n**结论**：${result.passed ? '通过' : '拒绝签核'}\n\n${result.blockers.length ? `### 阻断项\n${result.blockers.map((item) => `- ${item}`).join('\n')}` : '无阻断项。'}${result.warnings.length ? `\n\n### 警告\n${result.warnings.map((item) => `- ${item}`).join('\n')}` : ''}`
+      return { content: [{ type: 'text', text }], details: result, isError: !result.passed }
+    }
+  })
+
+  pi.registerTool({
     name: 'review_verification_evidence',
     label: 'Review Verification Evidence',
     description: '独立读取验证源码、原始 result.json、JUnit、日志和覆盖率证据，检查测试有效性与签核条件；不得以 Agent 自述替代证据。',
@@ -1376,6 +1410,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       else if (minimumBranch < branchThreshold) blockers.push(`条件/分支覆盖率 ${minimumBranch}% 低于 ${branchThreshold}%`)
       if (minimumFunctional === undefined) blockers.push('未找到功能覆盖率')
       else if (minimumFunctional < functionalThreshold) blockers.push(`功能覆盖率 ${minimumFunctional}% 低于 ${functionalThreshold}%`)
+      const scenarioReview = reviewScenarioClosure(ctx.cwd)
+      blockers.push(...scenarioReview.blockers.map((item) => `Scenario Closure：${item}`))
+      warnings.push(...scenarioReview.warnings.map((item) => `Scenario Closure：${item}`))
       for (const file of testFiles) {
         const code = readFileSync(file, 'utf-8')
         if (!/@cocotb\.test/.test(code)) warnings.push(`${relative(ctx.cwd, file)} 未发现 @cocotb.test`)

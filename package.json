@@ -49,6 +49,7 @@
     "@monaco-editor/react": "^4.7.0",
     "@moonglass/design-browser-engine": "workspace:*",
     "@moonglass/eda-bridge": "workspace:*",
+    "@moonglass/verification-intelligence-engine": "workspace:*",
     "@moonglass/prompts": "workspace:*",
     "@moonglass/rtl-engine": "workspace:*",
     "@tailwindcss/vite": "^4.1.0",

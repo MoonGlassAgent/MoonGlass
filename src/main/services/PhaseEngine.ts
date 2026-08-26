@@ -11,6 +11,7 @@ import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { runLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
+import { buildVerificationIntelligence, reviewScenarioClosure } from '@moonglass/verification-intelligence-engine'
 import {
   PHASE_ORDER,
   type ChipProject,
@@ -29,7 +30,7 @@ export const GATE_RULES: readonly GateRule[] = [
   { from: 'REQ_SPEC', to: 'ARCH', precondition: '需求、模块规格、接口规格与追溯矩阵可用于架构设计', autoChecks: ['requirements-usable', 'module-spec-usable', 'interface-spec-usable', 'rtm-complete'] },
   { from: 'ARCH', to: 'RTL', precondition: '总体架构和接口可用；独立微架构与时钟复位文档按设计复杂度选配', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
   { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
-  { from: 'VERIF', to: 'QA', precondition: '覆盖率与独立证据审查报告', autoChecks: ['line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'sim-passed', 'verification-evidence-review'] },
+  { from: 'VERIF', to: 'QA', precondition: '覆盖率、Scenario 闭环与独立证据审查报告', autoChecks: ['line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'sim-passed', 'verification-scenario-closure', 'verification-evidence-review'] },
   { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed'] }
 ] as const
 
@@ -58,6 +59,7 @@ const CHECK_NAMES: Record<string, string> = {
   'branch-coverage-gte-85': '条件/分支覆盖率 ≥85%',
   'func-coverage-gte-80': '功能覆盖率 ≥80%',
   'verification-evidence-review': '验证原始证据独立审查',
+  'verification-scenario-closure': '关键风险 Scenario 闭环',
   'sim-passed': '仿真通过',
   'verible-zero-error': 'Lint 零 Error',
   'yosys-synthesizable': 'Yosys 可综合性',
@@ -408,6 +410,15 @@ async function verificationEvidenceReview(ctx: GateCheckContext, checkId: string
   } catch { return makeResult(checkId, false, 'error', 'verification_signoff_review.json 无法解析') }
 }
 
+async function verificationScenarioClosure(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  buildVerificationIntelligence(ctx.workspaceDir)
+  const review = reviewScenarioClosure(ctx.workspaceDir)
+  if (review.passed) {
+    return makeResult(checkId, true, 'error', `Scenario 闭环通过：${review.state?.scenarioCount ?? 0} 个场景，关键未闭环 0`)
+  }
+  return makeResult(checkId, false, 'error', [...review.blockers, ...review.warnings].join('\n'))
+}
+
 /** Lint 零 Error：逐文件 runLint（verible 优先，verilator 回退），任一 Error 即失败 */
 async function lintZeroError(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
   const files = collectDesignRtlFiles(ctx.workspaceDir)
@@ -591,6 +602,7 @@ const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promi
   'branch-coverage-gte-85': coverageAtLeast(['branchCoverage', 'branch_coverage', 'expressionCoverage'], 85),
   'func-coverage-gte-80': coverageAtLeast(['functionalCoverage', 'functional_coverage', 'funcCoverage'], 80),
   'verification-evidence-review': verificationEvidenceReview,
+  'verification-scenario-closure': verificationScenarioClosure,
   'sim-passed': simPassed,
   'verible-lint-zero-error': lintZeroError,
   'verible-zero-error': lintZeroError,

@@ -1174,6 +1174,19 @@ interface ProjectInventory {
   artifacts: string[]
 }
 
+interface VerificationIntelligenceSummary {
+  scenarioCount: number
+  criticalOpen: string[]
+  regressions: Array<{ passed: boolean }>
+  scenarios: Array<{
+    id: string
+    title: string
+    priority: number
+    method: string
+    status: string
+  }>
+}
+
 const EMPTY_INVENTORY: ProjectInventory = {
   rtl: [], logs: [], waveforms: [], verification: [], synthesis: [], artifacts: []
 }
@@ -1191,6 +1204,7 @@ function BottomPanel({
   const [inventory, setInventory] = useState<ProjectInventory>(EMPTY_INVENTORY)
   const [loading, setLoading] = useState(false)
   const [waveformStatus, setWaveformStatus] = useState('')
+  const [intelligence, setIntelligence] = useState<VerificationIntelligenceSummary | null>(null)
 
   const refreshInventory = useCallback(async () => {
     setLoading(true)
@@ -1198,6 +1212,13 @@ function BottomPanel({
       const files = flattenFiles(await window.moonglass.fs.tree(projectId))
       const verification = files.filter((file) => /(^|\/)verification\//i.test(file))
       const synthesis = files.filter((file) => /(^|\/)imp\/(constraints|synthesis)\//i.test(file))
+      const intelligencePath = 'verification/intelligence/verification-state.json'
+      if (files.includes(intelligencePath)) {
+        try {
+          const result = await window.moonglass.fs.readFile(projectId, intelligencePath)
+          setIntelligence(result ? JSON.parse(result.content) as VerificationIntelligenceSummary : null)
+        } catch { setIntelligence(null) }
+      } else setIntelligence(null)
       setInventory({
         rtl: files.filter((file) => /(^|\/)rtl\/.*\.(v|sv)$/i.test(file)),
         logs: files.filter((file) => /\.(log|out)$/i.test(file)),
@@ -1315,9 +1336,38 @@ function BottomPanel({
         {toolbar}
         <div className="mb-2 grid grid-cols-3 gap-2">
           <ConsoleMetric label="验证产物" value={inventory.verification.length} />
-          <ConsoleMetric label="波形" value={inventory.waveforms.length} />
-          <ConsoleMetric label="RTL 文件" value={inventory.rtl.length} />
+          <ConsoleMetric label="Scenario" value={intelligence?.scenarioCount ?? 0} />
+          <ConsoleMetric label="关键未闭环" value={intelligence?.criticalOpen.length ?? 0} />
         </div>
+        {!intelligence && (
+          <div className="console-empty mb-2 flex items-center justify-between gap-3">
+            <span>尚未生成 Verification Intelligence 模型。</span>
+            <button
+              onClick={() => onAskAgent('请调用 build_verification_intelligence，基于当前规格、RTL 结构事实和覆盖率反馈生成风险与 Scenario 看板，并说明最高优先级场景的选择依据。')}
+              disabled={agentStreaming}
+              className="console-action shrink-0"
+            >
+              生成智能验证模型
+            </button>
+          </div>
+        )}
+        {intelligence && intelligence.scenarios.length > 0 && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Verification Intelligence Scenario 看板">
+            {intelligence.scenarios.slice(0, 12).map((scenario) => (
+              <button
+                key={scenario.id}
+                onDoubleClick={() => onOpenFile('verification/intelligence/scenario-registry.json')}
+                className="console-row w-full text-left"
+                title="双击打开完整 Scenario Registry"
+              >
+                <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{scenario.id}</strong>
+                <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{scenario.title}</span>
+                <span className="shrink-0 font-mono text-[10px] text-zinc-500">P={scenario.priority.toFixed(3)}</span>
+                <span className={`shrink-0 text-[10px] ${['VERIFIED', 'FORMAL_PROVED', 'WAIVED'].includes(scenario.status) ? 'text-emerald-600' : scenario.status === 'FAILED' ? 'text-red-600' : 'text-amber-600'}`}>{scenario.status}</span>
+              </button>
+            ))}
+          </div>
+        )}
         {inventory.waveforms.length > 0 && (
           <div className="console-list mb-2 max-h-24 overflow-y-auto">
             {inventory.waveforms.map((file) => (

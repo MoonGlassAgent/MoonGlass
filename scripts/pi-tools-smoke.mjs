@@ -24,6 +24,14 @@ for (const f of ['tool-runner.ts', 'rtl-files.ts', 'simulation.ts', 'synthesis.t
     (await import('node:fs')).readFileSync(join(process.cwd(), 'packages', 'eda-bridge', 'src', f), 'utf-8')
   )
 }
+const verificationIntelligenceDir = join(bridgeDir, 'verification-intelligence')
+mkdirSync(verificationIntelligenceDir, { recursive: true })
+for (const f of ['engine.ts', 'types.ts']) {
+  writeFileSync(
+    join(verificationIntelligenceDir, f),
+    (await import('node:fs')).readFileSync(join(process.cwd(), 'packages', 'verification-intelligence-engine', 'src', f), 'utf-8')
+  )
+}
 const work = join(bridgeDir, 'work')
 mkdirSync(join(work, '.pi'), { recursive: true })
 writeFileSync(join(work, '.pi', 'APPEND_SYSTEM.md'), 'test', 'utf-8')

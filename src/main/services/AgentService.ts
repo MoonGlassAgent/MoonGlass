@@ -245,6 +245,16 @@ export class AgentService implements MoonGlassService {
     copyEda('synthesis.ts')
     copyEda('rtl-files.ts')
 
+    const verificationIntelligenceDir = join(this.bridgeDir, 'verification-intelligence')
+    mkdirSync(verificationIntelligenceDir, { recursive: true })
+    for (const name of ['engine.ts', 'types.ts']) {
+      const src = app.isPackaged
+        ? join(resourcesDir, 'verification-intelligence', name)
+        : join(resourcesDir, 'packages', 'verification-intelligence-engine', 'src', name)
+      if (existsSync(src)) copyFileSync(src, join(verificationIntelligenceDir, name))
+      else console.error(`[agent-service] 未找到 Verification Intelligence 源文件: ${src}`)
+    }
+
     // MoonGlass 使用隔离的 Pi 目录；内置技能必须复制并显式写入该目录的设置。
     const piAgentDir = this.piAgentDir()
     const skillsDir = join(piAgentDir, 'skills')
@@ -454,6 +464,8 @@ scripts/
 - 仿真日志、机器可读结果、覆盖率与波形必须写入 \`verification/results/<module>/\`。
 - 主会话必须完成端到端验证闭环：先以 Cocotb + Icarus 完成功能回归和功能覆盖率；Windows 再以 Verilator C++ 模式采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率，Linux 可直接使用 Cocotb + Verilator。不得自行生成临时 runner 绕过工具。
 - 验证结束前必须调用 \`review_verification_evidence\` 独立读取原始测试、日志、JUnit、result.json 和覆盖率；存在阻断项时继续修复和回归，不能以自己的总结作为签核证据。
+- 验证规划必须调用 \`build_verification_intelligence\`，根据 Requirement Model、RTL 结构事实、风险分类和 Coverage Feedback 选择最高价值 Scenario；不得把风险标记写成已确认 Bug，也不得生成无结构依据的任意 Feature 笛卡尔积。
+- 每个智能规划 Scenario 必须使用稳定 SCN-* ID；测试将 reach/pass/证据写入 \`verification/results/<module>/scenario_hits.json\`。关键 Scenario 必须验证、Formal 证明、证明不可达或经批准豁免，最后调用 \`review_verification_scenarios\`。
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
 - 综合优先使用 MoonGlass 工艺库索引选定的默认 Liberty；若没有配置默认库，允许通用综合，但须明确提示面积和时序不具备工艺意义。
 - MoonGlass 工艺库统一索引路径：${processLibraryIndex.replace(/\\/g, '/')}。涉及工艺选择、综合、时序或物理视图前，先读取该索引并核对 Liberty/LEF/GDS/Verilog 等可用文件；不得只凭目录名猜测文件。用户新增或下载工艺库后，以该索引为准。
@@ -480,10 +492,11 @@ argument-hint: "<模块名>"
 1. 使用 verification-planning 技能维护 docs/04_verification/ 三份计划。
 2. 使用 collect_rtl_files、read_verilog、run_verible_lint 和 check_synthesizability。
 3. 使用 cocotb-verification 技能在 verification/$1_tb/ 创建规范环境。
-4. 完善 Cocotb 测试后，使用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus") 实际运行。
-5. 确认 verification/results/$1/ 中存在编译日志、仿真日志、result.json 和波形。
-6. 更新需求到测试的追踪、覆盖率结果和 docs/06_validation/ 验证报告。
-7. 工具失败时分析日志、修复并重跑；不得以文字结论代替实际工具结果。
+4. 调用 build_verification_intelligence，选择最高优先级 Scenario，优先配置现有 sequence/driver 并在测试和覆盖率中绑定 SCN-* ID。
+5. 完善 Cocotb 测试后，使用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus") 实际运行。
+6. 确认 verification/results/$1/ 中存在编译日志、仿真日志、result.json、scenario_hits.json 和波形。
+7. 重新构建 Verification State，完成关键 Scenario 后调用 review_verification_scenarios 与 review_verification_evidence。
+8. 更新需求到 Scenario、测试和证据的追踪以及 docs/06_validation/ 验证报告；工具失败时分析日志、修复并重跑。
 `
     writeFileSync(join(promptsDir, 'verify.md'), verifyTemplate, 'utf-8')
   }

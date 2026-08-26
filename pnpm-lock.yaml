@@ -29,6 +29,9 @@ importers:
       '@moonglass/rtl-engine':
         specifier: workspace:*
         version: link:packages/rtl-engine
+      '@moonglass/verification-intelligence-engine':
+        specifier: workspace:*
+        version: link:packages/verification-intelligence-engine
       '@tailwindcss/vite':
         specifier: ^4.1.0
         version: 4.3.3(vite@7.3.6(@types/node@22.20.1)(jiti@2.7.0)(lightningcss@1.32.0)(yaml@2.9.0))
@@ -142,6 +145,15 @@ importers:
 
   packages/rtl-engine:
     devDependencies:
+      typescript:
+        specifier: ^5.9.0
+        version: 5.9.3
+
+  packages/verification-intelligence-engine:
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.0
+        version: 22.20.1
       typescript:
         specifier: ^5.9.0
         version: 5.9.3

@@ -1,0 +1,26 @@
+{
+  "version": "1.0.0",
+  "purpose": "MoonGlass 可解释风险驱动验证分类。风险标记用于规划 Scenario，不等同于 RTL Bug 结论。",
+  "risks": [
+    { "id": "R01", "name": "Event Collision" },
+    { "id": "R02", "name": "Priority Dependency" },
+    { "id": "R03", "name": "Resource Contention" },
+    { "id": "R04", "name": "Outstanding Dependency" },
+    { "id": "R05", "name": "Counter Boundary" },
+    { "id": "R06", "name": "FSM Rare Transition" },
+    { "id": "R07", "name": "Error/Normal Collision" },
+    { "id": "R08", "name": "Reset/Transaction Collision" },
+    { "id": "R09", "name": "SW/HW Collision" },
+    { "id": "R10", "name": "CDC Interaction" },
+    { "id": "R11", "name": "Timeout/Late Response" },
+    { "id": "R12", "name": "Backpressure" },
+    { "id": "R13", "name": "Resource Exhaustion" },
+    { "id": "R14", "name": "Ordering" },
+    { "id": "R15", "name": "Recovery Path" },
+    { "id": "R16", "name": "Configuration Change During Busy" },
+    { "id": "R17", "name": "Width/Truncation/Signedness" },
+    { "id": "R18", "name": "FIFO Pointer/Full/Empty Boundary" },
+    { "id": "R19", "name": "Interrupt Mask/Pending/Clear Collision" },
+    { "id": "R20", "name": "Clock/Power State Transition" }
+  ]
+}

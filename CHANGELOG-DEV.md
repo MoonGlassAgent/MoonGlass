@@ -2,6 +2,17 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-08-26：Verification Intelligence 风险驱动验证闭环
+
+- 新增 Requirement Model、Structural Model、Risk Register、Scenario Registry 与 Verification State 五类机器可读产物。
+- 建立 R01-R20 风险分类；第一版以确定性结构规则提取风险事实，并明确标注 Pattern MVP 局限，不把风险标记冒充 RTL Bug。
+- 新增 `build_verification_intelligence` 和 `review_verification_scenarios` Pi 工具，按 Risk、Interaction、Coverage Gap、Criticality、Confidence 与 Cost 排序 Scenario。
+- Cocotb/回归通过 `scenario_hits.json` 回灌 Scenario reach/pass 和原始证据；引用证据不存在或为空时只能标记为 `PARTIAL`。
+- 主 Agent VERIF Prompt、`/verify` 模板和 verification-planning Skill 接入智能规划，要求稳定 `SCN-*` ID、禁止无结构依据的 Feature 笛卡尔积。
+- VERIF → QA 增加关键 Scenario 闭环门禁，现有覆盖率与独立原始证据审查继续保留。
+- 工作区底部“验证”面板新增 Scenario 总数、关键未闭环计数、优先级列表和一键生成智能验证模型入口。
+- 新增 Verification Intelligence Smoke Test；核心测试、集成测试、Pi 扩展加载、类型检查和生产构建通过。
+
 ## 2026-08-26：在线说明书补充开发环境与 EDA 工具链配置
 
 - 新增按工作目标划分的最低工具组合，覆盖文档、RTL、功能验证、覆盖率、综合、波形与 STA/物理实现。

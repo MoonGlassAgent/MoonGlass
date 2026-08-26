@@ -158,10 +158,12 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 1. 先使用 verification-planning 技能校验 docs/04_verification/ 三份计划
 2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
 3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb", simulator="icarus") 完成功能回归
-4. Windows 再使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。不得另写临时 runner 绕过工具
-5. 将 compile_icarus.log、simulation_icarus.log、compile_verilator.log、simulation_verilator.log、result.json、coverage.dat、coverage.json、覆盖率报告和 VCD/FST 写入 verification/results/<module>/
-6. 分析覆盖率报告，补充测试用例直至达标，并更新需求追踪
-7. 最后必须调用 review_verification_evidence；有阻断项时继续修复和回归，不得自行宣称验证完成
+4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成可解释风险和排序后的 Scenario Registry；风险标记不是 Bug 结论
+5. 优先验证高优先级 Scenario；禁止生成无结构依据的任意笛卡尔积。优先配置和复用现有 sequence/driver，把 Scenario ID 写入 testcase、coverage bin 和证据
+6. Windows 再使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。不得另写临时 runner 绕过工具
+7. 将 compile_icarus.log、simulation_icarus.log、compile_verilator.log、simulation_verilator.log、result.json、scenario_hits.json、coverage.dat、coverage.json、覆盖率报告和 VCD/FST 写入 verification/results/<module>/
+8. 根据 Scenario reach/断言/功能覆盖/代码覆盖增量更新 scenario_hits.json，再次调用 build_verification_intelligence；补充测试直至关键 Scenario 闭环
+9. 最后依次调用 review_verification_scenarios 和 review_verification_evidence；有阻断项时继续修复和回归，不得自行宣称验证完成
 
 约束：
 - 必须基于 RTL 阶段的端口定义

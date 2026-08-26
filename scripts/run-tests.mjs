@@ -9,7 +9,8 @@ const suites = {
     'scripts/file-reference-smoke.mjs',
     'scripts/project-import-analyzer-smoke.mjs',
     'scripts/pi-rpc-event-smoke.mjs',
-    'scripts/pi-tools-smoke.mjs'
+    'scripts/pi-tools-smoke.mjs',
+    'scripts/verification-intelligence-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

@@ -22,7 +22,26 @@ Create and maintain the verification documents under `docs/04_verification/`.
    requirement-to-test traceability.
 5. Define stimulus, checker, expected result, coverage target, and pass/fail
    criteria for each test.
-6. Run:
+6. Call `build_verification_intelligence`. Review the ranked Scenario Registry
+   and bind selected `SCN-*` IDs to requirements, RTL objects, tests, checkers,
+   coverage bins, and evidence. Risk markers are planning hypotheses, not
+   confirmed bugs. Do not generate arbitrary feature Cartesian products.
+7. After execution, write `verification/results/<module>/scenario_hits.json`:
+
+```json
+{
+  "scenarios": [
+    {
+      "id": "SCN-XXXXXXXX",
+      "reached": true,
+      "passed": true,
+      "evidence": ["results_icarus.xml", "wave.fst"]
+    }
+  ]
+}
+```
+
+8. Run:
 
 ```bash
 python <skill-dir>/scripts/check_vplan.py docs/04_verification/verification_plan.md
