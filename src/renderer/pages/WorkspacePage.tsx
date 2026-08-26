@@ -64,9 +64,12 @@ const MAX_BOTTOM = 400
 
 interface ManagedStep {
   phase: Phase
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'completed' | 'completed_with_risk' | 'failed'
   detail: string
 }
+
+const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+const isManagedPause = (message: string): boolean => /用户停止托管|托管已暂停|L3\/L4 高影响/.test(message)
 
 const MANAGED_PHASE_PROMPTS: Record<Phase, string> = {
   REQ_SPEC: '完成需求-规格定义：审查项目目标，补齐产品需求、模块规格、接口规格和需求-规格追溯矩阵，消除占位内容并执行文档检查。',
@@ -537,13 +540,21 @@ export function WorkspacePage(): React.JSX.Element {
   }
 
   const runManagedAgent = async (instruction: string): Promise<void> => {
-    await sendAgentPrompt(
-      `【MoonGlass 一键托管】\n${instruction}\n\n` +
+    const prompt = `【MoonGlass 一键托管】\n${instruction}\n\n` +
       '托管规则：直接检查并修改实际项目文件，调用本阶段适用工具完成验证，所有结论必须引用真实证据。' +
       '不要等待人工确认；存在多个方案时优先采用明确标记的推荐方案，其次采用风险最低且可回退的方案，并在总结中记录选择。' +
       'RTL 修复按 L1-L4 分级：L1/L2 可直接修改并自动完成定向复现、受影响回归、全量回归和独立证据 Review；只有 L3 架构影响或 L4 规格影响才暂停确认，并将决策标题以 [L3] 或 [L4] 开头。' +
       '不得删除失败用例、削弱 Checker/Assertion/覆盖率目标、扩大无关项范围，或无规格依据修改测试预期。不得伪造 EDA 结果，不得把估算称为签核。完成后列出修改文件、影响等级、执行命令、结果和遗留风险。'
-    )
+    let lastError = ''
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try { await sendAgentPrompt(prompt); lastError = ''; break } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error)
+        if (isManagedPause(lastError) || managedStopRef.current) throw error
+        appendLog(`一键托管：Agent 执行异常，第 ${attempt}/3 次重试：${lastError}`)
+        if (attempt < 3) await wait(attempt * 1500)
+      }
+    }
+    if (lastError) throw new Error(`Agent 重试后仍失败：${lastError}`)
     for (let round = 0; round < 6; round += 1) {
       const pending = pendingDecisionRequests()
       if (pending.length === 0) return
@@ -558,13 +569,21 @@ export function WorkspacePage(): React.JSX.Element {
           customText: '一键托管自动决策：采用推荐方案；无明确推荐时采用第一项，并要求保留可回退性。'
         }
       }))
-      await sendAgentPrompt(response)
+      let sent = false
+      for (let attempt = 1; attempt <= 3 && !sent; attempt += 1) {
+        try { await sendAgentPrompt(response); sent = true } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          appendLog(`一键托管：自动决策回传失败，第 ${attempt}/3 次重试：${message}`)
+          if (attempt < 3) await wait(attempt * 1000)
+          else throw error
+        }
+      }
     }
     throw new Error('Agent 连续产生过多待确认项，已停止托管以防止决策循环')
   }
 
   const writeManagedReport = async (
-    outcome: 'completed' | 'stopped' | 'failed',
+    outcome: 'completed' | 'completed_with_risk' | 'paused' | 'stopped' | 'failed',
     startedAt: string,
     steps: ManagedStep[],
     error?: string
@@ -579,15 +598,15 @@ export function WorkspacePage(): React.JSX.Element {
     const content = `# MoonGlass 一键托管报告\n\n` +
       `- 项目：${latest?.name ?? project?.name ?? projectId}\n` +
       `- 开始时间：${startedAt}\n- 结束时间：${finishedAt}\n` +
-      `- 结果：${outcome === 'completed' ? '已完成' : outcome === 'stopped' ? '用户停止' : '执行失败'}\n` +
+      `- 结果：${outcome === 'completed' ? '完整通过' : outcome === 'completed_with_risk' ? '带遗留风险完成（未签核）' : outcome === 'paused' ? '等待高影响决策' : outcome === 'stopped' ? '用户停止' : '执行失败'}\n` +
       `- 托管终点：${PHASE_LABELS[managedEndPhase]}\n` +
       `- 最终阶段：${latest ? PHASE_LABELS[latest.currentPhase] : '未知'}\n` +
       (error ? `- 停止原因：${error}\n` : '') +
       `\n## 阶段执行记录\n\n${steps.map((step) => `- [${step.status === 'completed' ? 'x' : ' '}] ${PHASE_LABELS[step.phase]}：${step.detail}`).join('\n')}\n` +
       `\n## 门禁与质量证据\n\n| 阶段 | 检查项 | 结果 | 级别 | 说明 |\n|---|---|---|---|---|\n${gates.join('\n') || '| - | 尚无门禁记录 | - | - | - |'}\n` +
       `\n## 自动决策与 RTL 修复策略\n\n托管期间优先采用 Agent 明确标记的推荐项；无推荐项时采用第一项并要求保持可回退。L1/L2 RTL 修复允许自动闭环；L3 架构影响和 L4 规格影响必须暂停等待用户裁决。所有自动选择、RTL 修改、影响等级和证据保留在 Agent 会话历史中。\n` +
-      `需求-规格定义和架构设计阶段的门禁在三次自动修复后仍失败时，不中断托管；失败项作为遗留风险保留并自动推进。RTL、验证、质量检查和综合实现阶段继续执行严格阻断。\n` +
-      `\n## 遗留风险\n\n${outcome === 'completed' ? '请人工复核关键架构决策、第三方 IP 许可证，以及正式 PPA/CDC/STA 签核条件。' : `托管未完整结束，必须处理停止原因后再继续：${error ?? '用户主动停止'}。`}\n`
+      `普通 Agent/工具异常会自动重试；所有阶段的门禁在多轮自动修复后仍失败时，作为未签核风险保留并继续推进。只有用户停止、模型不可用或 L3/L4 高影响决策会暂停流程。\n` +
+      `\n## 遗留风险\n\n${outcome === 'completed' ? '请人工复核关键架构决策、第三方 IP 许可证，以及正式 PPA/CDC/STA 签核条件。' : outcome === 'completed_with_risk' ? '流程已运行到目标阶段，但存在上表所列失败门禁或工具异常；本结果不得作为签核。' : `托管未完整结束，必须处理停止原因后再继续：${error ?? '用户主动停止'}。`}\n`
     await window.moonglass.fs.writeText(projectId, path, content)
     setTreeTick((tick) => tick + 1)
     setManagedReportPath(path)
@@ -607,8 +626,9 @@ export function WorkspacePage(): React.JSX.Element {
     const startedAt = new Date().toISOString()
     const steps: ManagedStep[] = []
     setManagedSteps([])
-    let outcome: 'completed' | 'stopped' | 'failed' = 'completed'
+    let outcome: 'completed' | 'completed_with_risk' | 'paused' | 'stopped' | 'failed' = 'completed'
     let failure = ''
+    let totalRisks = 0
     try {
       await ensureAgent(projectId)
       if (!useChatStore.getState().sessionInfo?.providersReady) throw new Error('模型会话未就绪，请先配置并测试模型服务')
@@ -628,21 +648,33 @@ export function WorkspacePage(): React.JSX.Element {
         }
         await ensureAgent(projectId)
         if (active.phases[phase].changeNotice?.status === 'pending') {
-          await runManagedAgent(buildChangeResponsePrompt(active, phase))
-          await window.moonglass.phase.acknowledgeChange(projectId, phase, '一键托管已完成该阶段变更响应')
+          try {
+            await runManagedAgent(buildChangeResponsePrompt(active, phase))
+            await window.moonglass.phase.acknowledgeChange(projectId, phase, '一键托管已完成该阶段变更响应')
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (isManagedPause(message)) throw error
+            totalRisks += 1; step.detail = `变更响应异常已记录：${message}`
+            appendLog(`一键托管：${PHASE_LABELS[phase]} 变更响应异常，记录风险并继续：${message}`)
+          }
         }
-        await runManagedAgent(MANAGED_PHASE_PROMPTS[phase])
+        try { await runManagedAgent(MANAGED_PHASE_PROMPTS[phase]) } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (isManagedPause(message)) throw error
+          totalRisks += 1; step.detail = `阶段 Agent 异常已记录：${message}`
+          appendLog(`一键托管：${PHASE_LABELS[phase]} Agent 异常，记录风险并继续检查门禁：${message}`)
+        }
         if (managedStopRef.current) throw new Error('用户停止托管')
 
         if (phase === 'SYNTH') {
           const completed = await window.moonglass.phase.completeProject(projectId)
-          if (!completed) throw new Error('综合阶段无法完成项目收口')
-          setProject(completed)
+          if (completed) setProject(completed)
+          else { totalRisks += 1; step.detail = '综合阶段未能完成项目收口，已作为遗留风险记录' }
         } else {
           const next = PHASE_ORDER[index + 1]
           let advanced = false
           let carriedGateIssues = 0
-          for (let attempt = 0; attempt < 3 && !advanced; attempt += 1) {
+          for (let attempt = 0; attempt < 4 && !advanced; attempt += 1) {
             const result = await window.moonglass.phase.advance(projectId, next)
             if (!result) throw new Error(`推进到 ${PHASE_LABELS[next]} 失败`)
             setProject(result.project)
@@ -652,34 +684,36 @@ export function WorkspacePage(): React.JSX.Element {
               break
             }
             const failed = result.gate.results.filter((item) => item.severity === 'error' && !item.passed)
-            if (attempt === 2) {
-              if (phase === 'REQ_SPEC' || phase === 'ARCH') {
-                const forced = await window.moonglass.phase.advance(projectId, next, { force: true })
-                if (!forced) throw new Error(`无法带遗留项推进到 ${PHASE_LABELS[next]}`)
-                carriedGateIssues = failed.length
-                setProject(forced.project)
-                setGate(forced.gate)
-                appendLog(
-                  `⚠️ 一键托管：${PHASE_LABELS[phase]} 门禁仍有 ${failed.length} 个阻断项，已记录遗留风险并继续推进`
-                )
-                advanced = true
-                break
-              }
-              throw new Error(`${PHASE_LABELS[phase]} 门禁重试后仍有 ${failed.length} 个阻断项`)
+            if (attempt === 3) {
+              const forced = await window.moonglass.phase.advance(projectId, next, { force: true })
+              if (!forced) throw new Error(`无法带遗留项推进到 ${PHASE_LABELS[next]}`)
+              carriedGateIssues = failed.length
+              totalRisks += failed.length
+              setProject(forced.project)
+              setGate(forced.gate)
+              appendLog(`一键托管：${PHASE_LABELS[phase]} 门禁仍有 ${failed.length} 个阻断项，已标记未签核并继续推进`)
+              advanced = true
+              break
             }
-            await runManagedAgent(`修复以下门禁阻断项并重新执行相关检查：\n${failed.map((item) => `- ${item.checkName}：${item.message}`).join('\n')}`)
+            try {
+              await runManagedAgent(`这是第 ${attempt + 1}/3 轮门禁恢复。分析根因，采用与上一轮不同的修复策略，修复后重新执行相关检查：\n${failed.map((item) => `- ${item.checkName}：${item.message}`).join('\n')}`)
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (isManagedPause(message)) throw error
+              appendLog(`一键托管：门禁恢复 Agent 异常，继续下一轮：${message}`)
+            }
           }
           if (carriedGateIssues > 0) {
             step.detail = `阶段任务已完成；${carriedGateIssues} 个门禁阻断项作为遗留风险带入后续阶段`
           }
         }
-        step.status = 'completed'
-        if (!step.detail.includes('遗留风险')) step.detail = '阶段任务及门禁已完成'
+        step.status = step.detail.includes('风险') || step.detail.includes('异常') ? 'completed_with_risk' : 'completed'
+        if (step.status === 'completed') step.detail = '阶段任务及门禁已完成'
         setManagedSteps([...steps])
       }
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error)
-      outcome = failure === '用户停止托管' ? 'stopped' : 'failed'
+      outcome = failure === '用户停止托管' ? 'stopped' : /托管已暂停|L3\/L4/.test(failure) ? 'paused' : 'failed'
       const running = steps.findLast((step) => step.status === 'running')
       if (running) {
         running.status = 'failed'
@@ -687,8 +721,9 @@ export function WorkspacePage(): React.JSX.Element {
       }
       setManagedSteps([...steps])
     } finally {
+      if (outcome === 'completed' && totalRisks > 0) outcome = 'completed_with_risk'
       const path = await writeManagedReport(outcome, startedAt, steps, failure)
-      appendLog(`${outcome === 'completed' ? '✅' : '⚠️'} 一键托管${outcome === 'completed' ? '完成' : '停止'}，报告：${path}`)
+      appendLog(`${outcome === 'completed' ? '一键托管完整通过' : outcome === 'completed_with_risk' ? `一键托管带 ${totalRisks} 项风险完成（未签核）` : '一键托管已暂停'}，报告：${path}`)
       setManagedRunning(false)
       await reload()
     }
@@ -852,8 +887,8 @@ export function WorkspacePage(): React.JSX.Element {
             <Bot size={14} className="shrink-0 text-blue-600" />
             <span className="shrink-0 font-medium text-blue-800">{managedRunning ? '托管进行中' : '最近托管'}</span>
             {managedSteps.map((step) => (
-              <span key={step.phase} className={`shrink-0 rounded px-2 py-1 ${step.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : step.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-white text-blue-700'}`} title={step.detail}>
-                {PHASE_LABELS[step.phase]} {step.status === 'completed' ? '✓' : step.status === 'failed' ? '!' : '…'}
+              <span key={step.phase} className={`shrink-0 rounded px-2 py-1 ${step.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : step.status === 'completed_with_risk' ? 'bg-amber-100 text-amber-700' : step.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-white text-blue-700'}`} title={step.detail}>
+                {PHASE_LABELS[step.phase]} {step.status === 'completed' ? '✓' : step.status === 'completed_with_risk' ? '!' : step.status === 'failed' ? '×' : '…'}
               </span>
             ))}
             {managedReportPath && <button onClick={() => void openFile(managedReportPath)} className="ml-auto shrink-0 text-blue-700 underline">查看托管报告</button>}
