@@ -14,7 +14,11 @@ import type {
   VerificationStateModel,
   FeatureInteractionGraph,
   ScenarioExecutionPlan,
-  VerificationHypothesis
+  VerificationHypothesis,
+  SpecGap,
+  BoundaryCondition,
+  VerificationIntent,
+  CoverageHole
 } from './types.ts'
 import { analyzeStructure } from './structural-analyzer.ts'
 
@@ -275,16 +279,75 @@ function readPrevious(path: string): VerificationScenario[] {
   try { return (JSON.parse(readFileSync(path, 'utf-8')) as { scenarios?: VerificationScenario[] }).scenarios ?? [] } catch { return [] }
 }
 
+function deriveSpecGaps(requirements: RequirementModel, structure: StructuralModel, risks: RiskMarker[]): SpecGap[] {
+  const gaps: SpecGap[] = requirements.unknowns.map((item, index) => ({
+    id: `SPEC-GAP-${String(index + 1).padStart(4, '0')}`,
+    category: 'SPEC_UNDEFINED', title: item.text.slice(0, 120), requirementIds: [], rtlObjects: [],
+    description: item.text, impact: '规格语义未闭合，相关验证结论可能无法裁决。', action: '由规格或架构负责人澄清并更新追踪关系。', confidence: 'high', sources: [item.source]
+  }))
+  const add = (gap: Omit<SpecGap, 'id'>): void => gaps.push({ id: `SPEC-GAP-${String(gaps.length + 1).padStart(4, '0')}`, ...gap })
+  for (const requirement of requirements.requirements) {
+    if (requirement.features.length === 0) continue
+    const facts = structure.facts.filter((fact) => fact.features.some((feature) => requirement.features.includes(feature)))
+    if (facts.length === 0) add({ category: 'SPEC_WITHOUT_RTL', title: `${requirement.id} 尚无 RTL 结构映射`, requirementIds: [requirement.id], rtlObjects: [], description: requirement.text, impact: '需求可能尚未实现，或结构分析无法建立映射。', action: '检查实现、命名映射与 RTL 结构证据。', confidence: 'medium', sources: [requirement.source] })
+  }
+  const specified = new Set(requirements.requirements.flatMap((item) => item.features))
+  for (const feature of [...new Set(structure.facts.flatMap((fact) => fact.features))].filter((item) => !specified.has(item)).slice(0, 20)) {
+    const facts = structure.facts.filter((fact) => fact.features.includes(feature))
+    add({ category: 'RTL_WITHOUT_SPEC', title: `RTL 特征 ${feature} 缺少规格映射`, requirementIds: [], rtlObjects: [...new Set(facts.map((fact) => `${fact.module}.${fact.object ?? fact.module}`))], description: `RTL 结构中识别到 ${feature} 行为，但需求/规格未建立对应语义。`, impact: '外部可见行为可能未被规格和验证计划约束。', action: '确认该行为是实现细节还是需要补充规格。', confidence: 'medium', sources: facts.slice(0, 4).map((fact) => fact.source) })
+  }
+  for (const risk of risks.filter((item) => item.features.length >= 2).slice(0, 24)) {
+    const covered = requirements.requirements.some((requirement) => risk.features.every((feature) => requirement.features.includes(feature)) && /同时|同周期|相邻|优先|before|after|concurrent|priority/i.test(requirement.text))
+    if (!covered) add({ category: 'TEMPORAL_UNDEFINED', title: `${risk.features.join(' × ')} 时间/优先级语义未定义`, requirementIds: requirements.requirements.filter((item) => item.features.some((feature) => risk.features.includes(feature))).map((item) => item.id), rtlObjects: [risk.object], description: `RTL 风险 ${risk.id} 表明这些事件可能交互，但规格未明确同时或相邻周期的裁决关系。`, impact: '不同实现与验证预期可能产生合理但不一致的解释。', action: '补充 BEFORE/SAME_CYCLE/AFTER 行为及优先级。', confidence: risk.confidence, sources: [risk.source] })
+  }
+  return gaps
+}
+
+function boundaryConditions(structure: StructuralModel, scenario: VerificationScenario): BoundaryCondition[] {
+  const relevant = structure.registerWriters.filter((item) => item.module === scenario.rtlObjects[0] && /cnt|count|counter|ptr|outstanding|depth|len|size|addr|id/i.test(item.register))
+  const boundaries = relevant.slice(0, 8).map((item) => ({ object: `${item.module}.${item.register}`, values: ['0', '1', 'MAX-1', 'MAX', 'overflow/wrap'], rationale: '由计数器、指针或容量相关 RTL 对象生成。', source: item.source }))
+  if (scenario.features.includes('fifo')) boundaries.push({ object: 'FIFO occupancy', values: ['EMPTY', '1', 'ALMOST_FULL', 'FULL'], rationale: '覆盖 FIFO 空、满和反压边界。' })
+  if (scenario.features.includes('outstanding')) boundaries.push({ object: 'outstanding', values: ['0', '1', 'MAX-1', 'MAX'], rationale: '覆盖在途事务容量边界。' })
+  return boundaries
+}
+
+function buildVerificationIntents(structure: StructuralModel, scenarios: VerificationScenario[]): VerificationIntent[] {
+  return scenarios.map((scenario) => {
+    const events = scenario.features.slice(0, 4)
+    const temporalInteractions = events.length >= 2 ? [
+      { relation: 'BEFORE' as const, offsetCycles: -1, events },
+      { relation: 'SAME_CYCLE' as const, offsetCycles: 0, events },
+      { relation: 'AFTER' as const, offsetCycles: 1, events },
+      { relation: 'WITHIN_N_CYCLES' as const, offsetCycles: '[-2,+2]', events }
+    ] : []
+    const methods: VerificationIntent['recommendedMethods'] = scenario.method === 'formal-candidate' ? ['formal', 'assertion', 'simulation'] : scenario.method === 'static' ? ['static', 'assertion'] : ['simulation', 'assertion']
+    return { id: `VI-${scenario.id.slice(4)}`, scenarioId: scenario.id, objective: scenario.title, sourceIds: [...scenario.requirementIds, ...scenario.riskIds], preconditions: scenario.trigger, stimulus: { events, temporalInteractions }, observations: scenario.rtlObjects, expectedResults: scenario.expected, boundaries: boundaryConditions(structure, scenario), recommendedMethods: methods, evidence: scenario.evidence, status: scenario.status, priority: scenario.priority }
+  })
+}
+
+function classifyCoverageHoles(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions']): CoverageHole[] {
+  return scenarios.filter((item) => !['VERIFIED', 'FORMAL_PROVED', 'WAIVED'].includes(item.status)).map((scenario) => {
+    let classification: CoverageHole['classification'] = 'C3_STIMULUS_MISSING'
+    let reason = '场景尚未被有效激励到达。'; let action = '生成定向激励，并记录 Scenario hit 与波形证据。'; let confidence: Confidence = 'medium'
+    if (scenario.status === 'FORMAL_UNREACHABLE') { classification = 'C1_UNREACHABLE'; reason = 'Formal 证据表明目标不可达。'; action = '审查 assumptions 后将不可达证据纳入签核。'; confidence = 'high' }
+    else if (scenario.status === 'BLOCKED_BY_SPEC') { classification = 'C5_SPEC_UNDEFINED'; reason = '缺少可裁决的规格语义。'; action = '先关闭关联 Spec Gap，再生成验证预期。'; confidence = 'high' }
+    else if (scenario.reachCount > 0 && scenario.assertionPassed === undefined) { classification = 'C4_OBSERVATION_MISSING'; reason = '场景已经到达，但缺少 Checker/Assertion 裁决。'; action = '增加 Checker、Assertion 或功能覆盖观察点。'; confidence = 'high' }
+    else if (regressions.length === 0) { classification = 'C6_TOOL_INSTRUMENTATION'; reason = '尚无可读取的结构化回归与覆盖率结果。'; action = '检查仿真、覆盖率插桩及 result.json 落盘。'; confidence = 'high' }
+    else if (/constraint/i.test(scenario.reason)) { classification = 'C2_CONSTRAINT_BLOCKED'; reason = '现有约束可能阻断场景到达。'; action = '审查环境约束与协议合法性，避免过约束。' }
+    return { id: `HOLE-${scenario.id.slice(4)}`, scenarioId: scenario.id, classification, confidence, evidence: scenario.evidence, reason, recommendedAction: action, blocking: scenario.priority >= 0.2 }
+  })
+}
+
 function writeReport(path: string, state: VerificationStateModel, risks: RiskMarker[]): void {
   const rows = state.scenarios.slice(0, 50).map((item) => `| ${item.id} | ${item.title} | ${item.priority} | ${item.method} | ${item.status} |`).join('\n')
-  writeFileSync(path, `# Verification Intelligence Report\n\n- RTL Hash: \`${state.rtlHash}\`\n- 风险标记：${risks.length}\n- Scenario：${state.scenarioCount}\n- Critical Open：${state.criticalOpen.length}\n\n## 高优先级 Scenario\n\n| Scenario | 交互 | 优先级 | 方法 | 状态 |\n|---|---|---:|---|---|\n${rows || '| - | 暂无 | - | - | - |'}\n\n> 风险标记用于验证规划，不等同于已发现 RTL Bug。Scenario 必须由仿真、Formal 或静态证据裁决。\n`, 'utf-8')
+  writeFileSync(path, `# Verification Intelligence Report\n\n- RTL Hash: \`${state.rtlHash}\`\n- 风险标记：${risks.length}\n- Scenario：${state.scenarioCount}\n- Verification Intent：${state.verificationIntents.length}\n- Spec Gap：${state.specGaps.length}\n- Coverage Hole：${state.coverageHoles.length}\n- Critical Open：${state.criticalOpen.length}\n\n## 高优先级 Scenario\n\n| Scenario | 交互 | 优先级 | 方法 | 状态 |\n|---|---|---:|---|---|\n${rows || '| - | 暂无 | - | - | - |'}\n\n> 风险标记用于验证规划，不等同于已发现 RTL Bug。Scenario 必须由仿真、Formal 或静态证据裁决。\n`, 'utf-8')
 }
 
 export function buildVerificationIntelligence(workspaceDir: string): IntelligenceArtifacts {
   const workspace = resolve(workspaceDir)
   const outputDir = join(workspace, 'verification', 'intelligence')
   mkdirSync(outputDir, { recursive: true })
-  const paths = { requirementModel: join(outputDir, 'requirement-model.json'), structuralModel: join(outputDir, 'structural-model.json'), riskRegister: join(outputDir, 'risk-register.json'), scenarioRegistry: join(outputDir, 'scenario-registry.json'), verificationState: join(outputDir, 'verification-state.json'), report: join(outputDir, 'verification-intelligence-report.md'), interactionGraph: join(outputDir, 'feature-interaction-graph.json'), executionPlan: join(outputDir, 'scenario-execution-plan.json'), hypotheses: join(outputDir, 'verification-hypotheses.json') }
+  const paths = { requirementModel: join(outputDir, 'requirement-model.json'), structuralModel: join(outputDir, 'structural-model.json'), riskRegister: join(outputDir, 'risk-register.json'), scenarioRegistry: join(outputDir, 'scenario-registry.json'), verificationState: join(outputDir, 'verification-state.json'), report: join(outputDir, 'verification-intelligence-report.md'), interactionGraph: join(outputDir, 'feature-interaction-graph.json'), executionPlan: join(outputDir, 'scenario-execution-plan.json'), hypotheses: join(outputDir, 'verification-hypotheses.json'), specGaps: join(outputDir, 'spec-gap-register.json'), verificationIntents: join(outputDir, 'verification-intent-registry.json'), coverageHoles: join(outputDir, 'coverage-hole-register.json') }
   const requirements = requirementModel(workspace)
   const structure = structuralModel(workspace)
   const risks = deriveRisks(workspace, structure)
@@ -294,11 +357,14 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const interactionGraph = buildInteractionGraph(requirements, structure, scenarios)
   const executionPlan = buildExecutionPlan(scenarios, regressions)
   const hypotheses = readHypotheses(paths.hypotheses)
+  const specGaps = deriveSpecGaps(requirements, structure, risks)
+  const verificationIntents = buildVerificationIntents(structure, scenarios)
+  const coverageHoles = classifyCoverageHoles(scenarios, regressions)
   const statusCounts: VerificationStateModel['statusCounts'] = {}
   for (const scenario of scenarios) statusCounts[scenario.status] = (statusCounts[scenario.status] ?? 0) + 1
   const criticalOpen = scenarios.filter((item) => item.priority >= 0.2 && !['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'].includes(item.status)).map((item) => item.id)
   const structuralSummary = { fsm: structure.stateMachines.length, cfgNodes: structure.controlFlow.nodes.length, dependencies: structure.temporalDependencies.length, cones: structure.conesOfInfluence.length, protocols: structure.protocols.map((item) => ({ protocol: item.protocol, module: item.module })) }
-  const verificationState: VerificationStateModel = { version: 2, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, hypotheses, formalResults, structuralSummary }
+  const verificationState: VerificationStateModel = { version: 3, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, hypotheses, formalResults, specGaps, verificationIntents, coverageHoles, structuralSummary }
   writeFileSync(paths.requirementModel, JSON.stringify(requirements, null, 2), 'utf-8')
   writeFileSync(paths.structuralModel, JSON.stringify(structure, null, 2), 'utf-8')
   writeFileSync(paths.riskRegister, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), risks }, null, 2), 'utf-8')
@@ -306,6 +372,9 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   writeFileSync(paths.verificationState, JSON.stringify(verificationState, null, 2), 'utf-8')
   writeFileSync(paths.interactionGraph, JSON.stringify(interactionGraph, null, 2), 'utf-8')
   writeFileSync(paths.executionPlan, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), plans: executionPlan }, null, 2), 'utf-8')
+  writeFileSync(paths.specGaps, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), gaps: specGaps }, null, 2), 'utf-8')
+  writeFileSync(paths.verificationIntents, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), intents: verificationIntents }, null, 2), 'utf-8')
+  writeFileSync(paths.coverageHoles, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), holes: coverageHoles }, null, 2), 'utf-8')
   if (!existsSync(paths.hypotheses)) writeFileSync(paths.hypotheses, JSON.stringify({ version: 1, hypotheses: [] }, null, 2), 'utf-8')
   writeReport(paths.report, verificationState, risks)
   return { requirementModel: requirements, structuralModel: structure, risks, verificationState, paths }

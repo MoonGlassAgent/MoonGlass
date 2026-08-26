@@ -22,10 +22,12 @@ Create and maintain the verification documents under `docs/04_verification/`.
    requirement-to-test traceability.
 5. Define stimulus, checker, expected result, coverage target, and pass/fail
    criteria for each test.
-6. Call `build_verification_intelligence`. Review the ranked Scenario Registry
-   and bind selected `SCN-*` IDs to requirements, RTL objects, tests, checkers,
-   coverage bins, and evidence. Risk markers are planning hypotheses, not
-   confirmed bugs. Do not generate arbitrary feature Cartesian products.
+6. Call `build_verification_intelligence`. Review the ranked Scenario Registry,
+   `verification-intent-registry.json`, `spec-gap-register.json`, and
+   `coverage-hole-register.json`. Bind each selected `VI-*` / `SCN-*` to
+   requirements, RTL objects, temporal offsets, boundary points, tests,
+   checkers, coverage bins, and evidence. Risk markers and Spec Gaps are review
+   inputs, not confirmed RTL bugs. Do not generate arbitrary feature Cartesian products.
 7. Inspect `verification/intelligence/feature-interaction-graph.json`. When semantic reasoning is useful, call `register_verification_hypotheses`; every hypothesis must cite existing Risk, RTL Object, and Interaction Edge IDs, and every claim must be classified as `SPEC_FACT`, `RTL_FACT`, `INFERENCE`, or `UNKNOWN`.
 8. Call `select_next_verification_batch`. Reuse or implement the named Cocotb sequence, constraints, temporal constraints, scoreboard/assertion checkers, iteration count, and time budget from `scenario-execution-plan.json`.
    For `formal-candidate` scenarios, use the `formal-verification` skill and `run_formal_verification`; do not call bounded PASS a proof.
@@ -51,6 +53,10 @@ python <skill-dir>/scripts/check_vplan.py docs/04_verification/verification_plan
 ```
 
 Resolve reported structural errors before implementing the environment.
+
+Classify every uncovered target as C1 unreachable, C2 constraint blocked,
+C3 stimulus missing, C4 observation missing, C5 spec undefined, or C6
+tool/instrumentation. Do not respond to a coverage hole by merely increasing seeds.
 
 Do not put executable tests in `docs/`. Test implementation belongs under
 `verification/<module>_tb/`.

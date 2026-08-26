@@ -51,6 +51,14 @@ if (!first.risks.some((risk) => risk.taxonomyId === 'R01')) throw new Error('未
 if (first.verificationState.scenarios.length === 0) throw new Error('Scenario Registry 为空')
 if (first.verificationState.interactionGraph.edges.length === 0) throw new Error('Feature Interaction Graph 为空')
 if (first.verificationState.executionPlan.length === 0) throw new Error('Scenario Execution Plan 为空')
+if (first.verificationState.verificationIntents.length === 0) throw new Error('Verification Intent 为空')
+if (!first.verificationState.verificationIntents.some((intent) => intent.stimulus.temporalInteractions.some((item) => item.relation === 'SAME_CYCLE'))) throw new Error('未生成时间交互条件')
+if (!first.verificationState.verificationIntents.some((intent) => intent.boundaries.length > 0)) throw new Error('未生成边界条件')
+if (first.verificationState.specGaps.length === 0) throw new Error('未识别 Spec Gap')
+if (first.verificationState.coverageHoles.length === 0) throw new Error('未分类 Coverage Hole')
+for (const path of [first.paths.specGaps, first.paths.verificationIntents, first.paths.coverageHoles]) {
+  if (!readFileSync(path, 'utf-8').trim()) throw new Error(`智能验证产物未落盘：${path}`)
+}
 if (reviewScenarioClosure(root).passed) throw new Error('关键 Scenario 未闭环时不应通过')
 
 const rejected = registerVerificationHypotheses(root, [{ title: '无依据组合', riskIds: [], rtlObjectIds: [], interactionEdgeIds: [], claims: [{ kind: 'INFERENCE', text: '猜测', references: [] }] }])
@@ -76,6 +84,7 @@ const secondIds = second.verificationState.scenarios.map((scenario) => scenario.
 const firstIds = first.verificationState.scenarios.map((scenario) => scenario.id)
 if (JSON.stringify([...secondIds].sort()) !== JSON.stringify([...firstIds].sort())) throw new Error(`Scenario ID 不稳定：${JSON.stringify(firstIds)} -> ${JSON.stringify(secondIds)}`)
 if (second.verificationState.scenarios.some((scenario) => scenario.status !== 'VERIFIED')) throw new Error('Scenario feedback 未回灌')
+if (second.verificationState.coverageHoles.length !== 0) throw new Error('Scenario 已闭环后 Coverage Hole 应清除')
 const review = reviewScenarioClosure(root)
 if (!review.passed) throw new Error(`Scenario Closure 应通过：${review.blockers.join('; ')}`)
 

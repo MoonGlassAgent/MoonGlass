@@ -77,6 +77,28 @@ export interface ReasoningClaim { kind: FactKind; text: string; references: stri
 export interface VerificationHypothesis { id: string; title: string; riskIds: string[]; rtlObjectIds: string[]; interactionEdgeIds: string[]; claims: ReasoningClaim[]; status: 'ACCEPTED' | 'REJECTED'; rejectionReasons: string[]; createdAt: string }
 export interface ScenarioExecutionPlan { scenarioId: string; sequence: string; constraints: Record<string, string | number | boolean>; temporalConstraints: string[]; iterations: number; budgetSeconds: number; expected: string[]; checkers: string[]; priority: number; reason: string }
 
+export type SpecGapCategory = 'SPEC_WITHOUT_RTL' | 'RTL_WITHOUT_SPEC' | 'SPEC_UNDEFINED' | 'TEMPORAL_UNDEFINED'
+export interface SpecGap { id: string; category: SpecGapCategory; title: string; requirementIds: string[]; rtlObjects: string[]; description: string; impact: string; action: string; confidence: Confidence; sources: SourceReference[] }
+export interface BoundaryCondition { object: string; values: string[]; rationale: string; source?: SourceReference }
+export interface TemporalInteraction { relation: 'BEFORE' | 'SAME_CYCLE' | 'AFTER' | 'WITHIN_N_CYCLES'; offsetCycles: number | string; events: string[] }
+export interface VerificationIntent {
+  id: string
+  scenarioId: string
+  objective: string
+  sourceIds: string[]
+  preconditions: string[]
+  stimulus: { events: string[]; temporalInteractions: TemporalInteraction[] }
+  observations: string[]
+  expectedResults: string[]
+  boundaries: BoundaryCondition[]
+  recommendedMethods: Array<'simulation' | 'assertion' | 'formal' | 'static'>
+  evidence: string[]
+  status: ScenarioStatus
+  priority: number
+}
+export type CoverageHoleClass = 'C1_UNREACHABLE' | 'C2_CONSTRAINT_BLOCKED' | 'C3_STIMULUS_MISSING' | 'C4_OBSERVATION_MISSING' | 'C5_SPEC_UNDEFINED' | 'C6_TOOL_INSTRUMENTATION'
+export interface CoverageHole { id: string; scenarioId: string; classification: CoverageHoleClass; confidence: Confidence; evidence: string[]; reason: string; recommendedAction: string; blocking: boolean }
+
 export interface RiskMarker {
   id: string
   taxonomyId: string
@@ -120,7 +142,7 @@ export interface VerificationScenario {
 }
 
 export interface VerificationStateModel {
-  version: 2
+  version: 3
   generatedAt: string
   rtlHash: string
   scenarioCount: number
@@ -133,6 +155,9 @@ export interface VerificationStateModel {
   executionPlan: ScenarioExecutionPlan[]
   hypotheses: VerificationHypothesis[]
   formalResults: Array<{ resultFile: string; status: 'PASS' | 'FAIL' | 'UNKNOWN' | 'ERROR'; mode: string; scenarioId?: string; propertyFiles: string[]; traces: string[] }>
+  specGaps: SpecGap[]
+  verificationIntents: VerificationIntent[]
+  coverageHoles: CoverageHole[]
   structuralSummary: { fsm: number; cfgNodes: number; dependencies: number; cones: number; protocols: Array<{ protocol: string; module: string }> }
 }
 
@@ -151,5 +176,8 @@ export interface IntelligenceArtifacts {
     interactionGraph: string
     executionPlan: string
     hypotheses: string
+    specGaps: string
+    verificationIntents: string
+    coverageHoles: string
   }
 }

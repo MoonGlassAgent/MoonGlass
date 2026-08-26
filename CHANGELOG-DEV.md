@@ -262,3 +262,12 @@
 - AIGV 运行时以单个压缩包随软件交付，首次启动自动解压到 MoonGlass 数据目录，避免绿色版出现大量零散文件。
 - 设置页显示工具来自“MoonGlass 内置”“MoonGlass 管理安装”或“系统环境”，并能识别内置组件异常。
 - Windows 工具执行层支持 `.cmd/.bat` 包装器，保证内置 SymbiYosys 可由 MoonGlass 直接启动。
+
+# 2026-08-27 - AIGV Verification Intent 与分级自动修复
+
+- Verification Intelligence 升级为 v3，新增 Spec Gap、Verification Intent、时间交互、边界条件和 Coverage Hole 机器可读产物。
+- 时间交互覆盖 BEFORE、SAME_CYCLE、AFTER 与可配置周期窗口；计数器、FIFO 和 outstanding 自动生成 0/1/MAX 等边界点。
+- Coverage Hole 区分不可达、约束阻断、激励缺失、观察缺失、规格未定义和工具/插桩问题，场景证据闭环后自动清除。
+- 验证控制台新增“验证意图”和“覆盖缺口”视图，可直接查看方法建议、边界数量、缺口分类与处置方向。
+- RTL 自动修复采用 L1-L4 影响分级：L1/L2 可无人值守完成修改与回归，L3 架构影响和 L4 规格影响暂停托管并等待用户裁决。
+- 自动修复禁止删除失败用例、削弱 Checker/Assertion/覆盖率目标或无规格依据修改测试预期。

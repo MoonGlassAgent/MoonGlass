@@ -466,7 +466,10 @@ scripts/
 - 主会话必须完成端到端验证闭环：先以 Cocotb + Icarus 完成功能回归和功能覆盖率；Windows 再以 Verilator C++ 模式采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率，Linux 可直接使用 Cocotb + Verilator。不得自行生成临时 runner 绕过工具。
 - 验证结束前必须调用 \`review_verification_evidence\` 独立读取原始测试、日志、JUnit、result.json 和覆盖率；存在阻断项时继续修复和回归，不能以自己的总结作为签核证据。
 - 验证规划必须调用 \`build_verification_intelligence\`，根据 Requirement Model、RTL 结构事实、风险分类和 Coverage Feedback 选择最高价值 Scenario；不得把风险标记写成已确认 Bug，也不得生成无结构依据的任意 Feature 笛卡尔积。
+- 智能验证必须读取 \`verification-intent-registry.json\`、\`spec-gap-register.json\` 和 \`coverage-hole-register.json\`；覆盖缺口必须区分不可达、约束阻断、激励缺失、观察缺失、规格未定义与工具/插桩问题，不能只靠增加随机种子掩盖。
 - 每个智能规划 Scenario 必须使用稳定 SCN-* ID；测试将 reach/pass/证据写入 \`verification/results/<module>/scenario_hits.json\`。关键 Scenario 必须验证、Formal 证明、证明不可达或经批准豁免，最后调用 \`review_verification_scenarios\`。
+- RTL 修复按影响分级：L1 语法/位宽/Lint/局部 Coding Bug 与 L2 不改变已批准规格的状态、握手、边界和异常修复可直接修改并自动完成定向复现、受影响回归、全量回归、覆盖率/Formal 与独立证据 Review；L3 接口、寄存器映射、时钟复位、数据宽度、PPA 目标、SRAM 组织等架构影响，或 L4 需求语义、优先级、并发行为、外部可见行为变化，必须用标题含 \`[L3]\` 或 \`[L4]\` 的结构化决策请求暂停并等待用户裁决。
+- 自动修复不得删除失败用例、削弱 Checker/Assertion/覆盖率目标、扩大 don't-care，或在没有规格依据时修改测试预期；RTL 与测试同时修改必须执行独立 Review。连续修复失败或影响扩散时升级为 L3。
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
 - 综合优先使用 MoonGlass 工艺库索引选定的默认 Liberty；若没有配置默认库，允许通用综合，但须明确提示面积和时序不具备工艺意义。
 - MoonGlass 工艺库统一索引路径：${processLibraryIndex.replace(/\\/g, '/')}。涉及工艺选择、综合、时序或物理视图前，先读取该索引并核对 Liberty/LEF/GDS/Verilog 等可用文件；不得只凭目录名猜测文件。用户新增或下载工艺库后，以该索引为准。

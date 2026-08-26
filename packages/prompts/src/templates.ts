@@ -158,13 +158,13 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 1. 先使用 verification-planning 技能校验 docs/04_verification/ 三份计划
 2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
 3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb", simulator="icarus") 完成功能回归
-4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成可解释风险和排序后的 Scenario Registry；风险标记不是 Bug 结论
+4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成 Spec Gap、Verification Intent、时间交互、边界条件、Coverage Hole 分类和排序后的 Scenario Registry；风险标记与 Spec Gap 不是 Bug 结论
 5. 读取 feature-interaction-graph.json；需要语义补充时调用 register_verification_hypotheses，每个推理必须引用 Risk/RTL Object/Interaction Edge，并区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN
 6. 调用 select_next_verification_batch，按 scenario-execution-plan.json 配置或复用现有 Cocotb sequence/driver、约束、时序条件、checker、迭代次数和预算；禁止无结构依据的任意笛卡尔积
 7. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification：先 BMC/cover，再对适合的不变量 prove；BMC PASS 只能算有限深度检查，不能宣称已证明
 8. Windows 再使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。不得另写临时 runner 绕过工具
 9. 将仿真日志、result.json、scenario_hits.json、coverage 数据、Formal result/log/property/trace 和 VCD/FST 写入固定证据目录
-10. 根据 Scenario reachCount、assertionPassed、功能/代码 coverageDelta 更新 scenario_hits.json，再次构建智能模型并重排任务，直至关键 Scenario 闭环
+10. 根据 Scenario reachCount、assertionPassed、功能/代码 coverageDelta 更新 scenario_hits.json；把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，再次构建智能模型并重排任务，直至关键 Verification Intent 闭环
 11. 最后依次调用 review_verification_scenarios 和 review_verification_evidence；有阻断项时继续修复和回归，不得自行宣称验证完成
 
 约束：

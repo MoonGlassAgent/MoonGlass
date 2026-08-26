@@ -541,11 +541,14 @@ export function WorkspacePage(): React.JSX.Element {
       `【MoonGlass 一键托管】\n${instruction}\n\n` +
       '托管规则：直接检查并修改实际项目文件，调用本阶段适用工具完成验证，所有结论必须引用真实证据。' +
       '不要等待人工确认；存在多个方案时优先采用明确标记的推荐方案，其次采用风险最低且可回退的方案，并在总结中记录选择。' +
-      '不得伪造 EDA 结果，不得把估算称为签核。完成后列出修改文件、执行命令、结果和遗留风险。'
+      'RTL 修复按 L1-L4 分级：L1/L2 可直接修改并自动完成定向复现、受影响回归、全量回归和独立证据 Review；只有 L3 架构影响或 L4 规格影响才暂停确认，并将决策标题以 [L3] 或 [L4] 开头。' +
+      '不得删除失败用例、削弱 Checker/Assertion/覆盖率目标、扩大无关项范围，或无规格依据修改测试预期。不得伪造 EDA 结果，不得把估算称为签核。完成后列出修改文件、影响等级、执行命令、结果和遗留风险。'
     )
     for (let round = 0; round < 6; round += 1) {
       const pending = pendingDecisionRequests()
       if (pending.length === 0) return
+      const highImpact = pending.filter((request) => /\[L[34]\]|架构影响|规格影响/.test(`${request.title} ${request.prompt ?? ''}`))
+      if (highImpact.length > 0) throw new Error(`托管已暂停：存在 ${highImpact.length} 个 L3/L4 高影响决策等待用户裁决`)
       const response = serializeDecisionResponses(pending.map((request) => {
         const recommended = request.options.filter((option) => option.recommended)
         const selected = recommended.length > 0 ? recommended : request.options.slice(0, 1)
@@ -582,7 +585,7 @@ export function WorkspacePage(): React.JSX.Element {
       (error ? `- 停止原因：${error}\n` : '') +
       `\n## 阶段执行记录\n\n${steps.map((step) => `- [${step.status === 'completed' ? 'x' : ' '}] ${PHASE_LABELS[step.phase]}：${step.detail}`).join('\n')}\n` +
       `\n## 门禁与质量证据\n\n| 阶段 | 检查项 | 结果 | 级别 | 说明 |\n|---|---|---|---|---|\n${gates.join('\n') || '| - | 尚无门禁记录 | - | - | - |'}\n` +
-      `\n## 自动决策策略\n\n托管期间优先采用 Agent 明确标记的推荐项；无推荐项时采用第一项并要求保持可回退。所有自动选择保留在 Agent 会话历史中。\n` +
+      `\n## 自动决策与 RTL 修复策略\n\n托管期间优先采用 Agent 明确标记的推荐项；无推荐项时采用第一项并要求保持可回退。L1/L2 RTL 修复允许自动闭环；L3 架构影响和 L4 规格影响必须暂停等待用户裁决。所有自动选择、RTL 修改、影响等级和证据保留在 Agent 会话历史中。\n` +
       `需求-规格定义和架构设计阶段的门禁在三次自动修复后仍失败时，不中断托管；失败项作为遗留风险保留并自动推进。RTL、验证、质量检查和综合实现阶段继续执行严格阻断。\n` +
       `\n## 遗留风险\n\n${outcome === 'completed' ? '请人工复核关键架构决策、第三方 IP 许可证，以及正式 PPA/CDC/STA 签核条件。' : `托管未完整结束，必须处理停止原因后再继续：${error ?? '用户主动停止'}。`}\n`
     await window.moonglass.fs.writeText(projectId, path, content)
@@ -1193,6 +1196,9 @@ interface VerificationIntelligenceSummary {
   }
   executionPlan?: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; priority: number; reason: string }>
   formalResults?: Array<{ resultFile: string; status: string; mode: string; scenarioId?: string; traces: string[] }>
+  specGaps?: Array<{ id: string; category: string; title: string; confidence: string }>
+  verificationIntents?: Array<{ id: string; scenarioId: string; objective: string; status: string; priority: number; recommendedMethods: string[]; boundaries: Array<{ object: string; values: string[] }> }>
+  coverageHoles?: Array<{ id: string; scenarioId: string; classification: string; confidence: string; reason: string; recommendedAction: string; blocking: boolean }>
   structuralSummary?: { fsm: number; cfgNodes: number; dependencies: number; cones: number; protocols: Array<{ protocol: string; module: string }> }
 }
 
@@ -1214,7 +1220,7 @@ function BottomPanel({
   const [loading, setLoading] = useState(false)
   const [waveformStatus, setWaveformStatus] = useState('')
   const [intelligence, setIntelligence] = useState<VerificationIntelligenceSummary | null>(null)
-  const [intelligenceView, setIntelligenceView] = useState<'scenario' | 'interaction' | 'schedule' | 'formal'>('scenario')
+  const [intelligenceView, setIntelligenceView] = useState<'scenario' | 'intent' | 'holes' | 'interaction' | 'schedule' | 'formal'>('scenario')
 
   const refreshInventory = useCallback(async () => {
     setLoading(true)
@@ -1344,15 +1350,17 @@ function BottomPanel({
     return (
       <div className="flex h-full flex-col">
         {toolbar}
-        <div className="mb-2 grid grid-cols-4 gap-2">
+        <div className="mb-2 grid grid-cols-6 gap-2">
           <ConsoleMetric label="验证产物" value={inventory.verification.length} />
           <ConsoleMetric label="Scenario" value={intelligence?.scenarioCount ?? 0} />
           <ConsoleMetric label="关键未闭环" value={intelligence?.criticalOpen.length ?? 0} />
           <ConsoleMetric label="Formal 证据" value={intelligence?.formalResults?.length ?? 0} />
+          <ConsoleMetric label="验证意图" value={intelligence?.verificationIntents?.length ?? 0} />
+          <ConsoleMetric label="规格缺口" value={intelligence?.specGaps?.length ?? 0} />
         </div>
         {intelligence && (
           <div className="mb-2 flex items-center gap-1" aria-label="验证智能视图">
-            {([['scenario', '风险场景'], ['interaction', '交互图'], ['schedule', '执行队列'], ['formal', 'Formal']] as const).map(([value, label]) => (
+            {([['scenario', '风险场景'], ['intent', '验证意图'], ['holes', '覆盖缺口'], ['interaction', '交互图'], ['schedule', '执行队列'], ['formal', 'Formal']] as const).map(([value, label]) => (
               <button key={value} onClick={() => setIntelligenceView(value)} className={`console-action ${intelligenceView === value ? 'border-emerald-500 text-emerald-600' : ''}`}>{label}</button>
             ))}
             <span className="ml-auto truncate text-[10px] text-zinc-400" title={intelligence.analyzer?.limitations.join('；')}>分析器：{intelligence.analyzer?.engine ?? '旧版模型'}{intelligence.analyzer?.version ? ` · ${intelligence.analyzer.version}` : ''}</span>
@@ -1399,6 +1407,29 @@ function BottomPanel({
               </button>
             })}
             {(intelligence.interactionGraph?.edges.length ?? 0) === 0 && <div className="console-empty">当前没有可展示的交互边。</div>}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'intent' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Verification Intent">
+            {(intelligence.verificationIntents ?? []).slice(0, 30).map((intent) => <button key={intent.id} onDoubleClick={() => onOpenFile('verification/intelligence/verification-intent-registry.json')} className="console-row w-full text-left" title="双击打开完整 Verification Intent Registry">
+              <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{intent.id}</strong>
+              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{intent.objective}</span>
+              <span className="shrink-0 text-[10px] text-sky-600">{intent.recommendedMethods.join(' + ')}</span>
+              <span className="shrink-0 text-[10px] text-zinc-500">边界 {intent.boundaries.length}</span>
+              <span className="shrink-0 text-[10px] text-amber-600">{intent.status}</span>
+            </button>)}
+            {(intelligence.verificationIntents?.length ?? 0) === 0 && <div className="console-empty">尚未生成 Verification Intent。</div>}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'holes' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Coverage Hole 分类">
+            {(intelligence.coverageHoles ?? []).slice(0, 30).map((hole) => <button key={hole.id} onDoubleClick={() => onOpenFile('verification/intelligence/coverage-hole-register.json')} className="console-row w-full text-left" title={`${hole.reason} ${hole.recommendedAction}`}>
+              <strong className={`shrink-0 font-mono text-[11px] ${hole.blocking ? 'text-red-600' : 'text-amber-600'}`}>{hole.classification}</strong>
+              <span className="shrink-0 font-mono text-[10px] text-zinc-500">{hole.scenarioId}</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{hole.reason}</span>
+              <span className="shrink-0 text-[10px] text-zinc-400">{hole.confidence}</span>
+            </button>)}
+            {(intelligence.coverageHoles?.length ?? 0) === 0 && <div className="console-empty">当前没有待处理的 Coverage Hole。</div>}
           </div>
         )}
         {intelligence && intelligenceView === 'schedule' && (
