@@ -28,6 +28,7 @@ Create and maintain the verification documents under `docs/04_verification/`.
    confirmed bugs. Do not generate arbitrary feature Cartesian products.
 7. Inspect `verification/intelligence/feature-interaction-graph.json`. When semantic reasoning is useful, call `register_verification_hypotheses`; every hypothesis must cite existing Risk, RTL Object, and Interaction Edge IDs, and every claim must be classified as `SPEC_FACT`, `RTL_FACT`, `INFERENCE`, or `UNKNOWN`.
 8. Call `select_next_verification_batch`. Reuse or implement the named Cocotb sequence, constraints, temporal constraints, scoreboard/assertion checkers, iteration count, and time budget from `scenario-execution-plan.json`.
+   For `formal-candidate` scenarios, use the `formal-verification` skill and `run_formal_verification`; do not call bounded PASS a proof.
 9. After execution, write `verification/results/<module>/scenario_hits.json`:
 
 ```json

@@ -28,6 +28,8 @@ const TOOL_PROBES: Probe[] = [
   { tool: 'Icarus Verilog', candidates: ['iverilog'], versionArgs: ['-V'], category: 'verification', importance: 'required', description: 'Windows 默认 Cocotb 仿真器', installId: OSS_CAD },
   { tool: 'Verible', candidates: ['verible-verilog-lint'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'Verilog/SystemVerilog 语法与风格检查', installUrl: 'https://github.com/chipsalliance/verible/releases' },
   { tool: 'Slang', candidates: ['slang.exe', 'slang'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'SystemVerilog 完整解析、展开与验证智能 AST', installUrl: 'https://github.com/MikePopoloski/slang/releases' },
+  { tool: 'SymbiYosys', candidates: ['sby.exe', 'sby'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: '开源 Formal BMC、证明与可达性验证', installId: OSS_CAD },
+  { tool: 'Boolector', candidates: ['boolector.exe', 'boolector'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'SymbiYosys 位向量 Formal 求解器', installId: OSS_CAD },
   { tool: 'GTKWave', candidates: process.platform === 'win32' ? ['gtkwave.exe', 'gtkwave'] : ['gtkwave'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'VCD/FST 波形查看', installId: OSS_CAD },
   { tool: 'Cocotb', candidates: ['python', 'python3'], versionArgs: ['-c', 'import cocotb; print(cocotb.__version__)'], category: 'verification', importance: 'required', description: '默认 Python 验证框架', installId: 'python-cocotb' },
   {

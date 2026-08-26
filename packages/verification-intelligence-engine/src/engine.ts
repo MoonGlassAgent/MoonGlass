@@ -125,6 +125,16 @@ function deriveRisks(workspace: string, structure: StructuralModel): RiskMarker[
       risks.push({ id: `RISK-${String(risks.length + 1).padStart(4, '0')}`, taxonomyId: rule.taxonomyId, title: rule.title, object: moduleName, features, structuralComplexity, interaction, temporalDepth: rule.temporalDepth, concurrency: rule.concurrency, riskScore, confidence: 'medium', facts: structure.facts.filter((fact) => fact.module === moduleName).map((fact) => fact.id), source: { file, line: Math.min(...rule.patterns.map((pattern) => sourceLine(text, pattern))) } })
     }
   }
+  for (const cone of structure.conesOfInfluence.filter((item) => item.directSources.length >= 3)) {
+    const [module, ...sinkParts] = cone.sink.split('.'); const sink = sinkParts.join('.')
+    const dependency = structure.temporalDependencies.find((item) => item.module === module && item.to === sink)
+    if (!dependency) continue
+    const features = [...new Set(cone.directSources.flatMap((item) => featuresOf(item)))]
+    const concurrency = Math.min(1, 0.45 + cone.directSources.length * 0.1); const interaction = Math.min(1, 0.4 + cone.transitiveSources.length * 0.06)
+    const structuralComplexity = Math.min(1, 0.35 + structure.controlFlow.nodes.filter((item) => item.module === module).length / 80)
+    const riskScore = Number((0.3 * structuralComplexity + 0.3 * interaction + 0.2 * Math.min(1, cone.depth / 4) + 0.2 * concurrency).toFixed(3))
+    risks.push({ id: `RISK-${String(risks.length + 1).padStart(4, '0')}`, taxonomyId: 'R01', title: 'N-way Shared State Interaction', object: module, features: features.length ? features : cone.directSources.slice(0, 5).map((item) => item.split('.').at(-1)!), structuralComplexity, interaction, temporalDepth: Math.min(1, cone.depth / 4), concurrency, riskScore, confidence: structure.analyzer.engine === 'slang-ast' ? 'high' : 'medium', facts: structure.facts.filter((item) => item.module === module && item.object === sink).map((item) => item.id), source: dependency.source })
+  }
   return risks.sort((a, b) => b.riskScore - a.riskScore)
 }
 
@@ -150,6 +160,12 @@ function buildInteractionGraph(requirements: RequirementModel, structure: Struct
     addNode(from, 'rtl-object', dependency.from, dependency.source); addNode(to, 'rtl-object', dependency.to, dependency.source)
     addEdge(from, to, dependency.relation, [], 'medium')
   }
+  for (const cone of structure.conesOfInfluence.filter((item) => item.directSources.length > 1)) {
+    for (let left = 0; left < Math.min(cone.directSources.length, 12); left++) for (let right = left + 1; right < Math.min(cone.directSources.length, 12); right++) {
+      const from = `RTL:${cone.directSources[left]}`; const to = `RTL:${cone.directSources[right]}`
+      addNode(from, 'rtl-object', cone.directSources[left]); addNode(to, 'rtl-object', cone.directSources[right]); addEdge(from, to, 'SHARES_STATE', [], structure.analyzer.engine === 'slang-ast' ? 'high' : 'medium')
+    }
+  }
   for (const domain of structure.clockResetDomains) {
     const domainId = `CLOCK:${domain.module}.${domain.clock}`; addNode(domainId, 'clock-domain', domain.clock, domain.source)
     for (const register of domain.registers) { const object = `RTL:${domain.module}.${register}`; addNode(object, 'rtl-object', register, domain.source); addEdge(domainId, object, 'CONTROLS', [], 'high') }
@@ -174,15 +190,15 @@ function buildExecutionPlan(scenarios: VerificationScenario[], regressions: Veri
   const baseline = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
   return scenarios.filter((item) => !['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'].includes(item.status)).slice(0, 24).map((item, index) => ({
     scenarioId: item.id,
-    sequence: item.features.includes('backpressure') ? 'backpressure_sequence' : item.features.includes('reset') ? 'reset_during_traffic_sequence' : item.features.includes('error') ? 'error_injection_sequence' : 'directed_random_sequence',
-    constraints: { seedClass: index < 4 ? 'focused' : 'diverse', preserveProtocolLegality: true },
+    sequence: item.method === 'formal-candidate' ? 'formal_harness' : item.features.includes('backpressure') ? 'backpressure_sequence' : item.features.includes('reset') ? 'reset_during_traffic_sequence' : item.features.includes('error') ? 'error_injection_sequence' : 'directed_random_sequence',
+    constraints: (item.method === 'formal-candidate' ? { formalMode: 'bmc_then_cover_then_prove', assumptionReviewRequired: true } : { seedClass: index < 4 ? 'focused' : 'diverse', preserveProtocolLegality: true }) as Record<string, string | number | boolean>,
     temporalConstraints: item.trigger,
     iterations: Math.max(10, Math.round(20 + item.priority * 180)),
     budgetSeconds: Math.max(30, Math.round(60 + item.costFactor * 240)),
     expected: item.expected,
-    checkers: ['scoreboard', 'protocol_assertions', 'scenario_hit_recorder'],
-    priority: Number((item.priority * (baseline > 90 ? 0.85 : 1)).toFixed(3)),
-    reason: `${item.reason} 当前状态 ${item.status}；覆盖反馈均值 ${baseline.toFixed(1)}%。`
+    checkers: item.method === 'formal-candidate' ? ['assert', 'cover', 'assumption_review'] : ['scoreboard', 'protocol_assertions', 'scenario_hit_recorder'],
+    priority: Number((item.priority * (baseline > 90 ? 0.85 : 1) * (Object.values(item.coverageDelta).some((value) => value > 0) ? 0.8 : 1)).toFixed(3)),
+    reason: `${item.reason} 当前状态 ${item.status}；到达 ${item.reachCount} 次；覆盖反馈均值 ${baseline.toFixed(1)}%；Scenario 覆盖增量 ${JSON.stringify(item.coverageDelta)}。`
   })).sort((a, b) => b.priority - a.priority)
 }
 
@@ -197,11 +213,21 @@ function collectResults(workspace: string): VerificationStateModel['regressions'
   })
 }
 
-function scenarioHits(workspace: string): Map<string, { status: ScenarioStatus; evidence: string[] }> {
-  const hits = new Map<string, { status: ScenarioStatus; evidence: string[] }>()
+function collectFormalResults(workspace: string): VerificationStateModel['formalResults'] {
+  return walk(join(workspace, 'verification', 'formal', 'results'), (file) => basename(file) === 'formal-result.json').map((file) => {
+    try {
+      const data = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>
+      const status = ['PASS', 'FAIL', 'UNKNOWN', 'ERROR'].includes(String(data.status)) ? data.status as 'PASS' | 'FAIL' | 'UNKNOWN' | 'ERROR' : 'ERROR'
+      return { resultFile: relative(workspace, file), status, mode: String(data.mode ?? 'unknown'), scenarioId: typeof data.scenarioId === 'string' ? data.scenarioId : undefined, propertyFiles: Array.isArray(data.propertyFiles) ? data.propertyFiles.map(String) : [], traces: Array.isArray(data.traces) ? data.traces.map(String) : [] }
+    } catch { return { resultFile: relative(workspace, file), status: 'ERROR' as const, mode: 'unknown', propertyFiles: [], traces: [] } }
+  })
+}
+
+function scenarioHits(workspace: string): Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number> }> {
+  const hits = new Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number> }>()
   for (const file of walk(join(workspace, 'verification', 'results'), (path) => basename(path) === 'scenario_hits.json')) {
     try {
-      const data = JSON.parse(readFileSync(file, 'utf-8')) as { scenarios?: Array<{ id?: string; status?: ScenarioStatus; reached?: boolean; passed?: boolean; evidence?: string[] }> }
+      const data = JSON.parse(readFileSync(file, 'utf-8')) as { scenarios?: Array<{ id?: string; status?: ScenarioStatus; reached?: boolean; passed?: boolean; assertionPassed?: boolean; reachCount?: number; coverageDelta?: Record<string, number>; evidence?: string[] }> }
       for (const item of data.scenarios ?? []) {
         if (!item.id) continue
         const evidence = (item.evidence ?? []).map((path) => resolve(dirname(file), path))
@@ -210,9 +236,14 @@ function scenarioHits(workspace: string): Map<string, { status: ScenarioStatus; 
         const status = ['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE'].includes(requestedStatus) && validEvidence.length === 0
           ? 'PARTIAL'
           : requestedStatus
-        hits.set(item.id, { status, evidence: [relative(workspace, file), ...validEvidence.map((path) => relative(workspace, path))] })
+        hits.set(item.id, { status, evidence: [relative(workspace, file), ...validEvidence.map((path) => relative(workspace, path))], reachCount: Number(item.reachCount ?? (item.reached ? 1 : 0)), assertionPassed: item.assertionPassed ?? item.passed, coverageDelta: Object.fromEntries(Object.entries(item.coverageDelta ?? {}).filter(([, value]) => typeof value === 'number')) })
       }
     } catch { /* 无效反馈由证据审查报告处理 */ }
+  }
+  for (const result of collectFormalResults(workspace)) {
+    if (!result.scenarioId) continue
+    const status: ScenarioStatus = result.status === 'FAIL' ? 'FAILED' : result.status !== 'PASS' ? 'PARTIAL' : result.mode === 'prove' ? 'FORMAL_PROVED' : result.mode === 'cover' ? 'REACHED' : 'PARTIAL'
+    hits.set(result.scenarioId, { status, evidence: [result.resultFile, ...result.propertyFiles, ...result.traces], reachCount: result.status === 'PASS' ? 1 : 0, assertionPassed: result.status === 'PASS', coverageDelta: {} })
   }
   return hits
 }
@@ -222,6 +253,7 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
   const hits = scenarioHits(workspace)
   return risks.map((risk) => {
     const rule = RISK_RULES.find((item) => item.taxonomyId === risk.taxonomyId)!
+    const nway = risk.title.startsWith('N-way')
     const stableKey = `${risk.taxonomyId}\0${risk.object}\0${risk.features.sort().join(',')}`
     const id = `SCN-${createHash('sha1').update(stableKey).digest('hex').slice(0, 8).toUpperCase()}`
     const previousItem = previousById.get(id)
@@ -234,7 +266,7 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
     const confidenceFactor = risk.confidence === 'high' ? 1 : risk.confidence === 'medium' ? 0.85 : 0.65
     const costFactor = rule.method === 'static' ? 1 : rule.method === 'formal-candidate' ? 0.8 : 0.9
     const priority = Number((criticality * risk.riskScore * risk.interaction * coverageGap * confidenceFactor * costFactor).toFixed(3))
-    return { id, title: `${risk.title}: ${risk.features.join(' × ')}`, riskIds: [risk.id], requirementIds, rtlObjects: [risk.object], features: risk.features, trigger: rule.trigger, expected: rule.expected, method: rule.method, status, risk: risk.riskScore, interaction: risk.interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `结构规则 ${risk.taxonomyId} 命中 ${risk.object}；${risk.features.join('、')} 共享控制或时序语义。`, evidence: [...new Set([risk.source.file, ...(hit?.evidence ?? previousItem?.evidence ?? [])])], updatedAt: new Date().toISOString() }
+    return { id, title: `${risk.title}: ${risk.features.join(' × ')}`, riskIds: [risk.id], requirementIds, rtlObjects: [risk.object], features: risk.features, trigger: nway ? risk.features.map((item) => `${item} 在同周期或相邻周期有效`) : rule.trigger, expected: nway ? ['共享状态的优先级、更新次数和外部可见结果符合规格'] : rule.expected, method: nway ? 'formal-candidate' : rule.method, status, risk: risk.riskScore, interaction: risk.interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `结构规则 ${risk.taxonomyId} 命中 ${risk.object}；${risk.features.join('、')} 共享控制或时序语义。`, evidence: [...new Set([risk.source.file, ...(hit?.evidence ?? previousItem?.evidence ?? [])])], reachCount: hit?.reachCount ?? previousItem?.reachCount ?? 0, assertionPassed: hit?.assertionPassed ?? previousItem?.assertionPassed, coverageDelta: hit?.coverageDelta ?? previousItem?.coverageDelta ?? {}, updatedAt: new Date().toISOString() }
   }).sort((a, b) => b.priority - a.priority)
 }
 
@@ -258,13 +290,15 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const risks = deriveRisks(workspace, structure)
   const scenarios = buildScenarios(requirements, structure, risks, readPrevious(paths.scenarioRegistry), workspace)
   const regressions = collectResults(workspace)
+  const formalResults = collectFormalResults(workspace)
   const interactionGraph = buildInteractionGraph(requirements, structure, scenarios)
   const executionPlan = buildExecutionPlan(scenarios, regressions)
   const hypotheses = readHypotheses(paths.hypotheses)
   const statusCounts: VerificationStateModel['statusCounts'] = {}
   for (const scenario of scenarios) statusCounts[scenario.status] = (statusCounts[scenario.status] ?? 0) + 1
   const criticalOpen = scenarios.filter((item) => item.priority >= 0.2 && !['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'].includes(item.status)).map((item) => item.id)
-  const verificationState: VerificationStateModel = { version: 2, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, hypotheses }
+  const structuralSummary = { fsm: structure.stateMachines.length, cfgNodes: structure.controlFlow.nodes.length, dependencies: structure.temporalDependencies.length, cones: structure.conesOfInfluence.length, protocols: structure.protocols.map((item) => ({ protocol: item.protocol, module: item.module })) }
+  const verificationState: VerificationStateModel = { version: 2, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, hypotheses, formalResults, structuralSummary }
   writeFileSync(paths.requirementModel, JSON.stringify(requirements, null, 2), 'utf-8')
   writeFileSync(paths.structuralModel, JSON.stringify(structure, null, 2), 'utf-8')
   writeFileSync(paths.riskRegister, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), risks }, null, 2), 'utf-8')
@@ -307,6 +341,7 @@ export function reviewScenarioClosure(workspaceDir: string): { passed: boolean; 
     if (state.scenarioCount === 0) warnings.push('未识别到 Scenario；简单设计允许人工确认，但需说明结构分析范围')
     if (state.regressions.length === 0) blockers.push('Verification State 中没有回归证据')
     if (state.regressions.some((item) => !item.passed)) blockers.push('Verification State 包含失败回归')
+    if (state.formalResults?.some((item) => item.status === 'FAIL' || item.status === 'ERROR')) blockers.push('Verification State 包含 Formal 失败或执行错误')
     return { passed: blockers.length === 0, blockers, warnings, state }
   } catch { return { passed: false, blockers: ['verification-state.json 无法解析'], warnings: [] } }
 }

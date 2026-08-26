@@ -244,6 +244,7 @@ export class AgentService implements MoonGlassService {
     copyEda('simulation.ts')
     copyEda('synthesis.ts')
     copyEda('rtl-files.ts')
+    copyEda('formal.ts')
 
     const verificationIntelligenceDir = join(this.bridgeDir, 'verification-intelligence')
     mkdirSync(verificationIntelligenceDir, { recursive: true })

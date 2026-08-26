@@ -161,10 +161,11 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成可解释风险和排序后的 Scenario Registry；风险标记不是 Bug 结论
 5. 读取 feature-interaction-graph.json；需要语义补充时调用 register_verification_hypotheses，每个推理必须引用 Risk/RTL Object/Interaction Edge，并区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN
 6. 调用 select_next_verification_batch，按 scenario-execution-plan.json 配置或复用现有 Cocotb sequence/driver、约束、时序条件、checker、迭代次数和预算；禁止无结构依据的任意笛卡尔积
-7. Windows 再使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。不得另写临时 runner 绕过工具
-8. 将 compile_icarus.log、simulation_icarus.log、compile_verilator.log、simulation_verilator.log、result.json、scenario_hits.json、coverage.dat、coverage.json、覆盖率报告和 VCD/FST 写入 verification/results/<module>/
-9. 根据 Scenario reach/断言/功能覆盖/代码覆盖增量更新 scenario_hits.json，再次调用 build_verification_intelligence；让调度器降低已闭环项优先级并补充测试，直至关键 Scenario 闭环
-10. 最后依次调用 review_verification_scenarios 和 review_verification_evidence；有阻断项时继续修复和回归，不得自行宣称验证完成
+7. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification：先 BMC/cover，再对适合的不变量 prove；BMC PASS 只能算有限深度检查，不能宣称已证明
+8. Windows 再使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。不得另写临时 runner 绕过工具
+9. 将仿真日志、result.json、scenario_hits.json、coverage 数据、Formal result/log/property/trace 和 VCD/FST 写入固定证据目录
+10. 根据 Scenario reachCount、assertionPassed、功能/代码 coverageDelta 更新 scenario_hits.json，再次构建智能模型并重排任务，直至关键 Scenario 闭环
+11. 最后依次调用 review_verification_scenarios 和 review_verification_evidence；有阻断项时继续修复和回归，不得自行宣称验证完成
 
 约束：
 - 必须基于 RTL 阶段的端口定义

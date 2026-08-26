@@ -1,0 +1,13 @@
+{
+  "version": 1,
+  "rules": [
+    { "id": "RV-001", "protocol": "READY_VALID", "title": "VALID stability", "check": "VALID asserted without READY must remain asserted and payload stable" },
+    { "id": "RV-002", "protocol": "READY_VALID", "title": "Single transfer", "check": "A transfer occurs exactly when VALID && READY" },
+    { "id": "AXI-001", "protocol": "AXI", "title": "Channel stability", "check": "Each AXI channel keeps VALID and payload stable under backpressure" },
+    { "id": "AXI-002", "protocol": "AXI", "title": "Response closure", "check": "Accepted requests are matched by exactly one legal response or an explicit timeout/abort policy" },
+    { "id": "AXI-003", "protocol": "AXI", "title": "Burst boundaries", "check": "LEN/SIZE/BURST and LAST remain mutually consistent" },
+    { "id": "APB-001", "protocol": "APB", "title": "Setup/access order", "check": "PSEL setup is followed by PENABLE access and held until PREADY" },
+    { "id": "AHB-001", "protocol": "AHB", "title": "Transfer progression", "check": "Address/control and response progress consistently with HREADY" },
+    { "id": "FIFO-001", "protocol": "FIFO", "title": "Boundary safety", "check": "No overflow on full and no underflow on empty" }
+  ]
+}

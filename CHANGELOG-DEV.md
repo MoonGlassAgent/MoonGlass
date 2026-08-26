@@ -2,6 +2,19 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-08-26：AIGV 完备化与开源 Formal 闭环
+
+- 新增 SymbiYosys + Yosys-SMTBMC + Boolector/Bitwuzla/Z3 开源 Formal 执行器，支持 `bmc`、`prove`、`cover`，统一归档 `.sby`、日志、`formal-result.json` 和 VCD/YW 反例/见证。
+- 修复 OSS CAD Suite Windows 包中 `yosys-smtbmc.exe.exe` 无法被 SBY 调用的问题：MoonGlass 在任务目录外创建隔离 shim，不修改用户安装目录。
+- Formal 语义严格区分：BMC PASS 仅记 `PARTIAL`，prove PASS 才记 `FORMAL_PROVED`，cover PASS 记可达；FAIL/ERROR 进入质量阻断。
+- 新增 `run_formal_verification` Pi 工具和 `formal-verification` Skill，强制审查 assumptions、绑定 `SCN-*`，不支持的高级 SVA 必须改写或明确报告。
+- Slang 前端改为隔离工具链环境并真正消费 elaborated AST，从过程块、条件、case、赋值和符号引用建立 CFG/DFG；AST 超过 128MB 时安全降级。
+- 新增静态 COI、多源共享状态与 N-way Interaction 分析；共享下游对象形成 `SHARES_STATE` 图边和高价值 Formal Candidate，禁止任意 Feature 笛卡尔积。
+- 自动识别 AXI/APB/AHB/ready-valid/FIFO 协议结构，新增机器可读协议规则库，用于仿真 assertion、Formal property 和验证计划约束。
+- `scenario_hits.json` 扩展 `reachCount`、`assertionPassed`、`coverageDelta`，调度器按 Scenario 级增量降低已有效覆盖任务预算。
+- 验证面板新增 Formal 证据视图，并显示 FSM、CFG、依赖、COI、协议数量；兼容旧版 Verification State 文件。
+- 新增真实 SymbiYosys/Boolector smoke test，并将 Formal、结构智能、Pi 扩展纳入核心测试链。
+
 ## 2026-08-26：Verification Intelligence 第二阶段完整落地
 
 - 新增 Slang AST 可选前端与设置页工具链探测：检测到 Slang 时执行完整 SystemVerilog elaboration 并保存带源位置 AST；未安装或分析失败时自动使用 MoonGlass 结构分析器，诊断与限制明确落盘。

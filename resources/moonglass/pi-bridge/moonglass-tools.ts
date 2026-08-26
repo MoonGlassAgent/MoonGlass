@@ -24,6 +24,7 @@ import {
 } from './eda-bridge/tool-runner'
 import { runCocotbSimulation, runVerilatorSimulation } from './eda-bridge/simulation'
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
+import { runFormalVerification } from './eda-bridge/formal'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
 import { buildVerificationIntelligence, registerVerificationHypotheses, reviewScenarioClosure } from './verification-intelligence/engine.ts'
 
@@ -1347,6 +1348,29 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       const result = reviewScenarioClosure(ctx.cwd)
       const text = `## Scenario Closure Review\n\n**结论**：${result.passed ? '通过' : '拒绝签核'}\n\n${result.blockers.length ? `### 阻断项\n${result.blockers.map((item) => `- ${item}`).join('\n')}` : '无阻断项。'}${result.warnings.length ? `\n\n### 警告\n${result.warnings.map((item) => `- ${item}`).join('\n')}` : ''}`
       return { content: [{ type: 'text', text }], details: result, isError: !result.passed }
+    }
+  })
+
+  pi.registerTool({
+    name: 'run_formal_verification',
+    label: 'Run Open-source Formal Verification',
+    description: '使用 SymbiYosys + SMT solver 运行开源 Formal BMC、prove 或 cover。属性/harness 必须先写入 verification/formal，结果与反例 trace 自动归档。',
+    promptSnippet: 'Run evidence-producing open-source formal verification',
+    promptGuidelines: 'Use only properties grounded in SPEC_FACT or explicit invariants. Keep assumptions minimal and review them. A PASS proves only the configured property, depth/mode and model assumptions.',
+    parameters: Type.Object({
+      top: Type.String({ description: 'Formal harness 顶层模块名' }),
+      rtlFiles: Type.Array(Type.String()),
+      propertyFiles: Type.Array(Type.String()),
+      mode: Type.Optional(Type.Union([Type.Literal('bmc'), Type.Literal('prove'), Type.Literal('cover')])),
+      depth: Type.Optional(Type.Number({ minimum: 1, maximum: 10000 })),
+      engine: Type.Optional(Type.Union([Type.Literal('boolector'), Type.Literal('bitwuzla'), Type.Literal('z3')])),
+      taskName: Type.Optional(Type.String()),
+      scenarioId: Type.Optional(Type.String({ pattern: '^SCN-[A-F0-9]{8}$', description: '绑定的 Verification Scenario ID' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      onUpdate?.({ content: [{ type: 'text', text: `正在运行 Formal ${params.mode ?? 'bmc'}：${params.top}` }] })
+      const result = await runFormalVerification({ workspaceDir: ctx.cwd, ...params, signal })
+      return { content: [{ type: 'text', text: `## Formal 验证结果\n\n- 状态：${result.status}\n- 模式：${result.mode}\n- 顶层：${result.top}\n- 引擎：${result.engine}\n- 深度：${result.depth}\n- 说明：${result.message}\n- 日志：${result.logPath}\n${result.traces.length ? `- 反例/见证：${result.traces.join(', ')}` : ''}` }], details: result, isError: ['ERROR', 'UNKNOWN'].includes(result.status) }
     }
   })
 

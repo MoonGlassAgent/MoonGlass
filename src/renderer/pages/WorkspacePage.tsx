@@ -1186,12 +1186,14 @@ interface VerificationIntelligenceSummary {
     status: string
     evidence: string[]
   }>
-  analyzer: { engine: string; version?: string; limitations: string[] }
-  interactionGraph: {
+  analyzer?: { engine: string; version?: string; limitations: string[] }
+  interactionGraph?: {
     nodes: Array<{ id: string; kind: string; label: string; source?: { file: string; line?: number } }>
     edges: Array<{ id: string; from: string; to: string; type: string; confidence: string }>
   }
-  executionPlan: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; priority: number; reason: string }>
+  executionPlan?: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; priority: number; reason: string }>
+  formalResults?: Array<{ resultFile: string; status: string; mode: string; scenarioId?: string; traces: string[] }>
+  structuralSummary?: { fsm: number; cfgNodes: number; dependencies: number; cones: number; protocols: Array<{ protocol: string; module: string }> }
 }
 
 const EMPTY_INVENTORY: ProjectInventory = {
@@ -1212,7 +1214,7 @@ function BottomPanel({
   const [loading, setLoading] = useState(false)
   const [waveformStatus, setWaveformStatus] = useState('')
   const [intelligence, setIntelligence] = useState<VerificationIntelligenceSummary | null>(null)
-  const [intelligenceView, setIntelligenceView] = useState<'scenario' | 'interaction' | 'schedule'>('scenario')
+  const [intelligenceView, setIntelligenceView] = useState<'scenario' | 'interaction' | 'schedule' | 'formal'>('scenario')
 
   const refreshInventory = useCallback(async () => {
     setLoading(true)
@@ -1342,19 +1344,21 @@ function BottomPanel({
     return (
       <div className="flex h-full flex-col">
         {toolbar}
-        <div className="mb-2 grid grid-cols-3 gap-2">
+        <div className="mb-2 grid grid-cols-4 gap-2">
           <ConsoleMetric label="验证产物" value={inventory.verification.length} />
           <ConsoleMetric label="Scenario" value={intelligence?.scenarioCount ?? 0} />
           <ConsoleMetric label="关键未闭环" value={intelligence?.criticalOpen.length ?? 0} />
+          <ConsoleMetric label="Formal 证据" value={intelligence?.formalResults?.length ?? 0} />
         </div>
         {intelligence && (
           <div className="mb-2 flex items-center gap-1" aria-label="验证智能视图">
-            {([['scenario', '风险场景'], ['interaction', '交互图'], ['schedule', '执行队列']] as const).map(([value, label]) => (
+            {([['scenario', '风险场景'], ['interaction', '交互图'], ['schedule', '执行队列'], ['formal', 'Formal']] as const).map(([value, label]) => (
               <button key={value} onClick={() => setIntelligenceView(value)} className={`console-action ${intelligenceView === value ? 'border-emerald-500 text-emerald-600' : ''}`}>{label}</button>
             ))}
-            <span className="ml-auto truncate text-[10px] text-zinc-400" title={intelligence.analyzer.limitations.join('；')}>分析器：{intelligence.analyzer.engine}{intelligence.analyzer.version ? ` · ${intelligence.analyzer.version}` : ''}</span>
+            <span className="ml-auto truncate text-[10px] text-zinc-400" title={intelligence.analyzer?.limitations.join('；')}>分析器：{intelligence.analyzer?.engine ?? '旧版模型'}{intelligence.analyzer?.version ? ` · ${intelligence.analyzer.version}` : ''}</span>
           </div>
         )}
+        {intelligence?.structuralSummary && <div className="mb-2 truncate text-[10px] text-zinc-400" title={intelligence.structuralSummary.protocols.map((item) => `${item.module}:${item.protocol}`).join('；')}>FSM {intelligence.structuralSummary.fsm} · CFG {intelligence.structuralSummary.cfgNodes} · 依赖 {intelligence.structuralSummary.dependencies} · COI {intelligence.structuralSummary.cones} · 协议 {intelligence.structuralSummary.protocols.length}</div>}
         {!intelligence && (
           <div className="console-empty mb-2 flex items-center justify-between gap-3">
             <span>尚未生成 Verification Intelligence 模型。</span>
@@ -1386,25 +1390,36 @@ function BottomPanel({
         )}
         {intelligence && intelligenceView === 'interaction' && (
           <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Feature Interaction Graph">
-            {intelligence.interactionGraph.edges.slice(0, 40).map((edge) => {
-              const source = intelligence.interactionGraph.nodes.find((node) => node.id === edge.from)?.source
+            {(intelligence.interactionGraph?.edges ?? []).slice(0, 40).map((edge) => {
+              const source = intelligence.interactionGraph?.nodes.find((node) => node.id === edge.from)?.source
               return <button key={edge.id} onDoubleClick={() => source?.file && onOpenFile(source.file)} className="console-row w-full text-left" title={source?.file ? '双击跳转到结构证据' : edge.id}>
                 <strong className="shrink-0 font-mono text-[10px] text-sky-600">{edge.type}</strong>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{edge.from} → {edge.to}</span>
                 <span className="shrink-0 text-[10px] text-zinc-400">{edge.confidence}</span>
               </button>
             })}
-            {intelligence.interactionGraph.edges.length === 0 && <div className="console-empty">当前没有可展示的交互边。</div>}
+            {(intelligence.interactionGraph?.edges.length ?? 0) === 0 && <div className="console-empty">当前没有可展示的交互边。</div>}
           </div>
         )}
         {intelligence && intelligenceView === 'schedule' && (
           <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="验证执行队列">
-            {intelligence.executionPlan.map((plan) => <div key={plan.scenarioId} className="console-row" title={plan.reason}>
+            {(intelligence.executionPlan ?? []).map((plan) => <div key={plan.scenarioId} className="console-row" title={plan.reason}>
               <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{plan.scenarioId}</strong>
               <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{plan.sequence}</span>
               <span className="shrink-0 text-[10px] text-zinc-500">{plan.iterations} 次 · {plan.budgetSeconds}s</span>
             </div>)}
-            {intelligence.executionPlan.length === 0 && <div className="console-empty">关键 Scenario 已闭环，当前没有待调度任务。</div>}
+            {(intelligence.executionPlan?.length ?? 0) === 0 && <div className="console-empty">关键 Scenario 已闭环，当前没有待调度任务。</div>}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'formal' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Formal 验证证据">
+            {(intelligence.formalResults ?? []).map((result) => <button key={result.resultFile} onDoubleClick={() => onOpenFile(result.resultFile)} className="console-row w-full text-left" title="双击打开 formal-result.json">
+              <strong className={`shrink-0 font-mono text-[11px] ${result.status === 'PASS' ? 'text-emerald-600' : result.status === 'FAIL' ? 'text-red-600' : 'text-amber-600'}`}>{result.status}</strong>
+              <span className="shrink-0 text-[10px] text-zinc-500">{result.mode}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{result.scenarioId ?? result.resultFile}</span>
+              <span className="shrink-0 text-[10px] text-zinc-400">trace {result.traces.length}</span>
+            </button>)}
+            {(intelligence.formalResults ?? []).length === 0 && <div className="console-empty">尚无 Formal 证据。Formal Candidate 可由主 Agent 使用 SymbiYosys 执行。</div>}
           </div>
         )}
         {inventory.waveforms.length > 0 && (
