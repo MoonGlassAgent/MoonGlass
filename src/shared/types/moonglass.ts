@@ -214,6 +214,8 @@ export interface ToolDetection {
   description?: string
   installId?: string
   installUrl?: string
+  builtin?: boolean
+  source?: 'bundled' | 'managed' | 'system'
 }
 
 export interface ToolInstallResult {

@@ -12,9 +12,9 @@
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
-    "predist": "node scripts/stage-pi-runtime.mjs",
+    "predist": "node scripts/stage-pi-runtime.mjs && node scripts/stage-aigv-runtime.mjs",
     "dist": "electron-builder",
-    "dist:dir": "node scripts/stage-pi-runtime.mjs && electron-builder --win dir",
+    "dist:dir": "node scripts/stage-pi-runtime.mjs && node scripts/stage-aigv-runtime.mjs && electron-builder --win dir",
     "package:green": "node scripts/package-green.mjs",
     "rebuild:electron": "electron-rebuild -f -w better-sqlite3",
     "rebuild:node": "pnpm rebuild better-sqlite3",
@@ -25,7 +25,8 @@
     "smoke:project-import": "node scripts/project-import-analyzer-smoke.mjs",
     "smoke:axi-lite-timer": "node scripts/axi-lite-timer-smoke.mjs",
     "test": "node scripts/check-skills.mjs && node scripts/run-tests.mjs core",
-    "test:integration": "node scripts/run-tests.mjs integration"
+    "test:integration": "node scripts/run-tests.mjs integration",
+    "stage:aigv-runtime": "node scripts/stage-aigv-runtime.mjs"
   },
   "devDependencies": {
     "@electron/asar": "^3.4.1",

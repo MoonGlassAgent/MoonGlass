@@ -130,9 +130,12 @@ export function run(
   timeoutMs: number = EXEC_TIMEOUT_MS
 ): Promise<RunResult> {
   return new Promise((resolve, reject) => {
+    const isWindowsScript = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(cmd)
+    const executable = isWindowsScript ? (process.env.ComSpec ?? 'cmd.exe') : cmd
+    const executableArgs = isWindowsScript ? ['/d', '/s', '/c', cmd, ...args] : args
     const child = execFile(
-      cmd,
-      args,
+      executable,
+      executableArgs,
       { timeout: timeoutMs, maxBuffer: MAX_BUFFER, env, signal, cwd },
       (err, stdout, stderr) => {
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {

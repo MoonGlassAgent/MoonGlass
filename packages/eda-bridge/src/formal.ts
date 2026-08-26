@@ -21,7 +21,7 @@ function collect(dir: string, match: RegExp): string[] {
 
 export async function runFormalVerification(options: FormalRunOptions): Promise<FormalRunResult> {
   const workspace = resolve(options.workspaceDir)
-  const sby = await locateTool(process.platform === 'win32' ? ['sby.exe', 'sby'] : ['sby'])
+  const sby = await locateTool(process.platform === 'win32' ? ['sby.exe', 'sby.cmd', 'sby'] : ['sby'])
   if (!sby) throw new Error('未找到 SymbiYosys (sby)。请在“设置 > 开发环境与 EDA 工具链”安装 OSS CAD Suite。')
   const mode = options.mode ?? 'bmc'; const depth = Math.max(1, Math.min(10000, Math.round(options.depth ?? (mode === 'prove' ? 40 : 64))))
   const engine = options.engine ?? 'boolector'; const task = safeName(options.taskName ?? `${options.top}_${mode}`)

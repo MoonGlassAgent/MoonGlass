@@ -23,13 +23,15 @@ const TOOL_PROBES: Probe[] = [
   { tool: 'Git', candidates: ['git'], versionArgs: ['--version'], category: 'build', importance: 'required', description: '版本管理与开源资源下载', installUrl: 'https://git-scm.com/downloads' },
   { tool: 'C/C++ 编译器', candidates: ['clang', 'gcc'], versionArgs: ['--version'], category: 'build', importance: 'recommended', description: 'Verilator C++ 仿真构建', installId: OSS_CAD },
   { tool: 'Make', candidates: ['make', 'mingw32-make'], versionArgs: ['--version'], category: 'build', importance: 'recommended', description: 'Verilator 构建流程', installId: OSS_CAD },
-  { tool: 'Yosys', candidates: ['yosys.exe', 'yosys'], versionArgs: ['-V'], category: 'eda', importance: 'required', description: 'RTL 综合与网表输出', installId: OSS_CAD },
+  { tool: 'Yosys', candidates: ['yosys.exe', 'yosys'], versionArgs: ['-V'], category: 'eda', importance: 'required', description: 'RTL 综合、结构分析与 Formal 模型生成', builtin: true },
   { tool: 'Verilator', candidates: ['verilator_bin.exe', 'verilator'], versionArgs: ['--version'], category: 'eda', importance: 'recommended', description: 'Lint 与高速仿真', installId: OSS_CAD },
   { tool: 'Icarus Verilog', candidates: ['iverilog'], versionArgs: ['-V'], category: 'verification', importance: 'required', description: 'Windows 默认 Cocotb 仿真器', installId: OSS_CAD },
   { tool: 'Verible', candidates: ['verible-verilog-lint'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'Verilog/SystemVerilog 语法与风格检查', installUrl: 'https://github.com/chipsalliance/verible/releases' },
-  { tool: 'Slang', candidates: ['slang.exe', 'slang'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'SystemVerilog 完整解析、展开与验证智能 AST', installUrl: 'https://github.com/MikePopoloski/slang/releases' },
-  { tool: 'SymbiYosys', candidates: ['sby.exe', 'sby'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: '开源 Formal BMC、证明与可达性验证', installId: OSS_CAD },
-  { tool: 'Boolector', candidates: ['boolector.exe', 'boolector'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'SymbiYosys 位向量 Formal 求解器', installId: OSS_CAD },
+  { tool: 'Slang', candidates: ['slang.exe', 'slang'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'SystemVerilog 完整解析、展开与验证智能 AST', builtin: true },
+  { tool: 'SymbiYosys', candidates: ['sby.cmd', 'sby.exe', 'sby'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: '开源 Formal BMC、证明与可达性验证', builtin: true },
+  { tool: 'Yosys-SMTBMC', candidates: ['yosys-smtbmc.cmd', 'yosys-smtbmc.exe', 'yosys-smtbmc'], versionArgs: ['--help'], category: 'verification', importance: 'recommended', description: 'SBY 与 SMT Solver 之间的模型检查执行层', builtin: true },
+  { tool: 'Boolector', candidates: ['boolector.exe', 'boolector'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: '位向量 Formal 求解器', builtin: true },
+  { tool: 'Bitwuzla', candidates: ['bitwuzla.exe', 'bitwuzla'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: '备用 SMT 位向量与数组求解器', builtin: true },
   { tool: 'GTKWave', candidates: process.platform === 'win32' ? ['gtkwave.exe', 'gtkwave'] : ['gtkwave'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'VCD/FST 波形查看', installId: OSS_CAD },
   { tool: 'Cocotb', candidates: ['python', 'python3'], versionArgs: ['-c', 'import cocotb; print(cocotb.__version__)'], category: 'verification', importance: 'required', description: '默认 Python 验证框架', installId: 'python-cocotb' },
   {
@@ -58,7 +60,7 @@ const TOOL_PROBES: Probe[] = [
 
 async function probeOne(probe: Probe): Promise<ToolDetection> {
   const toolPath = await locateTool(probe.candidates)
-  const metadata = { tool: probe.tool, category: probe.category, importance: probe.importance, description: probe.description, installId: probe.installId, installUrl: probe.installUrl }
+  const metadata = { tool: probe.tool, category: probe.category, importance: probe.importance, description: probe.description, installId: probe.installId, installUrl: probe.installUrl, builtin: probe.builtin }
   if (!toolPath) return { ...metadata, found: false }
 
   let version: string | undefined

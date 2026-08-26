@@ -6,6 +6,8 @@ portable-asar-dist/
 .DS_Store
 e2e-screenshots/
 build-resources/pi-runtime/
+build-resources/bundled-aigv-runtime/
+resources/moonglass/bundled-toolchains/**/*.tgz
 demo-seed/
 green-dist-*/
 .tools-gh-*/

@@ -32,6 +32,8 @@ extraResources:
     to: rules
   - from: resources/moonglass/skills
     to: skills
+  - from: resources/moonglass/bundled-toolchains
+    to: bundled-toolchains
 win:
   target:
     - target: nsis

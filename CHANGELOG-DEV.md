@@ -255,3 +255,10 @@
 - 新增中文综述型 HTML《从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流》。
 - 系统整理流程状态、Agent 控制、验证闭环、追溯门禁、IP/SRAM 复用、工具链、评价指标、局限性和开放研究议程。
 - 文档采用单文件响应式排版，支持浏览器分享与打印，并明确区分工程观察、系统方法和待验证研究假设。
+
+# 2026-08-27 - AIGV 开源工具链内置
+
+- Windows 发布包内置裁剪后的 Slang、Yosys、SymbiYosys、Yosys-SMTBMC、Boolector 与 Bitwuzla，无需用户逐项下载安装。
+- AIGV 运行时以单个压缩包随软件交付，首次启动自动解压到 MoonGlass 数据目录，避免绿色版出现大量零散文件。
+- 设置页显示工具来自“MoonGlass 内置”“MoonGlass 管理安装”或“系统环境”，并能识别内置组件异常。
+- Windows 工具执行层支持 `.cmd/.bat` 包装器，保证内置 SymbiYosys 可由 MoonGlass 直接启动。

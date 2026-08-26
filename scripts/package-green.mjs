@@ -51,8 +51,9 @@ console.log(`[green] MoonGlass v${VERSION} 绿色版 ${RELEASE}`)
 
 // ── 1. 构建 ────────────────────────────────────────────────
 if (!SKIP_BUILD) {
-  console.log('[green] 步骤 1/2：物化 pi 运行时 + electron-builder --win dir ...')
+  console.log('[green] 步骤 1/2：物化 pi 运行时与内置 AIGV 工具链 + electron-builder --win dir ...')
   execFileSync(process.execPath, [join(ROOT, 'scripts', 'stage-pi-runtime.mjs')], { stdio: 'inherit' })
+  execFileSync(process.execPath, [join(ROOT, 'scripts', 'stage-aigv-runtime.mjs')], { stdio: 'inherit' })
   execSync('pnpm build', { cwd: ROOT, stdio: 'inherit' })
   execSync('pnpm exec electron-builder --win dir', { cwd: ROOT, stdio: 'inherit' })
 } else {
@@ -71,6 +72,12 @@ const piVersion = execFileSync(
   { encoding: 'utf-8', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }
 ).trim()
 console.log(`[green] 打包内 pi 运行时自检通过（pi v${piVersion}）`)
+const packagedAigv = join(unpacked, 'resources', 'bundled-toolchains', 'windows-x64', 'moonglass-aigv-runtime.tgz')
+if (!existsSync(packagedAigv)) {
+  console.error('[green] 打包产物缺少内置 AIGV 工具链归档。')
+  process.exit(1)
+}
+console.log(`[green] 内置 AIGV 工具链归档就绪（${(statSync(packagedAigv).size / 1024 / 1024).toFixed(1)} MB）`)
 
 // ── 3. 组装绿色目录 ─────────────────────────────────────────
 rmSync(outRoot, { recursive: true, force: true })

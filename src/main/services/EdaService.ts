@@ -20,6 +20,7 @@ import type { ProjectService } from './ProjectService'
 export class EdaService implements MoonGlassService {
   readonly name = 'eda-service'
   private readonly toolchainRoot: string
+  private readonly bundledAigvRoot: string
   private readonly detectionCachePath: string
   private detectionCache: ToolDetection[] | null = null
   private readonly installJobs = new Map<string, ToolInstallJob>()
@@ -28,12 +29,14 @@ export class EdaService implements MoonGlassService {
 
   constructor(userDataDir: string, private readonly projects: ProjectService) {
     this.toolchainRoot = join(userDataDir, 'moonglass', 'toolchains')
+    this.bundledAigvRoot = join(this.toolchainRoot, 'bundled-aigv', 'aigv-toolchain')
     this.detectionCachePath = join(userDataDir, 'moonglass', 'eda-detection-cache.json')
   }
 
   async start(): Promise<void> {
     await mkdir(this.toolchainRoot, { recursive: true })
-    this.activateManagedTools()
+    try { await this.ensureBundledAigvRuntime() } catch (error) { console.error('[eda-service] 内置 AIGV 工具链部署失败', error) }
+    this.activateToolchains()
     this.loadDetectionCache()
   }
 
@@ -43,8 +46,8 @@ export class EdaService implements MoonGlassService {
 
   async detectTools(force = false): Promise<ToolDetection[]> {
     if (!force && this.detectionCache) return this.detectionCache
-    this.activateManagedTools()
-    const tools = await detectToolchain()
+    this.activateToolchains()
+    const tools = (await detectToolchain()).map((tool) => ({ ...tool, source: this.toolSource(tool.path) }))
     this.detectionCache = tools
     this.persistDetectionCache(tools)
     return tools
@@ -59,7 +62,7 @@ export class EdaService implements MoonGlassService {
         arch?: string
         tools?: ToolDetection[]
       }
-      if (cached.version === 1 && cached.platform === process.platform && cached.arch === process.arch && Array.isArray(cached.tools)) {
+      if (cached.version === 2 && cached.platform === process.platform && cached.arch === process.arch && Array.isArray(cached.tools)) {
         this.detectionCache = cached.tools
       }
     } catch (error) {
@@ -71,7 +74,7 @@ export class EdaService implements MoonGlassService {
     try {
       mkdirSync(dirname(this.detectionCachePath), { recursive: true })
       writeFileSync(this.detectionCachePath, JSON.stringify({
-        version: 1,
+        version: 2,
         platform: process.platform,
         arch: process.arch,
         detectedAt: new Date().toISOString(),
@@ -153,7 +156,7 @@ export class EdaService implements MoonGlassService {
       await this.runProcess('tar', ['-xzf', archivePath, '-C', this.toolchainRoot])
       await rm(archivePath, { force: true })
       if (!existsSync(join(suiteDir, 'bin'))) throw new Error('工具包解压完成，但未找到 bin 目录')
-      this.activateManagedTools()
+      this.activateToolchains()
       return { ok: true, message: 'OSS CAD Suite 安装完成', path: suiteDir }
     } catch (error) {
       await rm(archivePath, { force: true }).catch(() => {})
@@ -176,7 +179,7 @@ export class EdaService implements MoonGlassService {
   }
 
   async openWaveform(projectId: string, relPath: string): Promise<WaveformOpenResult> {
-    this.activateManagedTools()
+    this.activateToolchains()
     const root = resolve(this.projects.workspaceDir(projectId))
     const filePath = resolve(root, relPath)
     if (filePath !== root && !filePath.startsWith(root + sep)) {
@@ -259,15 +262,44 @@ export class EdaService implements MoonGlassService {
     }
   }
 
-  private activateManagedTools(): void {
-    const bin = join(this.toolchainRoot, 'oss-cad-suite', 'bin')
-    if (!existsSync(bin)) return
-    const lib = join(this.toolchainRoot, 'oss-cad-suite', 'lib')
-    const selected = new Set([bin.toLowerCase(), lib.toLowerCase()])
+  private bundledArchivePath(): string | undefined {
+    if (process.platform !== 'win32' || process.arch !== 'x64') return undefined
+    const relativeArchive = join('bundled-toolchains', 'windows-x64', 'moonglass-aigv-runtime.tgz')
+    const candidates = [join(process.resourcesPath, relativeArchive), join(process.cwd(), 'resources', 'moonglass', relativeArchive)]
+    return candidates.find((candidate) => existsSync(candidate))
+  }
+
+  private async ensureBundledAigvRuntime(): Promise<void> {
+    const archive = this.bundledArchivePath()
+    if (!archive) return
+    const archiveStat = statSync(archive); const fingerprint = `${archiveStat.size}:${Math.round(archiveStat.mtimeMs)}`
+    const marker = join(this.toolchainRoot, 'bundled-aigv', '.archive-fingerprint')
+    if (existsSync(join(this.bundledAigvRoot, 'bin', 'slang.exe')) && existsSync(marker) && readFileSync(marker, 'utf-8') === fingerprint) return
+    const target = join(this.toolchainRoot, 'bundled-aigv')
+    await rm(target, { recursive: true, force: true }); await mkdir(target, { recursive: true })
+    await this.runProcess('tar', ['-xzf', archive, '-C', target])
+    if (!existsSync(join(this.bundledAigvRoot, 'bin', 'slang.exe')) || !existsSync(join(this.bundledAigvRoot, 'bin', 'sby.cmd'))) throw new Error('MoonGlass 内置 AIGV 工具链解压不完整')
+    writeFileSync(marker, fingerprint, 'utf-8')
+  }
+
+  private toolSource(path?: string): ToolDetection['source'] {
+    if (!path) return undefined
+    const normalized = resolve(path).toLowerCase()
+    if (normalized.startsWith(resolve(this.bundledAigvRoot).toLowerCase() + sep)) return 'bundled'
+    if (normalized.startsWith(resolve(join(this.toolchainRoot, 'oss-cad-suite')).toLowerCase() + sep)) return 'managed'
+    return 'system'
+  }
+
+  private activateToolchains(): void {
+    const roots = [this.bundledAigvRoot, join(this.toolchainRoot, 'oss-cad-suite')].filter((root) => existsSync(join(root, 'bin')))
+    if (roots.length === 0) return
+    const priorityDirs = roots.flatMap((root) => [join(root, 'bin'), join(root, 'lib')]).filter(existsSync)
+    const selected = new Set(priorityDirs.map((entry) => resolve(entry).toLowerCase()))
     const current = (process.env.PATH ?? '').split(delimiter)
       .filter(Boolean)
       .filter((entry) => !selected.has(resolve(entry).toLowerCase()))
-    process.env.PATH = [bin, lib, ...current].join(delimiter)
+    process.env.PATH = [...priorityDirs, ...current].join(delimiter)
+    process.env.MOONGLASS_BUNDLED_AIGV_ROOT = this.bundledAigvRoot
   }
 
   private runProcess(command: string, args: string[], captureOutput?: false, env?: NodeJS.ProcessEnv): Promise<void>
