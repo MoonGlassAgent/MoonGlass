@@ -26,7 +26,9 @@ Create and maintain the verification documents under `docs/04_verification/`.
    and bind selected `SCN-*` IDs to requirements, RTL objects, tests, checkers,
    coverage bins, and evidence. Risk markers are planning hypotheses, not
    confirmed bugs. Do not generate arbitrary feature Cartesian products.
-7. After execution, write `verification/results/<module>/scenario_hits.json`:
+7. Inspect `verification/intelligence/feature-interaction-graph.json`. When semantic reasoning is useful, call `register_verification_hypotheses`; every hypothesis must cite existing Risk, RTL Object, and Interaction Edge IDs, and every claim must be classified as `SPEC_FACT`, `RTL_FACT`, `INFERENCE`, or `UNKNOWN`.
+8. Call `select_next_verification_batch`. Reuse or implement the named Cocotb sequence, constraints, temporal constraints, scoreboard/assertion checkers, iteration count, and time budget from `scenario-execution-plan.json`.
+9. After execution, write `verification/results/<module>/scenario_hits.json`:
 
 ```json
 {
@@ -41,7 +43,7 @@ Create and maintain the verification documents under `docs/04_verification/`.
 }
 ```
 
-8. Run:
+10. Rebuild intelligence after every batch so passed scenarios and coverage feedback reprioritize the remaining queue. Run:
 
 ```bash
 python <skill-dir>/scripts/check_vplan.py docs/04_verification/verification_plan.md

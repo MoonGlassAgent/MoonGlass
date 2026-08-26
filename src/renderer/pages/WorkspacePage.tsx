@@ -1184,7 +1184,14 @@ interface VerificationIntelligenceSummary {
     priority: number
     method: string
     status: string
+    evidence: string[]
   }>
+  analyzer: { engine: string; version?: string; limitations: string[] }
+  interactionGraph: {
+    nodes: Array<{ id: string; kind: string; label: string; source?: { file: string; line?: number } }>
+    edges: Array<{ id: string; from: string; to: string; type: string; confidence: string }>
+  }
+  executionPlan: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; priority: number; reason: string }>
 }
 
 const EMPTY_INVENTORY: ProjectInventory = {
@@ -1205,6 +1212,7 @@ function BottomPanel({
   const [loading, setLoading] = useState(false)
   const [waveformStatus, setWaveformStatus] = useState('')
   const [intelligence, setIntelligence] = useState<VerificationIntelligenceSummary | null>(null)
+  const [intelligenceView, setIntelligenceView] = useState<'scenario' | 'interaction' | 'schedule'>('scenario')
 
   const refreshInventory = useCallback(async () => {
     setLoading(true)
@@ -1339,6 +1347,14 @@ function BottomPanel({
           <ConsoleMetric label="Scenario" value={intelligence?.scenarioCount ?? 0} />
           <ConsoleMetric label="关键未闭环" value={intelligence?.criticalOpen.length ?? 0} />
         </div>
+        {intelligence && (
+          <div className="mb-2 flex items-center gap-1" aria-label="验证智能视图">
+            {([['scenario', '风险场景'], ['interaction', '交互图'], ['schedule', '执行队列']] as const).map(([value, label]) => (
+              <button key={value} onClick={() => setIntelligenceView(value)} className={`console-action ${intelligenceView === value ? 'border-emerald-500 text-emerald-600' : ''}`}>{label}</button>
+            ))}
+            <span className="ml-auto truncate text-[10px] text-zinc-400" title={intelligence.analyzer.limitations.join('；')}>分析器：{intelligence.analyzer.engine}{intelligence.analyzer.version ? ` · ${intelligence.analyzer.version}` : ''}</span>
+          </div>
+        )}
         {!intelligence && (
           <div className="console-empty mb-2 flex items-center justify-between gap-3">
             <span>尚未生成 Verification Intelligence 模型。</span>
@@ -1351,12 +1367,12 @@ function BottomPanel({
             </button>
           </div>
         )}
-        {intelligence && intelligence.scenarios.length > 0 && (
+        {intelligence && intelligenceView === 'scenario' && intelligence.scenarios.length > 0 && (
           <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Verification Intelligence Scenario 看板">
             {intelligence.scenarios.slice(0, 12).map((scenario) => (
               <button
                 key={scenario.id}
-                onDoubleClick={() => onOpenFile('verification/intelligence/scenario-registry.json')}
+                onDoubleClick={() => onOpenFile(scenario.evidence?.[0] ?? 'verification/intelligence/scenario-registry.json')}
                 className="console-row w-full text-left"
                 title="双击打开完整 Scenario Registry"
               >
@@ -1366,6 +1382,29 @@ function BottomPanel({
                 <span className={`shrink-0 text-[10px] ${['VERIFIED', 'FORMAL_PROVED', 'WAIVED'].includes(scenario.status) ? 'text-emerald-600' : scenario.status === 'FAILED' ? 'text-red-600' : 'text-amber-600'}`}>{scenario.status}</span>
               </button>
             ))}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'interaction' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Feature Interaction Graph">
+            {intelligence.interactionGraph.edges.slice(0, 40).map((edge) => {
+              const source = intelligence.interactionGraph.nodes.find((node) => node.id === edge.from)?.source
+              return <button key={edge.id} onDoubleClick={() => source?.file && onOpenFile(source.file)} className="console-row w-full text-left" title={source?.file ? '双击跳转到结构证据' : edge.id}>
+                <strong className="shrink-0 font-mono text-[10px] text-sky-600">{edge.type}</strong>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{edge.from} → {edge.to}</span>
+                <span className="shrink-0 text-[10px] text-zinc-400">{edge.confidence}</span>
+              </button>
+            })}
+            {intelligence.interactionGraph.edges.length === 0 && <div className="console-empty">当前没有可展示的交互边。</div>}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'schedule' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="验证执行队列">
+            {intelligence.executionPlan.map((plan) => <div key={plan.scenarioId} className="console-row" title={plan.reason}>
+              <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{plan.scenarioId}</strong>
+              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{plan.sequence}</span>
+              <span className="shrink-0 text-[10px] text-zinc-500">{plan.iterations} 次 · {plan.budgetSeconds}s</span>
+            </div>)}
+            {intelligence.executionPlan.length === 0 && <div className="console-empty">关键 Scenario 已闭环，当前没有待调度任务。</div>}
           </div>
         )}
         {inventory.waveforms.length > 0 && (

@@ -1,7 +1,7 @@
 import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildVerificationIntelligence, reviewScenarioClosure } from '../packages/verification-intelligence-engine/src/index.ts'
+import { buildVerificationIntelligence, registerVerificationHypotheses, reviewScenarioClosure } from '../packages/verification-intelligence-engine/src/index.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'moonglass-verification-intelligence-'))
 mkdirSync(join(root, 'docs', '02_requirements'), { recursive: true })
@@ -24,6 +24,13 @@ module dma_wr_ctrl(input clk, input rst_n, input abort, input timeout, input bva
     else if (timeout) state <= 4;
     else if (bvalid) begin state <= 5; outstanding_cnt <= outstanding_cnt - 1; end
   end
+  always @(*) begin
+    case (state)
+      0: state = abort ? 3 : 0;
+      3: state = bvalid ? 5 : 3;
+      default: state = 0;
+    endcase
+  end
 endmodule
 `, 'utf-8')
 
@@ -36,9 +43,21 @@ writeFileSync(join(root, 'verification', 'results', 'dma', 'result.json'), JSON.
 const first = buildVerificationIntelligence(root)
 if (first.requirementModel.requirements.length !== 2) throw new Error('Requirement Model 未提取稳定需求')
 if (first.structuralModel.facts.length === 0) throw new Error('Structural Model 为空')
+if (first.structuralModel.stateMachines.length === 0) throw new Error('未提取 FSM')
+if (first.structuralModel.registerWriters.length === 0) throw new Error('未提取寄存器写入关系')
+if (first.structuralModel.clockResetDomains.length === 0) throw new Error('未提取时钟复位域')
+if (first.structuralModel.temporalDependencies.length === 0) throw new Error('未提取时序依赖')
 if (!first.risks.some((risk) => risk.taxonomyId === 'R01')) throw new Error('未识别 Event Collision')
 if (first.verificationState.scenarios.length === 0) throw new Error('Scenario Registry 为空')
+if (first.verificationState.interactionGraph.edges.length === 0) throw new Error('Feature Interaction Graph 为空')
+if (first.verificationState.executionPlan.length === 0) throw new Error('Scenario Execution Plan 为空')
 if (reviewScenarioClosure(root).passed) throw new Error('关键 Scenario 未闭环时不应通过')
+
+const rejected = registerVerificationHypotheses(root, [{ title: '无依据组合', riskIds: [], rtlObjectIds: [], interactionEdgeIds: [], claims: [{ kind: 'INFERENCE', text: '猜测', references: [] }] }])
+if (rejected[0].status !== 'REJECTED') throw new Error('无依据假设应被拒绝')
+const graph = first.verificationState.interactionGraph
+const accepted = registerVerificationHypotheses(root, [{ title: '有结构证据的交互', riskIds: [first.risks[0].id], rtlObjectIds: [graph.nodes.find((item) => item.kind === 'rtl-object').id], interactionEdgeIds: [graph.edges[0].id], claims: [{ kind: 'RTL_FACT', text: '结构关系已存在', references: [first.structuralModel.facts[0].id] }] }])
+if (accepted[0].status !== 'ACCEPTED') throw new Error(`有完整引用的假设应被接受：${accepted[0].rejectionReasons.join('; ')}`)
 
 writeFileSync(join(root, 'verification', 'results', 'dma', 'results_icarus.xml'), '<testsuite tests="8" failures="0"/>', 'utf-8')
 writeFileSync(join(root, 'verification', 'results', 'dma', 'dma.fst'), 'waveform-evidence', 'utf-8')

@@ -11,8 +11,12 @@ import type {
   StructuralFact,
   StructuralModel,
   VerificationScenario,
-  VerificationStateModel
+  VerificationStateModel,
+  FeatureInteractionGraph,
+  ScenarioExecutionPlan,
+  VerificationHypothesis
 } from './types.ts'
+import { analyzeStructure } from './structural-analyzer.ts'
 
 interface RiskRule {
   taxonomyId: string
@@ -99,26 +103,11 @@ function requirementModel(workspace: string): RequirementModel {
 function structuralModel(workspace: string): StructuralModel {
   const files = walk(join(workspace, 'rtl'), (file) => /\.(?:v|sv)$/i.test(file))
   const hash = createHash('sha256')
-  const facts: StructuralFact[] = []
   for (const file of files) {
     const text = readFileSync(file, 'utf-8')
     hash.update(relative(workspace, file)).update('\0').update(text).update('\0')
-    const moduleName = /\bmodule\s+([A-Za-z_$][\w$]*)/.exec(text)?.[1] ?? basename(file).replace(/\.(?:v|sv)$/i, '')
-    const add = (factType: string, pattern: RegExp, evidence: string, confidence: Confidence = 'medium'): void => {
-      if (!pattern.test(text)) return
-      facts.push({ id: `RTL-F-${facts.length + 1}`, module: moduleName, object: moduleName, factType, features: featuresOf(text), evidence, kind: 'RTL_FACT', confidence, source: { file: relative(workspace, file), line: sourceLine(text, pattern) } })
-    }
-    add('STATE_MACHINE', /\b(?:case|casez|casex)\s*\([^)]*(?:state|fsm)/i, '识别到基于 case 的状态控制结构')
-    add('PRIORITY_CHAIN', /\bif\s*\([\s\S]{0,1200}?\belse\s+if\s*\(/i, '识别到 if/else-if 优先级链')
-    add('READY_VALID', /\bvalid\w*\b[\s\S]{0,3000}?\bready\w*\b/i, '识别到 ready/valid 交互', 'high')
-    add('COUNTER_OR_POINTER', /\b(?:cnt|count|counter|ptr)\w*\b/i, '识别到计数器或指针对象')
-    const clocks = new Set([...text.matchAll(/\b(?:posedge|negedge)\s+([A-Za-z_$][\w$]*clk[\w$]*)/gi)].map((match) => match[1]))
-    if (clocks.size > 1) {
-      const firstClock = /\b(?:posedge|negedge)\s+([A-Za-z_$][\w$]*clk[\w$]*)/i
-      facts.push({ id: `RTL-F-${facts.length + 1}`, module: moduleName, object: moduleName, factType: 'MULTI_CLOCK_HINT', features: [...new Set([...featuresOf(text), 'cdc'])], evidence: `同一文件中识别到多个时钟事件：${[...clocks].join(', ')}`, kind: 'RTL_FACT', confidence: 'low', source: { file: relative(workspace, file), line: sourceLine(text, firstClock) } })
-    }
   }
-  return { version: 1, generatedAt: new Date().toISOString(), rtlHash: hash.digest('hex'), sourceFiles: files.map((file) => relative(workspace, file)), facts, analyzer: { engine: 'moonglass-pattern-mvp', limitations: ['当前不等价于完整 SystemVerilog AST', 'FSM/CFG/DFG/COI 将由后续 Slang/Surelog 前端增强', '风险标记用于验证规划，不构成 bug 结论或 CDC 签核'] } }
+  return analyzeStructure({ workspace, files, rtlHash: hash.digest('hex'), featuresOf })
 }
 
 function deriveRisks(workspace: string, structure: StructuralModel): RiskMarker[] {
@@ -137,6 +126,64 @@ function deriveRisks(workspace: string, structure: StructuralModel): RiskMarker[
     }
   }
   return risks.sort((a, b) => b.riskScore - a.riskScore)
+}
+
+function buildInteractionGraph(requirements: RequirementModel, structure: StructuralModel, scenarios: VerificationScenario[]): FeatureInteractionGraph {
+  const nodes: FeatureInteractionGraph['nodes'] = []
+  const edges: FeatureInteractionGraph['edges'] = []
+  const addNode = (id: string, kind: FeatureInteractionGraph['nodes'][number]['kind'], label: string, source?: FeatureInteractionGraph['nodes'][number]['source']): void => {
+    if (!nodes.some((item) => item.id === id)) nodes.push({ id, kind, label, source })
+  }
+  const addEdge = (from: string, to: string, type: FeatureInteractionGraph['edges'][number]['type'], factIds: string[], confidence: Confidence): void => {
+    if (!edges.some((item) => item.from === from && item.to === to && item.type === type)) edges.push({ id: `EDGE-${edges.length + 1}`, from, to, type, factIds, confidence })
+  }
+  for (const requirement of requirements.requirements) {
+    addNode(requirement.id, 'requirement', requirement.text, requirement.source)
+    for (const feature of requirement.features) { const id = `FEATURE:${feature}`; addNode(id, 'feature', feature); addEdge(requirement.id, id, 'CONTROLS', [], 'medium') }
+  }
+  for (const fact of structure.facts) {
+    const object = `RTL:${fact.module}.${fact.object ?? fact.module}`; addNode(object, 'rtl-object', fact.object ?? fact.module, fact.source)
+    for (const feature of fact.features) { const id = `FEATURE:${feature}`; addNode(id, 'feature', feature); addEdge(id, object, fact.factType === 'REGISTER_WRITER' ? 'WRITES' : 'CONTROLS', [fact.id], fact.confidence) }
+  }
+  for (const dependency of structure.temporalDependencies) {
+    const from = `RTL:${dependency.module}.${dependency.from}`; const to = `RTL:${dependency.module}.${dependency.to}`
+    addNode(from, 'rtl-object', dependency.from, dependency.source); addNode(to, 'rtl-object', dependency.to, dependency.source)
+    addEdge(from, to, dependency.relation, [], 'medium')
+  }
+  for (const domain of structure.clockResetDomains) {
+    const domainId = `CLOCK:${domain.module}.${domain.clock}`; addNode(domainId, 'clock-domain', domain.clock, domain.source)
+    for (const register of domain.registers) { const object = `RTL:${domain.module}.${register}`; addNode(object, 'rtl-object', register, domain.source); addEdge(domainId, object, 'CONTROLS', [], 'high') }
+  }
+  for (const scenario of scenarios) {
+    addNode(scenario.id, 'scenario', scenario.title)
+    for (const object of scenario.rtlObjects) {
+      const candidates = nodes.filter((item) => item.kind === 'rtl-object' && item.id.startsWith(`RTL:${object}.`))
+      for (const candidate of candidates.slice(0, 8)) addEdge(candidate.id, scenario.id, 'COVERS', scenario.riskIds, 'medium')
+    }
+  }
+  return { version: 1, generatedAt: new Date().toISOString(), nodes, edges }
+}
+
+function readHypotheses(path: string): VerificationHypothesis[] {
+  if (!existsSync(path)) return []
+  try { return (JSON.parse(readFileSync(path, 'utf-8')) as { hypotheses?: VerificationHypothesis[] }).hypotheses ?? [] } catch { return [] }
+}
+
+function buildExecutionPlan(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions']): ScenarioExecutionPlan[] {
+  const values = regressions.flatMap((item) => Object.values(item.coverage))
+  const baseline = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
+  return scenarios.filter((item) => !['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'].includes(item.status)).slice(0, 24).map((item, index) => ({
+    scenarioId: item.id,
+    sequence: item.features.includes('backpressure') ? 'backpressure_sequence' : item.features.includes('reset') ? 'reset_during_traffic_sequence' : item.features.includes('error') ? 'error_injection_sequence' : 'directed_random_sequence',
+    constraints: { seedClass: index < 4 ? 'focused' : 'diverse', preserveProtocolLegality: true },
+    temporalConstraints: item.trigger,
+    iterations: Math.max(10, Math.round(20 + item.priority * 180)),
+    budgetSeconds: Math.max(30, Math.round(60 + item.costFactor * 240)),
+    expected: item.expected,
+    checkers: ['scoreboard', 'protocol_assertions', 'scenario_hit_recorder'],
+    priority: Number((item.priority * (baseline > 90 ? 0.85 : 1)).toFixed(3)),
+    reason: `${item.reason} 当前状态 ${item.status}；覆盖反馈均值 ${baseline.toFixed(1)}%。`
+  })).sort((a, b) => b.priority - a.priority)
 }
 
 function collectResults(workspace: string): VerificationStateModel['regressions'] {
@@ -205,23 +252,48 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const workspace = resolve(workspaceDir)
   const outputDir = join(workspace, 'verification', 'intelligence')
   mkdirSync(outputDir, { recursive: true })
-  const paths = { requirementModel: join(outputDir, 'requirement-model.json'), structuralModel: join(outputDir, 'structural-model.json'), riskRegister: join(outputDir, 'risk-register.json'), scenarioRegistry: join(outputDir, 'scenario-registry.json'), verificationState: join(outputDir, 'verification-state.json'), report: join(outputDir, 'verification-intelligence-report.md') }
+  const paths = { requirementModel: join(outputDir, 'requirement-model.json'), structuralModel: join(outputDir, 'structural-model.json'), riskRegister: join(outputDir, 'risk-register.json'), scenarioRegistry: join(outputDir, 'scenario-registry.json'), verificationState: join(outputDir, 'verification-state.json'), report: join(outputDir, 'verification-intelligence-report.md'), interactionGraph: join(outputDir, 'feature-interaction-graph.json'), executionPlan: join(outputDir, 'scenario-execution-plan.json'), hypotheses: join(outputDir, 'verification-hypotheses.json') }
   const requirements = requirementModel(workspace)
   const structure = structuralModel(workspace)
   const risks = deriveRisks(workspace, structure)
   const scenarios = buildScenarios(requirements, structure, risks, readPrevious(paths.scenarioRegistry), workspace)
   const regressions = collectResults(workspace)
+  const interactionGraph = buildInteractionGraph(requirements, structure, scenarios)
+  const executionPlan = buildExecutionPlan(scenarios, regressions)
+  const hypotheses = readHypotheses(paths.hypotheses)
   const statusCounts: VerificationStateModel['statusCounts'] = {}
   for (const scenario of scenarios) statusCounts[scenario.status] = (statusCounts[scenario.status] ?? 0) + 1
   const criticalOpen = scenarios.filter((item) => item.priority >= 0.2 && !['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'].includes(item.status)).map((item) => item.id)
-  const verificationState: VerificationStateModel = { version: 1, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, scenarios, regressions }
+  const verificationState: VerificationStateModel = { version: 2, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, hypotheses }
   writeFileSync(paths.requirementModel, JSON.stringify(requirements, null, 2), 'utf-8')
   writeFileSync(paths.structuralModel, JSON.stringify(structure, null, 2), 'utf-8')
   writeFileSync(paths.riskRegister, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), risks }, null, 2), 'utf-8')
   writeFileSync(paths.scenarioRegistry, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarios }, null, 2), 'utf-8')
   writeFileSync(paths.verificationState, JSON.stringify(verificationState, null, 2), 'utf-8')
+  writeFileSync(paths.interactionGraph, JSON.stringify(interactionGraph, null, 2), 'utf-8')
+  writeFileSync(paths.executionPlan, JSON.stringify({ version: 1, generatedAt: new Date().toISOString(), plans: executionPlan }, null, 2), 'utf-8')
+  if (!existsSync(paths.hypotheses)) writeFileSync(paths.hypotheses, JSON.stringify({ version: 1, hypotheses: [] }, null, 2), 'utf-8')
   writeReport(paths.report, verificationState, risks)
   return { requirementModel: requirements, structuralModel: structure, risks, verificationState, paths }
+}
+
+export function registerVerificationHypotheses(workspaceDir: string, proposed: Array<Omit<VerificationHypothesis, 'id' | 'status' | 'rejectionReasons' | 'createdAt'>>): VerificationHypothesis[] {
+  const artifacts = buildVerificationIntelligence(workspaceDir)
+  const riskIds = new Set(artifacts.risks.map((item) => item.id))
+  const objectIds = new Set(artifacts.verificationState.interactionGraph.nodes.filter((item) => item.kind === 'rtl-object').map((item) => item.id))
+  const edgeIds = new Set(artifacts.verificationState.interactionGraph.edges.map((item) => item.id))
+  const acceptedKinds = new Set(['SPEC_FACT', 'RTL_FACT', 'INFERENCE', 'UNKNOWN'])
+  const validated = proposed.map((item, index): VerificationHypothesis => {
+    const reasons: string[] = []
+    if (!item.riskIds.length || item.riskIds.some((id) => !riskIds.has(id))) reasons.push('必须引用现有 Risk ID')
+    if (!item.rtlObjectIds.length || item.rtlObjectIds.some((id) => !objectIds.has(id))) reasons.push('必须引用图中的 RTL Object ID')
+    if (!item.interactionEdgeIds.length || item.interactionEdgeIds.some((id) => !edgeIds.has(id))) reasons.push('必须引用至少一条现有交互边')
+    if (!item.claims.length || item.claims.some((claim) => !acceptedKinds.has(claim.kind))) reasons.push('每条 claim 必须标记 FACT/INFERENCE/UNKNOWN')
+    if (item.claims.some((claim) => ['SPEC_FACT', 'RTL_FACT'].includes(claim.kind) && claim.references.length === 0)) reasons.push('事实 claim 必须提供引用')
+    return { ...item, id: `HYP-${createHash('sha1').update(`${item.title}\0${index}`).digest('hex').slice(0, 8).toUpperCase()}`, status: reasons.length ? 'REJECTED' : 'ACCEPTED', rejectionReasons: reasons, createdAt: new Date().toISOString() }
+  })
+  writeFileSync(artifacts.paths.hypotheses, JSON.stringify({ version: 1, hypotheses: validated }, null, 2), 'utf-8')
+  return validated
 }
 
 export function reviewScenarioClosure(workspaceDir: string): { passed: boolean; blockers: string[]; warnings: string[]; state?: VerificationStateModel } {

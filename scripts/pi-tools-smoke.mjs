@@ -26,7 +26,7 @@ for (const f of ['tool-runner.ts', 'rtl-files.ts', 'simulation.ts', 'synthesis.t
 }
 const verificationIntelligenceDir = join(bridgeDir, 'verification-intelligence')
 mkdirSync(verificationIntelligenceDir, { recursive: true })
-for (const f of ['engine.ts', 'types.ts']) {
+for (const f of ['engine.ts', 'types.ts', 'structural-analyzer.ts']) {
   writeFileSync(
     join(verificationIntelligenceDir, f),
     (await import('node:fs')).readFileSync(join(process.cwd(), 'packages', 'verification-intelligence-engine', 'src', f), 'utf-8')

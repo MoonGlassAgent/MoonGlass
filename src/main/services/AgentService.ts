@@ -247,7 +247,7 @@ export class AgentService implements MoonGlassService {
 
     const verificationIntelligenceDir = join(this.bridgeDir, 'verification-intelligence')
     mkdirSync(verificationIntelligenceDir, { recursive: true })
-    for (const name of ['engine.ts', 'types.ts']) {
+    for (const name of ['engine.ts', 'types.ts', 'structural-analyzer.ts']) {
       const src = app.isPackaged
         ? join(resourcesDir, 'verification-intelligence', name)
         : join(resourcesDir, 'packages', 'verification-intelligence-engine', 'src', name)

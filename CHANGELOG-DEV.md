@@ -2,6 +2,17 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-08-26：Verification Intelligence 第二阶段完整落地
+
+- 新增 Slang AST 可选前端与设置页工具链探测：检测到 Slang 时执行完整 SystemVerilog elaboration 并保存带源位置 AST；未安装或分析失败时自动使用 MoonGlass 结构分析器，诊断与限制明确落盘。
+- 结构模型升级为 v2，提取 FSM/状态、寄存器写入者与条件优先级、时钟复位域、数据与时序依赖；复杂宏/generate/UVM 不伪装成已精确解析。
+- 新增 Feature Interaction Graph，统一表示 Requirement、Feature、RTL Object、Clock Domain、Scenario 及 CONTROLS/WRITES/DEPENDS_ON/PRECEDES/COVERS 等关系，并支持从 UI 双击回到源证据。
+- 新增受约束 Scenario Reasoner：`register_verification_hypotheses` 强制引用现有 Risk、RTL Object、Interaction Edge，逐条标记 SPEC_FACT/RTL_FACT/INFERENCE/UNKNOWN；无依据组合直接拒绝。
+- 新增可执行 `scenario-execution-plan.json` 与 `select_next_verification_batch`，为 Cocotb 复用/生成 sequence、约束、时序条件、checker、迭代次数和预算。
+- 覆盖率反馈调度器根据 Scenario 状态、回归覆盖率和成本持续重排剩余任务；`scenario_hits.json` 回灌后自动移出已闭环项。
+- 验证面板增加“风险场景 / 交互图 / 执行队列”视图，显示实际分析器、图边、队列预算并提供源文件跳转。
+- 扩充 Verification Intelligence smoke test，覆盖结构抽取、交互图、执行计划、假设接受/拒绝与证据闭环。
+
 ## 2026-08-26：Verification Intelligence 风险驱动验证闭环
 
 - 新增 Requirement Model、Structural Model、Risk Register、Scenario Registry 与 Verification State 五类机器可读产物。

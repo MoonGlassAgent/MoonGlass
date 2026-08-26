@@ -25,7 +25,7 @@ import {
 import { runCocotbSimulation, runVerilatorSimulation } from './eda-bridge/simulation'
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
-import { buildVerificationIntelligence, reviewScenarioClosure } from './verification-intelligence/engine.ts'
+import { buildVerificationIntelligence, registerVerificationHypotheses, reviewScenarioClosure } from './verification-intelligence/engine.ts'
 
 // ============================================================
 // 工具特定逻辑
@@ -1347,6 +1347,51 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       const result = reviewScenarioClosure(ctx.cwd)
       const text = `## Scenario Closure Review\n\n**结论**：${result.passed ? '通过' : '拒绝签核'}\n\n${result.blockers.length ? `### 阻断项\n${result.blockers.map((item) => `- ${item}`).join('\n')}` : '无阻断项。'}${result.warnings.length ? `\n\n### 警告\n${result.warnings.map((item) => `- ${item}`).join('\n')}` : ''}`
       return { content: [{ type: 'text', text }], details: result, isError: !result.passed }
+    }
+  })
+
+  pi.registerTool({
+    name: 'register_verification_hypotheses',
+    label: 'Register Verification Hypotheses',
+    description: '登记受约束的验证推理。每个假设必须引用现有 Risk、RTL Object、Interaction Edge，并逐条区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN。无依据组合会被拒绝。',
+    promptSnippet: 'Register only evidence-grounded interaction hypotheses',
+    promptGuidelines: 'Read feature-interaction-graph.json first. Never invent IDs. Mark uncertainty as UNKNOWN instead of converting it into a fact.',
+    parameters: Type.Object({
+      hypotheses: Type.Array(Type.Object({
+        title: Type.String(),
+        riskIds: Type.Array(Type.String()),
+        rtlObjectIds: Type.Array(Type.String()),
+        interactionEdgeIds: Type.Array(Type.String()),
+        claims: Type.Array(Type.Object({ kind: Type.Union([Type.Literal('SPEC_FACT'), Type.Literal('RTL_FACT'), Type.Literal('INFERENCE'), Type.Literal('UNKNOWN')]), text: Type.String(), references: Type.Array(Type.String()) }))
+      }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const results = registerVerificationHypotheses(ctx.cwd, params.hypotheses)
+      const accepted = results.filter((item) => item.status === 'ACCEPTED')
+      const rejected = results.filter((item) => item.status === 'REJECTED')
+      return {
+        content: [{ type: 'text', text: `## 受约束验证推理\n\n- 接受：${accepted.length}\n- 拒绝：${rejected.length}\n\n${rejected.map((item) => `- ${item.id} ${item.title}：${item.rejectionReasons.join('；')}`).join('\n') || '全部假设均通过引用约束。'}\n\n结果：verification/intelligence/verification-hypotheses.json` }],
+        details: { accepted, rejected },
+        isError: rejected.length > 0
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'select_next_verification_batch',
+    label: 'Select Next Verification Batch',
+    description: '根据 Scenario 风险、未闭环状态和覆盖率反馈，返回下一批可执行 Cocotb 场景配置与预算。',
+    promptSnippet: 'Select the next evidence-driven scenario batch',
+    promptGuidelines: 'Implement or reuse the named sequence and checkers. Write scenario_hits.json after execution, then rebuild intelligence.',
+    parameters: Type.Object({ limit: Type.Optional(Type.Number({ minimum: 1, maximum: 12 })) }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const artifacts = buildVerificationIntelligence(ctx.cwd)
+      const plans = artifacts.verificationState.executionPlan.slice(0, Number(params.limit ?? 5))
+      return {
+        content: [{ type: 'text', text: `## 下一批验证任务\n\n${plans.map((item, index) => `${index + 1}. ${item.scenarioId} · ${item.sequence} · ${item.iterations} 次 / ${item.budgetSeconds}s\n   - ${item.reason}`).join('\n') || '当前没有待执行的 Scenario。'}\n\n机器可读计划：verification/intelligence/scenario-execution-plan.json` }],
+        details: { plans, path: artifacts.paths.executionPlan },
+        isError: false
+      }
     }
   })
 
