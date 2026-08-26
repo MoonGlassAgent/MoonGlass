@@ -2,6 +2,12 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-08-26：在线说明书补充开发环境与 EDA 工具链配置
+
+- 新增按工作目标划分的最低工具组合，覆盖文档、RTL、功能验证、覆盖率、综合、波形与 STA/物理实现。
+- 补充 MoonGlass 设置页的一键安装 OSS CAD Suite、安装 Cocotb、重新检测和重启刷新步骤。
+- 增加 PowerShell 自检命令、Python 多版本、PATH、GTKWave 与工艺库相关故障排查说明。
+
 ## 2026-08-24：MoonGlass 中文配音演示短视频
 
 - 基于 MoonGlass 真实界面制作竖屏产品短视频，展示六阶段流程、主 Agent 端到端交付、RTL Design Browser 与证据驱动验证。
