@@ -875,6 +875,13 @@ export function WorkspacePage(): React.JSX.Element {
             {generatingDashboard ? '正在生成…' : '生成总体报告'}
           </button>
           <Link
+            to="/verification-posture/$projectId"
+            params={{ projectId }}
+            className="rounded border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+          >
+            验证态势
+          </Link>
+          <Link
             to="/design-browser/$projectId"
             params={{ projectId }}
             className="rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"

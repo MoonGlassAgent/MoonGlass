@@ -14,6 +14,7 @@ import { ProjectsPage } from './pages/ProjectsPage'
 
 const WorkspacePage = lazyRouteComponent(() => import('./pages/WorkspacePage'), 'WorkspacePage')
 const DesignBrowserPage = lazyRouteComponent(() => import('./pages/DesignBrowserPage'), 'DesignBrowserPage')
+const VerificationPosturePage = lazyRouteComponent(() => import('./pages/VerificationPosturePage'), 'VerificationPosturePage')
 const IpLibraryPage = lazyRouteComponent(() => import('./pages/IpLibraryPage'), 'IpLibraryPage')
 const ProcessLibrariesPage = lazyRouteComponent(() => import('./pages/ProcessLibrariesPage'), 'ProcessLibrariesPage')
 const ScriptsPage = lazyRouteComponent(() => import('./pages/ScriptsPage'), 'ScriptsPage')
@@ -50,6 +51,12 @@ const designBrowserRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/design-browser/$projectId',
   component: DesignBrowserPage
+})
+
+const verificationPostureRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/verification-posture/$projectId',
+  component: VerificationPosturePage
 })
 
 const ipLibraryRoute = createRoute({
@@ -93,6 +100,7 @@ const routeTree = rootRoute.addChildren([
   projectsRoute,
   workspaceRoute,
   designBrowserRoute,
+  verificationPostureRoute,
   ipLibraryRoute,
   processLibrariesRoute,
   scriptsRoute,
