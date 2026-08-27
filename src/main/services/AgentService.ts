@@ -675,8 +675,22 @@ argument-hint: "<模块名>"
   async prompt(projectId: string, text: string): Promise<void> {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
-    // prompt 回执在模型长响应时可能远超 30s（实际输出走事件流），超时放宽到 15 分钟
-    await session.client.command({ type: 'prompt', message: text }, 15 * 60_000)
+    // Pi 的 prompt response 仅表示命令已接收；文件和工具工作要到 agent_settled 才完成。
+    // 必须先注册事件等待器，避免极短轮次在 RPC response 前 settled 造成竞态。
+    const completion = session.client.waitForEvent((event) => {
+      if (event.type === 'agent_settled') return true
+      if (event.type !== 'message_update') return false
+      const delta = (event.assistantMessageEvent ?? {}) as Record<string, unknown>
+      return delta.type === 'error'
+    }, 60 * 60_000)
+    const [, terminalEvent] = await Promise.all([
+      session.client.command({ type: 'prompt', message: text }, 15 * 60_000),
+      completion
+    ])
+    if (terminalEvent.type === 'message_update') {
+      const delta = (terminalEvent.assistantMessageEvent ?? {}) as Record<string, unknown>
+      throw new Error(String(delta.errorMessage ?? delta.error ?? 'Agent 执行失败'))
+    }
   }
 
   /**

@@ -20,6 +20,8 @@ interface ChatState {
 
   ensure: (projectId: string) => Promise<void>
   send: (text: string) => Promise<void>
+  /** 发送并等待该轮 Agent settled；失败向调用方抛出，供托管执行屏障使用。 */
+  sendAndWait: (text: string) => Promise<void>
   abort: () => Promise<void>
   setModel: (providerId: string, modelId: string) => Promise<void>
   createParallel: (name?: string) => Promise<void>
@@ -37,6 +39,26 @@ export const useChatStore = create<ChatState>((set, get) => {
     const { projectId } = get()
     if (payload.projectId !== projectId) return
     applyEvent(set, payload.event)
+  }
+
+  const dispatchPrompt = async (text: string, propagateError: boolean): Promise<void> => {
+    const { projectId, streaming, sessionInfo } = get()
+    if (!projectId) throw new Error('Agent 会话尚未关联项目')
+    if (streaming) throw new Error('Agent 仍在处理上一轮任务')
+    if (!text.trim()) return
+    if (!sessionInfo?.providersReady) throw new Error('会话尚未就绪，请稍候（若持续无响应请重新进入工作区）')
+    const userMsg: AgentUiMessage = {
+      id: nextId(), role: 'user', text: text.trim(), timestamp: Date.now(),
+      decisionResponse: parseDecisionResponse(text), decisionResponses: parseDecisionResponses(text)
+    }
+    set((s) => ({ messages: [...s.messages, userMsg], streaming: true, streamTargetId: null }))
+    try {
+      await window.moonglass.agent.prompt(projectId, text.trim())
+    } catch (err) {
+      // 主进程的 error 事件通常已写入消息；仅在事件尚未到达时补充一次。
+      if (!get().aborting && get().streaming) pushError(set, err)
+      if (propagateError) throw err
+    }
   }
 
   return {
@@ -94,27 +116,11 @@ export const useChatStore = create<ChatState>((set, get) => {
     },
 
     send: async (text) => {
-      const { projectId, streaming, sessionInfo } = get()
-      if (!projectId || streaming || !text.trim()) return
-      if (!sessionInfo?.providersReady) {
-        pushError(set, new Error('会话尚未就绪，请稍候（若持续无响应请重新进入工作区）'))
-        return
-      }
-      const userMsg: AgentUiMessage = {
-        id: nextId(),
-        role: 'user',
-        text: text.trim(),
-        timestamp: Date.now(),
-        decisionResponse: parseDecisionResponse(text),
-        decisionResponses: parseDecisionResponses(text)
-      }
-      set((s) => ({ messages: [...s.messages, userMsg], streaming: true, streamTargetId: null }))
-      try {
-        await window.moonglass.agent.prompt(projectId, text.trim())
-      } catch (err) {
-        if (!get().aborting) pushError(set, err)
+      try { await dispatchPrompt(text, false) } catch (error) {
+        if (!get().aborting) pushError(set, error)
       }
     },
+    sendAndWait: async (text) => dispatchPrompt(text, true),
 
     abort: async () => {
       const { projectId, aborting } = get()

@@ -300,3 +300,11 @@
 - “规划与搭建”先生成 Verification Intelligence，再将 VI/SCN、Spec Gap、时间窗口、边界、Checker、Coverage 与环境实现绑定，不再只创建 Testbench 目录。
 - “AIGV 验证闭环”按执行队列驱动 Cocotb/Icarus、Verilator 覆盖率、开源 Formal、Coverage Hole 分类和独立 Evidence Review，不能只跑传统功能回归。
 - 软件信息页同步更新验证完备阶段说明，避免界面描述仍停留在 AIGV 合入前的方法。
+
+# 2026-08-27 - 一键托管 Agent 完成屏障
+
+- 修复 Pi `prompt` RPC 回执被误当作 Agent 任务完成的问题；主进程现在注册终止事件后再发命令，并等待真实 `agent_settled`。
+- 模型返回明确 error 时任务立即失败并进入托管重试，不再继续检查门禁或推进阶段。
+- Chat Store 新增 `sendAndWait`：一键托管、阶段快捷操作和门禁修复使用严格等待；普通手工聊天保留友好的错误展示行为。
+- 阶段推进、门禁复查和自动决策只会在上一轮 Agent 完成后执行；单轮最长允许一小时，用户仍可随时中止。
+- VERIF 和综合快捷操作日志改为在 Agent 真正完成后显示“任务已完成”，不再在仅发送消息后误报完成。

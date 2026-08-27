@@ -238,7 +238,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [viewerFontSize, setViewerFontSize] = useState(() => Number(localStorage.getItem('moonglass:viewer-font-size')) || 13)
   const [markdownPreview, setMarkdownPreview] = useState(true)
   const agentStreaming = useChatStore((s) => s.streaming)
-  const sendAgentPrompt = useChatStore((s) => s.send)
+  const sendAgentPrompt = useChatStore((s) => s.sendAndWait)
   const ensureAgent = useChatStore((s) => s.ensure)
   const abortAgent = useChatStore((s) => s.abort)
 
@@ -494,7 +494,7 @@ export function WorkspacePage(): React.JSX.Element {
         '7. 使用技能校验脚本检查环境结构；不要把测试代码或构建产物写入 rtl/\n' +
         '8. 完成后列出已覆盖 Intent、待执行批次、Spec Gap、环境限制和后续验证方法建议'
       )
-      appendLog('AIGV 验证规划与环境搭建指令已发送')
+      appendLog('AIGV 验证规划与环境搭建任务已完成')
     } catch (err) {
       appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -516,7 +516,7 @@ export function WorkspacePage(): React.JSX.Element {
         '9. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立读取原始测试、日志、Coverage、Formal 和 RTL 证据；存在阻断项时继续修复与回归\n' +
         '10. 更新需求追踪、docs/06_validation/ 验证报告和验证态势，明确已闭环 Intent、遗留 Spec Gap、Coverage Hole、工具限制与是否具备签核条件'
       )
-      appendLog('AIGV 验证闭环指令已发送')
+      appendLog('AIGV 验证闭环任务已完成')
     } catch (err) {
       appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -783,7 +783,7 @@ export function WorkspacePage(): React.JSX.Element {
         '6. 汇总网表、单元数量、面积、时序估算、警告和报告路径\n' +
         '注意区分通用单元统计、Liberty 映射估算与正式 STA 签核结果'
       )
-      appendLog('✅ 综合指令已发送')
+      appendLog('综合评估任务已完成')
     } catch (err) {
       appendLog(`❌ 综合指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
