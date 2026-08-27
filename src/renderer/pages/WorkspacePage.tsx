@@ -481,29 +481,44 @@ export function WorkspacePage(): React.JSX.Element {
 
   // ---- 验证操作 ----
   const handleSetupEnv = async (): Promise<void> => {
-    appendLog('🔧 开始搭建验证环境...')
+    appendLog('开始 AIGV 验证规划与环境搭建...')
     try {
       await sendAgentPrompt(
-        '请按 MoonGlass 验证目录规范搭建环境：\n' +
-        '1. 先使用 verification-planning 技能检查并补齐 docs/04_verification/ 三份计划\n' +
-        '2. 使用 collect_rtl_files 读取 rtl/design.json 与 rtl/filelist.f，确认 DUT 和 topModule\n' +
-        '3. 使用 cocotb-verification 技能为各 DUT 创建 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/\n' +
-        '4. 使用技能校验脚本验证环境结构；不要把测试代码或构建产物写入 rtl/\n' +
-        '5. 完成后汇总创建的环境、待实现测试和发现的规格缺口'
+        '请完成 AIGV 验证规划与环境搭建，不要只生成一个通用 Testbench：\n' +
+        '1. 使用 verification-planning 技能检查需求、规格、架构与 docs/04_verification/ 三份计划\n' +
+        '2. 使用 collect_rtl_files 读取 rtl/design.json 与 rtl/filelist.f，确认 DUT、topModule 和真实 RTL 范围\n' +
+        '3. 调用 build_verification_intelligence，生成并审查 requirement-model、structural-model、spec-gap-register、risk-register、verification-intent-registry、coverage-hole-register 和 scenario-execution-plan\n' +
+        '4. 将高优先级 VI-* / SCN-* 绑定到需求、RTL 对象、时间窗口、边界点、Checker、Coverage 和预期证据；Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
+        '5. 使用 cocotb-verification 技能为各 DUT 创建 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/，优先复用现有 VIP/IP 库资源\n' +
+        '6. 根据 Verification Intent 实现 scoreboard、assertion、scenario hit recorder、功能覆盖率和第一批高优先级 sequence，不能只搭空目录或冒烟测试\n' +
+        '7. 使用技能校验脚本检查环境结构；不要把测试代码或构建产物写入 rtl/\n' +
+        '8. 完成后列出已覆盖 Intent、待执行批次、Spec Gap、环境限制和后续验证方法建议'
       )
-      appendLog('✅ 验证环境搭建指令已发送')
+      appendLog('AIGV 验证规划与环境搭建指令已发送')
     } catch (err) {
-      appendLog(`❌ 指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
   const handleRunRegression = async (): Promise<void> => {
-    appendLog('🚀 开始完整验证回归...')
+    appendLog('开始 AIGV 风险驱动验证闭环...')
     try {
-      await sendAgentPrompt('请对工作区所有 RTL 模块完成规范验证闭环：\n1. 使用 verification-planning 技能校验 docs/04_verification/ 三份计划\n2. collect_rtl_files 扫描，并运行 run_verible_lint、check_synthesizability\n3. 使用 cocotb-verification 技能创建 verification/<module>_tb/ 标准环境\n4. 对每个 DUT 调用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus", trace=true)，不要自行编写临时 runner 绕过工具\n5. 确认 verification/results/<module>/ 中有 compile.log、simulation.log、results.xml、result.json 和波形\n6. 更新需求追踪与 docs/06_validation/ 验证报告')
-      appendLog('✅ 验证回归指令已发送')
+      await sendAgentPrompt(
+        '请完成工作区所有 RTL 模块的 AIGV 风险驱动、场景驱动和证据驱动验证闭环：\n' +
+        '1. 使用 verification-planning 技能校验验证计划，并运行 collect_rtl_files、run_verible_lint、check_synthesizability 建立当前 RTL 基线\n' +
+        '2. 调用 build_verification_intelligence，读取 Verification Intent、Spec Gap、风险热区、时间交互、边界条件、Coverage Hole 和 scenario-execution-plan\n' +
+        '3. 调用 select_next_verification_batch，按优先级执行真实 VI-* / SCN-*；不得绕过队列只跑已有冒烟用例，也不得生成无结构依据的任意笛卡尔积\n' +
+        '4. 对 Simulation 场景使用 Cocotb + Icarus 完成功能回归、Checker、功能覆盖率和波形；Windows 再用 Verilator C++ 回归采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率\n' +
+        '5. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification，依次考虑 BMC、cover 和适合的不变量 prove；BMC PASS 不得宣称完成证明\n' +
+        '6. 将每个 Scenario 的 reach/pass、assertionPassed、coverageDelta 和真实证据写入 verification/results/<module>/scenario_hits.json，保存日志、JUnit、result.json、Coverage 和 VCD/FST\n' +
+        '7. 再次构建 Verification Intelligence，把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，并按分类采取措施\n' +
+        '8. 持续选择下一批任务，直至关键 Verification Intent 已验证、Formal 证明、证明不可达或有批准豁免；不得仅因总覆盖率较高而停止\n' +
+        '9. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立读取原始测试、日志、Coverage、Formal 和 RTL 证据；存在阻断项时继续修复与回归\n' +
+        '10. 更新需求追踪、docs/06_validation/ 验证报告和验证态势，明确已闭环 Intent、遗留 Spec Gap、Coverage Hole、工具限制与是否具备签核条件'
+      )
+      appendLog('AIGV 验证闭环指令已发送')
     } catch (err) {
-      appendLog(`❌ 指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -941,14 +956,14 @@ export function WorkspacePage(): React.JSX.Element {
               disabled={agentStreaming}
               className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
             >
-              🔧 搭建验证环境
+              <FlaskConical size={13} className="mr-1 inline" />规划与搭建
             </button>
             <button
               onClick={() => void handleRunRegression()}
               disabled={agentStreaming}
               className="rounded border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
             >
-              🚀 完成验证回归
+              <Play size={13} className="mr-1 inline" />AIGV 验证闭环
             </button>
             {agentStreaming && <span className="text-xs text-amber-600">Agent 运行中…</span>}
           </div>

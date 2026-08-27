@@ -293,3 +293,10 @@
 - AIGV 全部机器可读 JSON 改为同目录临时文件写入后原子替换，避免页面读到 Agent 尚未写完的半截状态文件。
 - 验证态势页对瞬时读取或解析失败自动进行四次退避重试，并在错误页提供“重新读取”按钮。
 - “尚未生成”与“生成过程中暂时不可读”不再混为一类；状态文件完整后无需重新执行整个验证流程即可刷新查看。
+
+# 2026-08-27 - VERIF 快捷操作接入完整 AIGV
+
+- VERIF 阶段快捷入口调整为“规划与搭建”和“AIGV 验证闭环”，保留双入口但重新定义其职责。
+- “规划与搭建”先生成 Verification Intelligence，再将 VI/SCN、Spec Gap、时间窗口、边界、Checker、Coverage 与环境实现绑定，不再只创建 Testbench 目录。
+- “AIGV 验证闭环”按执行队列驱动 Cocotb/Icarus、Verilator 覆盖率、开源 Formal、Coverage Hole 分类和独立 Evidence Review，不能只跑传统功能回归。
+- 软件信息页同步更新验证完备阶段说明，避免界面描述仍停留在 AIGV 合入前的方法。
