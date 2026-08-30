@@ -268,7 +268,7 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
     env,
     options.signal,
     resolve(options.testDir),
-    Math.max(30, options.timeoutSec ?? 300) * 1000
+    options.timeoutSec === undefined ? 0 : Math.max(1, options.timeoutSec) * 1000
   )
   const output = [execution.stdout, execution.stderr].filter(Boolean).join('\n')
   const marker = output.indexOf('__MOONGLASS_BUILD_DONE__')
@@ -452,7 +452,8 @@ export async function runVerilatorSimulation(
     rtlCoverage ? [`+verilator+coverage+file+${coverageDataPath.replace(/\\/g, '/')}`] : [],
     verilatorEnv,
     signal,
-    resultDir
+    resultDir,
+    0
   )
 
   const log = [runOut, runErr].filter(Boolean).join('\n')

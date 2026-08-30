@@ -10,7 +10,8 @@
  * 由 AgentService 启动时从 packages/eda-bridge/src/ 复制过来。
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { dirname, join, relative, resolve } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
@@ -26,7 +27,132 @@ import { runCocotbSimulation, runVerilatorSimulation } from './eda-bridge/simula
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { runFormalVerification } from './eda-bridge/formal'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
-import { buildVerificationIntelligence, registerVerificationHypotheses, reviewScenarioClosure } from './verification-intelligence/engine.ts'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure } from './verification-intelligence/engine.ts'
+
+type DiagnosticLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5'
+
+interface DiagnosticAttempt {
+  id: string
+  topModule: string
+  testcase: string
+  passed: boolean
+  createdAt: string
+  durationMs: number
+  failureSignature: string
+  rtlHash: string
+  testbenchHash: string
+  diagnosticLevel: DiagnosticLevel
+  observations: string[]
+  evidence: string[]
+}
+
+interface DiagnosticControlState {
+  version: 1
+  updatedAt: string
+  mode: 'NORMAL_DEBUG' | 'DIAGNOSTIC_ENHANCEMENT' | 'CLOSED'
+  activeCase: string
+  attempts: DiagnosticAttempt[]
+  recommendation: string
+}
+
+function walkFiles(dir: string, accept: (path: string) => boolean): string[] {
+  if (!existsSync(dir)) return []
+  const files: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory() && !['__pycache__', 'sim_build', 'obj_dir'].includes(entry.name)) files.push(...walkFiles(full, accept))
+    else if (entry.isFile() && accept(full)) files.push(full)
+  }
+  return files.sort()
+}
+
+function filesHash(files: string[]): string {
+  const hash = createHash('sha256')
+  for (const file of files) {
+    if (!existsSync(file)) continue
+    try { hash.update(file).update('\0').update(readFileSync(file)).update('\0') } catch { /* 文件并发变化由下一次尝试记录 */ }
+  }
+  return hash.digest('hex')
+}
+
+function failureSignature(log: string): string {
+  const normalized = log.split(/\r?\n/)
+    .map((line) => line.replace(/[A-Z]:\\[^\s:]+/gi, '<path>').replace(/\b\d+(?:\.\d+)?\s*(?:ns|us|ms|s|cycles?)\b/gi, '<time>').replace(/\b0x[0-9a-f]+\b/gi, '<hex>').replace(/\b\d{4,}\b/g, '<number>').trim())
+    .filter((line) => /error|fail|assert|mismatch|timeout|traceback|exception|fatal/i.test(line))
+    .slice(-12)
+    .join('\n') || log.slice(-1200)
+  return createHash('sha1').update(normalized).digest('hex').slice(0, 12)
+}
+
+function inferDiagnosticLevel(log: string, hasWaveform: boolean): { level: DiagnosticLevel; observations: string[] } {
+  const observations: string[] = []
+  let rank = 0
+  if (/test(?:case)?|@cocotb\.test|FAILED/i.test(log)) { rank = 0; observations.push('已定位失败用例或最终失败') }
+  if (/channel|transaction|request|response|interface|axi|apb|ahb|fifo/i.test(log)) { rank = Math.max(rank, 1); observations.push('已缩小到接口、通道或事务范围') }
+  if (/\b(?:cycle|time|timestamp|\d+\s*(?:ns|us|ms))\b/i.test(log) || hasWaveform) { rank = Math.max(rank, 2); observations.push('已有时间窗口或波形证据') }
+  if (/state|counter|count|outstanding|queue|pointer|occupancy|register/i.test(log)) { rank = Math.max(rank, 3); observations.push('已关联状态、计数器或队列对象') }
+  if (/root cause|duplicate|underflow|overflow|priority|dropped|stale|race/i.test(log)) { rank = Math.max(rank, 4); observations.push('已有具体根因候选') }
+  if (/formal.*(?:trace|counterexample)|assertion.*(?:proves|confirmed)|root cause confirmed/i.test(log)) { rank = 5; observations.push('已有反例、Assertion 或等价强证据确认根因') }
+  return { level: `L${rank}` as DiagnosticLevel, observations }
+}
+
+function writeJsonAtomic(path: string, value: unknown): void {
+  mkdirSync(dirname(path), { recursive: true })
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf-8')
+  renameSync(temporary, path)
+}
+
+async function validatePythonTests(testDir: string, signal?: AbortSignal): Promise<{ ok: boolean; issues: string[] }> {
+  const files = walkFiles(testDir, (path) => path.endsWith('.py'))
+  const issues: string[] = []
+  for (const file of files) {
+    const source = readFileSync(file, 'utf-8')
+    const markers = [...source.matchAll(/MOONGLASS-BEGIN:([A-Za-z0-9_.-]+)/g)].map((match) => match[1])
+    for (const marker of new Set(markers)) if (markers.filter((item) => item === marker).length > 1) issues.push(`${relative(testDir, file)}：重复注入标记 ${marker}`)
+    const functions = [...source.matchAll(/^\s*(?:async\s+)?def\s+(test_[A-Za-z0-9_]+)\s*\(/gm)].map((match) => match[1])
+    for (const name of new Set(functions)) if (functions.filter((item) => item === name).length > 1) issues.push(`${relative(testDir, file)}：重复测试函数 ${name}`)
+  }
+  const python = await locateTool(process.platform === 'win32' ? ['python.exe', 'python'] : ['python3', 'python'])
+  if (!python) issues.push('未找到 Python，无法执行测试文件语法预检')
+  else for (const file of files) {
+    const result = await run(python, ['-m', 'py_compile', file], toolEnv(python), signal, testDir, 30_000)
+    if (result.code !== 0) issues.push(`${relative(testDir, file)}：${(result.stderr || result.stdout).trim()}`)
+  }
+  return { ok: issues.length === 0, issues }
+}
+
+function updateDiagnosticControl(input: {
+  workspace: string; topModule: string; testcase?: string; passed: boolean; log: string
+  rtlFiles: string[]; testDir?: string; evidence: string[]; hasWaveform: boolean; durationMs: number
+}): DiagnosticControlState {
+  const path = join(input.workspace, 'verification', 'results', 'diagnostic-control.json')
+  let previous: DiagnosticControlState | undefined
+  try { previous = JSON.parse(readFileSync(path, 'utf-8')) as DiagnosticControlState } catch { /* 首次执行 */ }
+  const activeCase = `${input.topModule}::${input.testcase ?? 'all'}`
+  const diagnosis = inferDiagnosticLevel(input.log, input.hasWaveform)
+  const attempt: DiagnosticAttempt = {
+    id: `ATT-${Date.now()}`, topModule: input.topModule, testcase: input.testcase ?? 'all', passed: input.passed,
+    createdAt: new Date().toISOString(), durationMs: input.durationMs, failureSignature: input.passed ? 'PASS' : failureSignature(input.log),
+    rtlHash: filesHash(input.rtlFiles), testbenchHash: input.testDir ? filesHash(walkFiles(input.testDir, (file) => /\.(?:py|sv|v|cpp|json)$/i.test(file))) : '',
+    diagnosticLevel: diagnosis.level, observations: diagnosis.observations, evidence: input.evidence.filter(Boolean)
+  }
+  const attempts = [...(previous?.attempts ?? []), attempt].slice(-40)
+  const related = attempts.filter((item) => `${item.topModule}::${item.testcase}` === activeCase)
+  const sameFailure = related.filter((item) => !item.passed && item.failureSignature === attempt.failureSignature)
+  const maxEarlierLevel = Math.max(-1, ...related.slice(0, -1).map((item) => Number(item.diagnosticLevel.slice(1))))
+  const noDiagnosticProgress = !input.passed && Number(attempt.diagnosticLevel.slice(1)) <= maxEarlierLevel
+  const repeated = !input.passed && (sameFailure.length >= 2 || (related.length >= 3 && noDiagnosticProgress))
+  const mode: DiagnosticControlState['mode'] = input.passed ? 'CLOSED' : repeated ? 'DIAGNOSTIC_ENHANCEMENT' : 'NORMAL_DEBUG'
+  const recommendation = input.passed
+    ? '当前用例已通过；继续运行受影响回归并保留闭环证据。'
+    : repeated
+      ? '检测到重复失败且诊断信息没有明显收敛。暂停继续盲改 RTL；先增强阶段性 Checker、协议/状态 Assertion、事务标识、Scoreboard 队列输出和必要波形，定位首个偏差点。不得修改正确预期来迎合 RTL。'
+      : '固定失败用例与 seed，提出单一根因假设并做最小修改；若下一轮仍失败，应优先增强诊断证据。'
+  const state: DiagnosticControlState = { version: 1, updatedAt: new Date().toISOString(), mode, activeCase, attempts, recommendation }
+  writeJsonAtomic(path, state)
+  return state
+}
 
 // ============================================================
 // 工具特定逻辑
@@ -932,7 +1058,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       trace: Type.Optional(Type.Boolean({ description: '是否生成波形，缺省 true' })),
       rtlCoverage: Type.Optional(Type.Boolean({ description: 'Verilator 后端是否采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率；缺省 true' })),
       functionalCoverageFile: Type.Optional(Type.String({ description: '功能覆盖率 JSON 路径；测试也可读取 MOONGLASS_FUNCTIONAL_COVERAGE_FILE 环境变量写入默认路径' })),
-      timeoutSec: Type.Optional(Type.Number({ description: '编译和仿真总超时秒数，缺省 300' }))
+      timeoutSec: Type.Optional(Type.Number({ minimum: 1, description: '仅在项目有明确依据时设置硬超时；缺省不按 wall-clock 强制终止' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const topModule = params.topModule as string
@@ -940,6 +1066,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       const mode = (params.mode as 'cocotb' | 'cpp' | undefined) ?? 'cocotb'
       const tbCpp = params.tbCpp ? resolve(ctx.cwd, params.tbCpp as string) : undefined
       const trace = params.trace as boolean | undefined ?? true
+      const testDir = mode === 'cocotb' ? resolve(ctx.cwd, (params.testDir as string | undefined) ?? `verification/${topModule}_tb`) : undefined
 
       if (mode === 'cocotb' && !(params.testModule as string | undefined)?.trim()) {
         return {
@@ -963,14 +1090,28 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         }
       }
 
+      if (testDir) {
+        onUpdate?.({ content: [{ type: 'text', text: '正在执行 Python 测试完整性预检（语法、重复测试与重复注入标记）…' }] })
+        const preflight = await validatePythonTests(testDir, signal)
+        if (!preflight.ok) {
+          return {
+            content: [{ type: 'text', text: `验证环境完整性检查失败，已阻止仿真。测试文件可能被重复注入或缩进已损坏：\n${preflight.issues.map((item) => `- ${item}`).join('\n')}\n\n请先修复测试文件；不要在损坏文件上继续追加脚本。` }],
+            isError: true,
+            details: { diagnosticMode: 'TESTBENCH_INTEGRITY', issues: preflight.issues }
+          }
+        }
+      }
+
+      const simulationStartedAt = Date.now()
       try {
+        onUpdate?.({ content: [{ type: 'text', text: `测试预检通过，正在运行 ${params.testcase ? `单用例 ${String(params.testcase)}` : '回归'}。缺省不使用固定 wall-clock 或仿真周期上限。` }] })
         const resultDir = resolve(ctx.cwd, 'verification', 'results', topModule)
         const result = mode === 'cocotb'
           ? await runCocotbSimulation({
               topModule,
               rtlFiles,
               testModule: params.testModule as string,
-              testDir: resolve(ctx.cwd, (params.testDir as string | undefined) ?? `verification/${topModule}_tb`),
+              testDir: testDir!,
               testcase: params.testcase as string | undefined,
               simulator: params.simulator as 'icarus' | 'verilator' | undefined,
               waves: trace,
@@ -1015,8 +1156,16 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         }
 
         if (!result.passed) {
-          report.push('', '### 调试建议', '', '1. 检查 RTL 语法错误', '2. 确认测试台端口连接正确', '3. 查看完整编译日志', '4. 用 read_verilog 确认端口定义')
+          report.push('', '### 调试建议', '', '1. 固定失败用例与 seed，读取完整日志和已有波形', '2. 只提出一个根因假设并做最小修改', '3. 若重复失败，暂停盲改 RTL，先增强 Checker、Assertion、事务追踪和观察点', '4. 不得修改正确预期来迎合 RTL')
         }
+
+        const diagnostic = updateDiagnosticControl({
+          workspace: resolve(ctx.cwd), topModule, testcase: params.testcase as string | undefined, passed: result.passed,
+          log: result.log, rtlFiles, testDir, hasWaveform: Boolean(result.vcdPath),
+          durationMs: Date.now() - simulationStartedAt,
+          evidence: [result.compileLogPath, result.simulationLogPath, result.resultPath, result.vcdPath ?? '', result.coverageReportPath ?? '']
+        })
+        report.push('', '### 渐进式诊断控制', '', `**诊断等级**: ${diagnostic.attempts.at(-1)?.diagnosticLevel ?? 'L0'}`, `**本次耗时**: ${Math.round((diagnostic.attempts.at(-1)?.durationMs ?? 0) / 1000)} 秒（仅记录，不据此强制终止）`, `**当前模式**: ${diagnostic.mode}`, `**建议**: ${diagnostic.recommendation}`, '', '诊断账本：verification/results/diagnostic-control.json')
 
         return {
           content: [{ type: 'text', text: report.join('\n') }],
@@ -1028,16 +1177,22 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
             simulationLogPath: result.simulationLogPath,
             resultPath: result.resultPath,
             coverage: result.coverage,
-            coverageReportPath: result.coverageReportPath
+            coverageReportPath: result.coverageReportPath,
+            diagnostic
           },
           isError: !result.passed
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)
+        const diagnostic = updateDiagnosticControl({
+          workspace: resolve(ctx.cwd), topModule, testcase: params.testcase as string | undefined, passed: false,
+          log: message, rtlFiles, testDir, hasWaveform: false, evidence: [],
+          durationMs: Date.now() - simulationStartedAt
+        })
         return {
-          content: [{ type: 'text', text: `仿真执行失败: ${message}` }],
+          content: [{ type: 'text', text: `仿真执行失败: ${message}\n\n诊断等级：${diagnostic.attempts.at(-1)?.diagnosticLevel ?? 'L0'}\n当前模式：${diagnostic.mode}\n建议：${diagnostic.recommendation}` }],
           isError: true,
-          details: {}
+          details: { diagnostic }
         }
       }
     }
@@ -1365,12 +1520,13 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       depth: Type.Optional(Type.Number({ minimum: 1, maximum: 10000 })),
       engine: Type.Optional(Type.Union([Type.Literal('boolector'), Type.Literal('bitwuzla'), Type.Literal('z3')])),
       taskName: Type.Optional(Type.String()),
-      scenarioId: Type.Optional(Type.String({ pattern: '^SCN-[A-F0-9]{8}$', description: '绑定的 Verification Scenario ID' }))
+      scenarioId: Type.Optional(Type.String({ pattern: '^SCN-[A-F0-9]{8}$', description: '绑定的 Verification Scenario ID' })),
+      obligation: Type.Optional(Type.Union([Type.Literal('required'), Type.Literal('supplemental')], { description: 'required 为唯一/强制关闭方法；supplemental 为已有仿真证据上的补强，缺省 supplemental' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: 'text', text: `正在运行 Formal ${params.mode ?? 'bmc'}：${params.top}` }] })
       const result = await runFormalVerification({ workspaceDir: ctx.cwd, ...params, signal })
-      return { content: [{ type: 'text', text: `## Formal 验证结果\n\n- 状态：${result.status}\n- 模式：${result.mode}\n- 顶层：${result.top}\n- 引擎：${result.engine}\n- 深度：${result.depth}\n- 说明：${result.message}\n- 日志：${result.logPath}\n${result.traces.length ? `- 反例/见证：${result.traces.join(', ')}` : ''}` }], details: result, isError: ['ERROR', 'UNKNOWN'].includes(result.status) }
+      return { content: [{ type: 'text', text: `## Formal 验证结果\n\n- 状态：${result.status}\n- 义务：${result.obligation === 'required' ? '强制签核' : '补强证据'}\n- 模式：${result.mode}\n- 顶层：${result.top}\n- 引擎：${result.engine}\n- 深度：${result.depth}\n- 分类：${result.classification ?? '求解结果'}\n- 说明：${result.message}\n- 日志：${result.logPath}\n${result.compatibilityIssues?.length ? `- 兼容性问题：\n${result.compatibilityIssues.map((item) => `  - ${item.file}:${item.line} ${item.construct}：${item.message}`).join('\n')}` : ''}\n${result.traces.length ? `- 反例/见证：${result.traces.join(', ')}` : ''}` }], details: result, isError: ['ERROR', 'UNKNOWN'].includes(result.status) }
     }
   })
 
@@ -1404,16 +1560,38 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'select_next_verification_batch',
     label: 'Select Next Verification Batch',
-    description: '根据 Scenario 风险、未闭环状态和覆盖率反馈，返回下一批可执行 Cocotb 场景配置与预算。',
+    description: '根据已生成的 Scenario 风险、未闭环状态和覆盖率反馈，返回下一批可执行场景。默认复用现有执行计划，只有明确 refresh 时才全量重建模型。',
     promptSnippet: 'Select the next evidence-driven scenario batch',
     promptGuidelines: 'Implement or reuse the named sequence and checkers. Write scenario_hits.json after execution, then rebuild intelligence.',
-    parameters: Type.Object({ limit: Type.Optional(Type.Number({ minimum: 1, maximum: 12 })) }),
+    parameters: Type.Object({
+      limit: Type.Optional(Type.Number({ minimum: 1, maximum: 12, description: '本批数量，缺省 3；小批执行便于及时反馈' })),
+      budgetSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 86400, description: '本批预计执行预算；P0 强制场景不因预算被饿死' })),
+      refresh: Type.Optional(Type.Boolean({ description: '是否先全量重建 Verification Intelligence；仅在规格、RTL 或回归证据变化后使用' }))
+    }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const artifacts = buildVerificationIntelligence(ctx.cwd)
-      const plans = artifacts.verificationState.executionPlan.slice(0, Number(params.limit ?? 5))
+      const planPath = resolve(ctx.cwd, 'verification', 'intelligence', 'scenario-execution-plan.json')
+      let available: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; mandatory?: boolean; reason: string }> = []
+      let refreshed = Boolean(params.refresh)
+      if (!refreshed && existsSync(planPath)) {
+        try {
+          const cached = JSON.parse(readFileSync(planPath, 'utf-8')) as { plans?: typeof available }
+          available = cached.plans ?? []
+        } catch { refreshed = true }
+      } else if (!existsSync(planPath)) refreshed = true
+      if (refreshed) available = buildVerificationIntelligence(ctx.cwd).verificationState.executionPlan
+      const plans: typeof available = []
+      const limit = Number(params.limit ?? 3)
+      let remainingBudget = Number(params.budgetSeconds ?? Number.POSITIVE_INFINITY)
+      for (const plan of available) {
+        if (plans.length >= limit) break
+        if (!plan.mandatory && plan.budgetSeconds > remainingBudget) continue
+        plans.push(plan)
+        remainingBudget = Math.max(0, remainingBudget - plan.budgetSeconds)
+      }
+      const explorationHistory = recordExplorationRound(ctx.cwd, plans.map((item) => item.scenarioId))
       return {
-        content: [{ type: 'text', text: `## 下一批验证任务\n\n${plans.map((item, index) => `${index + 1}. ${item.scenarioId} · ${item.sequence} · ${item.iterations} 次 / ${item.budgetSeconds}s\n   - ${item.reason}`).join('\n') || '当前没有待执行的 Scenario。'}\n\n机器可读计划：verification/intelligence/scenario-execution-plan.json` }],
-        details: { plans, path: artifacts.paths.executionPlan },
+        content: [{ type: 'text', text: `## 下一批验证任务\n\n- 计划来源：${refreshed ? '已重建' : '增量复用'}\n- 本批数量：${plans.length}\n\n${plans.map((item, index) => `${index + 1}. ${item.scenarioId} · ${item.sequence} · ${item.iterations} 次 / ${item.budgetSeconds}s\n   - ${item.reason}`).join('\n') || '当前没有待执行的 Scenario。'}\n\n机器可读计划：verification/intelligence/scenario-execution-plan.json` }],
+        details: { plans, path: planPath, refreshed, requestedBudgetSeconds: params.budgetSeconds, remainingBudgetSeconds: Number.isFinite(remainingBudget) ? remainingBudget : null, saturation: explorationHistory.saturation },
         isError: false
       }
     }

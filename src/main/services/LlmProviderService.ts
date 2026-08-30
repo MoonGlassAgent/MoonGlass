@@ -187,7 +187,13 @@ export class LlmProviderService implements MoonGlassService {
     return next
   }
 
-  /** 测试 Provider 连接并对照 /models 返回值检查每个配置模型，不产生推理 token。 */
+  /**
+   * 测试 Provider 连接。
+   *
+   * 标准 OpenAI-compatible Provider 优先使用 /models 做无 Token 探测；部分套餐型
+   * 网关（如火山方舟 Agent Plan）不提供该端点，遇到 404/405 时逐个使用配置模型
+   * 发起最小 chat/completions 请求，以免把“模型列表未实现”误判为连接失败。
+   */
   test(input: LlmProviderConfig): Promise<LlmProviderTestResult> {
     const provider = { ...input, apiKey: input.apiKey.trim(), baseUrl: input.baseUrl.trim() }
     const unknownModels = (message: string): LlmModelTestResult[] =>
@@ -208,11 +214,11 @@ export class LlmProviderService implements MoonGlassService {
       })
     }
 
-    let url: URL
+    let modelsUrl: URL
     try {
       const base = provider.baseUrl.replace(/\/+$/, '')
       // Anthropic 默认 Base URL 不含 /v1；OpenAI-compatible 通常已含 /v1。
-      url = new URL(`${base}${provider.protocol === 'anthropic' && !/\/v\d+$/i.test(base) ? '/v1' : ''}/models`)
+      modelsUrl = new URL(`${base}${provider.protocol === 'anthropic' && !/\/v\d+$/i.test(base) ? '/v1' : ''}/models`)
     } catch {
       return Promise.resolve({
         ok: false,
@@ -221,9 +227,6 @@ export class LlmProviderService implements MoonGlassService {
       })
     }
 
-    const hostname = url.hostname
-    const port = url.port || (url.protocol === 'https:' ? 443 : 80)
-    const path = url.pathname + url.search
     const headers: Record<string, string> = {
       Accept: 'application/json',
       'User-Agent': `MoonGlass/${app.getVersion()}`
@@ -234,16 +237,20 @@ export class LlmProviderService implements MoonGlassService {
     } else {
       headers.Authorization = `Bearer ${provider.apiKey}`
     }
-    const request = url.protocol === 'http:' ? httpRequest : httpsRequest
-
-    return new Promise<LlmProviderTestResult>((resolve) => {
+    const send = (url: URL, method: 'GET' | 'POST', body?: string): Promise<{ status?: number; body: string }> => new Promise((resolve) => {
+      const request = url.protocol === 'http:' ? httpRequest : httpsRequest
+      const requestHeaders = { ...headers }
+      if (body !== undefined) {
+        requestHeaders['Content-Type'] = 'application/json'
+        requestHeaders['Content-Length'] = Buffer.byteLength(body).toString()
+      }
       const req = request(
         {
-          hostname,
-          port,
-          path,
-          method: 'GET',
-          headers,
+          hostname: url.hostname,
+          port: url.port || (url.protocol === 'https:' ? 443 : 80),
+          path: url.pathname + url.search,
+          method,
+          headers: requestHeaders,
           timeout: 10000
         },
         (res) => {
@@ -252,83 +259,127 @@ export class LlmProviderService implements MoonGlassService {
             body += chunk.toString('utf-8')
           })
           res.on('end', () => {
-            if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
-              let ids: string[] = []
-              try {
-                const payload = JSON.parse(body) as {
-                  data?: Array<{ id?: unknown }>
-                  models?: Array<{ id?: unknown } | string>
-                }
-                const entries = payload.data ?? payload.models ?? []
-                ids = entries
-                  .map((entry) => typeof entry === 'string' ? entry : entry.id)
-                  .filter((id): id is string => typeof id === 'string' && id.length > 0)
-              } catch {
-                // 连接成功但响应不是标准模型列表，模型状态保持 unknown。
-              }
-
-              const available = new Set(ids)
-              const models: LlmModelTestResult[] = provider.models.map((model) => {
-                if (ids.length === 0) {
-                  return {
-                    model,
-                    status: 'unknown',
-                    message: 'Provider 连接成功，但未返回可识别的模型列表'
-                  }
-                }
-                return available.has(model)
-                  ? { model, status: 'pass', message: '模型 ID 存在于 Provider 可用列表' }
-                  : { model, status: 'fail', message: 'Provider 可用列表中未找到该模型 ID' }
-              })
-              resolve({
-                ok: true,
-                status: res.statusCode,
-                endpoint: url.toString(),
-                availableModelCount: ids.length,
-                models
-              })
-            } else if (res.statusCode === 401 || res.statusCode === 403) {
-              resolve({
-                ok: false,
-                status: res.statusCode,
-                endpoint: url.toString(),
-                error: 'API Key 无效或权限不足',
-                models: unknownModels('认证失败，模型未测试')
-              })
-            } else {
-              const msg = body.slice(0, 200).replace(/\s+/g, ' ')
-              resolve({
-                ok: false,
-                status: res.statusCode,
-                endpoint: url.toString(),
-                error: `HTTP ${res.statusCode}: ${msg}`,
-                models: unknownModels('Provider 端点失败，模型未测试')
-              })
-            }
+            resolve({ status: res.statusCode, body })
           })
         }
       )
 
       req.on('error', (err) => {
-        resolve({
-          ok: false,
-          endpoint: url.toString(),
-          error: `请求失败: ${err.message}`,
-          models: unknownModels('Provider 无法连接，模型未测试')
-        })
+        resolve({ body: '', status: undefined, error: err.message } as { status?: number; body: string })
       })
       req.on('timeout', () => {
         req.destroy()
-        resolve({
-          ok: false,
-          endpoint: url.toString(),
-          error: '请求超时（10s）',
-          models: unknownModels('Provider 请求超时，模型未测试')
-        })
+        resolve({ body: '', status: undefined })
       })
 
+      if (body !== undefined) req.write(body)
       req.end()
     })
+
+    return (async (): Promise<LlmProviderTestResult> => {
+      const modelsResponse = await send(modelsUrl, 'GET')
+      if (modelsResponse.status && modelsResponse.status >= 200 && modelsResponse.status < 300) {
+        let ids: string[] = []
+        try {
+          const payload = JSON.parse(modelsResponse.body) as {
+            data?: Array<{ id?: unknown }>
+            models?: Array<{ id?: unknown } | string>
+          }
+          const entries = payload.data ?? payload.models ?? []
+          ids = entries
+            .map((entry) => typeof entry === 'string' ? entry : entry.id)
+            .filter((id): id is string => typeof id === 'string' && id.length > 0)
+        } catch {
+          // 连接成功但响应不是标准模型列表，模型状态保持 unknown。
+        }
+        const available = new Set(ids)
+        return {
+          ok: true,
+          status: modelsResponse.status,
+          endpoint: modelsUrl.toString(),
+          availableModelCount: ids.length,
+          models: provider.models.map((model) => ids.length === 0
+            ? { model, status: 'unknown', message: 'Provider 连接成功，但未返回可识别的模型列表' }
+            : available.has(model)
+              ? { model, status: 'pass', message: '模型 ID 存在于 Provider 可用列表' }
+              : { model, status: 'fail', message: 'Provider 可用列表中未找到该模型 ID' })
+        }
+      }
+
+      if (modelsResponse.status === 404 || modelsResponse.status === 405) {
+        if (provider.protocol === 'anthropic' || provider.models.length === 0) {
+          return {
+            ok: false,
+            status: modelsResponse.status,
+            endpoint: modelsUrl.toString(),
+            error: 'Provider 未提供模型列表端点，且没有可用于兼容探测的模型',
+            models: unknownModels('未执行模型推理探测')
+          }
+        }
+        const base = provider.baseUrl.replace(/\/+$/, '')
+        const chatUrl = new URL(`${base}/chat/completions`)
+        const modelResults: LlmModelTestResult[] = []
+        let successfulStatus: number | undefined
+        for (const model of provider.models) {
+          const chatBody = JSON.stringify({
+            model,
+            messages: [{ role: 'user', content: 'Reply OK.' }],
+            max_tokens: 1,
+            stream: false
+          })
+          const chatResponse = await send(chatUrl, 'POST', chatBody)
+          if (chatResponse.status && chatResponse.status >= 200 && chatResponse.status < 300) {
+            successfulStatus ??= chatResponse.status
+            modelResults.push({
+              model,
+              status: 'pass',
+              message: '已通过最小推理请求验证（可能产生极少量 Token）'
+            })
+            continue
+          }
+          const msg = chatResponse.body.slice(0, 200).replace(/\s+/g, ' ')
+          modelResults.push({
+            model,
+            status: 'fail',
+            message: chatResponse.status
+              ? `最小推理请求失败：HTTP ${chatResponse.status}${msg ? `，${msg}` : ''}`
+              : '最小推理请求失败或超时'
+          })
+        }
+        if (successfulStatus !== undefined) {
+          return {
+            ok: true,
+            status: successfulStatus,
+            endpoint: chatUrl.toString(),
+            models: modelResults
+          }
+        }
+        return {
+          ok: false,
+          endpoint: chatUrl.toString(),
+          error: '模型列表端点不可用，且所有配置模型的最小推理探测均失败',
+          models: modelResults
+        }
+      }
+
+      if (modelsResponse.status === 401 || modelsResponse.status === 403) {
+        return {
+          ok: false,
+          status: modelsResponse.status,
+          endpoint: modelsUrl.toString(),
+          error: 'API Key 无效或权限不足',
+          models: unknownModels('认证失败，模型未测试')
+        }
+      }
+      const msg = modelsResponse.body.slice(0, 200).replace(/\s+/g, ' ')
+      return {
+        ok: false,
+        status: modelsResponse.status,
+        endpoint: modelsUrl.toString(),
+        error: modelsResponse.status ? `HTTP ${modelsResponse.status}: ${msg}` : '请求失败或超时（10s）',
+        models: unknownModels('Provider 端点失败，模型未测试')
+      }
+    })()
   }
 
   delete(id: string): boolean {

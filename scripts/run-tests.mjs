@@ -4,6 +4,7 @@ const suites = {
   core: [
     'scripts/rtl-engine-smoke.mjs',
     'scripts/agent-interaction-smoke.mjs',
+    'scripts/agent-run-watchdog-smoke.mjs',
     'scripts/sram-generator-smoke.mjs',
     'scripts/doc-repository-validator-smoke.mjs',
     'scripts/file-reference-smoke.mjs',
@@ -11,6 +12,7 @@ const suites = {
     'scripts/pi-rpc-event-smoke.mjs',
     'scripts/pi-tools-smoke.mjs',
     'scripts/verification-intelligence-smoke.mjs',
+    'scripts/verification-guidance-smoke.mjs',
     'scripts/formal-smoke.mjs'
   ],
   integration: [

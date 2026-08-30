@@ -45,7 +45,9 @@ export const GLOBAL_CONSTRAINTS: PromptTemplate = {
 8. **文档注释**：每个模块必须包含标准文件头（版权、作者、日期、版本历史、功能描述）
 9. **规范目录**：文档按 docs/01_project 至 docs/07_release 分阶段保存；RTL、验证、质量和综合产物分别进入 rtl/、verification/、rtlqa/、imp/
 10. **可审计执行**：只能根据实际工具输出报告结果；日志、机器可读结果、覆盖率与波形必须落盘
-11. **技能顺序**：文档使用 doc-repository；验证先使用 verification-planning，再使用 cocotb-verification`
+11. **技能顺序**：文档使用 doc-repository；验证先使用 verification-planning，再使用 cocotb-verification
+12. **执行优先**：用户要求创建、修改、检查或运行工具时，先用一次简短检查确认真实状态，然后立即调用工具；禁止把完整实现方案全部写入思考过程后才准备执行。大型任务按“一个文件/一个检查”的最小可验证增量持续落盘
+13. **事实边界**：思考或计划中提到的文件不代表文件已经存在。只有 write/edit 成功结果、文件系统读取和 EDA 原始输出才能作为完成证据`
 }
 
 // ============================================================
@@ -75,6 +77,9 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 - 每条规格必须使用稳定 ID，并在追溯矩阵中关联需求 ID
 - 接口信号必须使用标准命名规范
 - 必须定义每个信号的时钟域归属
+- 文档表格必须直接使用 doc-repository 可识别的“需求 ID”“规格 ID”列名，生成后只运行一次检查器；根据明确错误批量修复并立即复检
+- 门禁或文档检查通过后立即结束当前任务，不继续做措辞去重、格式洁癖、重复文件清单或主动 Git 初始化/提交
+- 同一文件避免分页反复读取和逐行修补；精确编辑失败后应改用稳定标题/ID 锚定的章节级重写，禁止按易漂移的固定行号删除
 - 可以讨论实现约束和候选方案，但不得提前编写 RTL 代码`
   },
 
@@ -154,18 +159,31 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     updatedAt: '2026-07-30',
     content: `当前处于【验证完备】阶段。
 
-你的任务是：
-1. 先使用 verification-planning 技能校验 docs/04_verification/ 三份计划
+## 执行范围规则
+
+- 用户或 MoonGlass 操作消息若明确指定“验证规划”“环境搭建”“基础回归”或“风险闭环”及停止边界，只执行该子任务，报告结果后停止。不得因为处于 VERIF 阶段而自动扩展到后续步骤。
+- 只有用户明确要求“完整验证”“完整闭环”或未限定范围地要求完成整个 VERIF 阶段时，才执行下面的端到端任务。
+- 已存在且通过校验的规划、环境和证据应增量复用，不得每次从头重建九份文档或全部 Testbench。
+
+完整验证闭环任务是：
+1. 先使用 verification-planning 技能校验 docs/04_verification/ 三份权威基线计划，并用统一追踪主链 REQ/SPEC → VI → SCN → TEST/COVER/PROPERTY → EVIDENCE → SIGNOFF 贯通 AIGV 六份方法/闭环文档；禁止维护两套测试清单
+1.1 读取并审查 module-verification-strategy.json：顶层 IP 执行 IP_SIGNOFF，高风险子模块执行 UNIT_FOCUSED，普通子模块执行 UNIT_SMOKE 或 STATIC_ONLY；不得把每个 .v 文件当成独立 DUT 重复完整 AIGV
+1.2 验证深度由风险决定，Oracle 类型由模块语义决定；Golden Model 由独立判定、故障定位和验证收敛收益决定，不得因子模块简单而禁止，也不得为了形式完整复制 RTL
 2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
 3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb", simulator="icarus") 完成功能回归
-4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成 Spec Gap、Verification Intent、时间交互、边界条件、Coverage Hole 分类和排序后的 Scenario Registry；风险标记与 Spec Gap 不是 Bug 结论
+4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成 Spec Gap、Verification Intent、时间交互、边界条件、Coverage Hole 分类和排序后的 Scenario Registry；每个 Intent 必须是包含前置状态、定向激励、观察点、通过标准和证据要求的可证伪工程目标，不能用 taxonomy 或 feature 组合代替；风险标记与 Spec Gap 不是 Bug 结论
 5. 读取 feature-interaction-graph.json；需要语义补充时调用 register_verification_hypotheses，每个推理必须引用 Risk/RTL Object/Interaction Edge，并区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN
-6. 调用 select_next_verification_batch，按 scenario-execution-plan.json 配置或复用现有 Cocotb sequence/driver、约束、时序条件、checker、迭代次数和预算；禁止无结构依据的任意笛卡尔积
-7. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification：先 BMC/cover，再对适合的不变量 prove；BMC PASS 只能算有限深度检查，不能宣称已证明
-8. Windows 再使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。不得另写临时 runner 绕过工具
-9. 将仿真日志、result.json、scenario_hits.json、coverage 数据、Formal result/log/property/trace 和 VCD/FST 写入固定证据目录
+6. 调用 select_next_verification_batch(limit=3)，优先复用现有执行计划，每轮最多处理三个最高优先级 Scenario；按 scenario-execution-plan.json 配置或复用 Cocotb sequence/driver、约束、时序条件、checker、迭代次数和预算；禁止无结构依据的任意笛卡尔积
+7. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification：先用 Yosys 兼容的过程式 immediate assert/assume/cover，不得使用 property/endproperty、assert property、default clocking、disable iff、|->、|=> 或 ##；Liveness 必须有规格依据的环境响应 assumption。标明 required/supplemental，先 BMC/cover，再对适合的不变量 prove；BMC PASS 只能算有限深度检查，不能宣称已证明
+8. Windows 使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。昂贵的全量 Coverage、广泛 Formal 和全量回归只在基础稳定、受影响批次稳定及签核前执行，不得在每次局部修复后重复；不得另写临时 runner 绕过工具
+9. 将仿真日志、result.json、scenario_hits.json、oracle_verdicts.json、coverage 数据、Formal result/log/property/trace 和 VCD/FST 写入固定证据目录；scenario_hits/oracle_verdicts 必须绑定当前 rtlHash，Scoreboard、Assertion、Protocol、Formal 等分别写 verdict，禁止用单个 passed 冒充多个独立 Oracle
 10. 根据 Scenario reachCount、assertionPassed、功能/代码 coverageDelta 更新 scenario_hits.json；把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，再次构建智能模型并重排任务，直至关键 Verification Intent 闭环
-11. 最后依次调用 review_verification_scenarios 和 review_verification_evidence；有阻断项时继续修复和回归，不得自行宣称验证完成
+11. 读取 oracle-registry.json 与 oracle-evaluation.json；关键 Scenario 至少需要两个 independenceDomain 不同且 Level >= 2 的有效 PASS。任何 Oracle 冲突均进入 CONFLICT，必须检查命题范围、共享 assumptions、Checker 与 RTL 原始证据，不得设置固定赢家
+12. 每次真实选批由 select_next_verification_batch 写入 exploration-history.json；只有实际执行、回灌并再次选批才算完成一轮。连续三轮无语义新增只能称为当前 Space、策略与预算下的经验性饱和，不得称为证明；规格或 RTL 变化后旧 Snapshot 的饱和结论自动失效
+13. 按 risk-register.json 对控制优先级、事务计数、边界和错误处理运行风险加权 Mutation，写入 mutation-results.json；KILLED 才计为检出，INVALID 不进入分母，EQUIVALENT 必须具名审查，SURVIVED/EQUIVALENCE_UNKNOWN 默认阻断
+14. 读取 residual-risk-register.json；优先用证据关闭风险，确需接受时由具名责任人在 signoff-approvals.json 记录 riskId、approver、rationale、approvedAt。Agent 不得代替用户伪造审批
+15. 用机器可读产物和原始证据持续更新 docs/04_verification/ 全套 AIGV 文档；最后依次调用 review_verification_scenarios 和 review_verification_evidence，并读取 signoff-package.json。有阻断项时继续修复和回归，不得自行宣称验证完成
+16. 验证失败时先固定 testcase/seed 并做单根因最小修改；若 diagnostic-control.json 或 exploration-history.json 进入 DIAGNOSTIC_ENHANCEMENT/STALLED，立即暂停继续盲改 RTL，优先增强阶段性 Checker、协议/状态 Assertion、事务标识、Scoreboard 队列输出和必要波形，提升 L0-L5 诊断等级后再修复。可增强诊断，但不得修改正确预期来迎合 RTL
 
 约束：
 - 必须基于 RTL 阶段的端口定义

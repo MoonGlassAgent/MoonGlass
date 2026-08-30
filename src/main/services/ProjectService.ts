@@ -8,11 +8,11 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, watch, type FSWatcher } from 'node:fs'
+import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renameSync, readdirSync, watch, lstatSync, rmSync, type FSWatcher } from 'node:fs'
 import { cp, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { eq, desc, sql } from 'drizzle-orm'
-import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase, type PhaseState, type ProjectImportAssessment, type ProjectMigrationResult } from '@shared/types'
+import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase, type PhaseResetMode, type PhaseResetPreview, type PhaseResetResult, type PhaseState, type ProjectImportAssessment, type ProjectMigrationResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import { createInitialPhases, markPhaseChanged } from './PhaseEngine.ts'
 import { projectWorkspaceDir } from '../core/paths.ts'
@@ -178,6 +178,85 @@ export class ProjectService implements MoonGlassService {
   private dataDir: string
   private workspaceWatchers = new Map<string, FSWatcher>()
   private workspaceChangeTimers = new Map<string, NodeJS.Timeout>()
+
+  private static readonly PHASE_OUTPUTS: Record<Phase, string[]> = {
+    REQ_SPEC: [
+      'docs/02_requirements',
+      'docs/03_design/interface_spec.md',
+      'docs/03_design/register_map.md'
+    ],
+    ARCH: [
+      'docs/03_design/architecture.md',
+      'docs/03_design/microarchitecture.md',
+      'docs/03_design/clock_reset.md'
+    ],
+    RTL: ['rtl', 'rtlqa/lint', 'rtlqa/cdc'],
+    VERIF: ['docs/04_verification', 'verification'],
+    QA: ['docs/06_validation'],
+    SYNTH: ['docs/05_implementation', 'imp']
+  }
+
+  private phaseResetPreview(projectId: string, phase: Phase, mode: PhaseResetMode): PhaseResetPreview {
+    const root = resolve(this.workspaceDir(projectId))
+    const paths = ProjectService.PHASE_OUTPUTS[phase].filter((relPath) => existsSync(join(root, relPath)))
+    let fileCount = 0
+    let totalBytes = 0
+    const measure = (path: string): void => {
+      const item = lstatSync(path)
+      if (item.isDirectory()) {
+        for (const entry of readdirSync(path)) measure(join(path, entry))
+      } else {
+        fileCount += 1
+        totalBytes += item.size
+      }
+    }
+    for (const relPath of paths) measure(join(root, relPath))
+    return {
+      phase,
+      mode,
+      paths,
+      fileCount,
+      totalBytes,
+      downstreamAffected: PHASE_ORDER.slice(PHASE_ORDER.indexOf(phase) + 1),
+      archivePath: mode === 'archive' ? `.moonglass/phase-archives/${phase}` : undefined
+    }
+  }
+
+  previewPhaseReset(projectId: string, phase: Phase, mode: PhaseResetMode): PhaseResetPreview {
+    if (!this.get(projectId)) throw new Error(`项目不存在: ${projectId}`)
+    return this.phaseResetPreview(projectId, phase, mode)
+  }
+
+  resetPhase(projectId: string, phase: Phase, mode: PhaseResetMode): PhaseResetResult {
+    const project = this.get(projectId)
+    if (!project) throw new Error(`项目不存在: ${projectId}`)
+    const preview = this.phaseResetPreview(projectId, phase, mode)
+    const root = resolve(this.workspaceDir(projectId))
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const archiveRoot = join(root, '.moonglass', 'phase-archives', phase, stamp)
+    if (mode === 'archive') mkdirSync(archiveRoot, { recursive: true })
+    for (const relPath of preview.paths) {
+      const source = resolve(root, relPath)
+      if (relative(root, source).startsWith('..')) throw new Error(`拒绝处理项目目录外路径: ${relPath}`)
+      if (mode === 'archive') {
+        const target = join(archiveRoot, relPath)
+        mkdirSync(dirname(target), { recursive: true })
+        renameSync(source, target)
+      } else {
+        rmSync(source, { recursive: true, force: true })
+      }
+    }
+    if (mode === 'archive') {
+      writeFileSync(join(archiveRoot, 'phase-reset-manifest.json'), JSON.stringify({ ...preview, createdAt: new Date().toISOString() }, null, 2), 'utf-8')
+    }
+    const initial = createInitialPhases()[phase]
+    project.currentPhase = phase
+    project.phases[phase] = { ...initial, status: 'active', startedAt: new Date().toISOString() }
+    markPhaseChanged(project, phase, `${PHASE_LABELS[phase]}已${mode === 'archive' ? '归档' : '清除'}并重新开始`)
+    const saved = this.save(project)
+    this.initWorkspace(projectId)
+    return { ...preview, archivePath: mode === 'archive' ? relative(root, archiveRoot).replace(/\\/g, '/') : undefined, project: saved }
+  }
 
   constructor(db: DbService, dataDir: string) {
     this.db = db
@@ -528,7 +607,7 @@ export class ProjectService implements MoonGlassService {
     try {
       const watcher = watch(root, { recursive: true }, (_eventType, filename) => {
         const changedPath = filename ? String(filename).replace(/\\/g, '/') : ''
-        if (!changedPath || changedPath.startsWith('.pi/') || changedPath.startsWith('.git/')) return
+        if (!changedPath || changedPath.startsWith('.pi/') || changedPath.startsWith('.git/') || changedPath.startsWith('.moonglass/')) return
         const sourcePhase = this.get(projectId)?.currentPhase
         if (!sourcePhase) return
         const previous = this.workspaceChangeTimers.get(projectId)

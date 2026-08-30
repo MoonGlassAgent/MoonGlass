@@ -25,6 +25,8 @@ interface ChatState {
   abort: () => Promise<void>
   setModel: (providerId: string, modelId: string) => Promise<void>
   createParallel: (name?: string) => Promise<void>
+  compactSession: () => Promise<void>
+  restartSessionFresh: () => Promise<void>
   switchSession: (name: string) => Promise<void>
   closeSession: (name: string) => Promise<void>
 }
@@ -33,6 +35,17 @@ let eventSubscribed = false
 let msgSeq = 0
 let ensureSeq = 0
 const nextId = (): string => `ui-${Date.now()}-${++msgSeq}`
+const MAX_LIVE_MESSAGES = 320
+const MAX_STREAM_CHARS = 120_000
+const trimMessages = (messages: AgentUiMessage[]): AgentUiMessage[] => messages.length > MAX_LIVE_MESSAGES
+  ? messages.slice(-MAX_LIVE_MESSAGES)
+  : messages
+const appendStream = (current: string, delta: string): string => {
+  const combined = current + delta
+  return combined.length > MAX_STREAM_CHARS
+    ? `…（较早的流式内容已折叠，完整内容保存在 Session 中）\n${combined.slice(-MAX_STREAM_CHARS)}`
+    : combined
+}
 
 export const useChatStore = create<ChatState>((set, get) => {
   const handleEvent = (payload: AgentEventPayload): void => {
@@ -51,7 +64,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       id: nextId(), role: 'user', text: text.trim(), timestamp: Date.now(),
       decisionResponse: parseDecisionResponse(text), decisionResponses: parseDecisionResponses(text)
     }
-    set((s) => ({ messages: [...s.messages, userMsg], streaming: true, streamTargetId: null }))
+    set((s) => ({ messages: trimMessages([...s.messages, userMsg]), streaming: true, streamTargetId: null }))
     try {
       await window.moonglass.agent.prompt(projectId, text.trim())
     } catch (err) {
@@ -160,6 +173,31 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
     },
 
+    compactSession: async () => {
+      const { projectId, streaming } = get()
+      if (!projectId || streaming) return
+      try {
+        const info = await window.moonglass.agent.compactSession(projectId)
+        const messages = await window.moonglass.agent.getMessages(projectId)
+        set({ sessionInfo: info, messages, streaming: false, streamTargetId: null })
+      } catch (err) {
+        pushError(set, err)
+        throw err
+      }
+    },
+
+    restartSessionFresh: async () => {
+      const { projectId, streaming } = get()
+      if (!projectId || streaming) return
+      try {
+        const info = await window.moonglass.agent.restartSessionFresh(projectId)
+        set({ sessionInfo: info, messages: [], streaming: false, aborting: false, streamTargetId: null })
+      } catch (err) {
+        pushError(set, err)
+        throw err
+      }
+    },
+
     switchSession: async (name) => {
       const { projectId } = get()
       if (!projectId) return
@@ -196,10 +234,10 @@ function pushError(set: Set, err: unknown): void {
     streaming: false,
     aborting: false,
     streamTargetId: null,
-    messages: [
+    messages: trimMessages([
       ...s.messages,
       { id: nextId(), role: 'assistant', text: message, isError: true, timestamp: Date.now() }
-    ]
+    ])
   }))
 }
 
@@ -219,7 +257,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
         if (s.streamTargetId && s.messages.at(-1)?.id === s.streamTargetId) {
           const last = s.messages.at(-1)!
           return {
-            messages: [...s.messages.slice(0, -1), { ...last, text: last.text + event.delta }]
+            messages: [...s.messages.slice(0, -1), { ...last, text: appendStream(last.text, event.delta) }]
           }
         }
         const msg: AgentUiMessage = {
@@ -228,7 +266,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
           text: event.delta,
           timestamp: Date.now()
         }
-        return { messages: [...s.messages, msg], streamTargetId: msg.id }
+        return { messages: trimMessages([...s.messages, msg]), streamTargetId: msg.id }
       })
       break
 
@@ -240,7 +278,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
           return {
             messages: [
               ...s.messages.slice(0, -1),
-              { ...last, thinking: (last.thinking ?? '') + event.delta }
+              { ...last, thinking: appendStream(last.thinking ?? '', event.delta) }
             ]
           }
         }
@@ -252,14 +290,14 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
           thinking: event.delta,
           timestamp: Date.now()
         }
-        return { messages: [...s.messages, msg], streamTargetId: msg.id }
+        return { messages: trimMessages([...s.messages, msg]), streamTargetId: msg.id }
       })
       break
 
     case 'tool-start':
       set((s) => ({
         streamTargetId: null,
-        messages: [
+        messages: trimMessages([
           ...s.messages,
           {
             id: nextId(),
@@ -270,7 +308,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
             text: '执行中…',
             timestamp: Date.now()
           }
-        ]
+        ])
       }))
       break
 
@@ -285,7 +323,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
         const output = event.output || (event.isError ? '（执行失败）' : '（无输出）')
         if (idx === -1) {
           return {
-            messages: [
+            messages: trimMessages([
               ...s.messages,
               {
                 id: nextId(),
@@ -297,7 +335,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
                 timestamp: Date.now(),
                 decisionRequest: event.decisionRequest
               }
-            ]
+            ])
           }
         }
         const realIdx = s.messages.length - 1 - idx
@@ -316,7 +354,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
       set((s) => ({
         streaming: false,
         streamTargetId: null,
-        messages: [
+        messages: trimMessages([
           ...s.messages,
           {
             id: nextId(),
@@ -325,7 +363,7 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
             isError: true,
             timestamp: Date.now()
           }
-        ]
+        ])
       }))
       break
   }

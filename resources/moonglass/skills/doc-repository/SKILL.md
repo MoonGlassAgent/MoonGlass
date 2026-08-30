@@ -35,6 +35,9 @@ docs/
 - Use `REQ-VER-0XX` for top-level verification requirements and `REQ-VER-1XX` only for formally registered detailed verification requirements. Use `SPEC-*` for design specifications and `VER-*`, `TEST-*`, or `CG-*` for verification artifacts.
 - Prefer one complete ID per reference. Legacy range and slash forms such as `SPEC-AXI-001~005` and `SPEC-AXI-001/002` are accepted and expanded by the checker, but new content should spell out complete IDs when review clarity matters.
 - Keep `requirements_traceability.md` bidirectional and current across requirement, specification, design, and verification IDs.
+- Use explicit `需求 ID` and `规格 ID` table headers so the validator recognizes definitions without repair passes.
+- Run the stage validator after the initial batch write. Fix only reported failures in one batch, rerun immediately, and stop when it passes; warnings do not justify open-ended polishing.
+- After repeated exact-edit failures, reread the target section once and replace it by stable heading/ID anchors. Never repair Markdown by deleting a drifting fixed line number.
 - Keep traceability states within `草稿 / 冻结 / 验证 / 已验证 / 已验收 / 开放 / 关闭`.
 - State assumptions, unresolved items, acceptance criteria, and source evidence.
 - Link related documents using relative paths.

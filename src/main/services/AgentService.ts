@@ -28,6 +28,7 @@ import type { ProjectService } from './ProjectService.ts'
 import type { LlmProviderService } from './LlmProviderService.ts'
 import type { AgentModelStore } from './AgentModelStore.ts'
 import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
+import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
 
 /** pi 模型切换命令返回的 Model 对象最小字段 */
 interface PiModelInfo {
@@ -164,6 +165,9 @@ interface PiSession {
   activeSessionName: string
   /** 由 Pi agent_start/agent_settled 事件维护，避免运行中查询 RPC 队列。 */
   isStreaming: boolean
+  /** 每轮重建的工具活动守护器，避免 Agent 陷入重复读写循环。 */
+  watchdog: AgentRunWatchdog
+  watchdogActionPending: boolean
 }
 
 /** pi 消息（仅声明映射所需的最小形状） */
@@ -181,6 +185,7 @@ interface PiMessage {
 }
 
 const TOOL_OUTPUT_MAX = 2000
+const UI_HISTORY_MAX = 320
 
 export class AgentService implements MoonGlassService {
   readonly name = 'agent-service'
@@ -454,7 +459,7 @@ scripts/
 \`\`\`
 
 - 文档工作必须使用 \`doc-repository\` 技能并写入对应规范文件。
-- 进入验证实现前必须先使用 \`verification-planning\`，随后使用 \`cocotb-verification\`。
+- 首次进入验证实现前必须使用 \`verification-planning\`；已有通过校验的验证规划时应直接增量复用，再使用 \`cocotb-verification\`，不得因每个子任务重复重建全套文档。
 - RTL 只写入 \`rtl/\`；Lint/CDC 报告分别写入 \`rtlqa/lint/\` 和 \`rtlqa/cdc/\`。
 - RTL 阶段必须维护 \`rtl/design.json\` 和 \`rtl/filelist.f\`：design.json 的 filelist 写字符串 \`"filelist.f"\`，源文件顺序逐行写入 filelist.f，并明确 topModule、includeDirs 与 defines。
 - 默认假设没有可用 SRAM/ROM 宏。若架构需要存储宏，先在 \`docs/03_design/architecture.md\` 记录组织、端口、时序、面积/功耗估算和替换责任，再把存储体从控制器剥离为参数化 bank 级宏接口。
@@ -493,14 +498,14 @@ argument-hint: "<模块名>"
 ---
 请对模块 **$1** 完成完整验证闭环：
 
-1. 使用 verification-planning 技能维护 docs/04_verification/ 三份计划。
+1. 使用 verification-planning 技能维护 docs/04_verification/ 三份基线计划与六份 AIGV 方法/闭环文档。
 2. 使用 collect_rtl_files、read_verilog、run_verible_lint 和 check_synthesizability。
 3. 使用 cocotb-verification 技能在 verification/$1_tb/ 创建规范环境。
 4. 调用 build_verification_intelligence，选择最高优先级 Scenario，优先配置现有 sequence/driver 并在测试和覆盖率中绑定 SCN-* ID。
 5. 完善 Cocotb 测试后，使用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus") 实际运行。
 6. 确认 verification/results/$1/ 中存在编译日志、仿真日志、result.json、scenario_hits.json 和波形。
 7. 重新构建 Verification State，完成关键 Scenario 后调用 review_verification_scenarios 与 review_verification_evidence。
-8. 更新需求到 Scenario、测试和证据的追踪以及 docs/06_validation/ 验证报告；工具失败时分析日志、修复并重跑。
+8. 用实际 JSON、日志、覆盖率和 Formal 证据更新 AIGV 策略、Intent 矩阵、风险场景、Formal、Coverage Closure、Signoff 文档以及 docs/06_validation/ 验证报告；工具失败时分析日志、修复并重跑。
 `
     writeFileSync(join(promptsDir, 'verify.md'), verifyTemplate, 'utf-8')
   }
@@ -563,8 +568,13 @@ argument-hint: "<模块名>"
         ELECTRON_RUN_AS_NODE: '1'
       },
       onEvent: (event) => {
-        if (event.type === 'agent_start') session.isStreaming = true
+        if (event.type === 'agent_start') {
+          session.isStreaming = true
+          session.watchdog = new AgentRunWatchdog(session.phase)
+          session.watchdogActionPending = false
+        }
         if (event.type === 'agent_settled') session.isStreaming = false
+        this.observeWatchdogEvent(projectId, session, event)
         if (this.sessions.get(projectId) === session) this.handlePiEvent(projectId, event)
       },
       onExit: (code, stderrTail) => {
@@ -601,7 +611,9 @@ argument-hint: "<模块名>"
       fingerprint: this.providersFingerprint(),
       currentSessionFile: sessionFile,
       activeSessionName: sessionName,
-      isStreaming: false
+      isStreaming: false,
+      watchdog: new AgentRunWatchdog(phase),
+      watchdogActionPending: false
     }
     this.sessions.set(projectId, session)
     return session
@@ -675,22 +687,45 @@ argument-hint: "<模块名>"
   async prompt(projectId: string, text: string): Promise<void> {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
-    // Pi 的 prompt response 仅表示命令已接收；文件和工具工作要到 agent_settled 才完成。
-    // 必须先注册事件等待器，避免极短轮次在 RPC response 前 settled 造成竞态。
-    const completion = session.client.waitForEvent((event) => {
-      if (event.type === 'agent_settled') return true
-      if (event.type !== 'message_update') return false
-      const delta = (event.assistantMessageEvent ?? {}) as Record<string, unknown>
-      return delta.type === 'error'
-    }, 60 * 60_000)
-    const [, terminalEvent] = await Promise.all([
-      session.client.command({ type: 'prompt', message: text }, 15 * 60_000),
-      completion
-    ])
-    if (terminalEvent.type === 'message_update') {
-      const delta = (terminalEvent.assistantMessageEvent ?? {}) as Record<string, unknown>
-      throw new Error(String(delta.errorMessage ?? delta.error ?? 'Agent 执行失败'))
+    let message = text
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      // Pi 的 prompt response 仅表示命令已接收；文件和工具工作要到 agent_settled 才完成。
+      // 必须先注册事件等待器，避免极短轮次在 RPC response 前 settled 造成竞态。
+      const completion = session.client.waitForEvent((event) => {
+        if (event.type === 'agent_settled') return true
+        if (event.type !== 'message_update') return false
+        const delta = (event.assistantMessageEvent ?? {}) as Record<string, unknown>
+        return delta.type === 'error'
+      }, 60 * 60_000)
+      const [, terminalEvent] = await Promise.all([
+        session.client.command({ type: 'prompt', message }, 15 * 60_000),
+        completion
+      ])
+      if (terminalEvent.type === 'message_update') {
+        const delta = (terminalEvent.assistantMessageEvent ?? {}) as Record<string, unknown>
+        throw new Error(String(delta.errorMessage ?? delta.error ?? 'Agent 执行失败'))
+      }
+      if (!this.lastAssistantTruncatedWithoutTool(session.currentSessionFile)) return
+      if (attempt === 3) {
+        throw new Error(
+          '模型连续 3 轮仅输出思考过程，并因输出长度限制截断，未产生任何工具调用。' +
+          'MoonGlass 已停止本任务，避免继续空转；请切换更适合 Coding Agent 工具调用的模型后重试。'
+        )
+      }
+      this.emit(projectId, {
+        type: 'status',
+        message: `模型第 ${attempt} 轮因长度限制截断且未执行工具，MoonGlass 正在要求其跳过重复规划并立即落盘。`
+      })
+      message = `[MoonGlass 执行恢复 ${attempt}/2]\n` +
+        '上一轮只输出了思考过程，并在生成任何工具调用前因长度限制截断。' +
+        '禁止重复规划、复述模块清单或一次性设计全部实现。现在立即调用一个实际工具完成最小可验证动作：' +
+        '先检查真实工作区；若产物不存在，直接创建第一个文件；若产物存在，直接运行用户要求的检查。' +
+        '完成该动作后再增量继续。'
     }
+  }
+
+  private lastAssistantTruncatedWithoutTool(sessionFile: string): boolean {
+    return isTruncatedWithoutToolCall(this.readSessionMessages(sessionFile))
   }
 
   /**
@@ -741,6 +776,61 @@ argument-hint: "<模块名>"
     } catch (error) {
       rmSync(newFile, { force: true })
       throw error
+    }
+  }
+
+  /** 压缩当前 Pi 上下文，保留会话历史及由模型生成的摘要。 */
+  async compactSession(projectId: string): Promise<AgentSessionInfo> {
+    const session = this.sessions.get(projectId)
+    if (!session) throw new Error('[agent-service] 会话未建立')
+    if (session.isStreaming) throw new Error('Agent 正在运行，请先等待完成或中止任务')
+    await session.client.command({ type: 'compact' }, 15 * 60_000)
+    return this.ensureSession(projectId)
+  }
+
+  /**
+   * 归档活动 JSONL，并用同名空白 session 重启 Pi。新进程不读取旧消息，
+   * 但会恢复当前标签、阶段和模型选择。归档不参与正常会话列表，避免误切回。
+   */
+  async restartSessionFresh(projectId: string): Promise<AgentSessionInfo> {
+    const session = this.sessions.get(projectId)
+    if (!session) throw new Error('[agent-service] 会话未建立')
+    if (session.isStreaming) throw new Error('Agent 正在运行，请先等待完成或中止任务')
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
+    const selectedModel = session.selectedModel
+    const sessionFile = session.currentSessionFile
+    const sessionName = session.activeSessionName
+    const storedLabel = this.storedSessionLabel(sessionFile)
+    const archiveDir = join(this.sessionDir(projectId), 'archive')
+    mkdirSync(archiveDir, { recursive: true })
+    if (existsSync(sessionFile)) {
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      copyFileSync(sessionFile, join(archiveDir, `${basename(sessionFile, '.jsonl')}-${stamp}.jsonl`))
+    }
+    this.sessions.delete(projectId)
+    session.client.dispose()
+    const now = new Date().toISOString()
+    writeFileSync(sessionFile, [
+      JSON.stringify({ type: 'session', version: 3, id: randomUUID(), timestamp: now, cwd: this.workspaceDir(projectId) }),
+      JSON.stringify({ type: 'session_info', id: randomUUID().slice(0, 8), parentId: null, timestamp: now, name: storedLabel ?? `${sessionName === 'main' ? '主会话' : sessionName} (${session.phase})` })
+    ].join('\n') + '\n', 'utf-8')
+
+    const replacement = this.spawnSession(projectId, session.phase, project.name, sessionFile)
+    await replacement.client.waitReady()
+    if (selectedModel) {
+      await this.setModelInternal(replacement, selectedModel.providerId, selectedModel.modelId)
+      this.modelStore.set(projectId, sessionName, selectedModel.providerId, selectedModel.modelId)
+    }
+    this.modelStore.setActiveSession(projectId, sessionName)
+    return {
+      projectId,
+      phase: replacement.phase,
+      sessionName: replacement.activeSessionName,
+      isStreaming: false,
+      modelLabel: replacement.modelLabel,
+      selectedModel: replacement.selectedModel,
+      providersReady: true
     }
   }
 
@@ -1067,9 +1157,9 @@ argument-hint: "<模块名>"
   async getMessages(projectId: string): Promise<AgentUiMessage[]> {
     const session = this.sessions.get(projectId)
     if (!session) return []
-    const data = session.isStreaming
-      ? { messages: this.readSessionMessages(session.currentSessionFile) }
-      : await session.client.command<{ messages: PiMessage[] }>({ type: 'get_messages' })
+    // Session JSONL 是持久化事实源。直接读取它可以避免长任务期间 Pi RPC 忙碌，
+    // 也不会因 get_messages 超时把整个工作区拖入错误状态。
+    const data = { messages: this.readSessionMessages(session.currentSessionFile) }
     const toolInputs = new Map<string, { toolName: string; input: string }>()
     for (const message of data.messages) {
       if (message.role !== 'assistant') continue
@@ -1084,7 +1174,17 @@ argument-hint: "<模块名>"
         })
       }
     }
-    return data.messages.flatMap((message, index) => this.mapMessage(message, index, toolInputs))
+    const mapped = data.messages.flatMap((message, index) => this.mapMessage(message, index, toolInputs))
+    if (mapped.length <= UI_HISTORY_MAX) return mapped
+    return [
+      {
+        id: `history-window-${mapped.length}`,
+        role: 'assistant',
+        text: `为保持长会话界面稳定，当前仅显示最近 ${UI_HISTORY_MAX} 条记录；完整历史仍保存在 Session 文件中。`,
+        timestamp: mapped.at(-UI_HISTORY_MAX)?.timestamp ?? Date.now()
+      },
+      ...mapped.slice(-UI_HISTORY_MAX)
+    ]
   }
 
   async getSessionStats(projectId: string): Promise<AgentSessionStats | null> {
@@ -1126,6 +1226,53 @@ argument-hint: "<模块名>"
       }
     }
     return messages
+  }
+
+  private observeWatchdogEvent(
+    projectId: string,
+    session: PiSession,
+    event: Record<string, unknown>
+  ): void {
+    if (this.sessions.get(projectId) !== session || !session.isStreaming) return
+    let action: WatchdogAction | null = null
+    if (event.type === 'tool_execution_start') {
+      action = session.watchdog.start(
+        String(event.toolCallId ?? ''),
+        String(event.toolName ?? ''),
+        event.args ?? event.input ?? event.arguments
+      )
+    } else if (event.type === 'tool_execution_end') {
+      action = session.watchdog.end(String(event.toolCallId ?? ''), Boolean(event.isError))
+    }
+    if (!action || session.watchdogActionPending) return
+    session.watchdogActionPending = true
+
+    if (action.level === 'abort') {
+      this.flushStreamEvents(projectId)
+      this.emit(projectId, {
+        type: 'error',
+        message: `MoonGlass 已触发 Agent 循环熔断：${action.reason}\n${action.instruction}`
+      })
+      void session.client.command({ type: 'abort' }, 5_000)
+        .catch((error) => console.warn('[agent-service] Watchdog 中止命令失败', error))
+        .finally(() => {
+          session.isStreaming = false
+          session.watchdogActionPending = false
+        })
+      return
+    }
+
+    this.emit(projectId, {
+      type: 'status',
+      message: `MoonGlass 检测到执行正在退化：${action.reason}，已要求 Agent 切换收敛策略。`
+    })
+    void session.client.command({
+      type: 'prompt',
+      message: `[MoonGlass Watchdog]\n原因：${action.reason}\n恢复要求：${action.instruction}`,
+      streamingBehavior: 'steer'
+    }, 15_000)
+      .catch((error) => console.warn('[agent-service] Watchdog steer 失败', error))
+      .finally(() => { session.watchdogActionPending = false })
   }
 
   // ==================== pi 事件 → AgentStreamEvent ====================

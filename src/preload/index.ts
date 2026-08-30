@@ -5,7 +5,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, type MoonGlassApi } from '@shared/ipc-contract'
-import type { AgentEventPayload, IpLibraryImportInput, LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
+import type { AgentEventPayload, IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest } from '@shared/types'
 
 const api: MoonGlassApi = {
   ui: {
@@ -31,7 +31,11 @@ const api: MoonGlassApi = {
     acknowledgeChange: (projectId: string, phase: Phase, responseNote?: string) =>
       ipcRenderer.invoke(IPC.Phase.AcknowledgeChange, projectId, phase, responseNote),
     fastTrackSynthesis: (projectId: string) => ipcRenderer.invoke(IPC.Phase.FastTrackSynthesis, projectId),
-    completeProject: (projectId: string) => ipcRenderer.invoke(IPC.Phase.CompleteProject, projectId)
+    completeProject: (projectId: string) => ipcRenderer.invoke(IPC.Phase.CompleteProject, projectId),
+    previewReset: (projectId: string, phase: Phase, mode: PhaseResetMode) =>
+      ipcRenderer.invoke(IPC.Phase.PreviewReset, projectId, phase, mode),
+    reset: (projectId: string, phase: Phase, mode: PhaseResetMode) =>
+      ipcRenderer.invoke(IPC.Phase.Reset, projectId, phase, mode)
   },
   eda: {
     detectTools: (force?: boolean) => ipcRenderer.invoke(IPC.Eda.DetectTools, force),
@@ -78,6 +82,8 @@ const api: MoonGlassApi = {
     getMessages: (projectId: string) => ipcRenderer.invoke(IPC.Agent.GetMessages, projectId),
     getSessionStats: (projectId: string) => ipcRenderer.invoke(IPC.Agent.GetSessionStats, projectId),
     resetSession: (projectId: string, sessionName?: string) => ipcRenderer.invoke(IPC.Agent.ResetSession, projectId, sessionName),
+    compactSession: (projectId: string) => ipcRenderer.invoke(IPC.Agent.CompactSession, projectId),
+    restartSessionFresh: (projectId: string) => ipcRenderer.invoke(IPC.Agent.RestartSessionFresh, projectId),
     listSessions: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ListSessions, projectId),
     switchSession: (projectId: string, sessionName: string) => ipcRenderer.invoke(IPC.Agent.SwitchSession, projectId, sessionName),
     closeSession: (projectId: string, sessionName: string) => ipcRenderer.invoke(IPC.Agent.CloseSession, projectId, sessionName),
@@ -92,6 +98,8 @@ const api: MoonGlassApi = {
     tree: (projectId: string) => ipcRenderer.invoke(IPC.Fs.Tree, projectId),
     readFile: (projectId: string, relPath: string) =>
       ipcRenderer.invoke(IPC.Fs.ReadFile, projectId, relPath),
+    readJson: (projectId: string, relPath: string) =>
+      ipcRenderer.invoke(IPC.Fs.ReadJson, projectId, relPath),
     writeText: (projectId: string, relPath: string, content: string) =>
       ipcRenderer.invoke(IPC.Fs.WriteText, projectId, relPath, content),
     openExternal: (projectId: string, relPath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, projectId, relPath)

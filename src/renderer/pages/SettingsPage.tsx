@@ -361,7 +361,9 @@ function LlmProviderSection(): React.JSX.Element {
                     </span>
                     <span className="text-xs text-zinc-500">
                       {testResult.ok
-                        ? `HTTP ${testResult.status ?? 200}，发现 ${testResult.availableModelCount ?? 0} 个模型`
+                        ? testResult.availableModelCount !== undefined
+                          ? `HTTP ${testResult.status ?? 200}，发现 ${testResult.availableModelCount} 个模型`
+                          : `HTTP ${testResult.status ?? 200}，已逐一探测 ${testResult.models.length} 个配置模型`
                         : testResult.error ?? '未知连接错误'}
                     </span>
                   </div>

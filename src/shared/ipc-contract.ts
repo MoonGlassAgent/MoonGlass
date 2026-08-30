@@ -18,6 +18,9 @@ import type {
   Phase,
   PhaseAdvanceResult,
   ProjectMigrationResult,
+  PhaseResetMode,
+  PhaseResetPreview,
+  PhaseResetResult,
   PythonRunRequest,
   PythonRunResult,
   ToolDetection,
@@ -50,7 +53,9 @@ export const IPC = {
     GateCheck: 'phase:gate-check',
     AcknowledgeChange: 'phase:acknowledge-change',
     FastTrackSynthesis: 'phase:fast-track-synthesis',
-    CompleteProject: 'phase:complete-project'
+    CompleteProject: 'phase:complete-project',
+    PreviewReset: 'phase:preview-reset',
+    Reset: 'phase:reset'
   },
   Eda: {
     DetectTools: 'eda:detect-tools',
@@ -76,6 +81,8 @@ export const IPC = {
     GetMessages: 'agent:get-messages',
     GetSessionStats: 'agent:get-session-stats',
     ResetSession: 'agent:reset-session',
+    CompactSession: 'agent:compact-session',
+    RestartSessionFresh: 'agent:restart-session-fresh',
     /** 主进程 → 渲染进程的事件推送通道（send，非 invoke） */
     Event: 'agent:event',
     ListSessions: 'agent:list-sessions',
@@ -85,6 +92,7 @@ export const IPC = {
   Fs: {
     Tree: 'fs:tree',
     ReadFile: 'fs:read-file',
+    ReadJson: 'fs:read-json',
     WriteText: 'fs:write-text',
     OpenExternal: 'fs:open-external'
   },
@@ -145,6 +153,8 @@ export interface MoonGlassApi {
     fastTrackSynthesis(projectId: string): Promise<ChipProject | null>
     /** 完成最终综合阶段并将项目标记为完成 */
     completeProject(projectId: string): Promise<ChipProject | null>
+    previewReset(projectId: string, phase: Phase, mode: PhaseResetMode): Promise<PhaseResetPreview>
+    reset(projectId: string, phase: Phase, mode: PhaseResetMode): Promise<PhaseResetResult>
   }
   eda: {
     /** 默认返回持久缓存；force=true 时重新扫描开发环境和 EDA 工具。 */
@@ -178,6 +188,10 @@ export interface MoonGlassApi {
     getSessionStats(projectId: string): Promise<AgentSessionStats | null>
     /** 创建平行会话（不关闭当前会话）。name 可选，默认自动生成 review-<时间戳> */
     resetSession(projectId: string, sessionName?: string): Promise<AgentSessionInfo>
+    /** 使用 Pi 原生 compact 压缩当前上下文，保留关键摘要和会话文件。 */
+    compactSession(projectId: string): Promise<AgentSessionInfo>
+    /** 归档当前历史并以空白 session 重启；保留标签和模型，不携带旧上下文。 */
+    restartSessionFresh(projectId: string): Promise<AgentSessionInfo>
     /** 列出项目所有可用会话 */
     listSessions(projectId: string): Promise<Array<{
       name: string
@@ -200,6 +214,8 @@ export interface MoonGlassApi {
     tree(projectId: string): Promise<FileTreeNode[]>
     /** 读取文件内容（相对路径，超限截断；二进制/越界返回 null 或提示） */
     readFile(projectId: string, relPath: string): Promise<FileContentResult | null>
+    /** 完整读取并在主进程解析项目内 JSON；供结构化数据视图使用，不走文件预览截断。 */
+    readJson(projectId: string, relPath: string): Promise<unknown | null>
     /** 在项目工作区内写入 UTF-8 文本，用于托管报告和变更单。 */
     writeText(projectId: string, relPath: string, content: string): Promise<boolean>
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */

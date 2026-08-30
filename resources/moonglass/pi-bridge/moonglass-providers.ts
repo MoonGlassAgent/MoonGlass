@@ -46,19 +46,24 @@ export default function (pi: {
       api: p.protocol === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
       models: p.models.map((m) => {
         const isDeepSeekReasoner = p.id === 'deepseek' && m === 'deepseek-reasoner'
+        const isVolcengineAgentPlan = /ark\.cn-beijing\.volces\.com\/api\/plan\//i.test(p.baseUrl)
         const metadata = resolveModelContext(m) ?? FALLBACK_MODEL_CONTEXT
         return {
           id: m,
           name: m,
-          reasoning: isDeepSeekReasoner,
+          // Agent Plan 默认可能开启深度思考。让 Pi 的 thinking=off 真正下发
+          // thinking:{type:"disabled"}，避免 reasoning_content 吞尽输出预算。
+          reasoning: isDeepSeekReasoner || isVolcengineAgentPlan,
           input: ['text'],
           cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
           contextWindow: metadata.contextWindow,
           maxTokens: metadata.maxTokens,
-          ...(isDeepSeekReasoner
+          ...(isDeepSeekReasoner || isVolcengineAgentPlan
             ? {
                 compat: {
-                  thinkingFormat: 'deepseek'
+                  thinkingFormat: 'deepseek',
+                  // 火山 Agent Plan Chat API 不接受 developer role；系统约束必须使用 system。
+                  ...(isVolcengineAgentPlan ? { supportsDeveloperRole: false } : {})
                 }
               }
             : {})

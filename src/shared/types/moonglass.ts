@@ -403,6 +403,22 @@ export interface LlmProviderTestResult {
   models: LlmModelTestResult[]
 }
 
+export type PhaseResetMode = 'archive' | 'purge'
+
+export interface PhaseResetPreview {
+  phase: Phase
+  mode: PhaseResetMode
+  paths: string[]
+  fileCount: number
+  totalBytes: number
+  downstreamAffected: Phase[]
+  archivePath?: string
+}
+
+export interface PhaseResetResult extends PhaseResetPreview {
+  project: ChipProject
+}
+
 // ==================== Agent 对话（Phase 2：Pi Coding Agent RPC 嵌入） ====================
 
 export interface AgentDecisionOption {

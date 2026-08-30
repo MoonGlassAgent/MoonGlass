@@ -16,10 +16,11 @@
 
 import { execFileSync, execSync } from 'node:child_process'
 import {
-  cpSync, existsSync, mkdirSync, readdirSync, readFileSync,
+  cpSync, existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync,
   rmSync, statSync, writeFileSync
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
+import { tmpdir } from 'node:os'
 
 const ROOT = process.cwd()
 const args = process.argv.slice(2)
@@ -55,6 +56,14 @@ if (!SKIP_BUILD) {
   execFileSync(process.execPath, [join(ROOT, 'scripts', 'stage-pi-runtime.mjs')], { stdio: 'inherit' })
   execFileSync(process.execPath, [join(ROOT, 'scripts', 'stage-aigv-runtime.mjs')], { stdio: 'inherit' })
   execSync('pnpm build', { cwd: ROOT, stdio: 'inherit' })
+  const mainBundle = readFileSync(join(ROOT, 'out', 'main', 'index.js'), 'utf-8')
+  const externalWorkspaceRequires = [...mainBundle.matchAll(/require\(["'](@moonglass\/[^"']+)["']\)/g)].map((match) => match[1])
+  if (externalWorkspaceRequires.length) {
+    console.error(`[green] 主进程仍外置 TypeScript workspace 包：${[...new Set(externalWorkspaceRequires)].join(', ')}`)
+    console.error('        这些包必须加入 electron-vite externalizeDepsPlugin.exclude。')
+    process.exit(1)
+  }
+  console.log('[green] 主进程 workspace bundle 检查通过')
   execSync('pnpm exec electron-builder --win dir', { cwd: ROOT, stdio: 'inherit' })
 } else {
   console.log('[green] --skip-build：复用 dist/win-unpacked')
@@ -78,6 +87,22 @@ if (!existsSync(packagedAigv)) {
   process.exit(1)
 }
 console.log(`[green] 内置 AIGV 工具链归档就绪（${(statSync(packagedAigv).size / 1024 / 1024).toFixed(1)} MB）`)
+
+// 真实启动打包后的主进程，捕获 app.asar、native module 和服务初始化错误。
+const smokeUserData = mkdtempSync(join(tmpdir(), 'moonglass-packaged-smoke-'))
+try {
+  const smokeOutput = execFileSync(
+    join(unpacked, 'MoonGlass.exe'), [`--user-data-dir=${smokeUserData}`],
+    { encoding: 'utf-8', timeout: 30_000, windowsHide: true, env: { ...process.env, MOONGLASS_STARTUP_SMOKE: '1' } }
+  )
+  if (!smokeOutput.includes('[moonglass] packaged startup smoke passed')) {
+    console.error('[green] 打包 EXE 未返回主进程启动成功标记。')
+    process.exit(1)
+  }
+  console.log('[green] 打包 EXE 主进程真实启动自检通过')
+} finally {
+  rmSync(smokeUserData, { recursive: true, force: true })
+}
 
 // ── 3. 组装绿色目录 ─────────────────────────────────────────
 rmSync(outRoot, { recursive: true, force: true })
@@ -135,6 +160,9 @@ writeFileSync(join(appDir, 'README-ZH-CN.txt'), `MoonGlass ASIC Design Agent 绿
 - 商务联系：moonglassagent@126.com
 
 v${VERSION} 主要更新：
+- 验证态势改用原子发布的紧凑快照，避免大型 AIGV 状态并发更新导致 JSON 读取失败。
+- 04_verification 扩展为三份基线计划与六份 AIGV 方法/闭环文档，覆盖 Intent、风险场景、Formal、Coverage Closure 和 Signoff。
+- 一键托管等待 Agent 本轮任务真正完成后才检查门禁和推进阶段，不再提前推进。
 - 主会话新增端到端验证闭环：Cocotb + Icarus 功能回归与功能覆盖率，Verilator C++ RTL 覆盖率签核。
 - 双通道结果统一合并，生成结构化覆盖率和中文报告，并由独立证据 Review 审查测试、JUnit、日志和覆盖率。
 - VERIF 到 QA 门禁增加行覆盖率、条件/表达式覆盖率、功能覆盖率和验证证据要求。

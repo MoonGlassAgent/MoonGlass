@@ -23,6 +23,15 @@
 
 ## 2. 验证策略
 
+### 2.0 统一验证追踪主链
+
+`REQ/SPEC → VI → SCN → TEST/COVER/PROPERTY → EVIDENCE → SIGNOFF`
+
+- 本文档是验证范围、方法分配、里程碑与签核准则的权威来源。
+- `test_plan.md` 维护可执行 TEST 项，`coverage_plan.md` 维护 COVER 项和 Coverage Hole。
+- AIGV 文档负责风险发现、场景排序和证据闭环，不另建重复测试清单。
+- `aigv_execution_snapshot.md` 由工具生成，用于核对计划与当前 RTL/证据状态。
+
 ### 2.1 验证方法
 
 | 方法 | 适用范围 | 工具 |

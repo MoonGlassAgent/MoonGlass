@@ -38,6 +38,21 @@ class VerificationValidator:
     def __init__(self, base_path: str):
         self.base_path = Path(base_path)
         self.results: List[ValidationResult] = []
+        self.module_plan = self._load_module_plan()
+
+    def _load_module_plan(self):
+        """读取 AIGV 模块分层策略；旧工程缺失策略时保持兼容。"""
+        module_name = re.sub(r'_tb$', '', self.base_path.name)
+        for parent in [self.base_path, *self.base_path.parents]:
+            strategy = parent / 'verification' / 'intelligence' / 'module-verification-strategy.json'
+            if not strategy.exists():
+                continue
+            try:
+                data = json.loads(strategy.read_text(encoding='utf-8'))
+                return next((item for item in data.get('modules', []) if item.get('module') == module_name), None)
+            except (OSError, ValueError, TypeError):
+                return None
+        return None
 
     def validate(self) -> bool:
         """执行所有验证"""
@@ -117,7 +132,13 @@ class VerificationValidator:
         if gm_files:
             self._pass('files', 'Golden Model', f'找到 {len(gm_files)} 个')
         else:
-            self._error('files', 'Golden Model', '未找到 golden_model 相关文件')
+            recommendation = (self.module_plan or {}).get('goldenModel', {}).get('recommendation')
+            if recommendation == 'RECOMMENDED':
+                self._error('files', 'Golden Model', '模块策略标记 RECOMMENDED，但未找到 golden_model 相关文件')
+            elif recommendation:
+                self._info('files', 'Golden Model', f'模块策略为 {recommendation}，未创建参考模型不阻断环境校验')
+            else:
+                self._warning('files', 'Golden Model', '缺少模块策略，无法判断参考模型是否必要')
 
     # ================================================================
     # Golden Model 检查

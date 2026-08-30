@@ -13,6 +13,7 @@ import type { ProjectService } from './ProjectService'
 
 /** 单文件读取上限（超出截断展示） */
 const READ_MAX_BYTES = 256 * 1024
+const JSON_MAX_BYTES = 16 * 1024 * 1024
 
 export class FileService implements MoonGlassService {
   readonly name = 'file-service'
@@ -70,6 +71,20 @@ export class FileService implements MoonGlassService {
     }
     const truncated = buf.length > READ_MAX_BYTES
     return { content: buf.subarray(0, READ_MAX_BYTES).toString('utf-8'), truncated }
+  }
+
+  /** 结构化视图专用：完整读取 JSON，不复用面向编辑器的 256 KiB 预览截断。 */
+  readJson(projectId: string, relPath: string): unknown | null {
+    if (!/\.json$/i.test(relPath)) throw new Error('结构化读取仅支持 JSON 文件')
+    const full = this.resolveProjectFile(projectId, relPath)
+    if (!full) return null
+    const size = statSync(full).size
+    if (size > JSON_MAX_BYTES) throw new Error(`JSON 文件超过结构化读取上限（${(size / 1024 / 1024).toFixed(1)} MB / 16 MB）`)
+    try {
+      return JSON.parse(readFileSync(full, 'utf-8')) as unknown
+    } catch (error) {
+      throw new Error(`JSON 数据无效：${error instanceof Error ? error.message : String(error)}`)
+    }
   }
 
   /** 安全写入项目内文本文件；拒绝绝对路径和目录穿越。 */

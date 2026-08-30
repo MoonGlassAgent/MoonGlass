@@ -12,10 +12,11 @@
  * - 底部面板功能化
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import {
   AlertTriangle,
+  ArrowRight,
   Bot,
   Box,
   ChevronDown,
@@ -48,6 +49,7 @@ import { FileTree } from '../components/FileTree'
 import { CodeViewer, fileLanguage } from '../components/CodeViewer'
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import { useChatStore } from '../store/chatStore'
+import { deriveVerificationActions, deriveVerificationSteps, type GuidanceState } from '../verification-guidance'
 
 const BOTTOM_TABS = [
   { id: 'problems', label: '问题', icon: AlertTriangle },
@@ -70,6 +72,42 @@ interface ManagedStep {
 
 const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 const isManagedPause = (message: string): boolean => /用户停止托管|托管已暂停|L3\/L4 高影响/.test(message)
+
+function VerifStatusBar({ projectId, agentStreaming, onAction, onPlan, onSetup, onBaseline, onFullClosure }: { projectId: string; agentStreaming: boolean; onAction: (prompt: string) => void; onPlan: () => void; onSetup: () => void; onBaseline: () => void; onFullClosure: () => void }): React.JSX.Element {
+  const [state, setState] = useState<GuidanceState | null>(null)
+  const [loading, setLoading] = useState(true)
+  const load = useCallback(async () => {
+    setLoading(true)
+    try {
+      const data = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-posture.json') as GuidanceState | null
+      setState(data)
+    } catch {
+      try { setState(await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-state.json') as GuidanceState | null) } catch { setState(null) }
+    } finally { setLoading(false) }
+  }, [projectId])
+  useEffect(() => { void load() }, [load])
+  const steps = useMemo(() => deriveVerificationSteps(state), [state])
+  const actions = useMemo(() => state ? deriveVerificationActions(state) : [], [state])
+  const primary = actions[0]
+  const current = steps.find((step) => step.status === 'blocked') ?? steps.find((step) => step.status === 'running') ?? steps.at(-1)!
+  return <div className="mt-3 border-t border-zinc-100 pt-3">
+    <div className="flex items-center gap-3">
+      <span className="shrink-0 text-xs font-medium text-zinc-500">VERIF 状态：</span>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">{steps.map((step, index) => <div key={step.id} className="flex min-w-0 items-center gap-1.5"><span title={`${step.label}：${step.detail}`} className={`flex min-w-0 items-center gap-1 rounded px-2 py-1 text-[10px] ${step.status === 'completed' ? 'bg-emerald-50 text-emerald-700' : step.status === 'blocked' ? 'bg-red-50 text-red-700' : step.status === 'running' ? 'bg-amber-50 text-amber-700' : 'bg-zinc-50 text-zinc-400'}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${step.status === 'completed' ? 'bg-emerald-500' : step.status === 'blocked' ? 'bg-red-500' : step.status === 'running' ? 'bg-amber-500' : 'bg-zinc-300'}`} /><span className="truncate">{step.label}</span></span>{index < steps.length - 1 && <ArrowRight size={10} className="shrink-0 text-zinc-300" />}</div>)}</div>
+      <button onClick={() => void load()} disabled={loading} className="rounded border border-zinc-200 p-1.5 text-zinc-400 hover:text-zinc-700" title="刷新 VERIF 状态"><RefreshCw size={12} className={loading ? 'animate-spin' : ''} /></button>
+    </div>
+    <div className="mt-2 flex items-center gap-3 bg-zinc-50 px-3 py-2">
+      <div className="min-w-0 flex-1"><span className={`text-xs font-medium ${current.status === 'blocked' ? 'text-red-700' : 'text-zinc-700'}`}>当前：{current.label}</span><span className="ml-2 text-xs text-zinc-500">{current.detail}</span><span className="ml-3 text-xs text-zinc-400">下一步：{primary?.title ?? '生成 AIGV 验证规划'}</span></div>
+      {primary && <button disabled={agentStreaming} onClick={() => onAction(primary.prompt)} className="shrink-0 rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50"><Play size={12} className="mr-1 inline" />{primary.title}</button>}
+      <div className="flex shrink-0 overflow-hidden rounded border border-zinc-200 bg-white">
+        <button onClick={onPlan} disabled={agentStreaming} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">验证规划</button>
+        <button onClick={onSetup} disabled={agentStreaming} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">环境搭建</button>
+        <button onClick={onBaseline} disabled={agentStreaming} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50">基础回归</button>
+        <button onClick={onFullClosure} disabled={agentStreaming} className="px-2.5 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">风险闭环</button>
+      </div>
+    </div>
+  </div>
+}
 
 const MANAGED_PHASE_PROMPTS: Record<Phase, string> = {
   REQ_SPEC: '完成需求-规格定义：审查项目目标，补齐产品需求、模块规格、接口规格和需求-规格追溯矩阵，消除占位内容并执行文档检查。',
@@ -229,6 +267,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [managedSteps, setManagedSteps] = useState<ManagedStep[]>([])
   const [managedReportPath, setManagedReportPath] = useState('')
   const managedStopRef = useRef(false)
+  const openingFilesRef = useRef(new Set<string>())
   const [changeDialogOpen, setChangeDialogOpen] = useState(false)
   const [changeType, setChangeType] = useState<'requirement' | 'specification' | 'bug'>('bug')
   const [changeSourcePhase, setChangeSourcePhase] = useState<Phase>('RTL')
@@ -271,7 +310,10 @@ export function WorkspacePage(): React.JSX.Element {
 
   const openFile = async (reference: string): Promise<void> => {
     const location = parseFileLocation(reference)
-    const relPath = location.path
+    const workspace = project?.workspacePath?.replace(/\\/g, '/').replace(/\/$/, '')
+    const relPath = workspace && location.path.toLowerCase().startsWith(`${workspace.toLowerCase()}/`)
+      ? location.path.slice(workspace.length + 1)
+      : location.path
     if (location.line && /\.md$/i.test(relPath)) setMarkdownPreview(false)
     if (/\.(vcd|fst)$/i.test(relPath)) {
       try {
@@ -296,13 +338,25 @@ export function WorkspacePage(): React.JSX.Element {
       else { appendLog(`🌐 已打开: ${relPath}`); return }
     }
     if (!openFiles.some((f) => f.path === relPath)) {
-      const result = await window.moonglass.fs.readFile(projectId, relPath)
-      setOpenFiles((files) => [
-        ...files,
-        result
-          ? { path: relPath, content: result.content, truncated: result.truncated, ...location, revealKey: Date.now() }
-          : { path: relPath, content: '（无法读取该文件）', truncated: false, ...location, revealKey: Date.now() }
-      ])
+      if (openingFilesRef.current.has(relPath)) return
+      openingFilesRef.current.add(relPath)
+      try {
+        const result = await window.moonglass.fs.readFile(projectId, relPath)
+        setOpenFiles((files) => files.some((file) => file.path === relPath) ? files : [
+          ...files,
+          result
+            ? { path: relPath, content: result.content, truncated: result.truncated, line: location.line, column: location.column, revealKey: Date.now() }
+            : { path: relPath, content: '（无法读取该文件）', truncated: false, line: location.line, column: location.column, revealKey: Date.now() }
+        ])
+      } catch (error) {
+        const text = `文件打开失败：${relPath}：${error instanceof Error ? error.message : String(error)}`
+        appendLog(text)
+        setFileNotice({ ok: false, text })
+        window.setTimeout(() => setFileNotice(null), 5000)
+        return
+      } finally {
+        openingFilesRef.current.delete(relPath)
+      }
     } else if (location.line) {
       setOpenFiles((files) => files.map((file) => file.path === relPath
         ? { ...file, line: location.line, column: location.column, revealKey: Date.now() }
@@ -480,21 +534,84 @@ export function WorkspacePage(): React.JSX.Element {
   }
 
   // ---- 验证操作 ----
-  const handleSetupEnv = async (): Promise<void> => {
-    appendLog('开始 AIGV 验证规划与环境搭建...')
+  const handlePlanVerification = async (): Promise<void> => {
+    appendLog('开始 AIGV 验证规划...')
     try {
       await sendAgentPrompt(
-        '请完成 AIGV 验证规划与环境搭建，不要只生成一个通用 Testbench：\n' +
-        '1. 使用 verification-planning 技能检查需求、规格、架构与 docs/04_verification/ 三份计划\n' +
+        '请仅完成 AIGV 验证规划。本次任务的停止边界是“规划和机器可读模型就绪”，不要搭建 Testbench、编写测试、运行仿真或进入验证闭环：\n' +
+        '1. 使用 verification-planning 技能检查需求、规格、架构，并建立 docs/04_verification/ 的三份基线计划与六份 AIGV 方法/闭环文档\n' +
         '2. 使用 collect_rtl_files 读取 rtl/design.json 与 rtl/filelist.f，确认 DUT、topModule 和真实 RTL 范围\n' +
         '3. 调用 build_verification_intelligence，生成并审查 requirement-model、structural-model、spec-gap-register、risk-register、verification-intent-registry、coverage-hole-register 和 scenario-execution-plan\n' +
-        '4. 将高优先级 VI-* / SCN-* 绑定到需求、RTL 对象、时间窗口、边界点、Checker、Coverage 和预期证据；Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
-        '5. 使用 cocotb-verification 技能为各 DUT 创建 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/，优先复用现有 VIP/IP 库资源\n' +
-        '6. 根据 Verification Intent 实现 scoreboard、assertion、scenario hit recorder、功能覆盖率和第一批高优先级 sequence，不能只搭空目录或冒烟测试\n' +
-        '7. 使用技能校验脚本检查环境结构；不要把测试代码或构建产物写入 rtl/\n' +
-        '8. 完成后列出已覆盖 Intent、待执行批次、Spec Gap、环境限制和后续验证方法建议'
+        '4. 审查 module-verification-strategy.json：顶层采用 IP_SIGNOFF，高风险子模块采用 UNIT_FOCUSED，普通子模块采用 UNIT_SMOKE 或 STATIC_ONLY；不得把每个 .v 文件都当成独立 DUT 执行完整 AIGV\n' +
+        '5. 分别确定验证深度与 Oracle 策略；Golden Model 是否建立取决于模块语义、独立判定、故障定位和收敛收益，不得按模块大小机械决定\n' +
+        '6. 将高优先级 VI-* / SCN-* 绑定到需求、RTL 对象、时间窗口、边界点、Checker、Coverage 和预期证据；Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
+        '7. 运行验证计划文档校验并修复结构问题\n' +
+        '8. 完成后列出模块分层、Oracle/Golden Model 建议、第一批待执行 Scenario、Spec Gap 和环境搭建建议，然后停止，不得自行继续下一步骤'
       )
-      appendLog('AIGV 验证规划与环境搭建任务已完成')
+      appendLog('AIGV 验证规划任务已完成')
+    } catch (err) {
+      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleResetPhase = async (phase: Phase, mode: 'archive' | 'purge'): Promise<void> => {
+    try {
+      const preview = await window.moonglass.phase.previewReset(projectId, phase, mode)
+      const pathList = preview.paths.length > 0 ? preview.paths.map((path) => `  - ${path}`).join('\n') : '  - 当前没有阶段产物'
+      const sizeMb = (preview.totalBytes / 1024 / 1024).toFixed(2)
+      const action = mode === 'archive' ? '归档并重新开始' : '永久清除并重新开始'
+      const confirmed = window.confirm(
+        `${action}“${PHASE_LABELS[phase]}”？\n\n将处理 ${preview.fileCount} 个文件（${sizeMb} MB）：\n${pathList}\n\n上游阶段成果会保留；已完成的后续阶段将标记黄色变更提醒。`
+      )
+      if (!confirmed) return
+      if (mode === 'purge' && !window.confirm('这是不可恢复的彻底清除。确认永久删除上述阶段产物？')) return
+      const result = await window.moonglass.phase.reset(projectId, phase, mode)
+      setProject(result.project)
+      setGate(null)
+      setTreeTick((tick) => tick + 1)
+      setMainTab('chat')
+      appendLog(
+        mode === 'archive'
+          ? `已归档 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件到 ${result.archivePath}，并以空白会话重新开始`
+          : `已彻底清除 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件，并以空白会话重新开始`
+      )
+    } catch (error) {
+      appendLog(`阶段重做失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const handleSetupEnv = async (): Promise<void> => {
+    appendLog('开始验证环境搭建...')
+    try {
+      await sendAgentPrompt(
+        '请仅完成验证环境搭建。本次任务的停止边界是“环境可编译、Checker 可工作”，不要执行完整回归、Coverage Closure、Formal 或签核：\n' +
+        '1. 读取现有 verification-intent-registry.json、scenario-execution-plan.json、验证计划和 RTL design.json/filelist.f；缺少规划时停止并明确提示先执行“验证规划”\n' +
+        '2. 读取 module-verification-strategy.json；仅为 IP_SIGNOFF 和 UNIT_FOCUSED 建立独立完整 Testbench，UNIT_SMOKE 只建立可复用的最小 smoke，STATIC_ONLY 不创建 Testbench\n' +
+        '3. 优先复用 IP 库中的 VIP/BFM；按每个模块的 oracleStrategies 实现必要 driver、monitor、scoreboard、协议/状态 assertion、scenario hit recorder 和功能覆盖采样骨架\n' +
+        '4. 对标记 REFERENCE_MODEL 的模块实现独立 Golden Model；未标记时仍应根据架构角色和定位收益复核，不得为了形式完整复制 RTL，也不得因模块是子模块就禁止 Golden Model\n' +
+        '5. UNIT_SMOKE 只实现 reset、接口连通、一个正常事务和一个关键边界点，不扩展完整风险场景批次\n' +
+        '6. 执行 Python 语法、导入、Testbench 结构以及 RTL 编译/elaboration 检查；允许为确认环境可启动而运行单个最小 smoke，但不得循环修复设计功能问题\n' +
+        '7. 保存环境检查证据，列出可运行入口、已实现 Checker/Golden Model、复用组件和阻断项，然后停止'
+      )
+      appendLog('验证环境搭建任务已完成')
+    } catch (err) {
+      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleRunBaselineRegression = async (): Promise<void> => {
+    appendLog('开始基础回归...')
+    try {
+      await sendAgentPrompt(
+        '请仅执行并建立基础回归基线。本次任务的停止边界是“最小可信回归产生结构化结果”，不要继续高风险 Scenario、Coverage Closure、Formal 或最终签核：\n' +
+        '1. 检查验证环境和 RTL 编译基线；环境未就绪时只修复环境基础设施问题\n' +
+        '2. 按 module-verification-strategy.json 执行：全部模块做静态基线，UNIT_SMOKE 运行最小基础集，UNIT_FOCUSED 只运行其定向 smoke，IP_SIGNOFF 运行顶层 reset/idle/一个合法正常事务；不得给每个 .v 文件复制完整回归\n' +
+        '3. 使用 run_simulation 真实执行，保存 compile.log、simulation.log、JUnit/results.xml、result.json、scenario_hits.json 和必要波形\n' +
+        '4. 不设置无工程依据的固定仿真周期或 wall-clock 上限；失败时按 diagnostic-control.json 提升诊断证据，禁止反复盲改 RTL\n' +
+        '5. 调用 build_verification_intelligence 回灌本批结果，使验证态势出现结构化 regression 记录\n' +
+        '6. 汇总通过/失败 DUT、首个失败证据和环境阻断项，然后停止，不得自动进入风险闭环'
+      )
+      appendLog('基础回归任务已完成')
     } catch (err) {
       appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -504,17 +621,18 @@ export function WorkspacePage(): React.JSX.Element {
     appendLog('开始 AIGV 风险驱动验证闭环...')
     try {
       await sendAgentPrompt(
-        '请完成工作区所有 RTL 模块的 AIGV 风险驱动、场景驱动和证据驱动验证闭环：\n' +
-        '1. 使用 verification-planning 技能校验验证计划，并运行 collect_rtl_files、run_verible_lint、check_synthesizability 建立当前 RTL 基线\n' +
+        '请完成项目顶层 IP 与选定高风险子模块的 AIGV 风险驱动、场景驱动和证据驱动验证闭环：\n' +
+        '1. 使用 verification-planning 技能校验三份基线计划与六份 AIGV 方法/闭环文档，并运行 collect_rtl_files、run_verible_lint、check_synthesizability 建立当前 RTL 基线\n' +
         '2. 调用 build_verification_intelligence，读取 Verification Intent、Spec Gap、风险热区、时间交互、边界条件、Coverage Hole 和 scenario-execution-plan\n' +
-        '3. 调用 select_next_verification_batch，按优先级执行真实 VI-* / SCN-*；不得绕过队列只跑已有冒烟用例，也不得生成无结构依据的任意笛卡尔积\n' +
-        '4. 对 Simulation 场景使用 Cocotb + Icarus 完成功能回归、Checker、功能覆盖率和波形；Windows 再用 Verilator C++ 回归采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率\n' +
-        '5. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification，依次考虑 BMC、cover 和适合的不变量 prove；BMC PASS 不得宣称完成证明\n' +
-        '6. 将每个 Scenario 的 reach/pass、assertionPassed、coverageDelta 和真实证据写入 verification/results/<module>/scenario_hits.json，保存日志、JUnit、result.json、Coverage 和 VCD/FST\n' +
-        '7. 再次构建 Verification Intelligence，把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，并按分类采取措施\n' +
-        '8. 持续选择下一批任务，直至关键 Verification Intent 已验证、Formal 证明、证明不可达或有批准豁免；不得仅因总覆盖率较高而停止\n' +
-        '9. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立读取原始测试、日志、Coverage、Formal 和 RTL 证据；存在阻断项时继续修复与回归\n' +
-        '10. 更新需求追踪、docs/06_validation/ 验证报告和验证态势，明确已闭环 Intent、遗留 Spec Gap、Coverage Hole、工具限制与是否具备签核条件'
+        '3. 调用 select_next_verification_batch(limit=3)，每轮最多执行 3 个最高优先级 VI-* / SCN-*；不得绕过队列只跑已有冒烟用例，也不得生成无结构依据的任意笛卡尔积\n' +
+        '4. 严格按 module-verification-strategy.json 分层执行：顶层完成端到端 AIGV，高风险子模块只做专项 Scenario，普通子模块依靠静态检查、轻量 smoke 与顶层覆盖；只有观察不足或缺陷难定位时才升级等级\n' +
+        '5. 对 Simulation 场景使用 Cocotb + Icarus 完成功能回归、Checker、功能覆盖率和波形；Windows 再用 Verilator C++ 回归采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率\n' +
+        '6. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification，依次考虑 BMC、cover 和适合的不变量 prove；BMC PASS 不得宣称完成证明\n' +
+        '7. 将每个 Scenario 的 reach/pass、assertionPassed、coverageDelta 和真实证据写入 verification/results/<module>/scenario_hits.json，保存日志、JUnit、result.json、Coverage 和 VCD/FST\n' +
+        '8. 再次构建 Verification Intelligence，把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，并按分类采取措施\n' +
+        '9. 每批完成后只重建一次 Verification Intelligence 并汇报证据增量；局部修复先跑定向与受影响回归，Verilator 全量覆盖、广泛 Formal 和全量回归仅在基础稳定、批次稳定及签核前的里程碑执行\n' +
+        '10. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立读取原始测试、日志、Coverage、Formal 和 RTL 证据；存在阻断项时继续修复与回归\n' +
+        '11. 用实际机器可读产物和原始证据更新 docs/04_verification/ 全套 AIGV 文档、需求追踪、docs/06_validation/ 验证报告和验证态势，明确已闭环 Intent、遗留 Spec Gap、Coverage Hole、工具限制与是否具备签核条件'
       )
       appendLog('AIGV 验证闭环任务已完成')
     } catch (err) {
@@ -551,6 +669,17 @@ export function WorkspacePage(): React.JSX.Element {
       appendLog(`总体报告生成失败: ${error instanceof Error ? error.message : String(error)}`)
     } finally {
       setGeneratingDashboard(false)
+    }
+  }
+
+  const handleVerificationGuidanceAction = async (prompt: string): Promise<void> => {
+    setMainTab('chat')
+    appendLog('已按验证态势推荐动作交给主 Agent…')
+    try {
+      await sendAgentPrompt(prompt)
+      appendLog('验证推荐动作已完成，请刷新 VERIF 状态或验证态势')
+    } catch (error) {
+      appendLog(`验证推荐动作失败：${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -925,6 +1054,7 @@ export function WorkspacePage(): React.JSX.Element {
           onCompleteProject={() => void handleCompleteProject()}
           onFixGateIssues={(phase, results) => void handleFixGateIssues(phase, results)}
           onRespondChange={(phase) => void handleRespondChange(phase)}
+          onResetPhase={(phase, mode) => void handleResetPhase(phase, mode)}
           gate={gate}
         />
 
@@ -948,26 +1078,7 @@ export function WorkspacePage(): React.JSX.Element {
           </div>
         )}
 
-        {project.currentPhase === 'VERIF' && (
-          <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">
-            <span className="text-xs font-medium text-zinc-500">验证操作：</span>
-            <button
-              onClick={() => void handleSetupEnv()}
-              disabled={agentStreaming}
-              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
-            >
-              <FlaskConical size={13} className="mr-1 inline" />规划与搭建
-            </button>
-            <button
-              onClick={() => void handleRunRegression()}
-              disabled={agentStreaming}
-              className="rounded border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-            >
-              <Play size={13} className="mr-1 inline" />AIGV 验证闭环
-            </button>
-            {agentStreaming && <span className="text-xs text-amber-600">Agent 运行中…</span>}
-          </div>
-        )}
+        {project.currentPhase === 'VERIF' && <VerifStatusBar projectId={project.id} agentStreaming={agentStreaming} onAction={(prompt) => void handleVerificationGuidanceAction(prompt)} onPlan={() => void handlePlanVerification()} onSetup={() => void handleSetupEnv()} onBaseline={() => void handleRunBaselineRegression()} onFullClosure={() => void handleRunRegression()} />}
 
         {project.currentPhase === 'SYNTH' && (
           <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">

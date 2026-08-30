@@ -2,6 +2,141 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-08-30：修复模型只思考不执行与托管误判完成
+
+- 复盘 MoonGlass_NPU RTL 阶段：GLM-5.3-Flash 多轮将 8192 个输出 Token 全部用于 reasoning，均以 `stopReason=length` 结束且没有任何工具调用；MoonGlass 旧逻辑错误地将其视为任务完成并继续门禁恢复。
+- 火山方舟 Agent Plan Provider 采用 Pi `deepseek` thinking 兼容格式，使会话的 thinking=off 实际下发 `thinking: { type: "disabled" }`，防止默认深度思考吞尽工具调用预算。
+- Agent 执行完成判定新增 `length + 零 toolCall` 检测：自动注入最小可验证动作恢复指令并继续等待；连续 3 轮仍无工具调用则明确失败并停止托管，提示切换 Coding Agent 模型。
+- 全局提示词明确“执行优先”和事实边界：计划中列出的 RTL 不等于实际文件，只有文件工具结果和 EDA 原始证据可用于完成结论。
+- 修复火山 Agent Plan Chat API 拒绝 `developer` role 的 400 错误：Provider 显式设置 `supportsDeveloperRole: false`，由 Pi 使用受支持的 `system` role 发送系统约束。
+
+## 2026-08-30：会话上下文压缩与无上下文重启
+
+- 会话工具菜单新增“压缩上下文”，调用 Pi 原生 `compact` 生成关键摘要并继续当前会话；操作前明确提示会产生一次摘要模型调用。
+- 新增“无上下文重启”：将当前 JSONL 历史归档到项目会话目录的 `archive/`，以空白同名 session 重启 Pi；会话标签、阶段和模型选择保持不变，旧消息和摘要均不会注入新上下文。
+- 两项操作在 Agent 运行期间禁用，并提供不同确认说明，避免把上下文压缩误认为彻底清空。
+
+## 2026-08-30：MoonGlass v0.8.0 模块分层验证策略
+
+- 产品版本由 `0.7.0` 升级到 `0.8.0`。
+- AIGV 新增 `module-verification-strategy.json`，按 `STATIC_ONLY`、`UNIT_SMOKE`、`UNIT_FOCUSED`、`IP_SIGNOFF` 对 RTL 模块分层；优先采用 `rtl/design.json` 的 `topModule`，缺失时再从实例关系推断顶层。
+- 风险仍覆盖全部 RTL 模块，但只有高风险子模块和顶层 IP 进入完整 VI/SCN 闭环；普通子模块只执行静态检查或轻量 Smoke，不再把每个 `.v` 文件当成独立 DUT 重复完整 AIGV。
+- 验证深度与 Oracle 策略解耦；Golden Model 根据模块语义、独立判定、故障定位和收敛收益推荐，允许 `UNIT_SMOKE` 子模块使用参考模型，也避免无收益地复制 RTL。
+- 工作区验证规划、环境搭建、基础回归、风险闭环以及 VERIF 主 Prompt 全部接入模块分层策略。
+- 验证态势新增模块策略表，展示模块角色、风险等级、独立 Testbench、Oracle 组合、Golden Model 建议和工程依据。
+
+## 2026-08-30：兼容无 `/models` 端点的套餐型模型网关
+
+- Provider 连接测试优先使用 `/models` 做无 Token 探测；端点返回 404/405 时，不再直接判定连接失败。
+- OpenAI-compatible Provider 自动对全部配置模型顺序发起最小 `chat/completions` 请求，兼容火山方舟 Agent Plan 等套餐型网关，同时避免并发探测触发限流。
+- 测试结果明确标注实际探测端点、每个模型的 PASS/FAIL 和具体 HTTP 原因；无模型列表时显示“已逐一探测配置模型”，不再错误显示“发现 0 个模型”。
+
+## 2026-08-29：AIGV 2.0 Mutation、Residual Risk 与最终签核包
+
+- 新增绑定当前 RTL Hash 的风险加权 Mutation 评估，区分 `KILLED`、`SURVIVED`、`EQUIVALENT`、`INVALID` 和 `EQUIVALENCE_UNKNOWN`；高风险 survivor、未知等价性和低于阈值均阻断签核。
+- 新增 Residual Risk Register，统一收敛 Formal 工具限制、Mutation survivor、Negative Space 和 Scenario waiver；仅接受包含审批人、依据和时间的显式批准记录，Agent 不得自行代签。
+- 新增机器可读 `signoff-package.json` 和工程可读 `verification-signoff-package.md`，固化 RTL Hash、Verification Space Snapshot、闭环结论、阻断项、警告、残余风险与证据清单。
+- Closure Engine、验证态势、工作区下一步引导与主 Agent Prompt 全部接入 Mutation 和残余风险；最终状态明确区分未就绪、条件就绪和待人工签核。
+- 专项测试覆盖 Mutation 全杀、survivor 阻断、探索饱和后的签核包生成，以及 Markdown 报告与 Package ID 的一致性。
+
+## 2026-08-29：AIGV 2.0 自主探索历史与经验性饱和
+
+- 新增 `exploration-history.json`；只有真实调用下一批验证任务才开启探索轮次，下一次选批结算上一轮的新增闭环与空间变化，刷新态势不会伪造轮次。
+- Novelty Saturation 分为 `NOT_ENOUGH_ROUNDS`、`PROGRESSING`、`EMPIRICALLY_SATURATED`、`STALLED`；连续三轮无新增只表示当前 Verification Space、探索策略与预算下的经验性饱和，不宣称数学证明。
+- 探索历史按 Verification Space Snapshot 隔离，规格或 RTL 变化后旧空间的饱和结论立即失效；关键场景仍开放时连续无新增进入 STALLED，要求停止重复并增强 Checker、Assertion、激励或空间模型。
+- 修复 RTL 变化后第二次重建可能重新接受旧 scenario_hits 的问题：证据携带的 rtlHash 成为恢复 CURRENT 的唯一依据，`IMPACT_UNKNOWN` 不会被连续重建洗白。
+- Closure Engine 将经验性饱和纳入机器签核条件；验证态势显示探索状态与解释，主 Agent 行动引导区分继续独立攻击探索和退出重复探索。
+
+## 2026-08-29：AIGV 2.0 Multi-Oracle 独立裁决
+
+- 新增 Oracle Registry，登记 Reference Model/Scoreboard、Invariant/Assertion、Protocol Checker、Formal Property、Metamorphic Relation 与 End-to-End Checker 的实现、独立性等级、独立性域和共享 assumptions。
+- 新增 `oracle-evaluation.json`；从绑定当前 RTL Hash 的 scenario_hits、oracle_verdicts 和 Formal 结果采集结构化 verdict，过期或来源未知的结果不进入有效裁决。
+- 关键 Scenario 至少需要两个 Level >= 2 且 independenceDomain 不同的 PASS；单个 `passed=true` 仅代表 Scoreboard，不能冒充 Assertion 或第二份独立证据。
+- 任意有效 Oracle PASS/FAIL 并存均标记 `CONFLICT` 并阻断签核，不设置 Invariant、Reference 或 End-to-End 的固定优先级赢家。
+- Closure Engine、验证态势指标和工作区行动引导接入 Multi-Oracle：优先仲裁冲突，其次补齐独立判定域；VERIF Prompt 要求生成 `oracle_verdicts.json` 并审查 provenance。
+
+## 2026-08-29：AIGV 2.0 Verification Space 与 Explorer
+
+- 每个 Scenario 新增 Feature、Boundary、Interaction、Temporal、State 五维坐标，生成版本化 `verification-space-snapshot.json`；Snapshot ID 同时绑定规格、RTL 与有限候选集合，输入不变时保持稳定。
+- 新增 first-class Negative Space，明确记录规格未定义、已证明不可达和批准豁免等“不验证”原因；未批准的 Negative Space 不得用于签核关闭。
+- 新增 `exploration-round.json`，固化本轮候选数量、选中场景、预计成本、关键未闭环数量和选择依据，为后续 Novelty Saturation 提供可审计轮次数据。
+- Explorer 对 P0 Scenario 设置强制任务和最低优先级，预算选择遇到昂贵普通任务时继续寻找可执行项，避免提前终止和关键场景饥饿。
+- 验证态势新增 Verification Space 条带，展示空间版本、候选/Negative 数量、五维规模和当前探索轮次。
+
+## 2026-08-29：AIGV 2.0 状态内核与机器签核评估
+
+- Scenario 在兼容旧 `status` 的同时新增执行、到达、裁决、证据、时效性和闭环六轴状态；所有新证据绑定 RTL Hash，RTL 变化后无法证明无关的旧证据进入 `IMPACT_UNKNOWN` 并阻断签核。
+- Formal 结果新增 `PROVEN`、`COUNTEREXAMPLE`、`COVERED`、`BOUND_EXHAUSTED`、`INCONCLUSIVE`、`TOOL_ERROR` 等结论分级；BMC 深度通过和 cover 未到达不再被解释为证明，补强 Formal 工具错误不再覆盖已闭环仿真证据。
+- 新增机器可读 `closure-assessment.json`，统一计算 P0/P1 Scenario 闭环、回归、Coverage Hole、强制 Formal、工具错误、变更影响和残余风险，输出 `NOT_READY`、`CONDITIONALLY_READY` 或 `READY_FOR_HUMAN_SIGNOFF`。
+- 验证态势顶部展示机器签核阻断和 AIGV 2.0 下一步，工作区行动引导优先处理 RTL 变更影响未知；专项测试覆盖旧数据兼容、证据闭环、Formal C6 隔离及 RTL 变更失效。
+
+## 2026-08-28：Yosys Formal 兼容层与签核义务分级
+
+- `run_formal_verification` 在启动求解器前拒绝 Yosys 不支持的 `default clocking`、`property/endproperty`、`assert property`、`disable iff`、`|->`、`|=>` 和 `##`，输出 C6 兼容性问题及过程式改写建议。
+- Formal 任务新增 `required`/`supplemental` 义务等级：任何 FAIL 均阻断；强制 Formal 的 ERROR/UNKNOWN 阻断；补强 Formal 的工具 ERROR 形成警告和修复动作，但不单独推翻已有充分仿真证据。
+- Formal Skill 与阶段 Prompt 要求使用 clocked `always`、监控计数器、`$past` 和 immediate assert/assume/cover；Liveness 环境 assumption 必须有规格依据。
+- Formal Smoke Test 新增高级 SVA 前置拒绝测试，确保同类 C6 不再经过三次盲试才发现。
+
+## 2026-08-28：长会话白屏防护与验证耗时优化
+
+- Agent 历史改为直接读取持久化 Session JSONL，避免长任务期间 `get_messages` RPC 超时；UI 仅保留最近 320 条展示记录，完整历史仍在 Session 文件中。
+- 单条流式正文/思考过程设置 120,000 字符显示窗口，Renderer 连续 20 秒无响应时自动重新加载界面，项目和 Agent 任务不受影响。
+- `select_next_verification_batch` 默认复用现有执行计划且每批最多 3 个 Scenario，只有规格、RTL 或回归证据变化时才全量重建 AIGV。
+- 局部修复只执行定向和受影响回归；Verilator 全量 Coverage、广泛 Formal、全量回归调整到基础稳定、批次稳定和签核前里程碑执行。
+
+## 2026-08-28：AIGV 方法学白皮书 v1.1
+
+- 方法学论文新增“验证规划、环境搭建、基础回归、风险闭环”外层四步交付状态机，明确每一步的完成判据与停止边界。
+- 新增 L0-L5 渐进式失败诊断、失败指纹与 `DIAGNOSTIC_ENHANCEMENT` 控制模式，说明无项目基线时不采用统一硬超时的工程理由。
+- 补充诊断信息增益、重复修复次数、分步交付时间等评价指标，并增加诊断精度边界和自适应停止策略研究议题。
+
+## 2026-08-28：VERIF 四步执行与 Prompt 边界
+
+- 工作区将原“规划与搭建”拆分为“验证规划、环境搭建、基础回归、风险闭环”四个独立操作，每一步都有明确停止边界。
+- 验证规划只生成权威计划与 AIGV 机器可读模型；环境搭建只做到 Testbench、Checker 和最小 smoke 可运行；基础回归只建立结构化回归基线；风险闭环才执行高风险 Scenario、Coverage、Formal 和签核。
+- VERIF 阶段全局 Prompt 遵从当前操作的显式范围，已有规划和环境增量复用，避免子任务隐式扩展为完整验证闭环。
+
+## 2026-08-28：绿色版打包脚本 Windows PowerShell 兼容修复
+
+- 将 `Build-Green.ps1` 固定为带 BOM 的 UTF-8，避免 Windows PowerShell 5.1 按本地 ANSI 代码页误读中文并破坏字符串边界。
+- 读取 `package.json` 时显式使用 UTF-8，避免中文产品描述经 ANSI 误解码后导致 `ConvertFrom-Json` 失败。
+- 已分别通过 PowerShell 7 与 Windows PowerShell 5.1 语法解析检查。
+
+## 2026-08-27：MoonGlass v0.7.0 绿色版基线
+
+- 产品版本统一升级到 `0.7.0`，同步应用包版本与软件信息页。
+- 基于当前 AIGV、验证态势、一键托管 Agent 完成屏障等最新功能制作 Windows x64 绿色版。
+- 绿色版保留 MIC_NPU Demo，不包含 API Key、模型账号配置或 Agent 会话；打包期间不关闭当前运行中的 MoonGlass。
+
+## 2026-08-27：验证态势稳定读取与 AIGV 文档体系
+
+- AIGV 新增原子发布的紧凑 `verification-posture.json`，验证态势页优先读取该快照并兼容旧版全量状态，避免大文件并发更新造成 JSON 中间态错误。
+- 修复验证态势误用 256 KiB 文件预览接口的问题：新增 16 MiB 上限的结构化 JSON IPC，由主进程完整解析后返回，文件查看器仍保持截断保护。
+- `docs/04_verification/` 从验证/测试/覆盖率三份基线计划扩展为 AIGV 策略、Intent 矩阵、风险场景、Formal、Coverage Closure、Signoff 六份方法与闭环文档。
+- VERIF 阶段 Prompt、工作区快捷操作、`/verify` 模板与 verification-planning Skill 统一要求使用机器可读产物和原始证据维护 AIGV 文档。
+
+## 2026-08-27：验证态势解释层与 VERIF 行动引导
+
+- 新增共享验证行动模型，将失败回归、Formal、Spec Gap、C1-C6 Coverage Hole 和 Intent 状态归并为 P0/P1/P2 推荐动作。
+- 验证态势顶部新增当前结论、七步交付路径、Top 5 风险解释和推荐下一步；风险明确区分已确认问题、高风险待验证、验证基础设施缺口、规格缺口与已接受风险。
+- Top 风险展示当前缺口、可能影响和推荐操作，并支持一键将具体任务交给主 Agent 执行。
+- 工作区 VERIF 阶段新增紧凑状态条，显示规划、环境、基础回归、风险场景、覆盖闭环、Formal 和签核状态，以及动态主操作。
+- AIGV 紧凑快照补充 Risk → Intent 的 `sourceIds` 关联；新增验证行动推导 Smoke Test。
+
+## 2026-08-27：v0.7.0 绿色版主进程启动修复
+
+- 修复 `@moonglass/verification-intelligence-engine` 被 electron-vite 错误外置，导致绿色版从 `app.asar/node_modules` 加载 TypeScript 并触发 `ERR_UNSUPPORTED_NODE_MODULES_TYPE_STRIPPING`。
+- 所有 `@moonglass/*` workspace 包统一随主进程 bundle，绿色版构建发现残留外部 require 时立即失败。
+- 新增打包 EXE 真实启动冒烟：使用隔离用户目录启动完整主进程与服务，收到成功标记并正常退出后才允许生成 ZIP。
+
+## 2026-08-27：会话文件链接白屏防护
+
+- 会话中的 Windows 绝对文件引用先规范化为项目相对路径，避免盘符、冒号和行号直接进入文件 tab 与 Monaco 模型标识。
+- Monaco 改用编码后的 `inmemory://moonglass/` 模型 URI；同一文件的并发打开请求去重，状态更新再次检查重复 tab。
+- 文件读取和打开异常在工作区内提示，不再形成未处理 Promise rejection。
+- 新增全局 React Error Boundary、window error/unhandled rejection 日志，以及主进程 renderer console、unresponsive、render-process-gone 诊断。
+- renderer 进程意外退出时自动恢复一次；组件异常时显示可重新加载的中文错误页，避免永久白屏。
+
 ## 2026-08-26：AIGV 完备化与开源 Formal 闭环
 
 - 新增 SymbiYosys + Yosys-SMTBMC + Boolector/Bitwuzla/Z3 开源 Formal 执行器，支持 `bmc`、`prove`、`cover`，统一归档 `.sby`、日志、`formal-result.json` 和 VCD/YW 反例/见证。
@@ -308,3 +443,40 @@
 - Chat Store 新增 `sendAndWait`：一键托管、阶段快捷操作和门禁修复使用严格等待；普通手工聊天保留友好的错误展示行为。
 - 阶段推进、门禁复查和自动决策只会在上一轮 Agent 完成后执行；单轮最长允许一小时，用户仍可随时中止。
 - VERIF 和综合快捷操作日志改为在 Agent 真正完成后显示“任务已完成”，不再在仅发送消息后误报完成。
+# 2026-08-28：AIGV 验证语义与文档主链增强
+
+- Risk 增加具体风险陈述、结构识别依据、失效模式和外部可见影响，不再只显示 taxonomy 标签。
+- Verification Intent 改为可证伪工程目标，明确前置状态、逐步激励、观察点、通过标准和证据要求。
+- Coverage Hole 增加具体缺失场景、所需激励、观察/Checker 和关闭证据。
+- 验证态势页面展开显示风险语义、Intent 执行方法和 Coverage Hole 闭环条件。
+- `verification_plan/test_plan/coverage_plan` 与 AIGV 文档统一为 `REQ/SPEC → VI → SCN → TEST/COVER/PROPERTY → EVIDENCE → SIGNOFF` 主链，并自动生成 `aigv_execution_snapshot.md` 同步快照。
+
+# 2026-08-28：统一绿色版打包入口
+
+- 新增根目录 `Build-Green.ps1`，自动读取版本、执行检查、构建绿色版并输出 ZIP 路径、大小、文件数量与 SHA-256。
+- 支持指定演示 userdata、跳过检查或复用构建产物；默认不会关闭当前运行中的 MoonGlass。
+
+# 2026-08-28：AIGV 方法学白皮书
+
+- 新增 `docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html`，系统说明 AIGV 的理论原则、数据模型、风险推导、Verification Intent、Scenario、Coverage Hole、Formal、证据闭环、文档治理、签核准则、工程示例与研究议程。
+- 文档采用响应式、可打印的学术论文版式，可直接离线阅读和分享。
+
+# 2026-08-28：渐进式验证诊断控制
+
+- 仿真默认不再使用统一的最大周期或 wall-clock 硬限制；只有项目明确提供依据时才启用显式超时。
+- Cocotb 运行前自动执行 Python 语法、重复测试函数和重复脚本注入标记检查，阻止损坏测试继续执行。
+- 新增 `verification/results/diagnostic-control.json`，记录失败指纹、RTL/Testbench Hash、L0-L5 诊断等级、证据和尝试历史。
+- 重复失败且诊断没有提升时切换为 `DIAGNOSTIC_ENHANCEMENT`，要求先增强 Checker、Assertion、事务追踪与波形，再继续修改 RTL。
+- 验证态势展示当前诊断模式、case、诊断等级、尝试次数和下一步建议。
+## 2026-08-30：Agent 文档编辑循环熔断与阶段收敛保护
+
+- 基于 MoonGlass_NPU 的 82.5 分钟会话复盘，新增运行时 Agent Watchdog：需求/架构阶段 80 次工具调用进入收敛模式，160 次自动中止并保留现场；后续阶段使用更宽预算。
+- 同一文件读取 12 次时强制改为一次性章节读取，同一文件精确编辑连续失败 3 次时强制切换章节级重写，6 次时自动中止，禁止固定行号破坏性修补。
+- 连续 40 次工具调用没有成功写入或编辑时注入停滞诊断；门禁通过后禁止继续措辞润色、重复清单和主动 Git 初始化。
+- REQ_SPEC 提示词与 doc-repository 技能明确使用“需求 ID”“规格 ID”表头，并采用“批量生成 → 一次检查 → 批量修复 → 立即复检”的收敛流程。
+# 2026-08-30 - 阶段产物归档/清除与重做
+
+- 阶段节点新增“归档重做”和“彻底清除”操作，执行前预览命中路径、文件数和体积。
+- 默认归档到 `.moonglass/phase-archives/<PHASE>/<timestamp>/`，并写入操作清单；彻底清除要求二次确认。
+- 重做仅处理阶段白名单产物，保留上游成果；已完成的后续阶段按既有规则显示黄色变更提醒。
+- 重置阶段状态、门禁与评审信息，并以空白 Agent session 重新开始，同时保留原模型选择。

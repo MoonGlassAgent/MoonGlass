@@ -6,7 +6,7 @@
 
 import { BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { IPC } from '@shared/ipc-contract'
-import type { IpLibraryImportInput, LlmProviderConfig, Phase, PythonRunRequest } from '@shared/types'
+import type { IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
 import { pathToFileURL } from 'node:url'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
@@ -204,6 +204,18 @@ export function registerIpcHandlers(services: ApplicationServices): void {
       if (ipEnhancementJobs.get(id) === job) ipEnhancementJobs.delete(id)
     }
   })
+
+  ipcMain.handle(IPC.Phase.PreviewReset, (_e, projectId: string, phase: Phase, mode: PhaseResetMode) =>
+    projects.previewPhaseReset(projectId, phase, mode)
+  )
+
+  ipcMain.handle(IPC.Phase.Reset, async (_e, projectId: string, phase: Phase, mode: PhaseResetMode) => {
+    await agent.abort(projectId).catch(() => undefined)
+    const result = projects.resetPhase(projectId, phase, mode)
+    await agent.ensureSession(projectId)
+    await agent.restartSessionFresh(projectId)
+    return result
+  })
   ipcMain.handle(IPC.IpLibrary.Remove, (_e, id: string) => ipLibraries.remove(id))
   ipcMain.handle(IPC.IpLibrary.OpenFolder, async (_e, id: string) => {
     const record = await ipLibraries.get(id)
@@ -243,6 +255,8 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Agent.ResetSession, (_e, projectId: string, sessionName?: string) =>
     agent.resetSession(projectId, sessionName)
   )
+  ipcMain.handle(IPC.Agent.CompactSession, (_e, projectId: string) => agent.compactSession(projectId))
+  ipcMain.handle(IPC.Agent.RestartSessionFresh, (_e, projectId: string) => agent.restartSessionFresh(projectId))
 
   ipcMain.handle(IPC.Agent.ListSessions, (_e, projectId: string) => agent.listSessions(projectId))
 
@@ -258,6 +272,10 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(IPC.Fs.ReadFile, (_e, projectId: string, relPath: string) =>
     files.readFile(projectId, relPath)
+  )
+
+  ipcMain.handle(IPC.Fs.ReadJson, (_e, projectId: string, relPath: string) =>
+    files.readJson(projectId, relPath)
   )
 
   ipcMain.handle(IPC.Fs.WriteText, (_e, projectId: string, relPath: string, content: string) =>

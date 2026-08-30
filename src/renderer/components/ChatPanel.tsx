@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
+import { Minimize2, MoreVertical, RotateCcw } from 'lucide-react'
 import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
 import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
@@ -228,7 +229,9 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     ensure,
     send,
     abort,
-    setModel
+    setModel,
+    compactSession,
+    restartSessionFresh
   } = useChatStore()
   const [input, setInput] = useState('')
   const [providers, setProviders] = useState<LlmProviderConfig[]>([])
@@ -237,6 +240,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [decisionDrafts, setDecisionDrafts] = useState<Record<string, { selectedIds: string[]; customText: string }>>({})
   const [historyIndex, setHistoryIndex] = useState<number | null>(null)
   const [sessionStats, setSessionStats] = useState<AgentSessionStats | null>(null)
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
+  const [sessionActionBusy, setSessionActionBusy] = useState(false)
   const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -358,6 +363,36 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     void send(text)
   }
 
+  const handleCompactSession = async (): Promise<void> => {
+    if (streaming || sessionActionBusy) return
+    if (!window.confirm('压缩当前会话上下文？\n\nPi 会生成一份关键摘要并用它继续对话，历史文件仍然保留。摘要过程会调用当前模型并产生 Token。')) return
+    setSessionMenuOpen(false)
+    setSessionActionBusy(true)
+    try {
+      await compactSession()
+      await refreshSessionStats()
+    } catch {
+      // Store 已将错误写入当前会话消息区。
+    } finally {
+      setSessionActionBusy(false)
+    }
+  }
+
+  const handleRestartSessionFresh = async (): Promise<void> => {
+    if (streaming || sessionActionBusy) return
+    if (!window.confirm('确认无上下文重启当前会话？\n\n当前聊天历史会被归档，标签和模型保持不变，但新的 Agent 不会获得旧消息或摘要。该操作适合彻底切断旧上下文。')) return
+    setSessionMenuOpen(false)
+    setSessionActionBusy(true)
+    try {
+      await restartSessionFresh()
+      setSessionStats(null)
+    } catch {
+      // Store 已将错误写入当前会话消息区。
+    } finally {
+      setSessionActionBusy(false)
+    }
+  }
+
   // 未配置 Provider 的引导
   if (sessionInfo && !sessionInfo.providersReady) {
     return (
@@ -418,6 +453,22 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               {typeof sessionStats.cost === 'number' && sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(3)}` : ''}
             </span>
           )}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => setSessionMenuOpen((open) => !open)}
+              disabled={!sessionInfo || streaming || sessionActionBusy}
+              className="flex h-7 w-7 items-center justify-center rounded border border-zinc-300 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 disabled:opacity-40"
+              title="会话上下文操作"
+              aria-label="打开会话上下文操作"
+            >
+              <MoreVertical size={15} />
+            </button>
+            {sessionMenuOpen && <div className="absolute right-0 top-8 z-[80] w-64 border border-zinc-200 bg-white py-1 shadow-lg">
+              <button type="button" onClick={() => void handleCompactSession()} className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-zinc-50"><Minimize2 size={15} className="mt-0.5 shrink-0 text-blue-600" /><span><b className="block text-xs text-zinc-800">压缩上下文</b><span className="mt-0.5 block text-[10px] text-zinc-500">保留关键摘要，降低上下文占用</span></span></button>
+              <button type="button" onClick={() => void handleRestartSessionFresh()} className="flex w-full items-start gap-2 border-t border-zinc-100 px-3 py-2 text-left hover:bg-zinc-50"><RotateCcw size={15} className="mt-0.5 shrink-0 text-amber-600" /><span><b className="block text-xs text-zinc-800">无上下文重启</b><span className="mt-0.5 block text-[10px] text-zinc-500">归档历史，以空白 session 重新开始</span></span></button>
+            </div>}
+          </div>
           <span className="text-[11px] text-zinc-400">当前会话模型</span>
           <select
           value={selectedModelValue}

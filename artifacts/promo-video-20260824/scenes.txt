@@ -1,0 +1,13 @@
+file 'D:/Projects/ASIC_Flow/MoonGlass/artifacts/promo-video-20260824/scene-01.png'
+duration 7.0
+file 'D:/Projects/ASIC_Flow/MoonGlass/artifacts/promo-video-20260824/scene-02.png'
+duration 8.5
+file 'D:/Projects/ASIC_Flow/MoonGlass/artifacts/promo-video-20260824/scene-03.png'
+duration 10.0
+file 'D:/Projects/ASIC_Flow/MoonGlass/artifacts/promo-video-20260824/scene-04.png'
+duration 8.0
+file 'D:/Projects/ASIC_Flow/MoonGlass/artifacts/promo-video-20260824/scene-05.png'
+duration 10.5
+file 'D:/Projects/ASIC_Flow/MoonGlass/artifacts/promo-video-20260824/scene-06.png'
+duration 7.5
+file 'D:/Projects/ASIC_Flow/MoonGlass/artifacts/promo-video-20260824/scene-06.png'
