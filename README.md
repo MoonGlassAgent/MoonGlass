@@ -14,6 +14,15 @@ MoonGlass 是面向 ASIC/SoC 设计工程师的 AI 工作台，以六阶段流�
 - [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)：简明功能说明与工程注意事项。
 - [下载 MoonGlass v0.6.0 完整绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.6.0)
 
+## 学术讨论与开发报告
+
+以下文章来自 MoonGlass 在真实 ASIC Agent 开发与验证中的工程实践，用于开放讨论、工程评审与后续实验设计；它们不代表已经完成同行评审，也不构成商业 EDA 签核认证。
+
+- [从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流](./docs/paper.html) — 讨论需求、架构、RTL、验证、质量门禁、变更控制和工程证据。
+- [MoonGlass AIGV：面向 ASIC IP 的语义化、风险驱动与证据闭环验证方法学](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html) — 介绍 Verification Space、Multi-Oracle、风险加权 Mutation、Residual Risk 与机器签核建议。
+- [MoonGlass：长时 Agent 芯片开发的上下文与执行工程学](./docs/MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html) — 总结阶段会话隔离、上下文生命周期、模型适配、完成屏障、证据门禁与故障恢复。
+- [MoonGlass v0.8.0 最新开发报告](./docs/dev-summary-v0.8.0.md) — 区分已经实现、局部验证通过、当前工作区增量和正式发布边界。
+
 ## 能做什么
 
 - 芯片设计工程师可快速完成 RTL 开发、代码检查、验证执行与回归闭环。
