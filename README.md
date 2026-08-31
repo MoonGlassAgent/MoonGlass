@@ -48,7 +48,9 @@ pnpm dist             # 打包安装包（dist/）
 
 要求：Node ≥ 22，pnpm ≥ 10。可选：Python 3.10+（脚本引擎）、Verible / Yosys / Verilator（EDA 功能）。
 
-更详细的总体说明与交接文档见 [`reports/overall-report.md`](./reports/overall-report.md) 和 [`reports/progress-report.md`](./reports/progress-report.md)。
+最新开发进展见 [`docs/dev-summary-v0.8.0.md`](./docs/dev-summary-v0.8.0.md)；上一份历史报告见
+[`docs/dev-summary-v0.3.md`](./docs/dev-summary-v0.3.md)。更详细的总体说明与交接文档见
+[`reports/overall-report.md`](./reports/overall-report.md) 和 [`reports/progress-report.md`](./reports/progress-report.md)。
 
 ## 学术讨论
 
