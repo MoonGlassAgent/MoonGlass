@@ -50,6 +50,16 @@ pnpm dist             # 打包安装包（dist/）
 
 更详细的总体说明与交接文档见 [`reports/overall-report.md`](./reports/overall-report.md) 和 [`reports/progress-report.md`](./reports/progress-report.md)。
 
+## 学术讨论
+
+MoonGlass 将实际 ASIC Agent 开发中出现的问题、方法和可检验假设整理为开放讨论稿。这些文章用于工程评审、学术交流与后续实验设计，不代表已经完成同行评审，也不构成商业 EDA 签核认证。
+
+- [从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流](./docs/EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html) — 从需求、架构、RTL、验证、质量门禁、变更控制和工程证据出发，讨论 ASIC Agent 如何从代码生成器演化为受控的工程协作者。
+
+- [MoonGlass AIGV：面向 ASIC IP 的语义化、风险驱动与证据闭环验证方法学](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html) — 系统描述 Verification Space、模块分层、Verification Intent、Scenario、Multi-Oracle、Novelty Saturation、风险加权 Mutation、Residual Risk 与机器签核建议。
+
+- [MoonGlass：长时 Agent 芯片开发的上下文与执行工程学](./docs/MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html) — 总结阶段会话隔离、上下文生命周期、模型与 Provider 适配、完成屏障、最小可验证增量、证据门禁、故障恢复和人机权限边界。
+
 ## 目录结构
 
 ```
