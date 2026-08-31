@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MoonGlass：长时 Agent 芯片开发的上下文与执行工程学</title>
+  <meta name="description" content="从阶段会话隔离、上下文生命周期、模型适配、完成屏障、增量执行和证据门禁出发，讨论长时芯片开发 Agent 的工程控制方法。">
+  <meta name="author" content="MoonGlass Contributors">
+  <style>
+    :root{--ink:#20242b;--muted:#657180;--line:#d9e0e8;--paper:#fff;--soft:#f5f7fa;--blue:#145d99;--green:#14765a;--orange:#a65314;--red:#b93838;--violet:#6852a5;--code:#17202b}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#e9edf2;color:var(--ink);font:16px/1.82 Georgia,"Noto Serif SC","Microsoft YaHei",serif}.paper{width:min(1180px,calc(100% - 28px));margin:28px auto;background:var(--paper);box-shadow:0 4px 24px #1f29371c}.masthead{padding:54px 72px 38px;border-top:8px solid var(--code);border-bottom:1px solid var(--line)}.kicker{color:var(--blue);font:700 13px system-ui,sans-serif;text-transform:uppercase}.masthead h1{max-width:980px;margin:13px 0 18px;font-size:38px;line-height:1.3}.subtitle{max-width:920px;color:#44505f;font-size:20px}.meta{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:26px;color:var(--muted);font:14px system-ui,sans-serif}.notice,.callout{margin:22px 0;padding:15px 18px;border-left:4px solid var(--orange);background:#fff8ec}.layout{display:grid;grid-template-columns:250px minmax(0,1fr)}.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:30px 22px;border-right:1px solid var(--line);font:13px/1.5 system-ui,sans-serif}.toc b,.toc a{display:block}.toc b{margin-bottom:10px}.toc a{padding:5px 7px;color:#4a5565;text-decoration:none}.toc a:hover{background:#eef5fb;color:var(--blue)}article{min-width:0;padding:38px 64px 72px}h2{margin:54px 0 18px;padding-bottom:8px;border-bottom:2px solid #27313d;font-size:27px;line-height:1.35}h2:first-child{margin-top:0}h3{margin:30px 0 10px;font-size:20px}p{margin:9px 0 15px}.lead{font-size:18px;color:#303b48}.abstract{padding:22px 24px;border:1px solid var(--line);background:var(--soft)}.callout.blue{border-color:var(--blue);background:#eef6fc}.callout.green{border-color:var(--green);background:#edf8f4}.callout.red{border-color:var(--red);background:#fff1f1}.equation{margin:16px 0;padding:14px 18px;background:var(--soft);text-align:center;font:15px Consolas,monospace}.flow,.schema{margin:20px 0;padding:19px;overflow:auto;background:var(--code);color:#e8eef5;font:13px/1.75 Consolas,monospace;white-space:pre}table{width:100%;margin:18px 0 26px;border-collapse:collapse;font-size:14px;line-height:1.65}th,td{padding:10px 12px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf1f5;font-family:system-ui,sans-serif}tr:nth-child(even) td{background:#fafbfc}code{padding:2px 5px;border:1px solid #d7dde5;border-radius:3px;background:#f2f4f7;font:13px Consolas,monospace}ol,ul{padding-left:25px}li{margin:6px 0}.footer{padding:24px 64px 38px;border-top:1px solid var(--line);color:var(--muted);font:13px system-ui,sans-serif}@media(max-width:880px){.paper{width:100%;margin:0}.masthead{padding:34px 24px}.masthead h1{font-size:30px}.layout{display:block}.toc{position:relative;max-height:none;border-right:0;border-bottom:1px solid var(--line)}.toc a{display:inline-block}article{padding:30px 24px}.footer{padding:22px 24px}}@media print{body{background:#fff}.paper{width:100%;margin:0;box-shadow:none}.toc{display:none}.layout{display:block}.masthead,article{padding-left:18mm;padding-right:18mm}.callout,table{break-inside:avoid}h2,h3{break-after:avoid}}
+  </style>
+</head>
+<body><main class="paper">
+  <header class="masthead">
+    <div class="kicker">Agent Systems Engineering · ASIC Development</div>
+    <h1>MoonGlass：长时 Agent 芯片开发的上下文与执行工程学</h1>
+    <div class="subtitle">把会话隔离、模型选择、任务边界、完成判定、证据门禁和故障恢复组合成一个可控的工程系统</div>
+    <div class="meta"><span>作者：MoonGlass Contributors</span><span>版本：1.0</span><span>日期：2026-08-31</span><span>工程对象：MoonGlass v0.8.0</span></div>
+    <div class="notice"><b>文档性质：</b>本文总结 MoonGlass 在真实 RTL 与验证长任务中形成的工程方法。它不是对某个模型的排行榜，也不假定更大上下文窗口可以自动解决复杂工程问题。文中明确区分已实现机制、项目策略与经验性判断。</div>
+  </header>
+  <div class="layout">
+    <nav class="toc"><b>目录</b><a href="#abstract">摘要</a><a href="#problem">1. 问题模型</a><a href="#failure">2. 失控模式</a><a href="#topology">3. 会话拓扑</a><a href="#lifecycle">4. 上下文生命周期</a><a href="#model">5. 模型与 Provider</a><a href="#completion">6. 完成语义</a><a href="#boundary">7. 任务边界</a><a href="#increment">8. 增量执行</a><a href="#evidence">9. 证据门禁</a><a href="#artifact">10. 产物生命周期</a><a href="#observability">11. 可观测性</a><a href="#recovery">12. 故障恢复</a><a href="#governance">13. 人机权限</a><a href="#metrics">14. 评价指标</a><a href="#limits">15. 局限性</a><a href="#conclusion">16. 结论</a></nav>
+    <article>
+      <section id="abstract"><h2>摘要</h2><div class="abstract">
+        <p>芯片开发 Agent 的主要风险并不只是“上下文不够长”。更常见的问题是：不同阶段的语义混入同一会话；失败轨迹不断复制；工具输出占据注意力；模型长时间思考却没有执行；局部成功被误判为阶段完成；旧会话和旧产物在清理后重新写回。上下文爆炸只是这些结构性问题最终呈现出来的症状。</p>
+        <p>MoonGlass 将其视为系统工程问题，而不是单纯的 Prompt 问题。系统以阶段会话隔离控制知识作用域，以压缩与无上下文重启管理会话生命周期，以模型能力与 Provider 协议适配控制推理行为，以完成屏障和工具活动守护器识别“只思考不执行”与重复循环，以最小可验证增量和阶段门禁建立真实进度，并以产物—会话联合清理阻止旧状态回流。</p>
+        <p>本文把这些机制组织为同一工程学主体下的多个主题方法。核心目标不是让 Agent 永不失败，而是让失败可检测、可定位、可停止、可恢复，并使长时任务的成本与可信度可以度量。</p>
+      </div></section>
+
+      <section id="problem"><h2>1. 问题模型：上下文不是工程状态</h2>
+        <p class="lead">语言模型看到的是被序列化的历史，不是项目本身。工程状态存在于文件、工具结果、数据库、版本标识和显式决策中；上下文只是对这些状态的一次临时投影。</p>
+        <div class="equation">Reliable Progress = Scoped Context × External State × Verified Action × Correct Completion Semantics</div>
+        <p>扩大上下文窗口只能推迟溢出，不能解决语义污染。需求讨论中的备选方案、RTL 调试中的错误假设、验证阶段的临时探针和综合阶段的工具限制，如果长期堆在同一历史中，会争夺模型注意力，并使已经失效的判断继续影响下一阶段。</p>
+        <div class="callout blue"><b>基本原则：</b>需要长期保存的内容应落入结构化工程状态；只对当前任务有用的内容才进入活动上下文。项目文件是事实源，会话是工作缓存，Agent 总结是导航信息。</div>
+      </section>
+
+      <section id="failure"><h2>2. 长时 Agent 的典型失控模式</h2>
+        <table><thead><tr><th>失控模式</th><th>表面症状</th><th>工程根因</th></tr></thead><tbody>
+          <tr><td>跨阶段语义污染</td><td>RTL 阶段持续讨论需求备选；验证阶段沿用旧实现假设</td><td>会话作用域大于任务作用域</td></tr>
+          <tr><td>推理耗尽</td><td>多轮达到输出上限，没有工具调用</td><td>模型/Provider 的 thinking 行为与 Coding Agent 工作负载不匹配</td></tr>
+          <tr><td>重复工具循环</td><td>反复读取、重写或运行同一文件/用例</td><td>缺少失败指纹、进展判据和循环守护</td></tr>
+          <tr><td>目标替代</td><td>临时 probe PASS，却没有回到正式验收目标</td><td>局部动作成功被当成任务完成</td></tr>
+          <tr><td>历史渲染拖垮界面</td><td>长任务后白屏、卡顿或消息读取超时</td><td>把完整持久历史同时当作实时 UI 数据</td></tr>
+          <tr><td>清理后重新污染</td><td>删除阶段产物后旧 Agent 又将其写回</td><td>文件、进程、会话和归档没有作为一个生命周期整体清理</td></tr>
+        </tbody></table>
+      </section>
+
+      <section id="topology"><h2>3. 主题方法一：阶段会话隔离</h2>
+        <h3>3.1 六阶段、六个主上下文</h3>
+        <p>MoonGlass 为 REQ_SPEC、ARCH、RTL、VERIF、QA、SYNTH 建立稳定的阶段主会话，例如 <code>session-phase-rtl.jsonl</code>。阶段变化时终止当前 Pi 进程，并切换到目标阶段自己的 JSONL。回退到旧阶段时恢复该阶段历史，而不是把所有阶段串成一条无限增长的主会话。</p>
+        <div class="flow">REQ_SPEC session ─┐
+ARCH session     ─┤
+RTL session      ─┼─ 共享：项目文件、阶段产物、门禁、显式决策
+VERIF session    ─┤  隔离：聊天历史、失败轨迹、临时假设、工具回显
+QA session       ─┤
+SYNTH session    ─┘</div>
+        <h3>3.2 继承配置，不继承历史</h3>
+        <p>首次进入新阶段可以继承上一活动会话的 Provider/模型选择，以降低配置摩擦，但不会继承聊天历史。模型选择是用户配置；上下文是阶段工作状态。两者必须分开治理。</p>
+        <h3>3.3 平行会话也必须有阶段命名空间</h3>
+        <p>平行会话采用 <code>phase-rtl--name</code> 一类逻辑名称，只在所属阶段的会话列表中出现。这样可用于独立复审、故障定位或方案对比，同时避免一个验证平行会话被误恢复到架构阶段。</p>
+        <div class="callout green"><b>作用：</b>隔离不会降低单阶段本身的复杂度，但会阻止复杂度跨阶段单调累积，并使“清除 RTL 阶段上下文”成为可定义、可执行的操作。</div>
+      </section>
+
+      <section id="lifecycle"><h2>4. 主题方法二：上下文生命周期管理</h2>
+        <h3>4.1 用量可视化</h3><p>MoonGlass 按当前主会话或平行会话显示上下文 Token、累计输入/输出、缓存读写、消息和工具调用统计，并按 70% 与 90% 提供分级提醒。显示口径与模型注册使用同一套 context-window 元数据，避免 UI 认为尚有空间而运行时已经开始压缩。</p>
+        <h3>4.2 压缩与重启是两种不同操作</h3>
+        <table><thead><tr><th>操作</th><th>保留</th><th>丢弃</th><th>适用时机</th></tr></thead><tbody><tr><td>压缩上下文</td><td>模型生成的摘要、当前目标和关键历史</td><td>大量原始对话细节</td><td>方向正确，但历史过长</td></tr><tr><td>无上下文重启</td><td>项目文件、阶段、标签、模型配置和可审计归档</td><td>旧消息与旧摘要的注入</td><td>历史已经污染、假设反复或需要重新审视</td></tr></tbody></table>
+        <p>无上下文重启先将 JSONL 复制到 <code>archive/</code>，再以空白同名会话启动；旧历史可审计，但不再进入模型输入。两项操作在 Agent 运行期间禁用，避免会话文件与活动进程竞争写入。</p>
+        <h3>4.3 持久历史与实时显示分离</h3><p>Session JSONL 是持久化事实源。UI 只展示最近 320 条记录；单条流式内容最多保留最近 120,000 字符；工具回显映射到 UI 时截断到 2,000 字符。完整原始历史仍在磁盘，不以渲染窗口的稳定性换取审计数据丢失。</p>
+      </section>
+
+      <section id="model"><h2>5. 主题方法三：模型与 Provider 的工作负载适配</h2>
+        <h3>5.1 不按“聪明程度”选择模型</h3><p>芯片 Coding Agent 需要在推理、工具调用、长输出、协议兼容和稳定停止之间平衡。一个擅长开放推理的模型，未必适合持续执行“读取—编辑—编译—复检”的工具密集型任务。模型选择应基于任务行为，而不是单一榜单。</p>
+        <h3>5.2 对已观察到的不匹配进行工程规避</h3><p>MoonGlass_NPU 的实际运行中，GLM-5.3-Flash 曾连续把输出预算消耗在 reasoning，出现 <code>stopReason=length</code> 且零工具调用。当前工程策略是在工具密集型 RTL/验证任务中避免使用这一具体组合，优先使用能够稳定产生工具动作并支持 Coding Agent 协议的模型。这是对已观察行为的风险控制，不是对模型一般能力的永久结论；模型版本、Provider 实现或参数变化后应重新评测。</p>
+        <h3>5.3 Provider 适配属于执行语义</h3><p>MoonGlass 对不支持 developer role 的网关显式回退到 system role，并按 Provider 能力配置 thinking 关闭语义。连接测试对缺少 <code>/models</code> 的套餐型网关使用最小推理请求逐模型探测。若协议适配错误，再好的 Prompt 也可能被错误角色、默认深思或网关兼容问题抵消。</p>
+        <div class="equation">Model Fitness(task) = Tool Action Reliability + Protocol Fit + Stop Reliability + Reasoning Sufficiency</div>
+      </section>
+
+      <section id="completion"><h2>6. 主题方法四：完成语义与执行屏障</h2>
+        <p>模型停止输出不等于工程任务完成。MoonGlass 将一次运行区分为模型 settled、工具执行完成、阶段交付物存在、门禁通过和人工决策完成等不同层次。</p>
+        <h3>6.1 “length + 零工具调用”不是成功</h3><p>当模型因长度停止且没有任何工具调用，系统自动注入最小可验证动作恢复指令；连续三轮仍无工具调用则明确失败并停止托管，提示切换 Coding Agent 模型。该状态不能继续进入门禁恢复，更不能标记阶段完成。</p>
+        <h3>6.2 严格等待</h3><p>一键托管、阶段快捷操作和门禁修复使用 <code>sendAndWait</code>：只有收到本轮 settled 且没有模型错误，流程才能读取产物和运行门禁。普通聊天可以友好展示错误，但自动流程必须把错误传播给编排器。</p>
+        <div class="schema">Agent settled
+  ├─ stopReason=length AND toolCalls=0 → 恢复动作 / 三次后失败
+  ├─ model error                      → 本轮失败，不推进
+  ├─ active decision L3/L4            → 暂停等待用户
+  └─ tools completed                  → 检查文件与门禁
+                                         ├─ pass → 可推进
+                                         └─ fail → 有界修复 / 停止或带风险记录</div>
+      </section>
+
+      <section id="boundary"><h2>7. 主题方法五：任务边界与阶段交付</h2>
+        <p>长上下文往往源于任务边界失效。MoonGlass 将验证拆为“验证规划、环境搭建、基础回归、风险闭环”，每项都定义完成判据和明确不做的内容；六个芯片阶段同样以交付物和门禁定义边界。</p>
+        <table><thead><tr><th>边界类型</th><th>工程规则</th></tr></thead><tbody><tr><td>阶段边界</td><td>需求、架构、RTL、验证、QA、综合分别使用独立会话和系统约束</td></tr><tr><td>操作边界</td><td>用户指定“基础验证”时不自动扩展为完整风险闭环</td></tr><tr><td>批次边界</td><td>AIGV 默认每批最多三个 Scenario，批末统一回灌</td></tr><tr><td>决策边界</td><td>L1/L2 可自动修复；L3 架构影响与 L4 规格影响暂停托管</td></tr><tr><td>签核边界</td><td>Agent 可以建议 READY_FOR_HUMAN_SIGNOFF，但不能代替具名审批</td></tr></tbody></table>
+      </section>
+
+      <section id="increment"><h2>8. 主题方法六：最小可验证增量</h2>
+        <p>对生成式模型，要求“一次写对完整设计”并不现实；但允许其无限迭代同一个文件同样不可接受。可控策略是把每次动作约束为一个能够立即用工具证伪的增量。</p>
+        <ol><li>先读取一次真实状态，明确当前唯一目标。</li><li>修改一个文件或一个紧密耦合的小集合。</li><li>立即运行与改动相称的局部检查。</li><li>阶段里程碑执行完整 filelist 的顶层 Lint/elaboration、综合性或回归门禁。</li><li>记录失败签名；下一轮只允许一个根因假设和一个最小修改。</li><li>重复失败且诊断等级不提升时停止盲改，转入诊断增强。</li></ol>
+        <p>大型索引同样采用“先检索候选、再读取详情”的两级访问，禁止把整份 IP 库索引灌入上下文。昂贵全量 Coverage、广泛 Formal 和全量回归只在基础稳定、受影响批次稳定及签核前执行。</p>
+      </section>
+
+      <section id="evidence"><h2>9. 主题方法七：外部证据与阶段门禁</h2>
+        <p>上下文压缩之所以可行，是因为关键状态已经外部化。需求和设计存在于权威文档；RTL 依赖由 <code>design.json/filelist.f</code> 描述；验证结果由 JUnit、result JSON、Scenario hit、Coverage、Formal trace 和 RTL Hash 表达；阶段状态由门禁和数据库表达。</p>
+        <div class="callout red"><b>禁止替代：</b>“我已经修改”“测试应该通过”“最后一次 probe PASS”都不能替代真实文件和工具输出。单文件编译也不能替代顶层 elaboration。</div>
+        <p>门禁的意义不只是质量检查，也是上下文卸载：当某个阶段已由确定性工具证明达到明确条件，后续阶段无需在会话中保留其全部推理过程，只需读取交付物、门禁结论与必要风险。</p>
+      </section>
+
+      <section id="artifact"><h2>10. 主题方法八：产物、会话与进程的联合生命周期</h2>
+        <p>阶段清理必须同时处理三个层面：磁盘产物、活动/后台 Agent 进程和该阶段会话。MoonGlass 的永久清除会先终止所属阶段进程，再删除标准阶段产物、阶段主会话、平行会话和 fresh-restart 归档；Provider 与模型选择保留，因为它们属于用户配置。</p>
+        <p>清除后不自动重新开始，也不启动空白 Pi 进程。后续工作只由用户输入或一键托管懒启动。这避免“删除动作本身触发 Agent，Agent 又依据旧上下文重建被删除产物”的回流链路。</p>
+        <div class="equation">Clean Reset = Stop Writers → Delete Artifacts → Delete Active History → Delete Restorable Archives → Lazy Restart</div>
+      </section>
+
+      <section id="observability"><h2>11. 主题方法九：把 Agent 行为变成可观测系统</h2>
+        <p>仅记录 Token 不足以判断效率。缓存命中可能使低成本循环持续很久；高 reasoning 消耗也可能没有任何文件变化。至少应联合观察：</p>
+        <ul><li>上下文占用率、累计输入/输出、缓存读写和消息数量；</li><li>每轮工具调用数、首次工具调用延迟、读写比和重复目标；</li><li><code>stopReason</code>、零工具调用轮次和自动恢复次数；</li><li>文件哈希变化、门禁变化和真实新增交付物；</li><li>同一失败指纹的重复次数与诊断等级 L0-L5 的提升；</li><li>每阶段耗时、每个通过门禁的成本和人工介入点。</li></ul>
+        <div class="equation">Useful Progress Rate = Verified State Change / (Wall Time + Model Cost + Tool Cost)</div>
+      </section>
+
+      <section id="recovery"><h2>12. 主题方法十：分级故障恢复</h2>
+        <table><thead><tr><th>故障</th><th>首选恢复</th><th>停止条件</th></tr></thead><tbody><tr><td>短暂网关/工具异常</td><td>有界重试，保留原错误</td><td>三次仍失败</td></tr><tr><td>length 且零工具调用</td><td>注入最小动作指令</td><td>连续三轮无动作，切换模型</td></tr><tr><td>上下文接近窗口</td><td>方向正确则 compact</td><td>摘要仍携带错误目标则 fresh restart</td></tr><tr><td>重复读写/同指纹失败</td><td>停止盲改，增强 Checker、Assertion、trace</td><td>无新证据或需要规格/架构决策</td></tr><tr><td>阶段状态污染</td><td>切回独立阶段会话；必要时永久清除</td><td>清理目标或影响范围不明确时等待用户</td></tr></tbody></table>
+        <p>恢复动作必须有界。无限自动重试只是把一次失败转化为不可预测的成本；无上下文重启也不是万能手段，如果项目文件本身已经矛盾，清空会话不会修复外部状态。</p>
+      </section>
+
+      <section id="governance"><h2>13. 主题方法十一：人机权限与责任边界</h2>
+        <p>自动化程度越高，越需要明确哪些决定不能由 Agent 默默完成。MoonGlass 允许对局部、可回退、低影响的 L1/L2 修复自动闭环；架构影响、规格改变、正式签核、第三方许可证和不可逆操作进入人工决策。</p>
+        <p>一键托管的“带风险完成”与“完整通过”必须分开。前者说明流程到达目标阶段但仍有失败门禁或工具异常，不得被包装成签核成功。停止、暂停、失败和用户主动中止也是一等状态，而不是异常文本。</p>
+      </section>
+
+      <section id="metrics"><h2>14. 如何评价这套工程学</h2>
+        <h3>14.1 上下文指标</h3><ul><li>每阶段峰值上下文占用与压缩次数；</li><li>跨阶段历史误注入次数；</li><li>fresh restart 后恢复有效工作的时间；</li><li>上下文增长中工具证据、重复输出和自然语言推理的占比。</li></ul>
+        <h3>14.2 执行指标</h3><ul><li>首次有效工具调用延迟；</li><li>每个通过门禁所需 Agent 轮次；</li><li>零工具调用结束率与完成误判率；</li><li>相同文件连续重写次数、同失败指纹重复次数；</li><li>局部检查与全量里程碑检查的时间占比。</li></ul>
+        <h3>14.3 质量指标</h3><ul><li>阶段完成后被下游发现的 L1 编译/elaboration 缺陷数；</li><li>清理后旧产物回流率；</li><li>Agent 声明完成但门禁拒绝的比例；</li><li>模型/Provider 组合在同一基准任务上的工具动作成功率与 wall time 分布。</li></ul>
+      </section>
+
+      <section id="limits"><h2>15. 局限性与待验证假设</h2>
+        <ol><li><b>隔离可能丢失跨阶段理由：</b>关键架构决策必须写入文档或决策记录，否则新阶段只看到结果，不知道约束来源。</li><li><b>摘要可能固化错误：</b>compact 是有损压缩；如果错误假设进入摘要，fresh restart 比继续压缩更安全。</li><li><b>模型行为会变化：</b>当前规避 GLM-5.3-Flash 来自具体 Provider、版本和任务观察，不应外推为永久模型结论。</li><li><b>工具活动不等于有效进度：</b>Agent 可以频繁调用工具但仍在循环，因此必须结合文件哈希、失败指纹和门禁变化。</li><li><b>阶段边界并非完全独立：</b>规格变化必然影响下游；隔离需要变更传播机制配合，而不是切断追踪链。</li><li><b>外部状态也会膨胀：</b>大量重复日志、临时 probe 和过期结果会污染文件系统；上下文治理必须与产物治理共同实施。</li></ol>
+      </section>
+
+      <section id="conclusion"><h2>16. 结论</h2>
+        <p>长时芯片 Agent 的可靠性不能建立在“模型会自己记住重点”之上。真正可控的系统需要把工作拆成有作用域的会话，把关键事实外部化，把模型停止与工程完成分开，把局部动作与阶段门禁分开，并为压缩、重启、重试、清理和人工接管定义明确语义。</p>
+        <p>MoonGlass 当前形成的核心主张是：<b>按阶段隔离上下文，按证据恢复状态，按工具动作判断执行，按门禁判断完成，按影响等级分配权限，按联合生命周期清理污染。</b>避免使用某个表现不匹配的模型只是其中一项策略；真正具有迁移价值的是这套不依赖单一模型的工程结构。</p>
+      </section>
+    </article>
+  </div>
+  <footer class="footer">MoonGlass Agent Systems Engineering Note · Apache-2.0 项目工程文档 · 本文不构成商业 EDA 签核认证或模型能力保证。</footer>
+</main></body></html>

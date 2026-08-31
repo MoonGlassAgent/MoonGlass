@@ -4,12 +4,12 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
   <title>MoonGlass AIGV：面向 ASIC IP 的语义化、风险驱动与证据闭环验证方法学</title>
-  <meta name="description" content="系统说明 MoonGlass AIGV 的理论基础、工程数据模型、四步验证交付、风险与 Verification Intent 推导、Coverage Hole 分类、渐进式失败诊断、证据闭环及开放研究问题。">
+  <meta name="description" content="MoonGlass AIGV 2.0 方法学：以 Verification Space、模块分层、Multi-Oracle、自主探索、风险加权 Mutation 与版本化证据形成 ASIC IP 验证闭环。">
   <meta name="author" content="MoonGlass Contributors">
   <meta property="og:type" content="article">
   <meta property="og:locale" content="zh_CN">
   <meta property="og:title" content="MoonGlass AIGV 验证方法学">
-  <meta property="og:description" content="从规格、RTL 结构、风险场景到 Coverage Hole 与签核证据的完整工程方法。">
+  <meta property="og:description" content="从规格与 RTL 事实、Verification Space、风险场景和独立 Oracle，到 Mutation 与机器签核建议的完整工程方法。">
   <style>
     :root{--ink:#20242b;--muted:#667085;--line:#d9dee7;--paper:#fff;--soft:#f5f7fa;--blue:#155fa0;--green:#14765a;--orange:#a65314;--red:#b93838;--code:#17202b;--violet:#6852a5}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#e9edf2;color:var(--ink);font:16px/1.82 Georgia,"Noto Serif SC","Source Han Serif SC","Microsoft YaHei",serif;letter-spacing:0}.paper{width:min(1180px,calc(100% - 28px));margin:28px auto;background:var(--paper);box-shadow:0 4px 24px #1f29371c}.masthead{padding:54px 72px 38px;border-top:8px solid #17202b;border-bottom:1px solid var(--line)}.kicker{color:var(--blue);font:700 13px/1.4 system-ui,sans-serif;text-transform:uppercase}.masthead h1{max-width:980px;margin:13px 0 18px;font-size:38px;line-height:1.3}.subtitle{max-width:930px;color:#44505f;font-size:20px}.meta{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:28px;color:var(--muted);font:14px/1.6 system-ui,sans-serif}.notice{margin-top:24px;padding:13px 16px;border-left:4px solid var(--orange);background:#fff8ec;color:#65411f;font-size:14px}.layout{display:grid;grid-template-columns:250px minmax(0,1fr)}.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:30px 22px;border-right:1px solid var(--line);font:13px/1.5 system-ui,sans-serif}.toc b{display:block;margin-bottom:10px}.toc a{display:block;padding:5px 7px;border-left:2px solid transparent;color:#4a5565;text-decoration:none}.toc a:hover{border-color:var(--blue);background:#eef5fb;color:var(--blue)}article{min-width:0;padding:38px 64px 72px}h2{margin:54px 0 18px;padding-bottom:8px;border-bottom:2px solid #27313d;font-size:27px;line-height:1.35}h2:first-child{margin-top:0}h3{margin:32px 0 12px;font-size:20px}h4{margin:24px 0 8px;font-size:16px}p{margin:9px 0 15px}.abstract{padding:22px 24px;border:1px solid var(--line);background:var(--soft)}.keywords{margin-top:15px;font-size:14px}.lead{font-size:18px;color:#303b48}.callout{margin:20px 0;padding:16px 18px;border-left:4px solid var(--blue);background:#eef6fc}.callout.green{border-color:var(--green);background:#edf8f4}.callout.orange{border-color:var(--orange);background:#fff7eb}.callout.red{border-color:var(--red);background:#fff1f1}.claim{margin:22px 0;padding:18px;border:1px solid #bbd0e3;background:#f2f8fd}.claim b{color:var(--blue)}table{width:100%;margin:18px 0 26px;border-collapse:collapse;font-size:14px;line-height:1.65}th,td{padding:10px 12px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf1f5;font-family:system-ui,sans-serif}tr:nth-child(even) td{background:#fafbfc}.flow{margin:22px 0;padding:20px;overflow:auto;border:1px solid #303b47;background:var(--code);color:#e9eef5;font:14px/1.8 Consolas,monospace;white-space:pre}.figure{margin:24px 0;padding:20px;border:1px solid var(--line);background:#fbfcfd}.figure-title{margin-top:12px;color:var(--muted);font-size:13px;text-align:center}.grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px}.grid div{min-height:92px;padding:13px;border:1px solid #cfd8e3;background:#fff;font:14px/1.55 system-ui,sans-serif}.grid b{display:block;margin-bottom:5px;color:var(--blue)}.chain{display:flex;flex-wrap:wrap;align-items:stretch;gap:6px;margin:20px 0;font:13px/1.45 system-ui,sans-serif}.chain span{display:flex;align-items:center;min-height:54px;padding:8px 12px;border:1px solid #b9c7d7;background:#f5f8fb}.chain i{align-self:center;color:#8793a1;font-style:normal}.equation{margin:16px 0;padding:14px 18px;background:#f5f7fa;text-align:center;font:15px Consolas,monospace}.semantic{margin:18px 0;padding:18px;border:1px solid #bed8cd;background:#f1faf6}.semantic dt{margin-top:10px;color:var(--green);font-weight:700}.semantic dd{margin:2px 0 8px 0}.tag{display:inline-block;margin:2px 4px 2px 0;padding:2px 7px;border:1px solid #cad3df;background:#f5f7fa;color:#4b5563;font:12px system-ui,sans-serif}.bad{color:var(--red)}.good{color:var(--green)}code{padding:2px 5px;border:1px solid #d7dde5;border-radius:3px;background:#f2f4f7;font:13px Consolas,monospace}pre code{border:0;background:none}.schema{margin:18px 0;padding:18px;overflow:auto;background:#17202b;color:#e5edf5;font:13px/1.65 Consolas,monospace;white-space:pre}.caption{color:var(--muted);font-size:13px}.small{font-size:14px;color:#4b5563}ol,ul{padding-left:25px}li{margin:6px 0}.refs{font-size:14px}.refs li{margin-bottom:10px}.footer{padding:24px 64px 38px;border-top:1px solid var(--line);color:var(--muted);font:13px/1.65 system-ui,sans-serif}@media(max-width:880px){.paper{width:100%;margin:0;box-shadow:none}.masthead{padding:34px 24px}.masthead h1{font-size:30px}.layout{display:block}.toc{position:relative;max-height:none;border-right:0;border-bottom:1px solid var(--line)}.toc a{display:inline-block}article{padding:30px 24px}.grid{grid-template-columns:1fr}.footer{padding:22px 24px}}@media print{body{background:#fff}.paper{width:100%;margin:0;box-shadow:none}.toc{display:none}.layout{display:block}.masthead,article{padding-left:18mm;padding-right:18mm}.figure,.claim,.callout,table,.semantic{break-inside:avoid}h2,h3{break-after:avoid}a{color:inherit;text-decoration:none}.paper{font-size:10.5pt}}
   </style>
@@ -19,8 +19,8 @@
   <header class="masthead">
     <div class="kicker">Methodology White Paper · Engineering Specification</div>
     <h1>MoonGlass AIGV：面向 ASIC IP 的语义化、风险驱动与证据闭环验证方法学</h1>
-    <div class="subtitle">从 Requirement Model、RTL Structure、Verification Intent 到 Coverage Hole 与 Signoff Evidence 的统一工程框架</div>
-    <div class="meta"><span>作者：MoonGlass Contributors</span><span>版本：1.1</span><span>日期：2026-08-28</span><span>联系：moonglassagent@126.com</span></div>
+    <div class="subtitle">从 Requirement Model、RTL Structure 与 Verification Space，到 Multi-Oracle、Mutation 和机器签核建议的统一工程框架</div>
+    <div class="meta"><span>作者：MoonGlass Contributors</span><span>版本：2.0</span><span>日期：2026-08-31</span><span>联系：moonglassagent@126.com</span></div>
     <div class="notice"><b>文档性质：</b>本文描述 MoonGlass 当前实现及其工程设计原则，是方法学白皮书与开放讨论稿，不是商业 EDA 签核认证，也不是已经完成同行评审的实验论文。文中会明确区分“已实现机制”“项目适配要求”和“研究假设”。</div>
   </header>
 
@@ -35,8 +35,9 @@
         <div class="abstract">
           <p>传统 RTL 验证计划通常从规格人工分解测试点，再由验证工程师构造环境、用例、覆盖模型和签核报告。Coding Agent 能够显著加速这些活动，但也引入新的可信性问题：模型可能把分类标签当作验证目标，把“测试运行”误写成“验证完成”，把高覆盖率误解为需求闭环，并可能在缺乏原始证据时生成乐观结论。</p>
           <p>MoonGlass AIGV（AI-Guided Verification）提出一种语义化、风险驱动、证据闭环的方法：以规格事实与 RTL 结构事实为确定性基础，构建 Feature Interaction Graph 和结构风险标记；将风险转化为可证伪的 Verification Intent；把 Intent 展开为具有时间关系、边界条件、定向激励、观察点、Checker 和通过准则的 Scenario；利用仿真、Assertion、开源 Formal、静态分析和覆盖率反馈形成迭代闭环；将未闭环目标分类为 C1-C6 Coverage Hole，并要求每项缺口给出明确关闭证据。</p>
-          <p>该方法不以 Agent 的自然语言结论作为签核依据，而以 <code>REQ/SPEC → VI → SCN → TEST/COVER/PROPERTY → EVIDENCE → SIGNOFF</code> 为统一追踪主链。为避免 Coding Agent 将一次操作无限扩展，工程执行被划分为验证规划、环境搭建、基础回归和风险闭环四个具有明确停止边界的交付步骤；当同一失败反复出现时，系统从直接修复切换到 L0-L5 渐进式诊断，优先提高 Checker、Assertion、事务追踪和状态观察能力，再继续修改 RTL。</p>
-          <p>本文给出其数据契约、算法逻辑、工程目录、工具分配、双层状态机、文档治理、签核准则、局限性与可复现实验方向。</p>
+          <p>AIGV 2.0 在此基础上引入五维 Verification Space、模块分层验证策略、六轴 Scenario 状态、Multi-Oracle 独立裁决、可审计 Explorer、经验性 Novelty Saturation、风险加权 Mutation 和 Residual Risk Register。系统不把“所有测试 PASS”或单个 <code>passed=true</code> 当作充分条件，而要求关键 Scenario 获得不同独立性域的有效裁决，并通过主动缺陷注入检验验证体系本身是否具备足够敏感性。</p>
+          <p>该方法不以 Agent 的自然语言结论作为签核依据，而以 <code>REQ/SPEC → VI → SCN → TEST/COVER/PROPERTY → EVIDENCE → SIGNOFF</code> 为统一追踪主链。工程执行被划分为验证规划、环境搭建、基础回归和风险闭环四个具有明确停止边界的交付步骤；当同一失败反复出现时，系统从直接修复切换到 L0-L5 渐进式诊断。最终输出是绑定规格、RTL Hash、Verification Space Snapshot、工具结果和残余风险的机器签核建议，最终批准仍由具名工程责任人完成。</p>
+          <p>本文给出其数据契约、算法逻辑、工程目录、工具分配、双层状态机、模块分层、探索停止条件、文档治理、签核准则、局限性与可复现实验方向。</p>
           <div class="keywords"><b>关键词：</b>AIGV；ASIC IP；RTL 验证；Verification Intent；Coverage Hole；形式验证；功能覆盖率；证据驱动工程；Coding Agent；需求追溯</div>
         </div>
       </section>
@@ -84,7 +85,7 @@
           <div><b>风险推导层</b>风险 taxonomy、交互图、结构复杂度、并发与时间深度</div>
           <div><b>语义规划层</b>Spec Gap、Verification Intent、Scenario、边界、执行批次</div>
           <div><b>执行证据层</b>Simulation、Assertion、Formal、Static、JUnit、Coverage、Waveform</div>
-          <div><b>闭环签核层</b>Coverage Hole、优先级更新、独立 Review、Waiver 与 Signoff</div>
+          <div><b>闭环签核层</b>Multi-Oracle、Novelty Saturation、Mutation、Residual Risk 与 Signoff Package</div>
         </div><div class="figure-title">图 1　MoonGlass AIGV 的六层结构</div></div>
         <div class="chain"><span>REQ / SPEC</span><i>→</i><span>Requirement Model</span><i>→</i><span>RTL Structure</span><i>→</i><span>Risk</span><i>→</i><span>VI / SCN</span><i>→</i><span>TEST / COVER / PROPERTY</span><i>→</i><span>EVIDENCE</span><i>→</i><span>SIGNOFF</span></div>
         <h3>3.1 确定性内核与 Agent 的职责</h3>
@@ -101,7 +102,7 @@
         <h3>4.3 Feature Interaction Graph</h3>
         <p>交互图节点包括 requirement、feature、RTL object、state、clock domain 和 scenario；边包括 READS、WRITES、CONTROLS、DEPENDS_ON、SHARES_STATE、PRECEDES、CROSSES_CLOCK、RECOVERS_FROM、COVERS 与 VERIFIED_BY。语义假设必须引用现有 Risk、RTL Object 和 Interaction Edge，防止 Agent 生成无结构依据的任意笛卡尔积。</p>
         <h3>4.4 Verification State Model</h3>
-        <div class="schema">VerificationState v4
+        <div class="schema">VerificationState v5
 ├─ rtlHash / generatedAt / analyzer
 ├─ scenarios[] / statusCounts / criticalOpen[]
 ├─ verificationIntents[]
@@ -112,8 +113,21 @@
 ├─ specGaps[] / coverageHoles[]
 ├─ regressions[] / formalResults[]
 ├─ interactionGraph / executionPlan / hypotheses
+├─ verificationSpace / explorationRound / explorationHistory
+├─ multiOracle / mutationAssessment / residualRiskRegister
+├─ closureAssessment / signoffPackage
+├─ moduleVerificationStrategy
 └─ structuralSummary</div>
         <p>完整状态可较大，因此验证态势 UI 读取原子发布的紧凑快照 <code>verification-posture.json</code>；完整分析留在 <code>verification-state.json</code>。发布采用临时文件写入后原子重命名，避免 UI 在更新过程中读到半截 JSON。</p>
+        <h3>4.5 Verification Space Snapshot</h3>
+        <p>Verification Space 不是 Feature、Boundary、Interaction、Temporal 和 System State 的无条件笛卡尔积，而是由规格合法性、RTL 结构关系、协议规则、风险优先级和预算共同约束的有限候选集合。每个快照同时绑定 <code>specHash</code>、<code>rtlHash</code> 与候选 Scenario ID；输入不变时快照身份稳定，输入变化时旧探索结论自动失效。</p>
+        <h3>4.6 Negative Space</h3>
+        <p>“不执行”也是需要治理的工程结论。架构无效、协议非法、已证明不可达、规格未定义和超出当前预算的候选进入 Negative Space，并记录原因、证据与审批状态。未经批准的 Negative Space 不能被用来缩小签核分母；<code>OVER_BUDGET</code> 只表示延后，不表示关闭。</p>
+        <h3>4.7 Scenario 六轴状态</h3>
+        <p>单一状态枚举不足以表达真实验证进度。AIGV 2.0 将 Scenario 分解为生命周期、到达、裁决、证据、时效性和闭环六轴。一个场景可以已经 EXECUTED，却仍是 NOT_REACHED；可以得到 PASS，却因证据 PARTIAL 不能闭环；也可以在 RTL 变化后从 CURRENT 进入 IMPACT_UNKNOWN。状态不会因为重复重建模型而被“洗绿”，恢复 CURRENT 必须依赖绑定新 RTL Hash 的证据。</p>
+        <h3>4.8 模块验证策略</h3>
+        <table><thead><tr><th>层级</th><th>适用对象</th><th>验证深度</th></tr></thead><tbody><tr><td>STATIC_ONLY</td><td>低风险、结构简单的普通子模块</td><td>编译/elaboration、Lint、可综合性、端口与未驱动检查</td></tr><tr><td>UNIT_SMOKE</td><td>需要独立冒烟的普通子模块</td><td>静态检查加最小合法事务、复位与基本 Checker</td></tr><tr><td>UNIT_FOCUSED</td><td>结构或语义风险较高的子模块</td><td>定向 Testbench、模块风险 Scenario、边界/异常/并发与 Oracle 证据</td></tr><tr><td>IP_SIGNOFF</td><td><code>design.json</code> 指定的顶层 IP</td><td>完整 AIGV Intent/Scenario、端到端回归、Multi-Oracle、Mutation、Residual Risk 与签核包</td></tr></tbody></table>
+        <p>风险分析仍覆盖全部 RTL，但只有顶层和风险选中的子模块进入完整 Scenario 闭环。验证深度由风险决定，Oracle 类型由语义决定；小模块可以在独立判断和定位收益明显时使用 Golden Model，顶层也不能为了形式完整而复制 RTL 作为“参考模型”。</p>
       </section>
 
       <section id="risk">
@@ -166,7 +180,7 @@
         <h3>7.2 执行计划字段</h3>
         <p><code>scenario-execution-plan.json</code> 为每个候选场景保存 sequence、constraints、temporalConstraints、iterations、budgetSeconds、expected、checkers、priority 和 reason。Agent 应复用或实现指定 sequence，而不是只收到一句“补充异常测试”。</p>
         <h3>7.3 下一批选择策略</h3>
-        <ol><li>排除 VERIFIED、FORMAL_PROVED、FORMAL_UNREACHABLE 和已批准 WAIVED。</li><li>优先 FAILED 与高 criticality、高 coverage gap 的场景。</li><li>将共享环境初始化或相同 protocol driver 的场景尽量合批。</li><li>保持总迭代次数与 wall-clock budget 可控。</li><li>每批结束后写 Scenario hit 和 Coverage Delta，再重建智能模型。</li></ol>
+        <ol><li>排除 VERIFIED、FORMAL_PROVED、FORMAL_UNREACHABLE 和已批准 WAIVED。</li><li>P0 Scenario 是强制任务，不能因成本较高而长期饥饿。</li><li>优先 FAILED 与高 criticality、高 coverage gap 的场景。</li><li>将共享环境初始化或相同 protocol driver 的场景尽量合批。</li><li>默认每批最多三个 Scenario；遇到昂贵普通任务时继续寻找预算内候选，而不是提前停止。</li><li>每批结束后写 Scenario hit 和 Coverage Delta，再重建一次智能模型；批内不得反复全量重建。</li></ol>
         <h3>7.4 反馈格式</h3>
         <div class="schema">{
   "scenarios": [{
@@ -179,6 +193,9 @@
     "evidence": ["results.xml", "result.json", "wave.fst"]
   }]
 }</div>
+        <h3>7.5 可审计探索与经验性饱和</h3>
+        <p>Explorer 的每次真实选批形成一轮 <code>exploration-history.json</code> 记录，包含 Verification Space Snapshot、选中场景、预计成本、基线闭环集合、新增闭环和 novelty score。刷新页面或重建模型不算探索轮次。探索状态分为 NOT_ENOUGH_ROUNDS、PROGRESSING、EMPIRICALLY_SATURATED 与 STALLED。</p>
+        <div class="callout orange"><b>停止语义：</b>连续三轮没有语义新增，只能说明在当前 Verification Space、探索策略和预算下边际信息收益趋近于零，不能宣称数学完备。若关键 Scenario 仍开放，则状态是 STALLED，应增强空间模型、激励、Checker 或 Assertion，而不是继续重复相同批次。</div>
       </section>
 
       <section id="coverage">
@@ -213,6 +230,10 @@
           <tr><td>VCD/FST/trace</td><td>失败与关键交互定位</td><td>默认失败保留；关键时序 Intent 可抽样保留</td></tr>
           <tr><td>review/signoff</td><td>独立证据审查</td><td>明确读取了哪些原始文件及未关闭风险</td></tr>
         </tbody></table>
+        <h3>9.5 Multi-Oracle 独立裁决</h3>
+        <p>关键 Scenario 不能由一个布尔值独占裁决。Oracle Registry 登记 Reference Model/Scoreboard、Invariant/Assertion、Protocol Checker、Formal Property、Metamorphic Relation 与 End-to-End Checker，并记录实现、独立性等级、独立性域和共享 assumptions。关键场景至少需要两个 <code>independenceLevel ≥ 2</code> 且 <code>independenceDomain</code> 不同的有效 PASS。</p>
+        <table><thead><tr><th>情形</th><th>结论</th><th>处置</th></tr></thead><tbody><tr><td>只有一个 Scoreboard PASS</td><td>INSUFFICIENT</td><td>增加不同独立性域的 Assertion、协议或端到端 Oracle</td></tr><tr><td>两个独立 Oracle PASS</td><td>PASS</td><td>继续检查到达、证据和时效性</td></tr><tr><td>任意有效 PASS 与 FAIL 并存</td><td>CONFLICT</td><td>阻断签核；审查命题范围、共享 assumptions、Checker 与 RTL 原始证据</td></tr><tr><td>Verdict 未绑定当前 RTL Hash</td><td>无效</td><td>执行受影响回归并重新发布证据</td></tr></tbody></table>
+        <p>系统不设置“Golden Model 永远获胜”或“Formal 永远获胜”的固定仲裁顺序。独立性来自不同错误机制，而不是不同文件名；同一 Agent 从同一 RTL 翻译出的两个 Checker 可能仍属于同一个判断域。</p>
       </section>
 
       <section id="formal">
@@ -293,10 +314,22 @@
           <tr><td>代码覆盖</td><td>达到项目定义阈值，排除项可审计</td><td>低覆盖、分母不明、随意 coverage_off</td></tr>
           <tr><td>功能覆盖</td><td>关键 bins/cross 达标并绑定 VI</td><td>覆盖模型缺失或只有随机次数</td></tr>
           <tr><td>Formal</td><td>候选任务无未解释 FAIL/ERROR</td><td>反例未处理、assumption 无依据</td></tr>
-          <tr><td>证据审查</td><td>独立读取原始日志、结果、覆盖与 RTL</td><td>只引用主 Agent 总结</td></tr>
+          <tr><td>Multi-Oracle</td><td>关键 Scenario 至少两个不同独立性域的有效 PASS，且无冲突</td><td>只有单一 Scoreboard、PASS/FAIL 冲突、证据过期</td></tr>
+          <tr><td>探索</td><td>关键项关闭后达到当前空间下的经验性饱和</td><td>轮次不足；关键项开放时 STALLED</td></tr>
+          <tr><td>Mutation</td><td>风险加权 Mutation Score 达到项目阈值，且无未处置高风险 survivor</td><td>SURVIVED、EQUIVALENCE_UNKNOWN、分数低于阈值</td></tr>
+          <tr><td>时效性</td><td>所有签核证据绑定当前 RTL Hash 和 Verification Space Snapshot</td><td>STALE 或 IMPACT_UNKNOWN</td></tr>
+          <tr><td>残余风险</td><td>Formal 限制、Mutation survivor、Negative Space、Waiver 和工具限制均登记</td><td>缺少影响分析、证据或具名审批</td></tr>
+          <tr><td>证据审查</td><td>独立读取原始日志、结果、覆盖、RTL 与 signoff package</td><td>只引用主 Agent 总结</td></tr>
         </tbody></table>
-        <h3>13.2 Waiver</h3>
+        <h3>13.2 风险加权 Mutation</h3>
+        <p>Mutation 的目的不是测试 RTL，而是测试验证体系。系统针对控制优先级、事务计数、边界、错误处理等高风险机制注入可追踪变异，并将结果分为 KILLED、SURVIVED、INVALID、EQUIVALENT 和 EQUIVALENCE_UNKNOWN。只有 KILLED 进入检出分子；INVALID 不进入分母；EQUIVALENT 必须经过具名审查；SURVIVED 与 EQUIVALENCE_UNKNOWN 默认阻断。</p>
+        <div class="equation">Risk-weighted Mutation Score = Σ(weight of KILLED valid mutants) / Σ(weight of all valid non-equivalent mutants)</div>
+        <p>高分不自动抵消高风险 survivor。Mutation 必须绑定当前 RTL Hash，且每个结论保留 operator、目标 Scenario、权重和原始证据。</p>
+        <h3>13.3 Residual Risk 与 Waiver</h3>
         <p>Waiver 不是删除失败或把状态手工改绿。每项豁免应包含目标 ID、原因、影响、适用版本、补偿措施、证据、负责人、审批人和失效条件。RTL Hash、规格或环境发生相关变化时，waiver 应重新评估。</p>
+        <p>Residual Risk Register 统一记录 Formal 限制、Mutation survivor、Negative Space、Waiver 和工具限制。Agent 可以发现、分类和提出处置建议，但不得伪造审批人。只有包含 approver、rationale 与 approvedAt 的明确批准才能使可接受残余风险进入条件就绪状态。</p>
+        <h3>13.4 Closure Engine 与最终责任</h3>
+        <p>Closure Engine 输出 NOT_READY、CONDITIONALLY_READY 或 READY_FOR_HUMAN_SIGNOFF，并生成绑定 <code>rtlHash</code> 与 <code>verificationSpaceSnapshotId</code> 的 <code>signoff-package.json</code> 和工程可读报告。机器状态是签核建议，不是最终签字；即使所有机器条件满足，仍需要具名工程责任人确认适用范围、工具限制与残余风险。</p>
       </section>
 
       <section id="example">
@@ -318,9 +351,9 @@
         <div class="equation">Semantic Coverage = Verified Behavior Bins / Planned Behavior Bins</div>
         <p>应同时报告 line、expression/branch、toggle、FSM、functional bin/cross、Intent closure 和 requirement trace completeness，避免单一聚合数字掩盖缺口。</p>
         <h3>15.2 效率指标</h3>
-        <ul><li>每个新增闭环 Intent 的仿真时间与 Agent token 成本。</li><li>每轮反馈带来的 Coverage Delta 与 Critical Open 减少量。</li><li>验证规划、环境搭建、基础回归和风险闭环各自的交付时间及重复工作比例。</li><li>失败定位平均时间、无效 seed 比例、重复测试比例与同指纹重复修复次数。</li><li>每次失败迭代的诊断等级增量，以及进入 DIAGNOSTIC_ENHANCEMENT 后首次获得新证据所需轮次。</li><li>Agent 建议被工程师采纳、修改或拒绝的比例。</li></ul>
+        <ul><li>每个新增闭环 Intent 的仿真时间与 Agent token 成本。</li><li>每轮反馈带来的 Coverage Delta、Critical Open 减少量与 Novelty Score。</li><li>验证规划、环境搭建、基础回归和风险闭环各自的交付时间及重复工作比例。</li><li>各模块层级投入：STATIC_ONLY/UNIT_SMOKE/UNIT_FOCUSED/IP_SIGNOFF 的执行成本与缺陷收益。</li><li>失败定位平均时间、无效 seed 比例、重复测试比例与同指纹重复修复次数。</li><li>每次失败迭代的诊断等级增量，以及进入 DIAGNOSTIC_ENHANCEMENT 后首次获得新证据所需轮次。</li><li>每个有效 Mutation 的执行成本、检出率和 survivor 关闭时间。</li><li>Agent 建议被工程师采纳、修改或拒绝的比例。</li></ul>
         <h3>15.3 可信性指标</h3>
-        <ul><li>Risk 精确率：抽样风险中确有合理结构依据的比例。</li><li>Spec Gap 精确率与召回率。</li><li>错误闭环率：被标记 VERIFIED 但复审缺少到达/裁决/证据的比例。</li><li>证据可复现率：在干净环境中可重跑并得到一致结果的比例。</li><li>变更敏感度：RTL/规格变化后受影响 Intent 被正确重新打开的比例。</li></ul>
+        <ul><li>Risk 精确率：抽样风险中确有合理结构依据的比例。</li><li>Spec Gap 精确率与召回率。</li><li>错误闭环率：被标记 VERIFIED 但复审缺少到达/独立裁决/证据的比例。</li><li>Oracle 冲突发现率与同源偏差率。</li><li>风险加权 Mutation Score，以及高风险 survivor 数量。</li><li>证据可复现率：在干净环境中可重跑并得到一致结果的比例。</li><li>变更敏感度：RTL/规格变化后受影响 Intent 被正确重新打开的比例。</li></ul>
       </section>
 
       <section id="limitations">
@@ -332,6 +365,8 @@
         <h3>16.5 开源工具差异</h3><p>Icarus、Verilator、Yosys/SymbiYosys 与商业工具在语言支持、性能、覆盖口径和诊断能力上不同。MoonGlass 的结果适合工程增强与早期质量控制，不应无条件等价为 foundry 或客户签核。</p>
         <h3>16.6 诊断精度边界</h3><p>L0-L5 是证据完备程度而非自动根因定位准确率。缺少内部观察点、事务标识、可重复 seed 或足够波形时，系统可能只能定位到接口或时间窗口；诊断等级也可能被冗余日志虚假抬高，因此仍需 Checker 质量和独立复审约束。</p>
         <h3>16.7 统计有效性</h3><p>当前方法主要在中小型数字 IP 上迭代，尚需跨协议、跨规模、跨团队、跨工具的公开基准和对照实验。</p>
+        <h3>16.8 Oracle 独立性的可测性</h3><p>独立性等级和 independenceDomain 目前仍依赖工程建模。不同代码、不同语言乃至不同模型并不自动构成独立判定；共享规格误解、共享参考算法和共享 assumptions 可能形成隐蔽相关性。Multi-Oracle 能降低单点误判，但不能从数学上消除共因失效。</p>
+        <h3>16.9 饱和与 Mutation 的边界</h3><p>经验性饱和仅对当前有限空间、策略和预算成立；Mutation Score 仅反映所选 operator 对现有验证体系的敏感性。二者都不能证明不存在未建模需求、未知交互或 operator 无法表达的缺陷。</p>
       </section>
 
       <section id="research">
@@ -341,8 +376,8 @@
 
       <section id="conclusion">
         <h2>18. 结论</h2>
-        <p>MoonGlass AIGV 将 AI 辅助验证从“生成测试代码”提升为“管理验证语义、执行边界与证据状态”。其关键不在于某个模型能写多少 Cocotb 或 SVA，而在于是否建立了稳定的事实模型、可解释风险、可证伪 Intent、可执行 Scenario、可操作 Coverage Hole、可停止的分层任务和独立证据审查。</p>
-        <p>这套方法的核心工程主张可以压缩为三句话：<b>Risk 必须说明可能怎样失效；Intent 必须说明怎样证明它不会失效；Signoff 必须说明证据在哪里。</b>只有当规格、RTL、测试、覆盖、Formal 和报告共享同一追踪主链时，Agent 才可能从高效代码助手演化为受控的芯片验证协作者。</p>
+        <p>MoonGlass AIGV 2.0 将 AI 辅助验证从“生成测试代码”提升为“构造受约束验证空间、选择高价值实验、独立裁决结果并管理停止条件”。其关键不在于某个模型能写多少 Cocotb 或 SVA，而在于是否建立了稳定事实模型、模块分层、可解释风险、可证伪 Intent、可执行 Scenario、版本化证据、独立 Oracle、验证体系敏感性评价和可审计残余风险。</p>
+        <p>这套方法的核心工程主张可以压缩为四句话：<b>Risk 必须说明可能怎样失效；Intent 必须说明怎样证伪；Oracle 必须说明为何能够独立判断；Signoff 必须说明证据、版本与残余风险在哪里。</b>机器可以输出 READY_FOR_HUMAN_SIGNOFF，但不能替代工程责任人的最终批准。</p>
       </section>
 
       <section id="glossary">
@@ -351,6 +386,11 @@
           <tr><td>AIGV</td><td>AI-Guided Verification；MoonGlass 中结合确定性分析、Agent 推理与真实工具证据的验证方法。</td></tr>
           <tr><td>Verification Intent</td><td>绑定来源、对象、激励、观察、判据和证据的可证伪验证目标。</td></tr>
           <tr><td>Scenario</td><td>Intent 的可执行实例，包含触发条件、时间关系、边界和方法。</td></tr>
+          <tr><td>Verification Space</td><td>由 Feature、Boundary、Interaction、Temporal 与 System State 五维描述，并由规格、结构、协议和预算约束的有限候选空间。</td></tr>
+          <tr><td>Negative Space</td><td>因架构无效、协议非法、已证明不可达、规格未定义或预算原因而不执行的候选及其证据化理由。</td></tr>
+          <tr><td>Multi-Oracle</td><td>使用不同独立性域的多个判定机制裁决同一 Scenario，并显式处理冲突。</td></tr>
+          <tr><td>Novelty Saturation</td><td>在当前空间、探索策略与预算下，连续真实探索没有产生语义新增的经验性停止信号。</td></tr>
+          <tr><td>Risk-weighted Mutation</td><td>按风险权重注入缺陷，评价验证体系是否能够检出重要错误的敏感性方法。</td></tr>
           <tr><td>Risk Marker</td><td>由规格或 RTL 结构推导的优先验证假设，不等同于 Bug。</td></tr>
           <tr><td>Spec Gap</td><td>规格与 RTL、需求与实现或时间/优先级语义之间的可定位缺口。</td></tr>
           <tr><td>Coverage Hole</td><td>具体 Scenario 未完成到达、裁决或证据闭环的 C1-C6 原因。</td></tr>
