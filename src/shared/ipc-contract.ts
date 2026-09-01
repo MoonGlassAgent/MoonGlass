@@ -81,6 +81,8 @@ export const IPC = {
     Abort: 'agent:abort',
     SetModel: 'agent:set-model',
     GetMessages: 'agent:get-messages',
+    /** 只读窥视指定会话的消息（解析会话 JSONL，不 attach / 不切换 / 不 spawn） */
+    GetSessionMessages: 'agent:get-session-messages',
     GetSessionStats: 'agent:get-session-stats',
     ResetSession: 'agent:reset-session',
     CompactSession: 'agent:compact-session',
@@ -191,6 +193,8 @@ export interface MoonGlassApi {
     abort(projectId: string): Promise<void>
     setModel(projectId: string, providerId: string, modelId: string): Promise<AgentSessionInfo>
     getMessages(projectId: string): Promise<AgentUiMessage[]>
+    /** 只读窥视指定会话的消息（后台批次会话实时活动 / 历史批次回看）；会话不存在返回空数组 */
+    getSessionMessages(projectId: string, sessionName: string): Promise<AgentUiMessage[]>
     /** 当前活动会话的 Token、费用和上下文窗口统计。 */
     getSessionStats(projectId: string): Promise<AgentSessionStats | null>
     /** 创建平行会话（不关闭当前会话）。name 可选，默认自动生成 review-<时间戳> */
@@ -208,6 +212,8 @@ export interface MoonGlassApi {
       modelLabel: string
       selectedModel: { providerId: string; modelId: string } | null
       isActive: boolean
+      /** 会话进程仍在后台运行（如 VERIF 批次会话）；UI 据此区分"运行中可刷新"与"历史可回看" */
+      isRunning: boolean
     }>>
     /** 切换到指定会话 */
     switchSession(projectId: string, sessionName: string): Promise<AgentSessionInfo>

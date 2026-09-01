@@ -524,8 +524,10 @@ export interface VerifBatchRunResult {
   /** 熔断原因（watchdog / diagnostic-control 无进展 / 证据缺失 / 会话异常） */
   circuitBreaker: string | null
   errorMessage: string | null
-  /** 批次会话 JSONL 的归档文件路径；未产生会话文件时为 null */
+  /** 批次会话 JSONL 的归档文件路径；延迟归档下仅当该批次超出保留窗口被真正归档时才有值 */
   archivedTo: string | null
+  /** 批次会话 JSONL 保留在会话目录中供只读回看（archivedTo 为 null 且会话文件存在时为 true） */
+  keptForReview: boolean
 }
 
 /** VERIF 批次编排循环结果（AgentService.runVerifBatches 返回） */

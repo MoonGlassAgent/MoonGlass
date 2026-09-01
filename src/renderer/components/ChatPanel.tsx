@@ -22,6 +22,13 @@ interface SessionInfo {
   modelLabel: string
   selectedModel: { providerId: string; modelId: string } | null
   isActive: boolean
+  /** 会话进程仍在后台运行（如 VERIF 批次会话） */
+  isRunning: boolean
+}
+
+/** VERIF 批次会话名标记（phase-verif--batch-N） */
+function isBatchSession(name: string): boolean {
+  return name.includes('--batch-')
 }
 
 interface ChatPanelProps {
@@ -58,6 +65,8 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
   const [name, setName] = useState('review')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  /** 正在只读查看的批次会话（不切换活动会话） */
+  const [peekSession, setPeekSession] = useState<SessionInfo | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -133,15 +142,25 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
           <button
             type="button"
             disabled={busy}
-            onClick={() => void select(session.name)}
+            onClick={() => {
+              // 批次会话（phase-verif--batch-N）由编排托管：不切换、不 attach，只读查看
+              if (isBatchSession(session.name)) setPeekSession(session)
+              else void select(session.name)
+            }}
+            title={isBatchSession(session.name) ? '查看批次会话（只读）' : undefined}
             className="min-w-0 truncate px-3 py-1.5 disabled:opacity-50"
           >
             {session.name === 'main' ? '主会话' : session.label.replace(/\s*\([^)]*\)$/, '')}
+            {isBatchSession(session.name) && (
+              <span className={`ml-1 text-[10px] font-normal ${session.isRunning ? 'text-amber-600' : 'opacity-60'}`}>
+                {session.isRunning ? '● 运行中' : '查看'}
+              </span>
+            )}
             <span className="ml-1 max-w-24 truncate text-[10px] font-normal opacity-60">
               {session.modelLabel || '未选模型'}
             </span>
           </button>
-          {session.name !== 'main' && (
+          {session.name !== 'main' && !isBatchSession(session.name) && (
             <button
               type="button"
               disabled={busy}
@@ -216,7 +235,97 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
           </div>
         </div>
       ), document.body)}
+
+      {peekSession && (
+        <BatchSessionPeek
+          projectId={projectId}
+          session={peekSession}
+          onClose={() => {
+            setPeekSession(null)
+            void refresh()
+          }}
+        />
+      )}
     </>
+  )
+}
+
+/**
+ * 批次会话只读查看面板（VERIF 批次可观测性）：
+ * 打开时经 getSessionMessages 解析会话 JSONL；会话仍在后台运行时
+ * 每 5 秒轮询刷新并标注"运行中（只读）"。只读——不提供输入框。
+ */
+function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; session: SessionInfo; onClose: () => void }): React.JSX.Element {
+  const [messages, setMessages] = useState<AgentUiMessage[]>([])
+  const [loadError, setLoadError] = useState('')
+  const [running, setRunning] = useState(session.isRunning)
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      setMessages(await window.moonglass.agent.getSessionMessages(projectId, session.name))
+      // 同步刷新运行标记：批次结束后停止轮询
+      const sessions = await window.moonglass.agent.listSessions(projectId)
+      setRunning(sessions.find((item) => item.name === session.name)?.isRunning ?? false)
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [projectId, session.name])
+
+  useEffect(() => {
+    void load()
+    if (!running) return
+    const timer = window.setInterval(() => void load(), 5_000)
+    return () => window.clearInterval(timer)
+  }, [load, running])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/30 p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`批次会话 ${session.label}`}
+        className="flex h-[80vh] w-full max-w-3xl flex-col rounded-md border border-zinc-300 bg-white shadow-xl"
+      >
+        <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2">
+          <h2 className="text-sm font-semibold text-zinc-900">
+            {session.label.replace(/\s*\([^)]*\)$/, '')}
+            <span className={`ml-2 text-xs font-normal ${running ? 'text-amber-600' : 'text-zinc-400'}`}>
+              {running ? '运行中（只读）' : '已完成（只读回看）'}
+            </span>
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="关闭批次会话查看"
+            className="flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+          >
+            ×
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {loadError && <p className="text-xs text-red-600">{loadError}</p>}
+          {!loadError && messages.length === 0 && (
+            <p className="mt-8 text-center text-sm text-zinc-400">该批次会话暂无可显示的消息</p>
+          )}
+          <div className="flex flex-col gap-3">
+            {messages.map((m) => (
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                decisionDisabled
+                onDecision={() => { /* 只读面板不响应决策 */ }}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 

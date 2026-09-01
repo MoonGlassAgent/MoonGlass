@@ -17,7 +17,7 @@
 
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound } from '@moonglass/verification-intelligence-engine'
@@ -31,6 +31,7 @@ import type { AgentModelStore } from './AgentModelStore.ts'
 import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
 import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
+import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
 
 /** pi 模型切换命令返回的 Model 对象最小字段 */
 interface PiModelInfo {
@@ -47,6 +48,8 @@ export interface SessionSummary {
   modelLabel: string
   selectedModel: { providerId: string; modelId: string } | null
   isActive: boolean
+  /** 会话进程仍在后台运行（如 VERIF 批次会话）；UI 据此区分"运行中可刷新"与"历史可回看" */
+  isRunning: boolean
 }
 
 /**
@@ -187,22 +190,10 @@ interface PiSession {
   verifContextWarned: boolean
 }
 
-/** pi 消息（仅声明映射所需的最小形状） */
-interface PiMessage {
-  role: string
-  content?: unknown
-  toolName?: string
-  toolCallId?: string
-  isError?: boolean
-  stopReason?: string
-  errorMessage?: string
-  command?: string
-  output?: string
-  timestamp?: number
-}
-
 const TOOL_OUTPUT_MAX = 2000
 const UI_HISTORY_MAX = 320
+/** 会话目录中保留的最近已完成 VERIF 批次会话数；超出的更老批次才归档进 archive/ */
+const RETAINED_BATCH_SESSIONS = 5
 
 export class AgentService implements MoonGlassService {
   readonly name = 'agent-service'
@@ -802,7 +793,7 @@ argument-hint: "<模块名>"
   }
 
   private lastAssistantTruncatedWithoutTool(sessionFile: string): boolean {
-    return isTruncatedWithoutToolCall(this.readSessionMessages(sessionFile))
+    return isTruncatedWithoutToolCall(readPiSessionMessages(sessionFile))
   }
 
   /**
@@ -1078,6 +1069,12 @@ argument-hint: "<模块名>"
     const project = this.projects.get(projectId)
     if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
     const phaseMainName = phaseMainSessionName(project.currentPhase)
+    // 后台运行中的会话文件（backgroundSessions 的键为 resolve 后的路径），用于标注批次会话"运行中"
+    const runningFiles = new Set<string>()
+    const background = this.backgroundSessions.get(projectId)
+    if (background) {
+      for (const file of background.keys()) runningFiles.add(resolve(file))
+    }
 
     try {
       const files = readdirSync(dir)
@@ -1114,7 +1111,8 @@ argument-hint: "<模块名>"
           messageCount,
           modelLabel: storedModel ? `${storedModel.providerId} / ${storedModel.modelId}` : '',
           selectedModel: storedModel ?? null,
-          isActive: active ? active.currentSessionFile === filePath : false
+          isActive: active ? active.currentSessionFile === filePath : false,
+          isRunning: runningFiles.has(resolve(filePath))
         })
       }
     } catch { /* 无可枚举的会话目录 */ }
@@ -1257,7 +1255,8 @@ argument-hint: "<模块名>"
    * 派发单个 VERIF 批次会话（主进程编排，批次 prompt 不经 LLM 主会话拼装）：
    * buildBatchPrompt 确定性生成批次 prompt → spawn 后台平行会话 phase-verif--batch-N
    * （显式继承 VERIF 阶段主会话的模型选择）→ 发送批次 prompt 并等待 settle →
-   * 证据绑定完成判定（scenario_hits 登记 + posture 重建时间戳）→ 双重终止后 close + 归档。
+   * 证据绑定完成判定（scenario_hits 登记 + posture 重建时间戳）→ 双重终止后 close + 延迟归档
+   * （保留最近 5 个批次 JSONL 供只读回看）。
    */
   async runVerifBatch(projectId: string, scenarioIds: string[], options?: { batchIndex?: number; timeoutMs?: number }): Promise<VerifBatchRunResult> {
     const project = this.projects.get(projectId)
@@ -1270,14 +1269,15 @@ argument-hint: "<模块名>"
     const startedAt = new Date().toISOString()
     const diagnosticBefore = readDiagnosticControl(workspace)
     const emptyVerdict: VerifBatchVerdict = { complete: false, missingScenarioIds: ids, postureGeneratedAt: null, postureFresh: false, reasons: [] }
-    const finish = (partial: Pick<VerifBatchRunResult, 'status' | 'verdict' | 'circuitBreaker' | 'errorMessage'>, sessionName: string, archivedTo: string | null): VerifBatchRunResult => ({
+    const finish = (partial: Pick<VerifBatchRunResult, 'status' | 'verdict' | 'circuitBreaker' | 'errorMessage'>, sessionName: string): VerifBatchRunResult => ({
       batchIndex,
       sessionName,
       scenarioIds: ids,
       startedAt,
       finishedAt: new Date().toISOString(),
       ...partial,
-      archivedTo
+      archivedTo: null,
+      keptForReview: false
     })
 
     // 批次 prompt 由引擎确定性函数拼装（契约 §2.2），LLM 不经手
@@ -1285,7 +1285,7 @@ argument-hint: "<模块名>"
     try {
       promptText = buildBatchPrompt(workspace, ids)
     } catch (error) {
-      return finish({ status: 'error', verdict: emptyVerdict, circuitBreaker: null, errorMessage: `批次 prompt 生成失败：${error instanceof Error ? error.message : String(error)}` }, '', null)
+      return finish({ status: 'error', verdict: emptyVerdict, circuitBreaker: null, errorMessage: `批次 prompt 生成失败：${error instanceof Error ? error.message : String(error)}` }, '')
     }
 
     // 平行会话文件：与 resetSession 相同的两行头；重名时追加时间戳后缀
@@ -1329,7 +1329,7 @@ argument-hint: "<模块名>"
       this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
 
       this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 已派发到平行会话 ${sessionName}：${ids.join('、')}` })
-      const run = await this.runBatchToSettled(session, promptText, options?.timeoutMs ?? 60 * 60_000)
+      const run = await this.runBatchToSettled(session, promptText, options?.timeoutMs ?? 60 * 60_000, batchIndex)
 
       // 完成判定（决策 4）：绑定工具登记证据，不读会话文本
       const verdict = judgeBatchCompletion(workspace, ids, startedAt)
@@ -1342,17 +1342,19 @@ argument-hint: "<模块名>"
       if (isDiagnosticStalled(diagnosticBefore, diagnosticAfter)) breakers.push('diagnostic-control 进入 DIAGNOSTIC_ENHANCEMENT 且本批诊断等级无进展')
       if (breakers.length === 0) {
         this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 正常完成（证据齐）：${ids.join('、')}` })
-        result = finish({ status: 'completed', verdict, circuitBreaker: null, errorMessage: null }, sessionName, null)
+        result = finish({ status: 'completed', verdict, circuitBreaker: null, errorMessage: null }, sessionName)
       } else {
         const circuitBreaker = breakers.join('；')
         this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 熔断：${circuitBreaker}` })
-        result = finish({ status: 'circuit-broken', verdict, circuitBreaker, errorMessage: run.errorMessage }, sessionName, null)
+        result = finish({ status: 'circuit-broken', verdict, circuitBreaker, errorMessage: run.errorMessage }, sessionName)
       }
     } catch (error) {
-      result = finish({ status: 'error', verdict: emptyVerdict, circuitBreaker: null, errorMessage: error instanceof Error ? error.message : String(error) }, sessionName, null)
+      result = finish({ status: 'error', verdict: emptyVerdict, circuitBreaker: null, errorMessage: error instanceof Error ? error.message : String(error) }, sessionName)
     }
-    // 决策 7：正常完成或异常熔断后都 close + 归档，不堆积平行会话
-    result.archivedTo = this.archiveBatchSession(projectId, session)
+    // 决策 7（延迟归档）：批次结束后 dispose 进程释放资源；JSONL 保留最近若干批次供只读回看，超出的更老批次才归档
+    const archive = this.archiveBatchSession(projectId, session)
+    result.archivedTo = archive.archivedTo
+    result.keptForReview = archive.keptForReview
     this.activeVerifBatches.delete(projectId)
     return result
   }
@@ -1457,11 +1459,15 @@ argument-hint: "<模块名>"
    * 批次会话的执行与观察：发送批次 prompt 并等待 settle；并行观察工具事件，
    * watchdog steer/abort 语义与主会话一致（abort 即熔断信号）。返回不抛错，
    * 异常经 errorMessage 上报，由调用方统一走完成判定。
+   * 可观测性：只把 run_simulation 结束这类里程碑以 status 事件转发主会话 UI，
+   * 批次会话的全量工具事件不混入主会话（节流语义不变）。
    */
-  private async runBatchToSettled(session: PiSession, promptText: string, timeoutMs: number): Promise<{ watchdogAbort: string | null; errorMessage: string | null }> {
+  private async runBatchToSettled(session: PiSession, promptText: string, timeoutMs: number, batchIndex?: number): Promise<{ watchdogAbort: string | null; errorMessage: string | null }> {
     let finished = false
     let watchdogAbort: string | null = null
     let steerPending = false
+    // run_simulation 调用发起时记录的 scenarioIds（toolCallId → 展示文本），供结束里程碑回读
+    const simulationCalls = new Map<string, string>()
     const watcher = (async () => {
       while (!finished) {
         const event = await session.client.waitForEvent(
@@ -1469,6 +1475,24 @@ argument-hint: "<模块名>"
           timeoutMs
         ).catch(() => null)
         if (!event || finished || event.type === 'agent_settled') return
+        if (String(event.toolName ?? '') === 'run_simulation') {
+          const callId = String(event.toolCallId ?? '')
+          if (event.type === 'tool_execution_start') {
+            const args = (event.args ?? event.input ?? event.arguments ?? {}) as { scenarioIds?: unknown }
+            const ids = Array.isArray(args.scenarioIds) ? args.scenarioIds.map((id) => String(id)) : []
+            simulationCalls.set(callId, ids.join('、'))
+          } else {
+            const result = (event.result ?? {}) as { content?: Array<{ text?: string }> }
+            const output = (result.content ?? []).map((c) => c.text ?? '').join('\n')
+            const outcome = Boolean(event.isError) || output.includes('❌ 失败') ? 'FAIL' : 'PASS'
+            const ids = simulationCalls.get(callId) ?? ''
+            simulationCalls.delete(callId)
+            this.emit(session.projectId, {
+              type: 'status',
+              message: `批次 ${batchIndex ?? '?'}：run_simulation 结束（${outcome}${ids ? `，scenarioIds=${ids}` : ''}）`
+            })
+          }
+        }
         const action: WatchdogAction | null = event.type === 'tool_execution_start'
           ? session.watchdog.start(String(event.toolCallId ?? ''), String(event.toolName ?? ''), event.args ?? event.input ?? event.arguments)
           : session.watchdog.end(String(event.toolCallId ?? ''), Boolean(event.isError))
@@ -1514,8 +1538,13 @@ argument-hint: "<模块名>"
     return { watchdogAbort, errorMessage }
   }
 
-  /** 批次会话终止后的 close + 归档：销毁进程、摘除后台表、JSONL 复制到 archive/ 并删除活动文件（复用 restartSessionFresh 的归档语义）。 */
-  private archiveBatchSession(projectId: string, session: PiSession): string | null {
+  /**
+   * 批次会话终止后的 close + 延迟归档：摘除后台表、销毁进程（必须，释放资源），
+   * 但 JSONL 活动文件保留在会话目录，让用户在会话列表里看到并可只读回看；
+   * 仅当已完成批次会话超过 RETAINED_BATCH_SESSIONS 个时，才把最老的批次
+   * 复制进 archive/ 并删除（模型记录清理只对被归档的批次执行）。
+   */
+  private archiveBatchSession(projectId: string, session: PiSession): { archivedTo: string | null; keptForReview: boolean } {
     const background = this.backgroundSessions.get(projectId)
     const key = resolve(session.currentSessionFile)
     if (background?.get(key) === session) {
@@ -1524,15 +1553,35 @@ argument-hint: "<模块名>"
     }
     session.client.dispose()
     const file = session.currentSessionFile
-    if (!existsSync(file)) return null
-    const archiveDir = join(this.sessionDir(projectId), 'archive')
-    mkdirSync(archiveDir, { recursive: true })
-    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
-    const target = join(archiveDir, `${basename(file, '.jsonl')}-${stamp}.jsonl`)
-    copyFileSync(file, target)
-    rmSync(file, { force: true })
-    this.modelStore.delete(projectId, session.activeSessionName)
-    return target
+    if (!existsSync(file)) return { archivedTo: null, keptForReview: false }
+
+    const dir = this.sessionDir(projectId)
+    const batchPrefix = `session-${phaseMainSessionName('VERIF')}--batch-`
+    // 批次文件名含序号但不保证字典序（batch-10 < batch-2），按修改时间排序（最老在前）
+    const batchFiles = readdirSync(dir)
+      .filter((name) => name.startsWith(batchPrefix) && name.endsWith('.jsonl'))
+      .map((name) => ({ name, mtimeMs: statSync(join(dir, name)).mtimeMs }))
+      .sort((a, b) => a.mtimeMs - b.mtimeMs)
+    const excess = batchFiles.slice(0, Math.max(0, batchFiles.length - RETAINED_BATCH_SESSIONS))
+    let archivedTo: string | null = null
+    let keptForReview = true
+    if (excess.length > 0) {
+      const archiveDir = join(dir, 'archive')
+      mkdirSync(archiveDir, { recursive: true })
+      const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+      for (const item of excess) {
+        const source = join(dir, item.name)
+        const target = join(archiveDir, `${basename(item.name, '.jsonl')}-${stamp}.jsonl`)
+        copyFileSync(source, target)
+        rmSync(source, { force: true })
+        this.modelStore.delete(projectId, sessionNameFromFile(item.name))
+        if (item.name === basename(file)) {
+          archivedTo = target
+          keptForReview = false
+        }
+      }
+    }
+    return { archivedTo, keptForReview }
   }
 
   async abort(projectId: string): Promise<void> {
@@ -1605,9 +1654,26 @@ argument-hint: "<模块名>"
     if (!session) return []
     // Session JSONL 是持久化事实源。直接读取它可以避免长任务期间 Pi RPC 忙碌，
     // 也不会因 get_messages 超时把整个工作区拖入错误状态。
-    const data = { messages: this.readSessionMessages(session.currentSessionFile) }
+    return this.mapMessagesForUi(readPiSessionMessages(session.currentSessionFile))
+  }
+
+  /**
+   * 只读窥视指定会话的消息（VERIF 批次可观测性）：直接解析会话 JSONL，
+   * 不 attach、不切换会话、不 spawn 进程。会话文件不存在返回空数组而非抛错。
+   */
+  async getSessionMessages(projectId: string, sessionName: string): Promise<AgentUiMessage[]> {
+    if (!sessionName || /[\\/]/.test(sessionName)) throw new Error('无效的会话名称')
+    const dir = resolve(this.sessionDir(projectId))
+    const targetFile = resolve(dir, `session-${sessionName}.jsonl`)
+    if (dirname(targetFile) !== dir) throw new Error('会话路径越界')
+    if (!existsSync(targetFile)) return []
+    return this.mapMessagesForUi(readPiSessionMessages(targetFile))
+  }
+
+  /** pi 消息数组 → 渲染端 UI 消息（超长时只保留最近 UI_HISTORY_MAX 条） */
+  private mapMessagesForUi(piMessages: PiMessage[]): AgentUiMessage[] {
     const toolInputs = new Map<string, { toolName: string; input: string }>()
-    for (const message of data.messages) {
+    for (const message of piMessages) {
       if (message.role !== 'assistant') continue
       const blocks = (message.content as Array<Record<string, unknown>> | undefined) ?? []
       for (const block of blocks) {
@@ -1620,7 +1686,7 @@ argument-hint: "<模块名>"
         })
       }
     }
-    const mapped = data.messages.flatMap((message, index) => this.mapMessage(message, index, toolInputs))
+    const mapped = piMessages.flatMap((message, index) => this.mapMessage(message, index, toolInputs))
     if (mapped.length <= UI_HISTORY_MAX) return mapped
     return [
       {
@@ -1670,21 +1736,6 @@ argument-hint: "<模块名>"
       console.warn('[agent-service] 获取会话用量失败', error)
       return null
     }
-  }
-
-  private readSessionMessages(sessionFile: string): PiMessage[] {
-    if (!existsSync(sessionFile)) return []
-    const messages: PiMessage[] = []
-    for (const line of readFileSync(sessionFile, 'utf-8').split(/\r?\n/)) {
-      if (!line.includes('"type":"message"')) continue
-      try {
-        const entry = JSON.parse(line) as { type?: string; message?: PiMessage }
-        if (entry.type === 'message' && entry.message) messages.push(entry.message)
-      } catch {
-        // 流式写入时末行可能尚未完整，忽略后等待下一次读取。
-      }
-    }
-    return messages
   }
 
   private observeWatchdogEvent(

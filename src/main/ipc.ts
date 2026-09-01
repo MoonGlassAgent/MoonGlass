@@ -253,6 +253,10 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   )
 
   ipcMain.handle(IPC.Agent.GetMessages, (_e, projectId: string) => agent.getMessages(projectId))
+  // 只读窥视指定会话（后台批次会话），不 attach / 不切换 / 不 spawn
+  ipcMain.handle(IPC.Agent.GetSessionMessages, (_e, projectId: string, sessionName: string) =>
+    agent.getSessionMessages(projectId, sessionName)
+  )
   ipcMain.handle(IPC.Agent.GetSessionStats, (_e, projectId: string) => agent.getSessionStats(projectId))
 
   ipcMain.handle(IPC.Agent.ResetSession, (_e, projectId: string, sessionName?: string) =>
