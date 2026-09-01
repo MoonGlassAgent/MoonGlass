@@ -1233,6 +1233,26 @@ argument-hint: "<模块名>"
 
   // ==================== VERIF 批次编排（上下文治理第 3 批） ====================
 
+  /** 用户停止标记：停止托管时置位，批次循环每批开始前检查 */
+  private verifBatchStopRequested = new Set<string>()
+  /** 正在进行中的批次会话（供 stopVerifBatches 中止）；批次结束（含熔断）后移除 */
+  private activeVerifBatches = new Map<string, PiSession>()
+
+  /**
+   * 停止 VERIF 批次编排：置停止标记（runVerifBatches 不再派发新批次），
+   * 并中止当前正在运行的批次会话（其 settle 等待会随 abort 返回，归档由 runVerifBatch 收尾）。
+   */
+  async stopVerifBatches(projectId: string): Promise<void> {
+    this.verifBatchStopRequested.add(projectId)
+    const active = this.activeVerifBatches.get(projectId)
+    if (!active) return
+    try {
+      await active.client.command({ type: 'abort' }, 5_000)
+    } catch (error) {
+      console.warn('[agent-service] 批次会话中止命令未及时响应，由批次收尾路径强制归档', error)
+    }
+  }
+
   /**
    * 派发单个 VERIF 批次会话（主进程编排，批次 prompt 不经 LLM 主会话拼装）：
    * buildBatchPrompt 确定性生成批次 prompt → spawn 后台平行会话 phase-verif--batch-N
@@ -1293,6 +1313,7 @@ argument-hint: "<模块名>"
     this.sessions.delete(projectId)
     if (previousActive) this.sessions.set(projectId, previousActive)
     this.backgroundFor(projectId).set(resolve(sessionFile), session)
+    this.activeVerifBatches.set(projectId, session)
 
     let result: VerifBatchRunResult
     try {
@@ -1316,6 +1337,7 @@ argument-hint: "<模块名>"
       const breakers: string[] = []
       if (run.errorMessage) breakers.push(`批次会话异常：${run.errorMessage}`)
       if (run.watchdogAbort) breakers.push(`watchdog 熔断：${run.watchdogAbort}`)
+      if (this.verifBatchStopRequested.has(projectId)) breakers.push('用户停止托管')
       if (!verdict.complete) breakers.push(`证据缺失：${verdict.reasons.join('；')}`)
       if (isDiagnosticStalled(diagnosticBefore, diagnosticAfter)) breakers.push('diagnostic-control 进入 DIAGNOSTIC_ENHANCEMENT 且本批诊断等级无进展')
       if (breakers.length === 0) {
@@ -1331,6 +1353,7 @@ argument-hint: "<模块名>"
     }
     // 决策 7：正常完成或异常熔断后都 close + 归档，不堆积平行会话
     result.archivedTo = this.archiveBatchSession(projectId, session)
+    this.activeVerifBatches.delete(projectId)
     return result
   }
 
@@ -1344,7 +1367,11 @@ argument-hint: "<模块名>"
     const maxBatches = Math.max(1, Math.trunc(options?.maxBatches ?? 20))
     const workspace = this.workspaceDir(projectId)
     const batches: VerifBatchRunResult[] = []
+    this.verifBatchStopRequested.delete(projectId)
     for (let index = 0; index < maxBatches; index += 1) {
+      if (this.verifBatchStopRequested.has(projectId)) {
+        return { batches, stoppedBy: 'user-stop', message: '用户停止托管：已中止当前批次，不再派发新批次' }
+      }
       let scenarioIds: string[]
       try {
         scenarioIds = this.selectVerifBatchScenarioIds(workspace, batchSize)

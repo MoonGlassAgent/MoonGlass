@@ -277,6 +277,9 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Agent.RunVerifBatches, (_e, projectId: string, options?: { batchSize?: number; maxBatches?: number }) =>
     agent.runVerifBatches(projectId, options)
   )
+  ipcMain.handle(IPC.Agent.StopVerifBatches, async (_e, projectId: string) => {
+    await agent.stopVerifBatches(projectId)
+  })
 
   // ==================== 项目文件 ====================
   ipcMain.handle(IPC.Fs.Tree, (_e, projectId: string) => files.tree(projectId))

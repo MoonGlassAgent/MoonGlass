@@ -832,6 +832,7 @@ export function WorkspacePage(): React.JSX.Element {
               totalRisks += 1
               step.detail = `VERIF 批次编排中止（${loop.stoppedBy}）：${loop.message}`
             }
+            if (managedStopRef.current) throw new Error('用户停止托管')
             await runManagedAgent(MANAGED_VERIF_REVIEW_PROMPT)
           } else {
             await runManagedAgent(MANAGED_PHASE_PROMPTS[phase])
@@ -909,6 +910,9 @@ export function WorkspacePage(): React.JSX.Element {
 
   const stopManagedRun = async (): Promise<void> => {
     managedStopRef.current = true
+    // 同时停止 VERIF 批次编排：中止进行中的批次会话并不再派发新批次；
+    // 停止时主会话通常是空闲的（在等批次），仅 abort 活动会话覆盖不到批次循环
+    await window.moonglass.agent.stopVerifBatches(projectId).catch(() => undefined)
     if (useChatStore.getState().streaming) await abortAgent()
   }
 

@@ -531,8 +531,8 @@ export interface VerifBatchRunResult {
 /** VERIF 批次编排循环结果（AgentService.runVerifBatches 返回） */
 export interface VerifBatchLoopResult {
   batches: VerifBatchRunResult[]
-  /** exhausted=队列耗尽正常结束；circuit-break=批次熔断停止后续批次；max-batches=达到批次上限；error=编排异常 */
-  stoppedBy: 'exhausted' | 'circuit-break' | 'max-batches' | 'error'
+  /** exhausted=队列耗尽正常结束；circuit-break=批次熔断停止后续批次；max-batches=达到批次上限；error=编排异常；user-stop=用户停止托管 */
+  stoppedBy: 'exhausted' | 'circuit-break' | 'max-batches' | 'error' | 'user-stop'
   message: string
 }
 

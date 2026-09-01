@@ -92,7 +92,8 @@ export const IPC = {
     CloseSession: 'agent:close-session',
     /** VERIF 批次编排（第 3 批）：单个批次 / 循环派发 */
     RunVerifBatch: 'agent:run-verif-batch',
-    RunVerifBatches: 'agent:run-verif-batches'
+    RunVerifBatches: 'agent:run-verif-batches',
+    StopVerifBatches: 'agent:stop-verif-batches'
   },
   Fs: {
     Tree: 'fs:tree',
@@ -216,6 +217,8 @@ export interface MoonGlassApi {
     runVerifBatch(projectId: string, scenarioIds: string[], options?: { batchIndex?: number }): Promise<VerifBatchRunResult>
     /** VERIF 批次编排（第 3 批）：循环“选择下一批 → 派发批次会话”直至队列耗尽或熔断 */
     runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number }): Promise<VerifBatchLoopResult>
+    /** 停止 VERIF 批次编排：中止进行中的批次会话并不再派发新批次 */
+    stopVerifBatches(projectId: string): Promise<void>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
   }

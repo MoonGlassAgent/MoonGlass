@@ -91,6 +91,7 @@ const api: MoonGlassApi = {
       ipcRenderer.invoke(IPC.Agent.RunVerifBatch, projectId, scenarioIds, options),
     runVerifBatches: (projectId: string, options?: { batchSize?: number; maxBatches?: number }) =>
       ipcRenderer.invoke(IPC.Agent.RunVerifBatches, projectId, options),
+    stopVerifBatches: (projectId: string) => ipcRenderer.invoke(IPC.Agent.StopVerifBatches, projectId),
     onEvent: (cb: (payload: AgentEventPayload) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, payload: AgentEventPayload): void =>
         cb(payload)
