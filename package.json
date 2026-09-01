@@ -20,6 +20,7 @@
     "rebuild:node": "pnpm rebuild better-sqlite3",
     "typecheck": "pnpm -r typecheck",
     "typecheck:root": "tsc --noEmit -p tsconfig.json",
+    "lint:rtl": "node scripts/rtl-design-lint.mjs",
     "smoke:ip-library": "node scripts/ip-library-service-smoke.mjs",
     "smoke:sram-generator": "node scripts/sram-generator-smoke.mjs",
     "smoke:project-import": "node scripts/project-import-analyzer-smoke.mjs",

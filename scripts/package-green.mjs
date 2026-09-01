@@ -10,7 +10,7 @@
  * 用法：
  *   node scripts/package-green.mjs [--skip-build] [--userdata <dir>] [--release <name>]
  *
- * 演示数据源优先级：--userdata 参数 > demo-seed/userdata > 历史 r4 绿色版 userdata。
+ * 演示数据源优先级：--userdata 参数 > demo-seed/userdata > 最近一次绿色版产物 userdata。
  * 安全要求：演示数据不得包含 llm-providers.json / API Key / Agent 会话。
  */
 
@@ -36,17 +36,34 @@ const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'))
 const VERSION = pkg.version
 const today = new Date().toISOString().slice(0, 10).replaceAll('-', '')
 
-const R4_USERDATA = 'D:/Projects/ASIC_Flow/MoonGlass/green-dist-r4-release2/win-unpacked/userdata'
-const seedCandidates = [
-  optValue('--userdata'),
-  join(ROOT, 'demo-seed', 'userdata'),
-  existsSync(join(R4_USERDATA, 'moonglass')) ? R4_USERDATA : null
-].filter(Boolean)
-
-const seedDir = seedCandidates.find((d) => existsSync(join(d, 'moonglass', 'projects.json')))
 const outRoot = join(ROOT, `green-dist-${RELEASE}`)
 const appDir = join(outRoot, 'MoonGlass')
 const unpacked = join(ROOT, 'dist', 'win-unpacked')
+
+// 演示数据（MIC_NPU）种子来源，按优先级：
+//   1. --userdata <dir>：显式指定
+//   2. demo-seed/userdata：仓库内的固定演示数据目录（若存在）
+//   3. 最近一次绿色版产物中的 userdata：自动延续上一版演示数据
+function discoverLatestGreenUserdata() {
+  const candidates = []
+  for (const entry of readdirSync(ROOT)) {
+    if (!entry.startsWith('green-dist-')) continue
+    const distDir = join(ROOT, entry)
+    if (distDir === outRoot) continue // 排除本次输出目录，避免拾取残留/半成品
+    const dir = join(distDir, 'MoonGlass', 'userdata')
+    if (existsSync(join(dir, 'moonglass', 'projects.json'))) candidates.push(dir)
+  }
+  candidates.sort((a, b) => statSync(b).mtimeMs - statSync(a).mtimeMs)
+  return candidates[0] ?? null
+}
+
+const seedCandidates = [
+  optValue('--userdata'),
+  join(ROOT, 'demo-seed', 'userdata'),
+  discoverLatestGreenUserdata()
+].filter(Boolean)
+
+const seedDir = seedCandidates.find((d) => existsSync(join(d, 'moonglass', 'projects.json')))
 
 console.log(`[green] MoonGlass v${VERSION} 绿色版 ${RELEASE}`)
 

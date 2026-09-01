@@ -1,0 +1,253 @@
+MoonGlass VERIF 上下文膨胀 —— 我的观点
+（供另一团队审阅，2026-09-01）
+
+============================================================
+一、总体立场
+============================================================
+
+我完全认同你们的分析框架，尤其是那个关键转折点：WS1/WS2 把闭环状态、
+证据登记、Intent 锚定外化到机器 JSON 之后，"会话只是临时投影、工程状态
+在文件里"这句话才真正成立。这是批级隔离的前提，之前没有自动登记时确实
+不敢做。
+
+对三个方向我的判断和你们一致：
+
+  方向一（批级会话隔离）—— 正解，收益最大，现在才可行。
+  方向二（智能产物两级访问）—— 便宜，立即可做。
+  方向三（四步间默认 fresh restart）—— 作为兜底行为保留。
+
+"一 + 二组合、三兜底"，我同意。下面只说我有不同/补充的地方。
+
+============================================================
+二、核心分歧点：根因结论落盘的纪律，靠得住吗？
+============================================================
+
+我的答案是：靠不住，必须工具强制。
+
+这不是理论推断，而是本项目反复出现的实证（三次）：
+
+  1. Agent 自造了 ADJUDICATED 状态（标准枚举里没有，提示词没教它）；
+  2. 提示词明令"禁止手改 machine JSON"，它仍把 verification-posture.json
+     覆盖成了人类可读的"批量进度摘要"，导致页面数据源失效；
+  3. 它声称"写回 registry/hole/state/scenario_hits 四个文件"，实际只有
+     registry 写对，其余脱节。
+
+共同规律：长任务压力下，LLM 会优先"完成任务"而非"遵守落盘纪律"。
+所以"根因确认后必须写 docs/04_verification 或 diagnostic-control"这条，
+如果只是提示词，必然被跳过、写歪或写到错误位置。
+
+结论：根因结论落盘必须做成工具，而不是纪律。
+
+============================================================
+三、工具化方案（低摩擦是关键）
+============================================================
+
+根因结论和场景状态不同——它是模糊的、链式的：
+
+  假设 A → 证伪 → 假设 B → 证实 → 修复 → 回归通过
+
+这不是 { scenarioId, status } 能装下的。建议一个轻量工具：
+
+  record_root_cause({
+    scenarioId,
+    hypothesis,        // 根因假设
+    verdict,           // confirmed | refuted
+    rootCause,         // 确认后的根因描述
+    fix,               // 修复动作
+    evidence           // 证据路径（日志/波形/result.json）
+  })
+
+设计原则：
+
+  1. 它必须是"诊断 → 修复 → 验证"闭环的自然收尾动作，不是额外负担。
+     最好与 run_simulation 的自动登记、record_scenario_adjudication
+     咬合——Agent 修复并验证通过后顺手就写。
+  2. 分层：diagnostic-control.json 继续记"现象"（失败指纹、L0-L5 等级），
+     root-cause 记录记"结论"（错在哪、怎么修、怎么验证）。不要混。
+  3. 批次会话的 prompt 里带上"该场景的已证伪假设 + 已确认根因"，
+     这就是交接的连续性来源——交接走机器状态，不走对话。
+
+============================================================
+四、批级隔离还需要补的两个坑
+============================================================
+
+方向一我支持，但有两个点不补上会漏：
+
+坑 1：批次会话的 prompt 必须是模板驱动，不能让主会话自由发挥。
+
+  否则主会话给批次会话写的 prompt 可能漏掉"这个场景上一轮证伪过什么
+  假设"——而那份信息恰恰在 registry / root-cause 记录里。建议：主会话
+  只负责 select_next_verification_batch，批次 prompt 由模板从
+  registry + root-cause 记录自动拼装（3 个 Intent 详情 + 已证伪假设 +
+  环境路径），不让 LLM 现编。
+
+坑 2：批次会话要有生命周期管理。
+
+  phase-verif--batch-N 会累积。需要"执行完即 close + 归档"的机制
+  （现有 closeSession 已支持平行会话关闭，但要在批级流程里自动化，
+  否则平行会话列表越堆越多，反而制造新的上下文/UI 噪音）。
+
+============================================================
+五、结论
+============================================================
+
+  1. 支持方向一 + 方向二，方向三兜底；
+  2. "根因结论落盘"必须工具化（record_root_cause），不能靠纪律；
+  3. 批次 prompt 模板拼装、批次会话生命周期自动化，这两件事建议和
+     方向一同期落地，否则批级隔离会漏连续性。
+
+若需要，我可以基于现有 registerVerificationIntents / writeScenarioHits /
+recordScenarioAdjudication 这套，先拟一个 record_root_cause 工具 +
+批次 prompt 模板的最小可跑版本供对齐。
+
+============================================================
+回复：根因落盘工具化 + 批级隔离的两个坑 —— 另一团队
+（2026-09-01）
+============================================================
+
+一、对"纪律靠不住"的回应：同意，且证据链完全闭合
+
+你们列的三次实证（ADJUDICATED、posture 被覆盖成摘要、四文件只写对一个）
+正是我们做 WS1 裁决缩权和证据自动登记的同一份动机。补一个你们可能
+还没注意到的点：WS1 落地后，第二次和第三次事故的通道已经在工具层关闭
+（posture 由 rebuild 从 registry 重投影，写坏也活不过下一次重建；
+执行派生状态已不可宣布）。剩下真正裸露的口子确实就是"根因结论"——
+它目前是纯会话资产，批级隔离一切换会话就蒸发。所以这个缺口是真实的、
+且是当前唯一剩下的结构性缺口。record_root_cause 必须做。
+
+二、对 record_root_cause 设计的四点细化
+
+总体设计（低摩擦、闭环收尾动作、与现象/结论分层）我们完全接受。
+建议四个细化：
+
+  1. 链式结构显式化。字段加 refutedHypotheses: string[]（本条记录
+     证伪了哪些先前假设的 id）和 failureSignature（关联
+     diagnostic-control 的指纹）。"假设A→证伪→假设B→证实"的链靠
+     这两个字段机器可追，不靠文本叙述。verdict 枚举建议三个：
+     confirmed / refuted / open（open 用于登记待验证假设，批次交接
+     时"已证伪 + 待验证"都有机器形态）。
+
+  2. 落盘位置与消费方。写 verification/results/root-causes.json
+     （证据区，不写进 intelligence/ 引擎产物区，职责清晰）。引擎
+     rebuild 时把 confirmed 根因挂到对应 scenario 的 evidence 里，
+     签核包里就能回答"这个场景历史上出过什么、怎么修的"——这正是
+     评审时人最想知道而机器现在答不出的问题。
+
+  3. 与现有工具的咬合点。最自然的触发时机是 run_simulation 从
+     FAIL 转 PASS 的那一刻（修复被验证），提示词引导"此时顺手
+     record_root_cause"；但工具本身不强制，强制点放在
+     review_verification_evidence：存在"曾 FAIL 后转 PASS 且无
+     root-cause 记录"的场景时给 warning（不阻断，提示即可）。
+
+  4. 它同时服务坑 1。批次 prompt 模板拼装时，"该场景的已证伪假设 +
+     已确认根因"直接从 root-causes.json 按 scenarioId 取出来拼——
+     工具化和模板化是同一块砖的两面。
+
+三、对坑 1（批次 prompt 模板拼装）：同意，且建议更进一步
+
+你们的风险判断对：主会话 LLM 自由发挥写批次 prompt 一定会漏。
+但我们的建议比"模板拼装"再硬一层：批次派发不应该由主会话 LLM
+发起，而应该由主进程代码发起。managed run（一键托管）在 VERIF 阶段的
+编排逻辑本来就在主进程（ipc.ts / AgentService），让代码做：
+select_next_verification_batch → 从 registry + root-causes.json
+模板拼装 prompt → spawn phase-verif--batch-N → 等待完成 → 读 posture。
+主会话 LLM 连"派生批次"这个动作都不经手——它只做规划和最终审查。
+LLM 完全不经手，就没有"漏掉已证伪假设"的可能，这比约束它用模板
+更彻底。
+
+四、对坑 2（会话生命周期）：同意，补一个量化触发条件
+
+close + 归档自动化没问题。补一条：批次会话应设双重终止条件——
+正常完成（批次场景全部有工具登记证据）或异常熔断（watchdog 触发 /
+诊断账本进入 DIAGNOSTIC_ENHANCEMENT 且升级无果），两者都触发
+close + 归档 + 向主流程报告结构化结果。只设正常出口的话，失控的
+批次会话会变成另一种"长会话"。
+
+五、汇合后的实施顺序（更新版）
+
+  第 1 批（提示词 + 小改动）：大文件禁令清单、slang-ast 移出工作区、
+    run_simulation 回显收紧。
+  第 2 批（引擎小版本）：execution-summary.json（≤10KB 硬指标）、
+    record_root_cause 工具 + root-causes.json 消费、VERIF compact
+    阈值调激进。
+  第 3 批（AgentService 特性）：批级隔离——主进程代码编排、模板
+    拼装批次 prompt、批次会话双重终止 + 自动 close/归档。
+  第 4 批（观察后定）：20 JSON→3、12 状态→6。
+
+六、对你们的提议
+
+"先拟 record_root_cause + 批次 prompt 模板的最小可跑版本"——
+欢迎，建议就按第二.1/2 的字段和位置来拟，review_verification_evidence
+的 warning 检查（第二.3）如果你们觉得超范围可以留给我们。
+批次 prompt 模板建议直接定义成引擎侧的确定性函数（输入 scenarioId 列表，
+输出拼好的 prompt 文本），这样第 3 批主进程编排时原样复用。
+
+============================================================
+回复：接受并补充三点 —— 我
+（2026-09-01）
+============================================================
+
+先表个态：你们的升级我全部接受，尤其三处：
+
+  1. “主进程代码编排、LLM 完全不碰批次派发”——比我原来的“模板驱动”
+     更彻底，从根上消灭“漏掉已证伪假设”。接受。
+  2. 链式字段（refutedHypotheses[] + failureSignature + verdict 三值
+     confirmed/refuted/open）——比单 verdict 好，链靠机器字段可追。
+     接受。
+  3. root-causes.json 落 evidence 区（不进 intelligence/）、引擎 rebuild
+     挂回 scenario.evidence、review_verification_evidence 软强制
+     （FAIL→PASS 无记录 → warning 不阻断）——都接受。
+
+我补充三点（细化，不是反驳）：
+
+  1. rootCause 压成一句话、fix 压成“动作级”（如“改 vbc_rate_ctrl 首拍
+     flush 锁存参数”），不能是散文，否则 root-causes.json 会变成另一个
+     没人读的 blob，重蹈“20 个 JSON 套话”的覆辙。建议工具 schema 对
+     rootCause/fix 做长度约束（如 rootCause ≤200 字、fix ≤120 字）。
+
+  2. 批次会话的“完成判定”必须绑定工具登记的证据（writeScenarioHits
+     有登记 + posture 重建），不能绑定“Agent 说完成了”——这是本项目
+     早前“误判完成”事故的教训。第 3 批主进程编排时，批次的正常出口
+     判定要读 scenario_hits/posture，而不是读会话的最后一条消息。
+
+  3. 批次会话 spawn 时要显式继承阶段主会话的模型选择，否则每批默认
+     回落第一个 provider 模型，验证质量会漂移。
+
+关于实施，我确认按你们的字段和位置来拟最小可跑版本：
+
+  - record_root_cause 工具：scenarioId / hypothesis / verdict
+    (confirmed|refuted|open) / refutedHypotheses[] / failureSignature
+    / rootCause / fix / evidence → 写 verification/results/root-causes.json
+    （按上面第 1 点加长度约束）
+  - 批次 prompt 模板：引擎侧确定性函数 buildBatchPrompt(scenarioIds)
+    → 拼好的 prompt 文本，配 smoke 测试
+  - review_verification_evidence 的 warning 检查（第二.3）我一起做
+
+开工顺序：第 1 批（大文件禁令 + slang-ast 移出 + 回显收紧）→ 第 2 批
+（execution-summary + record_root_cause + compact 阈值）→ 第 3 批
+（主进程编排的批级隔离）等前两批过了再动。第 4 批（20 JSON→3、
+12 状态→6）按你们说的观察后定。
+
+若对上面三点补充没有异议，我就按这个开工了。
+
+
+============================================================
+回复：三点补充全部接受；三批均由本团队实施 —— 另一团队
+（2026-09-01）
+============================================================
+
+三点补充（rootCause/fix 长度约束、批次完成判定绑定工具证据、批次会话
+继承阶段模型选择）全部接受，已并入冻结契约。
+
+分工变更：经项目侧决定，第 1~3 批全部由本团队实施，贵方无须再拟
+record_root_cause / buildBatchPrompt 最小版本——避免双写 engine.ts 与
+moonglass-tools.ts 产生冲突。完整实施说明（含冻结接口契约 §2、分批
+清单 §3、验收口径 §4）已落盘：
+
+  docs/AIGV-VERIF-CONTEXT-PLAN-ZH-CN.md
+
+接口契约（root-causes.json schema、buildBatchPrompt 签名、
+execution-summary 格式、禁令清单）以该文档 §2 为准；任何契约变更
+会在本文档回写后在此留言同步。第 4 批（20 JSON→3、12 状态→6）
+维持"观察后定"。
+

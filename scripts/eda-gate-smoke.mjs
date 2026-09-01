@@ -14,7 +14,7 @@ import { mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const { runLint } = await import('../packages/eda-bridge/src/lint.ts')
+const { runLint, runDesignLint } = await import('../packages/eda-bridge/src/lint.ts')
 const { checkSynthesizability } = await import('../packages/eda-bridge/src/synthesis.ts')
 const { PhaseEngine, markPhaseChanged, enterPhase, acknowledgePhaseChange } = await import('../src/main/services/PhaseEngine.ts')
 
@@ -37,6 +37,21 @@ const BAD_V = `module broken (
     // 语法错误：缺少 end / endmodule
 `
 
+const LATE_DECL_V = `module late_decl(input wire i_a, output wire o_y);
+  assign o_y = w_late;
+  wire w_late;
+  assign w_late = i_a;
+endmodule
+`
+
+const DYNAMIC_PART_SELECT_V = `module dynamic_select(
+  input wire [31:0] i_data, input wire [4:0] i_hi, input wire [4:0] i_lo,
+  output wire [7:0] o_data
+);
+  assign o_data = i_data[i_hi:i_lo];
+endmodule
+`
+
 const root = mkdtempSync(join(tmpdir(), 'moonglass-gate-smoke-'))
 const goodDir = join(root, 'good')
 const badDir = join(root, 'bad')
@@ -46,6 +61,8 @@ const simpleArchDir = join(root, 'simple-arch')
 mkdirSync(goodDir); mkdirSync(badDir); mkdirSync(emptyDir); mkdirSync(resolvedTbdDir); mkdirSync(simpleArchDir)
 writeFileSync(join(goodDir, 'counter.v'), GOOD_V)
 writeFileSync(join(badDir, 'broken.v'), BAD_V)
+writeFileSync(join(badDir, 'late_decl.v'), LATE_DECL_V)
+writeFileSync(join(badDir, 'dynamic_select.v'), DYNAMIC_PART_SELECT_V)
 mkdirSync(join(goodDir, 'rtl'), { recursive: true })
 mkdirSync(join(goodDir, 'verification', 'counter_tb', 'rtl'), { recursive: true })
 writeFileSync(join(goodDir, 'rtl', 'counter.v'), GOOD_V)
@@ -107,10 +124,22 @@ function check(name, cond, detail = '') {
 // ---------- 1. runLint ----------
 const lintGood = await runLint({ filePath: join(goodDir, 'counter.v') })
 check('lint 好文件通过', lintGood.passed, `engine=${lintGood.engine} errors=${lintGood.errors.length} warnings=${lintGood.warnings.length}`)
+const designLintGood = await runDesignLint({ files: [join(goodDir, 'rtl', 'counter.v')], topModule: 'counter' })
+check('全设计 lint 好文件通过', designLintGood.passed, `errors=${JSON.stringify(designLintGood.errors)}`)
 
 const lintBad = await runLint({ filePath: join(badDir, 'broken.v') })
 check('lint 坏文件报错', !lintBad.passed && lintBad.errors.length > 0, `engine=${lintBad.engine} errors=${lintBad.errors.length}`)
 if (lintBad.errors[0]) console.log('  示例错误:', JSON.stringify(lintBad.errors[0]))
+
+const lintLateDeclaration = await runLint({ filePath: join(badDir, 'late_decl.v') })
+check(
+  'lint 阻断先使用后声明',
+  lintLateDeclaration.errors.some((issue) => issue.rule === 'moonglass-declaration-before-use'),
+  `errors=${lintLateDeclaration.errors.length}`
+)
+
+const lintDynamicSelect = await runDesignLint({ files: [join(badDir, 'dynamic_select.v')], topModule: 'dynamic_select' })
+check('全设计 lint 阻断动态 part-select', !lintDynamicSelect.passed && lintDynamicSelect.errors.length > 0, `errors=${lintDynamicSelect.errors.length}`)
 
 // ---------- 2. checkSynthesizability ----------
 const synthGood = await checkSynthesizability({ rtlFiles: [join(goodDir, 'counter.v')] })
@@ -133,7 +162,7 @@ check('RTL→VERIF 好文件门禁通过', lintCheck?.passed === true, lintCheck
 check('RTL→VERIF 好文件不阻断', !engine.isBlocked(passResults))
 check(
   '验证环境 DUT 镜像不参与设计门禁',
-  lintCheck?.message.includes('1 个文件') === true,
+  lintCheck?.message.includes('1 个设计文件') === true,
   lintCheck?.message
 )
 

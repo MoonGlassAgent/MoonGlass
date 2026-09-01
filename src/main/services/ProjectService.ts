@@ -181,6 +181,7 @@ export class ProjectService implements MoonGlassService {
 
   private static readonly PHASE_OUTPUTS: Record<Phase, string[]> = {
     REQ_SPEC: [
+      'docs/01_project',
       'docs/02_requirements',
       'docs/03_design/interface_spec.md',
       'docs/03_design/register_map.md'
@@ -250,11 +251,20 @@ export class ProjectService implements MoonGlassService {
       writeFileSync(join(archiveRoot, 'phase-reset-manifest.json'), JSON.stringify({ ...preview, createdAt: new Date().toISOString() }, null, 2), 'utf-8')
     }
     const initial = createInitialPhases()[phase]
-    project.currentPhase = phase
-    project.phases[phase] = { ...initial, status: 'active', startedAt: new Date().toISOString() }
-    markPhaseChanged(project, phase, `${PHASE_LABELS[phase]}已${mode === 'archive' ? '归档' : '清除'}并重新开始`)
+    if (mode === 'archive') {
+      project.currentPhase = phase
+      project.phases[phase] = { ...initial, status: 'active', startedAt: new Date().toISOString() }
+      markPhaseChanged(project, phase, `${PHASE_LABELS[phase]}已归档并重新开始`)
+    } else {
+      // 彻底清除只改变产物与阶段状态，不替用户开始新一轮工作，也不切换当前阶段。
+      // 当前正在查看的阶段维持 active 以允许用户随后输入；其他阶段恢复 locked，等待用户显式进入。
+      project.phases[phase] = project.currentPhase === phase
+        ? { ...initial, status: 'active' }
+        : initial
+      markPhaseChanged(project, phase, `${PHASE_LABELS[phase]}产物已彻底清除，尚未重新开始`)
+    }
     const saved = this.save(project)
-    this.initWorkspace(projectId)
+    if (mode === 'archive') this.initWorkspace(projectId)
     return { ...preview, archivePath: mode === 'archive' ? relative(root, archiveRoot).replace(/\\/g, '/') : undefined, project: saved }
   }
 

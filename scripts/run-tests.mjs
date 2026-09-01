@@ -13,6 +13,7 @@ const suites = {
     'scripts/pi-tools-smoke.mjs',
     'scripts/verification-intelligence-smoke.mjs',
     'scripts/verification-guidance-smoke.mjs',
+    'scripts/scenario-hits-smoke.mjs',
     'scripts/formal-smoke.mjs'
   ],
   integration: [

@@ -48,6 +48,13 @@ Create and maintain the verification documents under `docs/04_verification/`.
    requirements, RTL objects, temporal offsets, boundary points, tests,
    checkers, coverage bins, and evidence. Risk markers and Spec Gaps are review
    inputs, not confirmed RTL bugs. Do not generate arbitrary feature Cartesian products.
+   The engine-generated Scenario pool is a candidate set, not a task list. After the
+   build, read `risk-register.json` and `structural-model.json` together with the spec,
+   select 5-10 real verification points (each naming concrete signals, a concrete
+   failure mode, and concrete pass criteria), and register them with
+   `register_verification_intents`, anchored to existing riskIds / requirementIds /
+   rtlSignals. Fix and resubmit REJECTED anchors; never bypass the tool by editing
+   registry JSON by hand.
    The generated `aigv_execution_snapshot.md` is the synchronization bridge between
    the baseline plans and AIGV execution state. Do not edit it manually.
    Every open Intent must be written as a falsifiable engineering statement and include:
@@ -62,22 +69,21 @@ Create and maintain the verification documents under `docs/04_verification/`.
 8. Inspect `verification/intelligence/feature-interaction-graph.json`. When semantic reasoning is useful, call `register_verification_hypotheses`; every hypothesis must cite existing Risk, RTL Object, and Interaction Edge IDs, and every claim must be classified as `SPEC_FACT`, `RTL_FACT`, `INFERENCE`, or `UNKNOWN`.
 9. Call `select_next_verification_batch` with a default batch of at most three Scenarios. Reuse the current execution plan unless specification, RTL, or regression evidence changed. Reuse or implement the named Cocotb sequence, constraints, temporal constraints, scoreboard/assertion checkers, iteration count, and time budget from `scenario-execution-plan.json`.
    For `formal-candidate` scenarios, use the `formal-verification` skill and `run_formal_verification`; do not call bounded PASS a proof.
-10. After execution, write `verification/results/<module>/scenario_hits.json`:
+10. Execution evidence is registered by the tool, not by hand. Bind each directed
+    run to its scenarios via `run_simulation(scenarioIds=[...])` (or embed
+    `scn_<8-hex>` in the testcase name); the tool writes
+    `verification/results/<module>/scenario_hits.json` — including FAILs — with the
+    current rtlHash and evidence paths, and rebuilds the posture snapshot
+    automatically. Never hand-write or hand-edit `scenario_hits.json`.
+    Execution-derived statuses (VERIFIED/FAILED/REACHED/...) are derived from this
+    evidence only; `record_scenario_adjudication` is reserved for spec
+    clarification and waivers, and WAIVED requires a prior named approval in
+    `signoff-approvals.json`.
 
-```json
-{
-  "scenarios": [
-    {
-      "id": "SCN-XXXXXXXX",
-      "reached": true,
-      "passed": true,
-      "evidence": ["results_icarus.xml", "wave.fst"]
-    }
-  ]
-}
-```
-
-11. Rebuild intelligence once after each completed batch so passed scenarios and coverage feedback reprioritize the remaining queue. Do not rebuild between individual tests in the same batch. Run expensive Verilator code coverage, broad Formal, and full regression at milestone boundaries (baseline stable, affected batch stable, pre-signoff), not after every local edit. Update only affected AIGV documents from actual machine-readable artifacts and raw evidence; do not rewrite unchanged documents or claim closure from an Agent summary. Run:
+11. Intelligence is rebuilt automatically after every evidence-producing tool run;
+    review the refreshed posture after each batch so passed scenarios and coverage
+    feedback reprioritize the remaining queue — a manual `build_verification_intelligence`
+    is only needed after spec or RTL edits outside the tools. Run expensive Verilator code coverage, broad Formal, and full regression at milestone boundaries (baseline stable, affected batch stable, pre-signoff), not after every local edit. Update only affected AIGV documents from actual machine-readable artifacts and raw evidence; do not rewrite unchanged documents or claim closure from an Agent summary. Run:
 
 ```bash
 python <skill-dir>/scripts/check_vplan.py docs/04_verification/verification_plan.md

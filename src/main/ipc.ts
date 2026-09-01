@@ -211,9 +211,12 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(IPC.Phase.Reset, async (_e, projectId: string, phase: Phase, mode: PhaseResetMode) => {
     await agent.abort(projectId).catch(() => undefined)
+    if (mode === 'purge') agent.clearPhaseSessions(projectId, phase)
     const result = projects.resetPhase(projectId, phase, mode)
-    await agent.ensureSession(projectId)
-    await agent.restartSessionFresh(projectId)
+    if (mode === 'archive') {
+      await agent.ensureSession(projectId)
+      await agent.restartSessionFresh(projectId)
+    }
     return result
   })
   ipcMain.handle(IPC.IpLibrary.Remove, (_e, id: string) => ipLibraries.remove(id))
@@ -276,6 +279,10 @@ export function registerIpcHandlers(services: ApplicationServices): void {
 
   ipcMain.handle(IPC.Fs.ReadJson, (_e, projectId: string, relPath: string) =>
     files.readJson(projectId, relPath)
+  )
+
+  ipcMain.handle(IPC.Fs.VerificationStatus, (_e, projectId: string) =>
+    files.verificationRunStatus(projectId)
   )
 
   ipcMain.handle(IPC.Fs.WriteText, (_e, projectId: string, relPath: string, content: string) =>

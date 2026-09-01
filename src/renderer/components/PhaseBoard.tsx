@@ -154,7 +154,7 @@ export function PhaseBoard({
                 {onResetPhase && (
                   <span className="ml-1 hidden items-center gap-0.5 group-hover:flex">
                     <button type="button" title="归档本阶段产物并重新开始" aria-label="归档重做" onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'archive') }} className="rounded p-0.5 hover:bg-black/10"><RotateCcw size={13} /></button>
-                    <button type="button" title="彻底清除本阶段产物并重新开始" aria-label="彻底清除" onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'purge') }} className="rounded p-0.5 text-red-600 hover:bg-red-100"><Trash2 size={13} /></button>
+                    <button type="button" title="彻底清除本阶段产物（不自动重新开始）" aria-label="彻底清除" onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'purge') }} className="rounded p-0.5 text-red-600 hover:bg-red-100"><Trash2 size={13} /></button>
                   </span>
                 )}
               </div>

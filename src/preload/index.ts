@@ -102,6 +102,7 @@ const api: MoonGlassApi = {
       ipcRenderer.invoke(IPC.Fs.ReadJson, projectId, relPath),
     writeText: (projectId: string, relPath: string, content: string) =>
       ipcRenderer.invoke(IPC.Fs.WriteText, projectId, relPath, content),
+    verificationStatus: (projectId: string) => ipcRenderer.invoke(IPC.Fs.VerificationStatus, projectId),
     openExternal: (projectId: string, relPath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, projectId, relPath)
   },
   designBrowser: {

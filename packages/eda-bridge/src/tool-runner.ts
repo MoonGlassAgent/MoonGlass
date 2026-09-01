@@ -7,7 +7,7 @@
  * 因此本文件必须**仅依赖 Node 内置模块**，禁止引用 workspace 包或 @shared/types。
  */
 
-import { execFile } from 'node:child_process'
+import { execFile, execFileSync } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { delimiter, dirname, extname, join, normalize, resolve } from 'node:path'
 import { promisify } from 'node:util'
@@ -120,6 +120,18 @@ export function toolEnv(toolPath: string): NodeJS.ProcessEnv {
   return env
 }
 
+/** 递归终止整个进程树，避免超时/中止后残留孤儿孙进程（如 Icarus 的 vvp.exe）。 */
+function killProcessTree(pid: number): void {
+  if (!pid) return
+  if (process.platform === 'win32') {
+    try {
+      execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
+    } catch { /* 进程树可能已退出 */ }
+    return
+  }
+  try { process.kill(-pid, 'SIGKILL') } catch { try { process.kill(pid, 'SIGKILL') } catch { /* 已退出 */ } }
+}
+
 /** execFile 的宽松封装——ENOENT 时 reject（供 runWithFallback 候选回退），其余非零退出 resolve */
 export function run(
   cmd: string,
@@ -133,11 +145,25 @@ export function run(
     const isWindowsScript = process.platform === 'win32' && /\.(?:cmd|bat)$/i.test(cmd)
     const executable = isWindowsScript ? (process.env.ComSpec ?? 'cmd.exe') : cmd
     const executableArgs = isWindowsScript ? ['/d', '/s', '/c', cmd, ...args] : args
-    const child = execFile(
+
+    let child: ReturnType<typeof execFile>
+    let killed = false
+    let timer: NodeJS.Timeout | undefined
+    const onAbort = (): void => kill()
+    function kill(): void {
+      if (killed) return
+      killed = true
+      if (timer) clearTimeout(timer)
+      killProcessTree(child?.pid ?? 0)
+    }
+
+    child = execFile(
       executable,
       executableArgs,
-      { timeout: timeoutMs, maxBuffer: MAX_BUFFER, env, signal, cwd },
+      { maxBuffer: MAX_BUFFER, env, cwd },
       (err, stdout, stderr) => {
+        if (timer) clearTimeout(timer)
+        if (signal) signal.removeEventListener('abort', onAbort)
         if (err && (err as NodeJS.ErrnoException).code === 'ENOENT') {
           reject(new Error(`工具未找到: ${cmd}`))
           return
@@ -149,6 +175,12 @@ export function run(
         })
       }
     )
+
+    if (timeoutMs > 0) timer = setTimeout(kill, timeoutMs)
+    if (signal) {
+      if (signal.aborted) kill()
+      else signal.addEventListener('abort', onAbort, { once: true })
+    }
   })
 }
 

@@ -94,7 +94,8 @@ export const IPC = {
     ReadFile: 'fs:read-file',
     ReadJson: 'fs:read-json',
     WriteText: 'fs:write-text',
-    OpenExternal: 'fs:open-external'
+    OpenExternal: 'fs:open-external',
+    VerificationStatus: 'fs:verification-status'
   },
   ProcessLibrary: {
     List: 'process-library:list',
@@ -218,6 +219,8 @@ export interface MoonGlassApi {
     readJson(projectId: string, relPath: string): Promise<unknown | null>
     /** 在项目工作区内写入 UTF-8 文本，用于托管报告和变更单。 */
     writeText(projectId: string, relPath: string, content: string): Promise<boolean>
+    /** 读取验证环境与用例执行状态（环境是否搭建、已执行/未完成用例及 pass/fail）。 */
+    verificationStatus(projectId: string): Promise<import('./types/moonglass').VerificationRunStatus>
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
     /** 在系统浏览器/默认程序中打开项目文件；路径必须相对项目工作区。 */
     openExternal(projectId: string, relPath: string): Promise<boolean>

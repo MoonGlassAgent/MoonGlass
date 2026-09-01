@@ -78,12 +78,17 @@ function VerifStatusBar({ projectId, agentStreaming, onAction, onPlan, onSetup, 
   const [loading, setLoading] = useState(true)
   const load = useCallback(async () => {
     setLoading(true)
+    let data: GuidanceState | null = null
     try {
-      const data = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-posture.json') as GuidanceState | null
-      setState(data)
-    } catch {
-      try { setState(await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-state.json') as GuidanceState | null) } catch { setState(null) }
-    } finally { setLoading(false) }
+      data = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-posture.json') as GuidanceState | null
+      // posture 是机器可读快照；被 Agent 覆盖成摘要时会缺失 verificationIntents，回退到完整 state.json
+      if (data && !Array.isArray(data.verificationIntents)) data = null
+    } catch { data = null }
+    if (!data) {
+      try { data = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-state.json') as GuidanceState | null } catch { data = null }
+    }
+    setState(data)
+    setLoading(false)
   }, [projectId])
   useEffect(() => { void load() }, [load])
   const steps = useMemo(() => deriveVerificationSteps(state), [state])
@@ -280,6 +285,7 @@ export function WorkspacePage(): React.JSX.Element {
   const sendAgentPrompt = useChatStore((s) => s.sendAndWait)
   const ensureAgent = useChatStore((s) => s.ensure)
   const abortAgent = useChatStore((s) => s.abort)
+  const clearAgentAfterPhasePurge = useChatStore((s) => s.clearAfterPhasePurge)
 
   const reload = useCallback(async () => {
     setProject(await window.moonglass.project.get(projectId))
@@ -541,12 +547,12 @@ export function WorkspacePage(): React.JSX.Element {
         '请仅完成 AIGV 验证规划。本次任务的停止边界是“规划和机器可读模型就绪”，不要搭建 Testbench、编写测试、运行仿真或进入验证闭环：\n' +
         '1. 使用 verification-planning 技能检查需求、规格、架构，并建立 docs/04_verification/ 的三份基线计划与六份 AIGV 方法/闭环文档\n' +
         '2. 使用 collect_rtl_files 读取 rtl/design.json 与 rtl/filelist.f，确认 DUT、topModule 和真实 RTL 范围\n' +
-        '3. 调用 build_verification_intelligence，生成并审查 requirement-model、structural-model、spec-gap-register、risk-register、verification-intent-registry、coverage-hole-register 和 scenario-execution-plan\n' +
+        '3. 调用 build_verification_intelligence，生成并审查 requirement-model、structural-model、spec-gap-register、risk-register 与候选场景池；穷举候选只是参考，不是任务清单\n' +
         '4. 审查 module-verification-strategy.json：顶层采用 IP_SIGNOFF，高风险子模块采用 UNIT_FOCUSED，普通子模块采用 UNIT_SMOKE 或 STATIC_ONLY；不得把每个 .v 文件都当成独立 DUT 执行完整 AIGV\n' +
         '5. 分别确定验证深度与 Oracle 策略；Golden Model 是否建立取决于模块语义、独立判定、故障定位和收敛收益，不得按模块大小机械决定\n' +
-        '6. 将高优先级 VI-* / SCN-* 绑定到需求、RTL 对象、时间窗口、边界点、Checker、Coverage 和预期证据；Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
+        '6. 阅读 risk-register.json 与 structural-model.json 并结合规格语义，圈定 5~10 个真实验证点：每个必须点名具体信号、具体失效反例、具体判定标准，并锚定真实存在的 riskIds/requirementIds/rtlSignals，调用 register_verification_intents 登记；被 REJECTED 的锚点必须修正后重登，不得绕过。Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
         '7. 运行验证计划文档校验并修复结构问题\n' +
-        '8. 完成后列出模块分层、Oracle/Golden Model 建议、第一批待执行 Scenario、Spec Gap 和环境搭建建议，然后停止，不得自行继续下一步骤'
+        '8. 完成后列出模块分层、Oracle/Golden Model 建议、已登记验证点（含被引擎拒绝及修正的记录）、第一批待执行 Scenario、未覆盖的高分风险候选、Spec Gap 和环境搭建建议，然后停止，不得自行继续下一步骤'
       )
       appendLog('AIGV 验证规划任务已完成')
     } catch (err) {
@@ -559,9 +565,9 @@ export function WorkspacePage(): React.JSX.Element {
       const preview = await window.moonglass.phase.previewReset(projectId, phase, mode)
       const pathList = preview.paths.length > 0 ? preview.paths.map((path) => `  - ${path}`).join('\n') : '  - 当前没有阶段产物'
       const sizeMb = (preview.totalBytes / 1024 / 1024).toFixed(2)
-      const action = mode === 'archive' ? '归档并重新开始' : '永久清除并重新开始'
+      const action = mode === 'archive' ? '归档并重新开始' : '永久清除'
       const confirmed = window.confirm(
-        `${action}“${PHASE_LABELS[phase]}”？\n\n将处理 ${preview.fileCount} 个文件（${sizeMb} MB）：\n${pathList}\n\n上游阶段成果会保留；已完成的后续阶段将标记黄色变更提醒。`
+        `${action}“${PHASE_LABELS[phase]}”？\n\n将处理 ${preview.fileCount} 个文件（${sizeMb} MB）：\n${pathList}\n\n${mode === 'purge' ? '该阶段会话历史也将清除；不会自动重新开始，需由你在会话中输入或使用一键托管。\n' : ''}上游阶段成果会保留；已完成的后续阶段将标记黄色变更提醒。`
       )
       if (!confirmed) return
       if (mode === 'purge' && !window.confirm('这是不可恢复的彻底清除。确认永久删除上述阶段产物？')) return
@@ -570,13 +576,14 @@ export function WorkspacePage(): React.JSX.Element {
       setGate(null)
       setTreeTick((tick) => tick + 1)
       setMainTab('chat')
+      if (mode === 'purge') clearAgentAfterPhasePurge()
       appendLog(
         mode === 'archive'
           ? `已归档 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件到 ${result.archivePath}，并以空白会话重新开始`
-          : `已彻底清除 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件，并以空白会话重新开始`
+          : `已彻底清除 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件及阶段会话；未自动重新开始`
       )
     } catch (error) {
-      appendLog(`阶段重做失败: ${error instanceof Error ? error.message : String(error)}`)
+      appendLog(`阶段处理失败: ${error instanceof Error ? error.message : String(error)}`)
     }
   }
 
@@ -587,10 +594,10 @@ export function WorkspacePage(): React.JSX.Element {
         '请仅完成验证环境搭建。本次任务的停止边界是“环境可编译、Checker 可工作”，不要执行完整回归、Coverage Closure、Formal 或签核：\n' +
         '1. 读取现有 verification-intent-registry.json、scenario-execution-plan.json、验证计划和 RTL design.json/filelist.f；缺少规划时停止并明确提示先执行“验证规划”\n' +
         '2. 读取 module-verification-strategy.json；仅为 IP_SIGNOFF 和 UNIT_FOCUSED 建立独立完整 Testbench，UNIT_SMOKE 只建立可复用的最小 smoke，STATIC_ONLY 不创建 Testbench\n' +
-        '3. 优先复用 IP 库中的 VIP/BFM；按每个模块的 oracleStrategies 实现必要 driver、monitor、scoreboard、协议/状态 assertion、scenario hit recorder 和功能覆盖采样骨架\n' +
+        '3. 优先复用 IP 库中的 VIP/BFM；按每个模块的 oracleStrategies 实现必要 driver、monitor、scoreboard、协议/状态 assertion 和功能覆盖采样骨架；定向测试与 SCN-ID 绑定（testcase 命名含 scn_<8位hex>），scenario_hits.json 由 run_simulation(scenarioIds=...) 自动登记，不得在 Testbench 中自写任何机器裁决产物\n' +
         '4. 对标记 REFERENCE_MODEL 的模块实现独立 Golden Model；未标记时仍应根据架构角色和定位收益复核，不得为了形式完整复制 RTL，也不得因模块是子模块就禁止 Golden Model\n' +
         '5. UNIT_SMOKE 只实现 reset、接口连通、一个正常事务和一个关键边界点，不扩展完整风险场景批次\n' +
-        '6. 执行 Python 语法、导入、Testbench 结构以及 RTL 编译/elaboration 检查；允许为确认环境可启动而运行单个最小 smoke，但不得循环修复设计功能问题\n' +
+        '6. 执行 Python 语法、导入、Testbench 结构以及 RTL 编译/elaboration 检查；允许为确认环境可启动而运行单个最小 smoke（环境自检不绑定 scenarioIds、不登记场景证据），但不得循环修复设计功能问题\n' +
         '7. 保存环境检查证据，列出可运行入口、已实现 Checker/Golden Model、复用组件和阻断项，然后停止'
       )
       appendLog('验证环境搭建任务已完成')
@@ -606,9 +613,9 @@ export function WorkspacePage(): React.JSX.Element {
         '请仅执行并建立基础回归基线。本次任务的停止边界是“最小可信回归产生结构化结果”，不要继续高风险 Scenario、Coverage Closure、Formal 或最终签核：\n' +
         '1. 检查验证环境和 RTL 编译基线；环境未就绪时只修复环境基础设施问题\n' +
         '2. 按 module-verification-strategy.json 执行：全部模块做静态基线，UNIT_SMOKE 运行最小基础集，UNIT_FOCUSED 只运行其定向 smoke，IP_SIGNOFF 运行顶层 reset/idle/一个合法正常事务；不得给每个 .v 文件复制完整回归\n' +
-        '3. 使用 run_simulation 真实执行，保存 compile.log、simulation.log、JUnit/results.xml、result.json、scenario_hits.json 和必要波形\n' +
+        '3. 使用 run_simulation 真实执行，compile.log、simulation.log、JUnit/results.xml、result.json 和必要波形由工具统一落盘；基础回归不绑定 scenarioIds 时不登记场景证据\n' +
         '4. 不设置无工程依据的固定仿真周期或 wall-clock 上限；失败时按 diagnostic-control.json 提升诊断证据，禁止反复盲改 RTL\n' +
-        '5. 调用 build_verification_intelligence 回灌本批结果，使验证态势出现结构化 regression 记录\n' +
+        '5. 仿真工具执行后验证态势由工具自动重建，无需手工回灌；确认态势页出现结构化 regression 记录\n' +
         '6. 汇总通过/失败 DUT、首个失败证据和环境阻断项，然后停止，不得自动进入风险闭环'
       )
       appendLog('基础回归任务已完成')
@@ -624,13 +631,13 @@ export function WorkspacePage(): React.JSX.Element {
         '请完成项目顶层 IP 与选定高风险子模块的 AIGV 风险驱动、场景驱动和证据驱动验证闭环：\n' +
         '1. 使用 verification-planning 技能校验三份基线计划与六份 AIGV 方法/闭环文档，并运行 collect_rtl_files、run_verible_lint、check_synthesizability 建立当前 RTL 基线\n' +
         '2. 调用 build_verification_intelligence，读取 Verification Intent、Spec Gap、风险热区、时间交互、边界条件、Coverage Hole 和 scenario-execution-plan\n' +
-        '3. 调用 select_next_verification_batch(limit=3)，每轮最多执行 3 个最高优先级 VI-* / SCN-*；不得绕过队列只跑已有冒烟用例，也不得生成无结构依据的任意笛卡尔积\n' +
+        '3. 调用 select_next_verification_batch(limit=3)，每轮最多执行 3 个最高优先级 VI-* / SCN-*；执行时用 run_simulation(scenarioIds=...) 绑定批次场景，不得绕过队列只跑已有冒烟用例，也不得生成无结构依据的任意笛卡尔积\n' +
         '4. 严格按 module-verification-strategy.json 分层执行：顶层完成端到端 AIGV，高风险子模块只做专项 Scenario，普通子模块依靠静态检查、轻量 smoke 与顶层覆盖；只有观察不足或缺陷难定位时才升级等级\n' +
         '5. 对 Simulation 场景使用 Cocotb + Icarus 完成功能回归、Checker、功能覆盖率和波形；Windows 再用 Verilator C++ 回归采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率\n' +
         '6. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification，依次考虑 BMC、cover 和适合的不变量 prove；BMC PASS 不得宣称完成证明\n' +
-        '7. 将每个 Scenario 的 reach/pass、assertionPassed、coverageDelta 和真实证据写入 verification/results/<module>/scenario_hits.json，保存日志、JUnit、result.json、Coverage 和 VCD/FST\n' +
+        '7. 场景 reach/pass 与证据由 run_simulation(scenarioIds=...) 自动登记到 scenario_hits.json 并自动重建态势，禁止手写；执行派生状态由证据派生，record_scenario_adjudication 仅用于规格澄清/豁免，WAIVED 需已有具名审批；日志、JUnit、result.json、Coverage 和 VCD/FST 由工具统一落盘\n' +
         '8. 再次构建 Verification Intelligence，把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，并按分类采取措施\n' +
-        '9. 每批完成后只重建一次 Verification Intelligence 并汇报证据增量；局部修复先跑定向与受影响回归，Verilator 全量覆盖、广泛 Formal 和全量回归仅在基础稳定、批次稳定及签核前的里程碑执行\n' +
+        '9. 每批完成后核对工具自动重建的验证态势并汇报证据增量；局部修复先跑定向与受影响回归，Verilator 全量覆盖、广泛 Formal 和全量回归仅在基础稳定、批次稳定及签核前的里程碑执行\n' +
         '10. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立读取原始测试、日志、Coverage、Formal 和 RTL 证据；存在阻断项时继续修复与回归\n' +
         '11. 用实际机器可读产物和原始证据更新 docs/04_verification/ 全套 AIGV 文档、需求追踪、docs/06_validation/ 验证报告和验证态势，明确已闭环 Intent、遗留 Spec Gap、Coverage Hole、工具限制与是否具备签核条件'
       )

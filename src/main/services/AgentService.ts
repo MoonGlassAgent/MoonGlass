@@ -6,9 +6,9 @@
  * 系统提示词经 `.pi/APPEND_SYSTEM.md` 注入（buildSystemPrompt 按阶段组装），
  * Provider 配置经权限受限的一次性文件注入桥接扩展。
  *
- * 会话模型：每个项目以 projectId 隔离一个主会话和若干平行会话。阶段推进/回退、
- * 关闭重开默认延续当前项目的主会话；阶段切换需重启进程以加载新系统提示词。
- * 平行会话拥有独立历史，可在同一项目内创建和切换。
+ * 会话模型：每个项目、每个阶段拥有独立主会话和若干平行会话。阶段推进/回退时
+ * 自动切换到目标阶段的独立 JSONL，只继承模型选择，不继承其他阶段的消息历史。
+ * 平行会话拥有独立历史，且只能在所属阶段内创建和切换。
  *
  * TODO(Phase 4): 芯片工具集以 pi 扩展注册；按阶段限制工具白名单
  *                （当前使用 pi 默认的 read/write/edit/bash 四工具，不做限制）。
@@ -122,6 +122,19 @@ function sessionNameFromFile(filePath: string): string {
   return fileName.replace(/^session-/, '').replace(/\.jsonl$/, '') || 'main'
 }
 
+const PHASE_SESSION_PREFIX = 'phase-'
+
+/** 阶段主会话的稳定逻辑名。阶段回退时会恢复该阶段原有历史。 */
+function phaseMainSessionName(phase: Phase): string {
+  return `${PHASE_SESSION_PREFIX}${phase.toLowerCase()}`
+}
+
+/** 判断逻辑会话名是否属于指定阶段；`--` 后为该阶段的平行会话名。 */
+function sessionBelongsToPhase(sessionName: string, phase: Phase): boolean {
+  const main = phaseMainSessionName(phase)
+  return sessionName === main || sessionName.startsWith(`${main}--`)
+}
+
 /** 从 __dirname 向上探测 node_modules 中 pi 的 cli.js（开发模式）。 */
 function resolvePiBinFromNodeModules(): string {
   const rel = join('node_modules', '@earendil-works', 'pi-coding-agent', 'dist', 'cli.js')
@@ -159,7 +172,7 @@ interface PiSession {
   selectedModel: { providerId: string; modelId: string } | null
   /** 进程启动时的 Provider 配置指纹（见 providersFingerprint） */
   fingerprint: string
-  /** 当前会话文件名（如 session.jsonl, session-review.jsonl） */
+  /** 当前会话文件名（如 session-phase-rtl.jsonl） */
   currentSessionFile: string
   /** 会话展示名 */
   activeSessionName: string
@@ -248,6 +261,7 @@ export class AgentService implements MoonGlassService {
     copyEda('tool-runner.ts')
     copyEda('simulation.ts')
     copyEda('synthesis.ts')
+    copyEda('lint.ts')
     copyEda('rtl-files.ts')
     copyEda('formal.ts')
 
@@ -387,10 +401,7 @@ export class AgentService implements MoonGlassService {
     return dir
   }
 
-  /**
-   * 会话文件路径。支持多会话：session.jsonl（主会话）、session-<name>.jsonl（平行会话）。
-   * pi --session 支持绝对路径，文件不存在时会自动创建。
-   */
+  /** 会话文件路径。pi --session 支持绝对路径，文件不存在时会自动创建。 */
   private sessionFilePath(projectId: string, name = 'main'): string {
     const dir = this.sessionDir(projectId)
     const file = name === 'main' ? join(dir, 'session.jsonl') : join(dir, `session-${name}.jsonl`)
@@ -401,6 +412,11 @@ export class AgentService implements MoonGlassService {
       if (legacy && existsSync(legacy)) copyFileSync(legacy, file)
     }
     return file
+  }
+
+  /** 当前阶段主会话文件；新阶段始终从独立 JSONL 开始。 */
+  private phaseSessionFilePath(projectId: string, phase: Phase): string {
+    return join(this.sessionDir(projectId), `session-${phaseMainSessionName(phase)}.jsonl`)
   }
 
   private storedSessionLabel(sessionFile: string): string | undefined {
@@ -472,7 +488,8 @@ scripts/
 - 验证结束前必须调用 \`review_verification_evidence\` 独立读取原始测试、日志、JUnit、result.json 和覆盖率；存在阻断项时继续修复和回归，不能以自己的总结作为签核证据。
 - 验证规划必须调用 \`build_verification_intelligence\`，根据 Requirement Model、RTL 结构事实、风险分类和 Coverage Feedback 选择最高价值 Scenario；不得把风险标记写成已确认 Bug，也不得生成无结构依据的任意 Feature 笛卡尔积。
 - 智能验证必须读取 \`verification-intent-registry.json\`、\`spec-gap-register.json\` 和 \`coverage-hole-register.json\`；覆盖缺口必须区分不可达、约束阻断、激励缺失、观察缺失、规格未定义与工具/插桩问题，不能只靠增加随机种子掩盖。
-- 每个智能规划 Scenario 必须使用稳定 SCN-* ID；测试将 reach/pass/证据写入 \`verification/results/<module>/scenario_hits.json\`。关键 Scenario 必须验证、Formal 证明、证明不可达或经批准豁免，最后调用 \`review_verification_scenarios\`。
+- \`verification/intelligence/\` 下的 JSON（\`verification-posture.json\`、\`verification-state.json\`、\`scenario-registry.json\`、\`verification-intent-registry.json\`、\`coverage-hole-register.json\` 等）是 \`build_verification_intelligence\` 等工具生成的机器可读产物，Agent 禁止手工编辑或覆盖它们；\`verification/results/\` 下的 \`scenario_hits.json\` 由 \`run_simulation(scenarioIds=...)\` 自动登记，同样禁止手工编辑或覆盖。批次进度、规格裁决、门禁结论只能写入 \`docs/04_verification/\` 的 Markdown 报告或 \`verification/results/\` 下的其他证据文件。场景裁决（规格澄清/豁免/验证结果）必须调用 \`record_scenario_adjudication\` 工具写回，该工具会自动重新生成态势快照。
+- 每个智能规划 Scenario 必须使用稳定 SCN-* ID；仿真通过 \`run_simulation\` 的 \`scenarioIds\` 参数绑定场景，reach/pass/证据由工具自动写入 \`verification/results/<module>/scenario_hits.json\`。关键 Scenario 必须验证、Formal 证明、证明不可达或经批准豁免，最后调用 \`review_verification_scenarios\`。
 - RTL 修复按影响分级：L1 语法/位宽/Lint/局部 Coding Bug 与 L2 不改变已批准规格的状态、握手、边界和异常修复可直接修改并自动完成定向复现、受影响回归、全量回归、覆盖率/Formal 与独立证据 Review；L3 接口、寄存器映射、时钟复位、数据宽度、PPA 目标、SRAM 组织等架构影响，或 L4 需求语义、优先级、并发行为、外部可见行为变化，必须用标题含 \`[L3]\` 或 \`[L4]\` 的结构化决策请求暂停并等待用户裁决。
 - 自动修复不得删除失败用例、削弱 Checker/Assertion/覆盖率目标、扩大 don't-care，或在没有规格依据时修改测试预期；RTL 与测试同时修改必须执行独立 Review。连续修复失败或影响扩散时升级为 L3。
 - SDC 写入 \`imp/constraints/\`；网表、综合日志、时序和面积报告写入 \`imp/synthesis/\`。
@@ -501,10 +518,10 @@ argument-hint: "<模块名>"
 1. 使用 verification-planning 技能维护 docs/04_verification/ 三份基线计划与六份 AIGV 方法/闭环文档。
 2. 使用 collect_rtl_files、read_verilog、run_verible_lint 和 check_synthesizability。
 3. 使用 cocotb-verification 技能在 verification/$1_tb/ 创建规范环境。
-4. 调用 build_verification_intelligence，选择最高优先级 Scenario，优先配置现有 sequence/driver 并在测试和覆盖率中绑定 SCN-* ID。
-5. 完善 Cocotb 测试后，使用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus") 实际运行。
+4. 调用 build_verification_intelligence 生成风险候选与结构事实，阅读后圈定 5~10 个真实验证点并用 register_verification_intents 登记（锚定真实 riskIds/requirementIds/rtlSignals），再用 select_next_verification_batch 选择最高优先级 Scenario，优先配置现有 sequence/driver 并在测试中绑定 SCN-* ID。
+5. 完善 Cocotb 测试后，使用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus", scenarioIds=[...]) 实际运行；scenario_hits.json 与态势快照由工具自动登记重建，禁止手写。
 6. 确认 verification/results/$1/ 中存在编译日志、仿真日志、result.json、scenario_hits.json 和波形。
-7. 重新构建 Verification State，完成关键 Scenario 后调用 review_verification_scenarios 与 review_verification_evidence。
+7. 完成关键 Scenario 后调用 review_verification_scenarios 与 review_verification_evidence；执行派生状态由证据派生，record_scenario_adjudication 仅用于规格澄清/豁免且 WAIVED 需已有具名审批。
 8. 用实际 JSON、日志、覆盖率和 Formal 证据更新 AIGV 策略、Intent 矩阵、风险场景、Formal、Coverage Closure、Signoff 文档以及 docs/06_validation/ 验证报告；工具失败时分析日志、修复并重跑。
 `
     writeFileSync(join(promptsDir, 'verify.md'), verifyTemplate, 'utf-8')
@@ -625,7 +642,10 @@ argument-hint: "<模块名>"
 
     const providers = this.readyProviders()
     if (providers.length === 0) {
-      const activeSessionName = this.sessions.get(projectId)?.activeSessionName ?? 'main'
+      const currentSession = this.sessions.get(projectId)
+      const activeSessionName = currentSession?.phase === project.currentPhase
+        ? currentSession.activeSessionName
+        : phaseMainSessionName(project.currentPhase)
       return {
         projectId,
         phase: project.currentPhase,
@@ -640,9 +660,8 @@ argument-hint: "<模块名>"
     const fingerprint = this.providersFingerprint()
     let session = this.sessions.get(projectId)
 
-    // Provider 配置变更或阶段变化都需要重启 pi 进程（两者都只能在进程启动时生效：
-    // Provider 注册表经环境变量固化，阶段系统提示词仅在启动时读取）。
-    // 注意：会话文件是项目唯一的 session.jsonl，进程重启后对话历史无缝延续。
+    // Provider 配置变更或阶段变化都需要重启 pi 进程（两者都只能在进程启动时生效）。
+    // 阶段变化后切换到目标阶段自己的 JSONL，避免需求/架构/失败轨迹污染 RTL 等下游阶段。
     if (session && (session.fingerprint !== fingerprint || session.phase !== project.currentPhase)) {
       session.client.dispose()
       this.sessions.delete(projectId)
@@ -651,18 +670,21 @@ argument-hint: "<模块名>"
     }
 
     if (!session) {
-      const rememberedSessionName = this.modelStore.getActiveSession(projectId) ?? 'main'
-      const rememberedSessionFile = rememberedSessionName === 'main'
-        ? this.sessionFilePath(projectId)
-        : join(this.sessionDir(projectId), `session-${rememberedSessionName}.jsonl`)
-      const targetSessionFile = existsSync(rememberedSessionFile)
+      const rememberedSessionName = this.modelStore.getActiveSession(projectId)
+      const rememberedSessionFile = rememberedSessionName && sessionBelongsToPhase(rememberedSessionName, project.currentPhase)
+        ? join(this.sessionDir(projectId), `session-${rememberedSessionName}.jsonl`)
+        : ''
+      const targetSessionFile = rememberedSessionFile && existsSync(rememberedSessionFile)
         ? rememberedSessionFile
-        : this.sessionFilePath(projectId)
+        : this.phaseSessionFilePath(projectId, project.currentPhase)
       session = this.spawnSession(projectId, project.currentPhase, project.name, targetSessionFile)
       await session.client.waitReady()
 
-      // 优先恢复上次选中的模型；失效则回退到第一个可用 Provider 的第一个模型
-      const selection = this.modelStore.get(projectId, session.activeSessionName)
+      // 阶段会话优先恢复自己的模型；首次进入阶段时继承上一活动会话的模型选择，但不继承历史。
+      const previousSelection = rememberedSessionName
+        ? this.modelStore.get(projectId, rememberedSessionName)
+        : undefined
+      const selection = this.modelStore.get(projectId, session.activeSessionName) ?? previousSelection
       const initial =
         selection && providers.some((p) => p.id === selection.providerId && p.models.includes(selection.modelId))
           ? selection
@@ -687,6 +709,10 @@ argument-hint: "<模块名>"
   async prompt(projectId: string, text: string): Promise<void> {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
+    // 兜底校验：即使渲染层 streaming 标志与真实状态漂移，也不能把第二条 prompt 发给正在运行的 Agent。
+    if (session.isStreaming) {
+      throw new Error('Agent 仍在处理上一轮任务，请等待完成后再发送新消息')
+    }
     let message = text
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       // Pi 的 prompt response 仅表示命令已接收；文件和工具工作要到 agent_settled 才完成。
@@ -741,10 +767,11 @@ argument-hint: "<模块名>"
 
     const name = sessionName?.trim() || `review-${Date.now().toString(36)}`
     const safeName = name.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '') || 'session'
-    let fileName = `session-${safeName}.jsonl`
+    const scopedName = `${phaseMainSessionName(session.phase)}--${safeName}`
+    let fileName = `session-${scopedName}.jsonl`
     let newFile = join(this.sessionDir(projectId), fileName)
     if (existsSync(newFile)) {
-      fileName = `session-${safeName}-${Date.now().toString(36)}.jsonl`
+      fileName = `session-${scopedName}-${Date.now().toString(36)}.jsonl`
       newFile = join(this.sessionDir(projectId), fileName)
     }
     const now = new Date().toISOString()
@@ -772,7 +799,7 @@ argument-hint: "<模块名>"
     )
 
     try {
-      return await this.switchSession(projectId, fileName.slice(0, -'.jsonl'.length))
+      return await this.switchSession(projectId, sessionNameFromFile(newFile))
     } catch (error) {
       rmSync(newFile, { force: true })
       throw error
@@ -831,6 +858,58 @@ argument-hint: "<模块名>"
       modelLabel: replacement.modelLabel,
       selectedModel: replacement.selectedModel,
       providersReady: true
+    }
+  }
+
+  /**
+   * 彻底移除指定阶段的活动/后台进程、JSONL 和模型选择。
+   * 必须在删除阶段产物前调用，避免仍在运行的 Agent 把文件重新写回工作区。
+   */
+  clearPhaseSessions(projectId: string, phase: Phase): void {
+    const active = this.sessions.get(projectId)
+    const preservedModel = active?.phase === phase ? active.selectedModel : null
+    if (active?.phase === phase) {
+      this.flushStreamEvents(projectId)
+      this.sessions.delete(projectId)
+      active.client.dispose()
+    }
+
+    const background = this.backgroundSessions.get(projectId)
+    if (background) {
+      for (const [file, session] of background) {
+        if (session.phase !== phase) continue
+        session.client.dispose()
+        background.delete(file)
+      }
+      if (background.size === 0) this.backgroundSessions.delete(projectId)
+    }
+
+    const dir = this.sessionDir(projectId)
+    for (const fileName of readdirSync(dir)) {
+      if (!fileName.endsWith('.jsonl')) continue
+      const filePath = join(dir, fileName)
+      const sessionName = sessionNameFromFile(filePath)
+      if (!sessionBelongsToPhase(sessionName, phase)) continue
+      rmSync(filePath, { force: true })
+      this.modelStore.delete(projectId, sessionName)
+    }
+
+    // 无上下文重启产生的归档也属于该阶段；purge 语义下不保留可再次污染的副本。
+    const archiveDir = join(dir, 'archive')
+    if (existsSync(archiveDir)) {
+      const prefix = `session-${phaseMainSessionName(phase)}`
+      for (const fileName of readdirSync(archiveDir)) {
+        if (fileName.startsWith(prefix) && fileName.endsWith('.jsonl')) {
+          rmSync(join(archiveDir, fileName), { force: true })
+        }
+      }
+    }
+
+    // Provider/模型属于用户配置而非会话上下文；保留当前选择供下一次显式工作复用。
+    if (preservedModel) {
+      const mainName = phaseMainSessionName(phase)
+      this.modelStore.set(projectId, mainName, preservedModel.providerId, preservedModel.modelId)
+      this.modelStore.setActiveSession(projectId, mainName)
     }
   }
 
@@ -945,16 +1024,22 @@ argument-hint: "<模块名>"
     const dir = this.sessionDir(projectId)
     const summaries: SessionSummary[] = []
     const active = this.sessions.get(projectId)
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
+    const phaseMainName = phaseMainSessionName(project.currentPhase)
 
     try {
       const files = readdirSync(dir)
 
       for (const f of files) {
         if (!f.endsWith('.jsonl') || f.endsWith('.bak.jsonl')) continue
-        const name = f === 'session.jsonl' ? 'main' : f.slice(0, -'.jsonl'.length)
         const filePath = join(dir, f)
+        const logicalName = sessionNameFromFile(filePath)
+        // 其他阶段及旧版跨阶段 session.jsonl 只保留在磁盘，不进入当前阶段会话列表。
+        if (!sessionBelongsToPhase(logicalName, project.currentPhase)) continue
+        const name = logicalName === phaseMainName ? 'main' : logicalName
         let messageCount = 0
-        let label = name === 'main' ? '主会话' : name
+        let label = name === 'main' ? `${project.currentPhase} 主会话` : name
         try {
           const content = readFileSync(filePath, 'utf-8')
           const lines = content.trim().split(/\n/).filter(l => l.trim().length > 0)
@@ -970,8 +1055,7 @@ argument-hint: "<模块名>"
             } catch { /* 忽略损坏的单行，保留文件名作为展示名 */ }
           }
         } catch { /* 忽略 */ }
-        const sessionName = sessionNameFromFile(filePath)
-        const storedModel = this.modelStore.get(projectId, sessionName)
+        const storedModel = this.modelStore.get(projectId, logicalName)
         summaries.push({
           name,
           file: filePath,
@@ -996,9 +1080,14 @@ argument-hint: "<模块名>"
     const project = this.projects.get(projectId)
     if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
 
-    const targetFile = resolve(sessionName === 'main'
-      ? this.sessionFilePath(projectId)
-      : join(this.sessionDir(projectId), `${sessionName}.jsonl`))
+    const logicalSessionName = sessionName === 'main'
+      ? phaseMainSessionName(project.currentPhase)
+      : sessionName
+    if (!sessionBelongsToPhase(logicalSessionName, project.currentPhase)) {
+      throw new Error(`不能在 ${project.currentPhase} 阶段载入其他阶段的会话历史`)
+    }
+
+    const targetFile = resolve(join(this.sessionDir(projectId), `session-${logicalSessionName}.jsonl`))
     if (!existsSync(targetFile)) throw new Error(`[agent-service] 会话文件不存在: ${targetFile}`)
     if (resolve(current.currentSessionFile) === targetFile) {
       this.modelStore.setActiveSession(projectId, current.activeSessionName)
@@ -1061,19 +1150,21 @@ argument-hint: "<模块名>"
   }
 
   async closeSession(projectId: string, sessionName: string): Promise<AgentSessionInfo> {
-    if (sessionName === 'main') throw new Error('主会话不可关闭')
+    if (sessionName === 'main') throw new Error('阶段主会话不可关闭')
     if (!sessionName || /[\\/]/.test(sessionName)) throw new Error('无效的会话名称')
 
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 进程未建立')
+    const phaseMainName = phaseMainSessionName(session.phase)
+    if (sessionName === phaseMainName) throw new Error('阶段主会话不可关闭')
     const dir = resolve(this.sessionDir(projectId))
-    const targetFile = resolve(dir, `${sessionName}.jsonl`)
+    const targetFile = resolve(dir, `session-${sessionName}.jsonl`)
     if (dirname(targetFile) !== dir) throw new Error('会话路径越界')
     if (!existsSync(targetFile)) throw new Error(`会话文件不存在: ${targetFile}`)
 
     let info: AgentSessionInfo
     if (resolve(session.currentSessionFile) === targetFile) {
-      info = await this.switchSession(projectId, 'main')
+      info = await this.switchSession(projectId, phaseMainName)
     } else {
       const background = this.backgroundSessions.get(projectId)
       const backgroundSession = background?.get(targetFile)
@@ -1325,6 +1416,18 @@ argument-hint: "<模块名>"
           isError: Boolean(event.isError),
           output: output.length > TOOL_OUTPUT_MAX ? output.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : output,
           decisionRequest: parseDecisionRequest(output)
+        })
+        break
+      }
+      case 'tool_execution_update': {
+        // 长耗时工具（如 run_simulation）的中间进度：转发给渲染层，避免界面长时间无反馈被误判为“中止”。
+        const partial = (event.partialResult ?? event.partial ?? {}) as { content?: Array<{ text?: string }> }
+        const text = (partial.content ?? []).map((c) => c.text ?? '').join('\n')
+        this.emit(projectId, {
+          type: 'tool-update',
+          toolName: String(event.toolName ?? ''),
+          toolCallId: String(event.toolCallId ?? ''),
+          text: text.length > TOOL_OUTPUT_MAX ? text.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : text
         })
         break
       }

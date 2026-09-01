@@ -7,13 +7,38 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
-import type { FileContentResult, FileTreeNode } from '@shared/types'
+import type { FileContentResult, FileTreeNode, VerificationRunStatus } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
 import type { ProjectService } from './ProjectService'
 
 /** 单文件读取上限（超出截断展示） */
 const READ_MAX_BYTES = 256 * 1024
 const JSON_MAX_BYTES = 16 * 1024 * 1024
+
+/** 读取文本文件；失败时返回空串（供尽最大努力的扫描方法使用）。 */
+function safeRead(filePath: string): string {
+  try {
+    return readFileSync(filePath, 'utf-8')
+  } catch {
+    return ''
+  }
+}
+
+/** 从 scenario evidence（如 "test_smoke.py::test_reset_sync_smoke"）提取测试函数名。 */
+function extractTestName(evidence: string[]): string | null {
+  for (const e of evidence) {
+    const m = /::(test_\w+)/.exec(e)
+    if (m) return m[1]
+  }
+  return null
+}
+
+/** 场景 ID → TEST ID：优先按 evidence 中的测试函数名映射，否则做前缀替换（SMOKE-X-001 → TEST-X-001）。 */
+function mapScenarioToTestId(scenarioId: string, evidence: string[], nameToId: Map<string, { testId: string; module: string }>): string {
+  const viaEvidence = extractTestName(evidence)
+  if (viaEvidence && nameToId.has(viaEvidence)) return nameToId.get(viaEvidence)!.testId
+  return `TEST-${scenarioId.replace(/^[A-Z0-9]+-/, '')}`
+}
 
 export class FileService implements MoonGlassService {
   readonly name = 'file-service'
@@ -104,5 +129,183 @@ export class FileService implements MoonGlassService {
     if (full !== root && !full.startsWith(root + sep)) return null
     if (!existsSync(full) || !statSync(full).isFile()) return null
     return full
+  }
+
+  /**
+   * 验证环境与用例执行状态（操作级视图）。
+   *
+   * 数据源：
+   * - 环境：verification/<module>_tb/（含 tests/ 或 env/ 视为已搭建）
+   * - 规划用例：docs/04_verification/test_plan.md 的 TEST-* 表格；缺失时回退到测试文件函数清单
+   * - 执行结果：verification/results/<module>/results_*.xml（JUnit，权威逐用例结果）
+   * - testName → TEST ID 映射：解析 *_tb/tests/*.py 中 @cocotb.test 函数的 docstring
+   *
+   * 该方法只读不写、尽最大努力返回，不因单文件损坏而整体抛错。
+   */
+  verificationRunStatus(projectId: string): VerificationRunStatus {
+    const root = resolve(this.projects.workspaceDir(projectId))
+    const status: VerificationRunStatus = {
+      environment: { ready: false, testbenches: [], missing: [] },
+      planned: [],
+      executed: [],
+      summary: { planned: 0, executed: 0, passed: 0, failed: 0, skipped: 0, notRun: 0, bugsFound: 0 }
+    }
+    if (!existsSync(root)) return status
+
+    const listDirs = (dir: string): string[] => {
+      try {
+        return readdirSync(dir, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => e.name)
+      } catch { return [] }
+    }
+    const listFiles = (dir: string): string[] => {
+      try {
+        return readdirSync(dir, { withFileTypes: true })
+          .filter((e) => e.isFile())
+          .map((e) => e.name)
+      } catch { return [] }
+    }
+
+    const verificationDir = join(root, 'verification')
+
+    // ── 1. 验证环境 ──────────────────────────────────────────
+    const tbDirs = existsSync(verificationDir) ? listDirs(verificationDir).filter((d) => /_tb$/.test(d)) : []
+    for (const tb of tbDirs) {
+      const tbPath = join(verificationDir, tb)
+      if (existsSync(join(tbPath, 'tests')) || existsSync(join(tbPath, 'env'))) {
+        status.environment.testbenches.push(tb)
+      }
+    }
+    status.environment.ready = status.environment.testbenches.length > 0
+    if (!existsSync(verificationDir)) {
+      status.environment.missing.push('尚未创建 verification/ 目录')
+    } else if (!status.environment.ready) {
+      status.environment.missing.push('尚未搭建 Cocotb 验证环境（需要 verification/<module>_tb/tests 与 env）')
+    }
+
+    // ── 2. testName → TEST ID 映射（解析测试函数 docstring） ──
+    const nameToId = new Map<string, { testId: string; module: string }>()
+    for (const tb of status.environment.testbenches) {
+      const testsDir = join(verificationDir, tb, 'tests')
+      if (!existsSync(testsDir)) continue
+      for (const file of listFiles(testsDir)) {
+        if (!file.endsWith('.py')) continue
+        const content = safeRead(join(testsDir, file))
+        const re = /async\s+def\s+(test_\w+)\s*\([^)]*\)\s*:\s*\r?\n\s*"""(TEST-[A-Z0-9-]+)/g
+        let m: RegExpExecArray | null
+        while ((m = re.exec(content)) !== null) nameToId.set(m[1], { testId: m[2], module: tb })
+      }
+    }
+
+    // ── 3. 规划用例：test_plan.md 表格 ───────────────────────
+    const testPlanPath = join(root, 'docs', '04_verification', 'test_plan.md')
+    if (existsSync(testPlanPath)) {
+      for (const line of safeRead(testPlanPath).split(/\r?\n/)) {
+        if (!line.includes('TEST-')) continue
+        const cells = line.split('|').map((c) => c.trim())
+        if (cells.length < 6) continue
+        const testId = cells[1] ?? ''
+        if (!/^TEST-[A-Z0-9-]+$/.test(testId)) continue
+        status.planned.push({
+          testId,
+          tcId: cells[2] ?? '',
+          priority: cells[3] ?? '',
+          name: cells[4] ?? '',
+          environment: cells[5] ?? ''
+        })
+      }
+    }
+    // 回退：无 test_plan.md 时，以测试文件中的函数清单作为规划用例
+    if (status.planned.length === 0 && nameToId.size > 0) {
+      for (const [testName, mapped] of nameToId) {
+        status.planned.push({ testId: mapped.testId, tcId: '', priority: '', name: testName, environment: mapped.module })
+      }
+    }
+
+    // ── 4. 执行证据：scenario_hits.json（累计，优先）+ JUnit XML（最后一次，补充）──
+    // 注意：JUnit XML 每次 run_simulation 都会被覆盖，且单用例调试运行时其余用例显示
+    // <skipped/>；若只读它会把历史 PASS 误报为“未执行”。scenario_hits.json 是跨多次
+    // 运行累计的权威证据，应作为 PASS/FAIL 的首要来源。
+    const resultsDir = join(verificationDir, 'results')
+    if (existsSync(resultsDir)) {
+      const executedByTestId = new Map<string, VerificationRunStatus['executed'][number]>()
+      // 4a. 累计证据 scenario_hits.json
+      for (const moduleDir of listDirs(resultsDir)) {
+        const modulePath = join(resultsDir, moduleDir)
+        const hitsPath = join(modulePath, 'scenario_hits.json')
+        if (!existsSync(hitsPath)) continue
+        try {
+          const hits = JSON.parse(safeRead(hitsPath)) as { scenarios?: Array<Record<string, unknown>> }
+          for (const sc of hits.scenarios ?? []) {
+            const id = String(sc.id ?? '')
+            if (!id) continue
+            const evidence = (sc.evidence as string[] | undefined) ?? []
+            const testId = mapScenarioToTestId(id, evidence, nameToId)
+            const passed = sc.passed === true
+            const blocker = String(sc.blocker ?? '')
+            const isFail = !passed && (sc.reached === true || blocker.length > 0)
+            executedByTestId.set(testId, {
+              testId,
+              testName: extractTestName(evidence) ?? '',
+              module: moduleDir,
+              status: passed ? 'PASS' : isFail ? 'FAIL' : 'SKIPPED',
+              bugFound: isFail,
+              errorMessage: String(sc.disposition ?? sc.blocker ?? '') || undefined,
+              blocker: blocker || undefined
+            })
+          }
+        } catch { /* 忽略损坏的 scenario_hits.json */ }
+      }
+      // 4b. 最后一次运行 JUnit XML（补充累计证据未覆盖的用例与最新瞬时错误）
+      for (const moduleDir of listDirs(resultsDir)) {
+        const modulePath = join(resultsDir, moduleDir)
+        for (const file of listFiles(modulePath)) {
+          if (!/^results_.*\.xml$/.test(file)) continue
+          const content = safeRead(join(modulePath, file))
+          const caseRe = /<testcase\s+([^>]*?)(?:\/>|>(.*?)<\/testcase>)/gs
+          let m: RegExpExecArray | null
+          while ((m = caseRe.exec(content)) !== null) {
+            const attrs = m[1] ?? ''
+            const body = m[2] ?? ''
+            const name = /name="([^"]+)"/.exec(attrs)?.[1] ?? ''
+            if (!name) continue
+            const timeSec = Number(/time="([^"]+)"/.exec(attrs)?.[1] ?? 0)
+            const skipped = /<skipped\s*\/?>/.test(body)
+            const failed = /<(?:failure|error)\b/.test(body)
+            const errorMessage = /error_msg="([^"]*)"/.exec(body)?.[1] ?? ''
+            const mapped = nameToId.get(name)
+            const testId = mapped?.testId ?? ''
+            const existing = testId ? executedByTestId.get(testId) : undefined
+            if (existing) {
+              // 已有累计证据：仅在累计未给出根因时补充本次 JUnit 的瞬时错误详情
+              if (!existing.errorMessage && failed) existing.errorMessage = errorMessage
+              continue
+            }
+            executedByTestId.set(testId || `junit:${name}`, {
+              testId,
+              testName: name,
+              module: mapped?.module ?? moduleDir,
+              status: skipped ? 'SKIPPED' : failed ? 'FAIL' : 'PASS',
+              bugFound: failed,
+              errorMessage: errorMessage || undefined,
+              timeSec: Number.isFinite(timeSec) ? timeSec : undefined
+            })
+          }
+        }
+      }
+      status.executed = [...executedByTestId.values()]
+    }
+
+    // ── 5. 汇总 ──────────────────────────────────────────────
+    const runTestIds = new Set(status.executed.filter((e) => e.status === 'PASS' || e.status === 'FAIL').map((e) => e.testId).filter(Boolean))
+    status.summary.planned = status.planned.length
+    status.summary.executed = status.executed.filter((e) => e.status === 'PASS' || e.status === 'FAIL').length
+    status.summary.passed = status.executed.filter((e) => e.status === 'PASS').length
+    status.summary.failed = status.executed.filter((e) => e.status === 'FAIL').length
+    status.summary.skipped = status.executed.filter((e) => e.status === 'SKIPPED').length
+    status.summary.bugsFound = status.executed.filter((e) => e.bugFound).length
+    status.summary.notRun = status.planned.filter((p) => !runTestIds.has(p.testId)).length
+    return status
   }
 }

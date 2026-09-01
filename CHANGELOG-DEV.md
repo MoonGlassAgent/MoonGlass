@@ -2,6 +2,54 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-01：验证态势数据流收敛与下一步引导修复
+
+- 新增 `record_scenario_adjudication` 工具（引擎函数 + pi 工具）：场景裁决（规格澄清/豁免/验证）只写 `scenario-registry.json`（单一事实源）并自动重建态势快照（RTL 未变时 0.3 秒），页面刷新即见；提示词同步约束“Agent 禁止用 write/edit 手改 `verification/intelligence/` 下的机器 JSON，裁决必须走工具”。
+- 验证态势页与工作区 VERIF 状态条读取时校验 schema：`verification-posture.json` 被覆盖或缺失 `verificationIntents` 时自动回退 `verification-state.json`。
+- `deriveVerificationActions/Steps/TopRisks` 增加 `normalizeGuidanceState` 防御：缺失数组字段按空数组处理，修复“从验证态势返回工作区”时 `undefined.filter` 崩溃。
+- 推荐下一步优先级修正：C3 激励缺失的“执行下一批高风险场景”提升为 P0；规格缺口按是否阻断拆分（C5 阻断为 P0、文档级 TBD 为 P1）；Formal 工具/环境限制独立为 P1（不再与 RTL 失败混为 P0）；统一“规格缺口 5 项 vs 2 个场景”的口径。
+- 数据清洗：将 Agent 自造的非标准状态 `ADJUDICATED`（7 个场景）迁移为 `DISCOVERED`，证据中保留迁移记录。
+- 新增 AIGV 优化方案讨论稿 `docs/AIGV-OPTIMIZATION-PROPOSAL-ZH-CN.md`（供专家团队评审：收敛/LLM 主导规划/重型层取舍）。
+
+## 2026-08-31：AIGV 引擎收敛与验证态势重构
+
+- 修复 spec-gap 解析 bug：不再把版本历史/变更日志表格行、Markdown 表格行、章节标题里的 “TBD” 当规格缺口（MoonGlass_NPU 52 项；DEC_VISINEX 104→68 项）。
+- N-way Shared State Interaction 风险按模块去重（每模块最多 1 个），消除锥体影响生成的组合爆炸。
+- Verification Intent 模板具体化：objective 改为“验证 X：具体信号 在同周期/相邻周期交互时，具体预期”；failureMode 改为“反例：…不成立（如计数重复/丢失…）”；不再重复罗列信号。
+- 新增 `refine_verification_intents` 工具 + VERIF 提示词步骤 4.1：build 后由 Agent 精炼优先级最高的 10 个 Intent（点名具体信号/反例/判定），合并回注册表与态势。
+- 验证态势页新增操作级视图：验证环境搭建状态、规划用例、已执行用例 pass/fail/发现的 Bug、未完成用例（读 JUnit XML + scenario_hits.json + result.json）。
+- 修复用例状态误报：scenario_hits.json（累计证据）作为 PASS/FAIL 首要来源，JUnit XML（最后一次运行）降级为补充；解决“单用例调试运行导致其余用例被误报未执行”。
+- 验证态势页重构：新增“当前验证进展”白话总览；风险卡落到具体对象/失效/验证点；Spec Gap 过滤垃圾并显示来源；Intent/Coverage Hole 只展示 top 15/20。
+
+## 2026-08-31：会话静默中止与运行中可输入修复
+
+- 转发 `tool_execution_update` 为 `tool-update` 事件：长耗时工具（如 run_simulation）中间进度实时展示，不再长时间无反馈被误判“中止”。
+- 展示 `status` 事件（长度截断重试、Watchdog 收敛等提示），不再静默丢弃。
+- `AgentService.prompt` 增加 `isStreaming` 守卫：渲染层状态漂移时也不会把第二条 prompt 发给运行中的 Agent。
+- EDA 工具超时/中止时用 `taskkill /T /F` 递归清理进程树，消除 Icarus `vvp.exe` 等孤儿孙进程。
+
+## 2026-08-31：RTL Design Browser 宏实例化解析
+
+- Design Browser 解析 `design.json` 时追加 `libraryFiles`（SRAM blackbox 视图），解决 `hierarchy -check` 报 “Module not part of the design” 无法展开层次的问题。
+
+## 2026-08-31：绿色版打包脚本补充
+
+- 新增 `build-green.bat` 双击入口（UTF-8 + CRLF + 参数透传 + 结束暂停）。
+- 修复 `package-green.mjs` 失效的演示数据兜底路径：改为自动继承最近一次绿色版产物中的 userdata，避免直接打包产出空白绿色版（缺少 MIC_NPU Demo）。
+
+## 2026-08-31：Agent 阶段隔离会话
+
+- REQ_SPEC、ARCH、RTL、VERIF、QA、SYNTH 分别使用独立 Pi JSONL；阶段推进或回退时自动切换到目标阶段主会话，不再把上游长历史、失败轨迹和工具输出注入下游阶段。
+- 阶段首次进入时仅继承上一活动会话的有效模型选择，不继承消息历史；回退到已工作过的阶段时恢复该阶段原有历史。
+- 平行会话按阶段命名并限制在所属阶段内切换；旧版 `session.jsonl` 和其他阶段日志继续保留在磁盘，但不会出现在当前阶段页签或被误加载。
+- `pnpm typecheck` 通过。
+
+## 2026-08-31：阶段彻底清除不再自动重做
+
+- 阶段垃圾桶改为仅永久删除标准阶段产物，不再切换阶段、不再发送任务，也不再启动空白 Pi 进程或执行 `restartSessionFresh`；后续工作只在用户会话输入或一键托管时懒启动。
+- 清除前终止该阶段活动与后台 Pi 进程，并删除该阶段主会话、平行会话及 fresh-restart 归档，避免 Agent 或旧上下文把产物重新写回；Provider/模型选择作为用户配置保留。
+- REQ_SPEC 清理范围补齐 `docs/01_project`，与项目章程交付物保持一致；已完成下游阶段继续收到变更提醒。
+
 ## 2026-08-30：修复模型只思考不执行与托管误判完成
 
 - 复盘 MoonGlass_NPU RTL 阶段：GLM-5.3-Flash 多轮将 8192 个输出 Token 全部用于 reasoning，均以 `stopReason=length` 结束且没有任何工具调用；MoonGlass 旧逻辑错误地将其视为任务完成并继续门禁恢复。

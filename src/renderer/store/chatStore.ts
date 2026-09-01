@@ -27,6 +27,8 @@ interface ChatState {
   createParallel: (name?: string) => Promise<void>
   compactSession: () => Promise<void>
   restartSessionFresh: () => Promise<void>
+  /** 阶段 purge 后仅清空前端状态；下一次输入时再懒启动空白会话。 */
+  clearAfterPhasePurge: () => void
   switchSession: (name: string) => Promise<void>
   closeSession: (name: string) => Promise<void>
 }
@@ -55,10 +57,17 @@ export const useChatStore = create<ChatState>((set, get) => {
   }
 
   const dispatchPrompt = async (text: string, propagateError: boolean): Promise<void> => {
-    const { projectId, streaming, sessionInfo } = get()
+    let { projectId, streaming, sessionInfo } = get()
     if (!projectId) throw new Error('Agent 会话尚未关联项目')
     if (streaming) throw new Error('Agent 仍在处理上一轮任务')
     if (!text.trim()) return
+    if (!sessionInfo) {
+      sessionInfo = await window.moonglass.agent.ensureSession(projectId)
+      if (sessionInfo.providersReady) {
+        const history = await window.moonglass.agent.getMessages(projectId)
+        set({ sessionInfo, messages: history, streaming: false, streamTargetId: null })
+      }
+    }
     if (!sessionInfo?.providersReady) throw new Error('会话尚未就绪，请稍候（若持续无响应请重新进入工作区）')
     const userMsg: AgentUiMessage = {
       id: nextId(), role: 'user', text: text.trim(), timestamp: Date.now(),
@@ -198,6 +207,11 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
     },
 
+    clearAfterPhasePurge: () => {
+      ++ensureSeq
+      set({ sessionInfo: null, messages: [], streaming: false, aborting: false, streamTargetId: null })
+    },
+
     switchSession: async (name) => {
       const { projectId } = get()
       if (!projectId) return
@@ -312,6 +326,27 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
       }))
       break
 
+    case 'tool-update':
+      set((s) => {
+        // 长耗时工具的中间进度：按 toolCallId 回填到对应“执行中…”卡片
+        const idx = [...s.messages]
+          .reverse()
+          .findIndex((m) => m.role === 'tool' && (m.toolCallId ? m.toolCallId === event.toolCallId : m.toolName === event.toolName))
+        if (idx === -1) return {}
+        const realIdx = s.messages.length - 1 - idx
+        const target = s.messages[realIdx]
+        const base = target.text && target.text !== '执行中…' ? target.text : ''
+        const next = base ? `${base}\n${event.text}` : (event.text || '执行中…')
+        return {
+          messages: [
+            ...s.messages.slice(0, realIdx),
+            { ...target, text: next },
+            ...s.messages.slice(realIdx + 1)
+          ]
+        }
+      })
+      break
+
     case 'tool-end':
       set((s) => {
         // 按 toolCallId 精确回填；兼容旧事件时才回退到工具名。
@@ -348,6 +383,20 @@ function applyEvent(set: Set, event: AgentStreamEvent): void {
           ]
         }
       })
+      break
+
+    case 'status':
+      set((s) => ({
+        messages: trimMessages([
+          ...s.messages,
+          {
+            id: nextId(),
+            role: 'assistant',
+            text: event.message,
+            timestamp: Date.now()
+          }
+        ])
+      }))
       break
 
     case 'error':

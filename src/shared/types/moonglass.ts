@@ -469,9 +469,11 @@ export type AgentStreamEvent =
   | { type: 'text-delta'; delta: string }
   | { type: 'thinking-delta'; delta: string }
   | { type: 'tool-start'; toolName: string; toolCallId: string; input?: string }
+  | { type: 'tool-update'; toolName: string; toolCallId: string; text: string }
   | { type: 'tool-end'; toolName: string; toolCallId: string; isError: boolean; output: string; decisionRequest?: AgentDecisionRequest }
   | { type: 'agent-start' }
   | { type: 'agent-settled' }
+  | { type: 'status'; message: string }
   | { type: 'error'; message: string }
 
 /** agent:event 推送负载 */
@@ -516,5 +518,51 @@ export interface AgentSessionStats {
     tokens: number | null
     contextWindow: number
     percent: number | null
+  }
+}
+
+/** 验证用例执行结果（操作级，来自 JUnit XML） */
+export interface VerificationExecutedCase {
+  /** 关联的 TEST ID（如 TEST-RESET-001）；未能映射到规划清单时为空串 */
+  testId: string
+  /** Cocotb 测试函数名（如 test_reset_sync_smoke） */
+  testName: string
+  /** 所属模块/测试环境目录名（如 vbc_enc_tb） */
+  module: string
+  status: 'PASS' | 'FAIL' | 'SKIPPED' | 'ERROR'
+  /** FAIL/ERROR 视为发现疑似 Bug */
+  bugFound: boolean
+  errorMessage?: string
+  /** 场景级阻断标签（来自 scenario_hits.json 的 blocker，如 RTL_L2_*） */
+  blocker?: string
+  timeSec?: number
+}
+
+/** 规划中的验证用例（来自 test_plan.md 或测试文件函数清单） */
+export interface VerificationPlannedCase {
+  testId: string
+  tcId: string
+  priority: string
+  name: string
+  environment: string
+}
+
+/** 验证环境与用例执行状态（操作级视图，区别于 AIGV 场景级态势） */
+export interface VerificationRunStatus {
+  environment: {
+    ready: boolean
+    testbenches: string[]
+    missing: string[]
+  }
+  planned: VerificationPlannedCase[]
+  executed: VerificationExecutedCase[]
+  summary: {
+    planned: number
+    executed: number
+    passed: number
+    failed: number
+    skipped: number
+    notRun: number
+    bugsFound: number
   }
 }

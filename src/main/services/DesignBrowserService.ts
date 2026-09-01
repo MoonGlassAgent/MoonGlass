@@ -23,6 +23,8 @@ interface DesignManifest {
   /** 综合视图优先，避免 Design Browser 展开 SRAM 等行为模型。 */
   filelistSyn?: string | string[]
   files?: string[]
+  /** SRAM 等宏的 blackbox 视图（read_verilog -lib 用），用于解析宏实例化。 */
+  libraryFiles?: string | string[]
   includeDirs?: string[]
   defines?: string[]
 }
@@ -67,32 +69,33 @@ function parseFilelist(workspaceDir: string, rtlDir: string, manifest: DesignMan
   const includeDirs = stringList(manifest.includeDirs)
     .map((dir) => resolveDesignPath(workspaceDir, rtlDir, dir))
   const defines = stringList(manifest.defines)
-  if (manifestFiles.length > 0) {
-    return {
-      files: manifestFiles.map((file) => resolveDesignPath(workspaceDir, rtlDir, file)),
-      includeDirs,
-      defines
-    }
-  }
+  // 宏 blackbox 视图：用于解析 SRAM 等宏的实例化，不展开行为阵列
+  const macroViews = stringList(manifest.libraryFiles)
+    .map((file) => resolveDesignPath(workspaceDir, rtlDir, file))
 
-  const filelistName = typeof preferredFilelist === 'string' ? preferredFilelist : 'filelist.f'
-  const filelistPath = resolveDesignPath(workspaceDir, rtlDir, filelistName)
-  if (!existsSync(filelistPath)) {
-    return {
-      files: readRtlInputs(workspaceDir).designFiles,
-      includeDirs,
-      defines
+  let files: string[]
+  if (manifestFiles.length > 0) {
+    files = manifestFiles.map((file) => resolveDesignPath(workspaceDir, rtlDir, file))
+  } else {
+    const filelistName = typeof preferredFilelist === 'string' ? preferredFilelist : 'filelist.f'
+    const filelistPath = resolveDesignPath(workspaceDir, rtlDir, filelistName)
+    if (!existsSync(filelistPath)) {
+      files = readRtlInputs(workspaceDir).designFiles
+    } else {
+      files = []
+      for (const sourceLine of readFileSync(filelistPath, 'utf-8').split(/\r?\n/)) {
+        const line = sourceLine.replace(/\/\/.*$/, '').replace(/#.*$/, '').trim()
+        if (!line) continue
+        if (line.startsWith('+incdir+')) includeDirs.push(resolveDesignPath(workspaceDir, rtlDir, line.slice(8)))
+        else if (line.startsWith('+define+')) defines.push(line.slice(8))
+        else if (!line.startsWith('+')) files.push(resolveDesignPath(workspaceDir, rtlDir, line))
+      }
+      if (files.length === 0) files = readRtlInputs(workspaceDir).designFiles
     }
   }
-  const files: string[] = []
-  for (const sourceLine of readFileSync(filelistPath, 'utf-8').split(/\r?\n/)) {
-    const line = sourceLine.replace(/\/\/.*$/, '').replace(/#.*$/, '').trim()
-    if (!line) continue
-    if (line.startsWith('+incdir+')) includeDirs.push(resolveDesignPath(workspaceDir, rtlDir, line.slice(8)))
-    else if (line.startsWith('+define+')) defines.push(line.slice(8))
-    else if (!line.startsWith('+')) files.push(resolveDesignPath(workspaceDir, rtlDir, line))
-  }
-  return { files: files.length > 0 ? files : readRtlInputs(workspaceDir).designFiles, includeDirs, defines }
+  // 追加宏 blackbox 视图（去重，保持依赖序）
+  for (const macro of macroViews) if (!files.includes(macro)) files.push(macro)
+  return { files, includeDirs, defines }
 }
 
 export class DesignBrowserService implements MoonGlassService {

@@ -10,7 +10,7 @@ import { randomUUID } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
-import { runLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
+import { runLint, runDesignLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
 import { buildVerificationIntelligence, reviewScenarioClosure } from '@moonglass/verification-intelligence-engine'
 import {
   PHASE_ORDER,
@@ -419,9 +419,10 @@ async function verificationScenarioClosure(ctx: GateCheckContext, checkId: strin
   return makeResult(checkId, false, 'error', [...review.blockers, ...review.warnings].join('\n'))
 }
 
-/** Lint 零 Error：逐文件 runLint（verible 优先，verilator 回退），任一 Error 即失败 */
+/** Lint 零 Error：逐文件规则检查后，对完整 filelist 执行顶层联合 Lint/elaboration。 */
 async function lintZeroError(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
-  const files = collectDesignRtlFiles(ctx.workspaceDir)
+  const inputs = readRtlInputs(ctx.workspaceDir)
+  const files = inputs.designFiles
   if (files.length === 0) {
     return makeResult(checkId, false, 'error', '工作区暂无 RTL 文件（*.v/*.sv），无法执行 Lint')
   }
@@ -438,13 +439,24 @@ async function lintZeroError(ctx: GateCheckContext, checkId: string): Promise<Ga
     }
   }
 
+  const designResult = await runDesignLint({
+    files,
+    libraryFiles: inputs.libraryFiles,
+    topModule: inputs.topModule,
+    includeDirs: inputs.includeDirs,
+    defines: inputs.defines
+  })
+  engine = `${engine} + verilator-design`
+  warningCount += designResult.warnings.length
+  for (const e of designResult.errors) errors.push(`全设计:${e.line}:${e.column} ${e.message}`)
+
   if (errors.length > 0) {
     const shown = errors.slice(0, MAX_ISSUES_IN_MESSAGE).join('；')
     const more = errors.length > MAX_ISSUES_IN_MESSAGE ? ` 等 ${errors.length} 条` : ''
     return makeResult(checkId, false, 'error', `${errors.length} 条 Error（${engine}）：${shown}${more}`)
   }
   const warn = warningCount > 0 ? `，${warningCount} 条 Warning 待评审` : ''
-  return makeResult(checkId, true, 'error', `通过（${engine}，${files.length} 个文件${warn}）`)
+  return makeResult(checkId, true, 'error', `通过（${engine}，${files.length} 个设计文件，顶层 ${inputs.topModule ?? '自动识别'}${warn}）`)
 }
 
 /** Yosys 可综合性：全部 RTL 文件一次检查 */

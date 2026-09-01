@@ -26,8 +26,9 @@ import {
 import { runCocotbSimulation, runVerilatorSimulation } from './eda-bridge/simulation'
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { runFormalVerification } from './eda-bridge/formal'
+import { runDesignLint } from './eda-bridge/lint'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
-import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure } from './verification-intelligence/engine.ts'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents } from './verification-intelligence/engine.ts'
 
 type DiagnosticLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5'
 
@@ -152,6 +153,74 @@ function updateDiagnosticControl(input: {
   const state: DiagnosticControlState = { version: 1, updatedAt: new Date().toISOString(), mode, activeCase, attempts, recommendation }
   writeJsonAtomic(path, state)
   return state
+}
+
+export interface ScenarioHitWriteInput {
+  /** 显式场景 ID（来自 select_next_verification_batch 返回的批次），优先于 testcase 名解析 */
+  scenarioIds?: string[]
+  /** 用例名；含 scn_<8位hex> 标记时可解析出场景 ID */
+  testcase?: string
+  passed: boolean
+  rtlFiles: string[]
+  evidence: string[]
+}
+
+export interface ScenarioHitWriteResult {
+  registered: string[]
+  warnings: string[]
+}
+
+/**
+ * 把仿真执行结果自动登记到 verification/results/<topModule>/scenario_hits.json（合并写）。
+ * 这是 scenario_hits.json 的唯一写入入口：PASS/FAIL 都登记（失败同样是证据），
+ * Agent 禁止手写该文件。导出以便 smoke 直接测试合并逻辑。
+ */
+export function writeScenarioHits(workspace: string, topModule: string, input: ScenarioHitWriteInput): ScenarioHitWriteResult {
+  const warnings: string[] = []
+  const explicit = [...new Set((input.scenarioIds ?? []).map((id) => id.toUpperCase()))]
+  const parsed = [...new Set([...(input.testcase ?? '').matchAll(/scn_([0-9a-fA-F]{8})/g)].map((match) => `SCN-${match[1].toUpperCase()}`))]
+  if (explicit.length && parsed.length && (explicit.length !== parsed.length || explicit.some((id) => !parsed.includes(id)))) {
+    warnings.push(`显式 scenarioIds（${explicit.join('、')}）与 testcase 名解析结果（${parsed.join('、')}）不一致，以显式参数为准`)
+  }
+  const scenarioIds = explicit.length ? explicit : parsed
+  if (!scenarioIds.length) return { registered: [], warnings: ['本次运行未绑定场景：未提供 scenarioIds，且 testcase 名中不含 scn_<8位hex> 标记'] }
+
+  const resultsDir = join(workspace, 'verification', 'results', topModule)
+  const path = join(resultsDir, 'scenario_hits.json')
+  let existing: { scenarios?: Array<Record<string, unknown>> } = {}
+  try { existing = JSON.parse(readFileSync(path, 'utf-8')) as typeof existing } catch { /* 首次写入 */ }
+  const rtlHash = filesHash(input.rtlFiles)
+  const evidence = input.evidence.filter(Boolean).map((item) => {
+    const absolute = resolve(workspace, item)
+    return absolute.startsWith(resultsDir) ? relative(resultsDir, absolute) : absolute
+  })
+  const byId = new Map<string, Record<string, unknown>>()
+  for (const item of existing.scenarios ?? []) if (typeof item.id === 'string') byId.set(item.id, item)
+  for (const id of scenarioIds) {
+    const previous = byId.get(id)
+    byId.set(id, {
+      ...previous,
+      id,
+      reached: true,
+      passed: input.passed,
+      reachCount: Number(previous?.reachCount ?? 0) + 1,
+      rtlHash,
+      evidence: [...new Set([...((previous?.evidence as string[] | undefined) ?? []), ...evidence])],
+      generatedAt: new Date().toISOString()
+    })
+  }
+  writeJsonAtomic(path, { rtlHash, scenarios: [...byId.values()] })
+  return { registered: scenarioIds, warnings }
+}
+
+/** 证据工具执行后自动重建验证态势快照；失败不影响工具结果返回，仅返回警告文本。 */
+function rebuildVerificationPosture(workspace: string): string | null {
+  try {
+    buildVerificationIntelligence(workspace)
+    return null
+  } catch (err) {
+    return err instanceof Error ? err.message : String(err)
+  }
 }
 
 // ============================================================
@@ -600,20 +669,21 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'run_verible_lint',
     label: 'Run Verible Lint',
-    description: '调用 Verible（或回退 Verilator）对 Verilog/SystemVerilog 文件进行代码风格检查。返回通过的 Lint 分区（Error/Warning）及详情。支持自动修复（autofix）。',
-    promptSnippet: 'Run lint on a Verilog/SystemVerilog file to check for code issues',
-    promptGuidelines: 'Use run_verible_lint after writing or editing RTL code to check for coding issues. Fix all errors before proceeding to synthesizability check.',
+    description: '执行 RTL Lint。缺省按 design.json/filelist.f 对全设计进行 Verilator 联合 Lint 与顶层 elaboration；指定 filePath 时只做单文件快速检查。',
+    promptSnippet: 'Run full-design RTL lint/elaboration or a fast single-file lint',
+    promptGuidelines: 'Use file scope while editing. Before declaring RTL complete, omit filePath and run full-design lint/elaboration; a single-file PASS is never completion evidence.',
     parameters: Type.Object({
-      filePath: Type.String({ description: '目标文件路径（绝对路径，或相对 cwd 的路径）' }),
+      filePath: Type.Optional(Type.String({ description: '可选：目标文件路径。省略时检查完整设计并 elaboration 顶层' })),
       rulesFile: Type.Optional(Type.String({ description: 'Verible 规则配置文件路径（可选，仅 verible 引擎生效）' })),
       autofix: Type.Optional(Type.Boolean({ description: '是否启用 autofix（仅 verible 支持，会就地修改文件）' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
-      const filePath = params.filePath as string
+      const requestedPath = params.filePath as string | undefined
+      const filePath = requestedPath ? resolve(ctx.cwd, requestedPath) : undefined
       const rulesFile = params.rulesFile as string | undefined
       const autofix = params.autofix as boolean | undefined
 
-      if (!existsSync(filePath)) {
+      if (filePath && !existsSync(filePath)) {
         return {
           content: [{ type: 'text', text: `错误：文件不存在 — ${filePath}` }],
           isError: true,
@@ -621,14 +691,26 @@ export default function (pi: ExtensionAPI): void {
         }
       }
 
-      // 优先使用 verible，没有则回退 verilator
-      const veribleResult = await tryVerible(filePath, signal, rulesFile, autofix)
       let result: { engine: string; errors: LintIssue[]; warnings: LintIssue[]; fixedCode: string | null }
-
-      if (veribleResult) {
-        result = veribleResult
+      let target: string
+      if (filePath) {
+        // 单文件快速检查：优先 Verible，没有则回退 Verilator。
+        const veribleResult = await tryVerible(filePath, signal, rulesFile, autofix)
+        result = veribleResult ?? await tryVerilatorLint(filePath, signal)
+        target = filePath
       } else {
-        result = await tryVerilatorLint(filePath, signal)
+        if (autofix) throw new Error('全设计 Lint 不支持 autofix；请指定 filePath 后执行局部自动修复')
+        const inputs = readRtlInputs(ctx.cwd)
+        if (inputs.designFiles.length === 0) throw new Error('工作区没有可检查的设计 RTL')
+        const designResult = await runDesignLint({
+          files: inputs.designFiles,
+          libraryFiles: inputs.libraryFiles,
+          topModule: inputs.topModule,
+          includeDirs: inputs.includeDirs,
+          defines: inputs.defines
+        })
+        result = { ...designResult, fixedCode: null }
+        target = `完整设计（${inputs.designFiles.length} 个文件，顶层 ${inputs.topModule ?? '自动识别'}）`
       }
 
       const errorCount = result.errors.length
@@ -636,7 +718,7 @@ export default function (pi: ExtensionAPI): void {
       const passed = errorCount === 0
 
       const report = [
-        `## Lint Result — ${filePath}`,
+        `## Lint Result — ${target}`,
         `**引擎**: ${result.engine}`,
         `**结果**: ${passed ? '✅ 通过' : '❌ 失败'}`,
         `**Error**: ${errorCount} / **Warning**: ${warningCount}`,
@@ -1043,9 +1125,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'run_simulation',
     label: 'Run Simulation',
-    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。',
+    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势；scenario_hits.json 由本工具独占写入，禁止手工编辑。',
     promptSnippet: 'Run Cocotb or legacy C++ RTL simulation and collect artifacts',
-    promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench.',
+    promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench. Pass scenarioIds from select_next_verification_batch so scenario hits are auto-registered; never hand-write scenario_hits.json.',
     parameters: Type.Object({
       mode: Type.Optional(Type.Union([Type.Literal('cocotb'), Type.Literal('cpp')], { description: '缺省 cocotb；cpp 仅兼容旧项目' })),
       topModule: Type.String({ description: '顶层模块名（对应 RTL module 名称）' }),
@@ -1053,6 +1135,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       testModule: Type.Optional(Type.String({ description: 'Cocotb Python 模块名，例如 tests.test_uart（不要带 .py）' })),
       testDir: Type.Optional(Type.String({ description: 'Cocotb 环境根目录，加入 PYTHONPATH' })),
       testcase: Type.Optional(Type.String({ description: '仅运行指定 @cocotb.test 测试，可选' })),
+      scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本用例定向关闭的场景 ID，来自 select_next_verification_batch 返回的批次' })),
       simulator: Type.Optional(Type.Union([Type.Literal('icarus'), Type.Literal('verilator')], { description: 'Cocotb 后端；Windows 缺省 icarus' })),
       tbCpp: Type.Optional(Type.String({ description: 'mode=cpp 时的 C++ 测试台路径' })),
       trace: Type.Optional(Type.Boolean({ description: '是否生成波形，缺省 true' })),
@@ -1167,6 +1250,20 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         })
         report.push('', '### 渐进式诊断控制', '', `**诊断等级**: ${diagnostic.attempts.at(-1)?.diagnosticLevel ?? 'L0'}`, `**本次耗时**: ${Math.round((diagnostic.attempts.at(-1)?.durationMs ?? 0) / 1000)} 秒（仅记录，不据此强制终止）`, `**当前模式**: ${diagnostic.mode}`, `**建议**: ${diagnostic.recommendation}`, '', '诊断账本：verification/results/diagnostic-control.json')
 
+        // 证据管线：PASS/FAIL 都自动登记 scenario_hits（失败同样是证据），并重建验证态势
+        const hits = writeScenarioHits(resolve(ctx.cwd), topModule, {
+          scenarioIds: params.scenarioIds as string[] | undefined,
+          testcase: params.testcase as string | undefined,
+          passed: result.passed,
+          rtlFiles,
+          evidence: [result.resultPath, result.simulationLogPath, result.vcdPath ?? '']
+        })
+        report.push('', '### Scenario 证据登记', '')
+        if (hits.registered.length) report.push(`已自动登记 ${hits.registered.length} 个场景到 scenario_hits.json：${hits.registered.join('、')}`)
+        for (const warning of hits.warnings) report.push(`⚠️ ${warning}`)
+        const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+        report.push(rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次仿真结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见')
+
         return {
           content: [{ type: 'text', text: report.join('\n') }],
           details: {
@@ -1178,7 +1275,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
             resultPath: result.resultPath,
             coverage: result.coverage,
             coverageReportPath: result.coverageReportPath,
-            diagnostic
+            diagnostic,
+            scenarioHits: hits.registered
           },
           isError: !result.passed
         }
@@ -1478,7 +1576,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     label: 'Build Verification Intelligence',
     description: '从需求/规格、RTL 结构事实和回归反馈生成 Requirement Model、Structural Model、Risk Register、Scenario Registry 与 Verification State。风险标记不等同于 RTL Bug。',
     promptSnippet: 'Build deterministic verification models before choosing verification scenarios',
-    promptGuidelines: 'Use ranked scenarios to choose tests. Do not invent RTL facts or generate arbitrary Cartesian products.',
+    promptGuidelines: 'Exhaustive scenarios are a candidate pool, not a task list: circle the top real verification points yourself and register them via register_verification_intents. Do not invent RTL facts or generate arbitrary Cartesian products.',
     parameters: Type.Object({}),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const artifacts = buildVerificationIntelligence(ctx.cwd)
@@ -1488,6 +1586,88 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         content: [{ type: 'text', text: `## Verification Intelligence\n\n- Requirement：${artifacts.requirementModel.requirements.length}\n- RTL Structural Fact：${artifacts.structuralModel.facts.length}\n- Risk Marker：${artifacts.risks.length}\n- Scenario：${state.scenarioCount}\n- Critical Open：${state.criticalOpen.length}\n- RTL Hash：${state.rtlHash}\n\n### 当前最高优先级\n${top.length ? top.map((item) => `- ${item.id} [${item.status}] priority=${item.priority}：${item.title}`).join('\n') : '- 未识别到 Scenario'}\n\n报告：${artifacts.paths.report}` }],
         details: { paths: artifacts.paths, scenarioCount: state.scenarioCount, criticalOpen: state.criticalOpen, topScenarios: top },
         isError: false
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'refine_verification_intents',
+    label: 'Refine Verification Intents',
+    description: '把优先级最高的 Verification Intent 的 objective/failureMode/passCriteria 改写为具体可证伪的表述（点名具体信号、具体失效反例、具体判定），并合并回 Intent 注册表与验证态势。',
+    promptSnippet: 'Refine top verification intents into concrete falsifiable targets',
+    promptGuidelines: 'Only refine top scenarios. Ground each refinement in the actual RTL object and spec; never invent signals or facts.',
+    parameters: Type.Object({
+      refinements: Type.Array(Type.Object({
+        scenarioId: Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }),
+        objective: Type.Optional(Type.String()),
+        failureMode: Type.Optional(Type.String()),
+        passCriteria: Type.Optional(Type.Array(Type.String())),
+        rtlSignals: Type.Optional(Type.Array(Type.String(), { description: '点名的真实 RTL 信号；引擎校验存在性后并入 observationPoints' }))
+      }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const result = refineVerificationIntents(ctx.cwd, params.refinements)
+      return {
+        content: [{ type: 'text', text: `## Intent 精炼\n\n- 更新：${result.updated.length}\n- 未找到：${result.missing.length}${result.missing.length ? `（${result.missing.join('、')}）` : ''}\n\n结果已写回 verification-intent-registry.json 与 verification-posture.json。` }],
+        details: result,
+        isError: false
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'register_verification_intents',
+    label: 'Register Verification Intents',
+    description: '登记 Agent 主导的验证意图：点名真实 RTL 信号、具体失效反例与具体判定标准，并锚定现有 riskIds / requirementIds。引擎校验锚点真实性，幻觉信号或不存在的 ID 会被拒绝；接受后生成 origin=AGENT_INTENT 的 Scenario（同分排序优先于引擎穷举候选）并自动重建验证态势。',
+    promptSnippet: 'Register LLM-planned verification intents grounded in real signals and risks',
+    promptGuidelines: 'Read risk-register.json, requirement-model.json and structural-model.json first. Every rtlSignal must be a real signal from the structural model. Fix rejected anchors and re-register; never bypass by editing registry JSON.',
+    parameters: Type.Object({
+      intents: Type.Array(Type.Object({
+        title: Type.String({ minLength: 1, description: '验证点标题' }),
+        objective: Type.String({ minLength: 1, description: '可证伪验证目标' }),
+        failureMode: Type.String({ minLength: 1, description: '具体失效反例' }),
+        passCriteria: Type.Array(Type.String(), { minItems: 1, description: '具体判定标准' }),
+        anchors: Type.Object({
+          riskIds: Type.Array(Type.String(), { minItems: 1, description: 'risk-register.json 中现有的 Risk ID' }),
+          requirementIds: Type.Array(Type.String(), { minItems: 1, description: 'requirement-model.json 中现有的 REQ/SPEC ID' }),
+          rtlSignals: Type.Array(Type.String(), { minItems: 1, description: 'structural-model.json 中真实存在的信号，支持 module.signal 或裸信号名' })
+        }, { description: '锚点：引擎逐项校验真实性，幻觉引用一律拒绝' }),
+        recommendedMethod: Type.Union([Type.Literal('simulation'), Type.Literal('formal-candidate'), Type.Literal('static')], { description: '推荐验证方法' }),
+        preconditions: Type.Optional(Type.Array(Type.String())),
+        observationPoints: Type.Optional(Type.Array(Type.String()))
+      }), { minItems: 1 })
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      onUpdate?.({ content: [{ type: 'text', text: '正在校验锚点并登记验证意图…' }] })
+      const result = registerVerificationIntents(ctx.cwd, params.intents)
+      return {
+        content: [{ type: 'text', text: `## 验证意图登记\n\n- 接受：${result.accepted.length}${result.accepted.length ? `（${result.accepted.join('、')}）` : ''}\n- 拒绝：${result.rejected.length}\n${result.rejected.map((item) => `  - ${item.title}：${item.reasons.join('；')}`).join('\n')}\n- 态势快照：${result.rebuilt ? '已自动重建，页面刷新即可见' : '未重建'}\n\n被拒绝的锚点必须核对 risk-register / requirement-model / structural-model 后修正重登，不得绕过。` }],
+        details: result,
+        isError: result.rejected.length > 0
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'record_scenario_adjudication',
+    label: 'Record Scenario Adjudication',
+    description: '把判断类场景裁决（PLANNED/IMPLEMENTED/BLOCKED_BY_SPEC/WAIVED）写回 scenario-registry.json 并自动重新生成验证态势快照。执行派生状态（VERIFIED/FAILED/REACHED/NOT_REACHED/PARTIAL/FORMAL_PROVED/FORMAL_UNREACHABLE）只能由 run_simulation / run_formal_verification 的证据自动派生，不可宣布；WAIVED 要求 signoff-approvals.json 中已有 RR-WAIVER-<scenarioId> 具名审批。Agent 禁止用 write/edit 手改 verification/intelligence/ 下的机器 JSON。',
+    promptSnippet: 'Record judgment-class scenario verdict and refresh the posture snapshot',
+    promptGuidelines: 'Only PLANNED/IMPLEMENTED/BLOCKED_BY_SPEC/WAIVED are allowed. Execution-derived statuses come from simulation/formal evidence automatically. WAIVED requires an existing named user approval. Never invent scenario IDs.',
+    parameters: Type.Object({
+      adjudications: Type.Array(Type.Object({
+        scenarioId: Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }),
+        status: Type.Union([Type.Literal('PLANNED'), Type.Literal('IMPLEMENTED'), Type.Literal('BLOCKED_BY_SPEC'), Type.Literal('WAIVED')]),
+        evidence: Type.Optional(Type.Array(Type.String()))
+      }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      onUpdate?.({ content: [{ type: 'text', text: '正在写回场景裁决并重新生成验证态势快照…' }] })
+      const result = recordScenarioAdjudication(ctx.cwd, params.adjudications)
+      return {
+        content: [{ type: 'text', text: `## 场景裁决写回\n\n- 更新：${result.updated.length}\n- 未找到：${result.missing.length}${result.missing.length ? `（${result.missing.join('、')}）` : ''}\n- 拒绝：${result.rejected.length}\n${result.rejected.map((item) => `  - ${item.scenarioId}：${item.reason}`).join('\n')}\n- 态势快照：${result.rebuilt ? '已重新生成，页面刷新即可见' : '未重建'}` }],
+        details: result,
+        isError: result.missing.length > 0 || result.rejected.length > 0
       }
     }
   })
@@ -1526,7 +1706,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: 'text', text: `正在运行 Formal ${params.mode ?? 'bmc'}：${params.top}` }] })
       const result = await runFormalVerification({ workspaceDir: ctx.cwd, ...params, signal })
-      return { content: [{ type: 'text', text: `## Formal 验证结果\n\n- 状态：${result.status}\n- 义务：${result.obligation === 'required' ? '强制签核' : '补强证据'}\n- 模式：${result.mode}\n- 顶层：${result.top}\n- 引擎：${result.engine}\n- 深度：${result.depth}\n- 分类：${result.classification ?? '求解结果'}\n- 说明：${result.message}\n- 日志：${result.logPath}\n${result.compatibilityIssues?.length ? `- 兼容性问题：\n${result.compatibilityIssues.map((item) => `  - ${item.file}:${item.line} ${item.construct}：${item.message}`).join('\n')}` : ''}\n${result.traces.length ? `- 反例/见证：${result.traces.join(', ')}` : ''}` }], details: result, isError: ['ERROR', 'UNKNOWN'].includes(result.status) }
+      // 证据管线：Formal 结果落盘后自动重建验证态势；失败不影响本次结果返回
+      const rebuildError = rebuildVerificationPosture(ctx.cwd)
+      return { content: [{ type: 'text', text: `## Formal 验证结果\n\n- 状态：${result.status}\n- 义务：${result.obligation === 'required' ? '强制签核' : '补强证据'}\n- 模式：${result.mode}\n- 顶层：${result.top}\n- 引擎：${result.engine}\n- 深度：${result.depth}\n- 分类：${result.classification ?? '求解结果'}\n- 说明：${result.message}\n- 日志：${result.logPath}\n${result.compatibilityIssues?.length ? `- 兼容性问题：\n${result.compatibilityIssues.map((item) => `  - ${item.file}:${item.line} ${item.construct}：${item.message}`).join('\n')}` : ''}\n${result.traces.length ? `- 反例/见证：${result.traces.join(', ')}` : ''}\n- ${rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次 Formal 结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见'}` }], details: result, isError: ['ERROR', 'UNKNOWN'].includes(result.status) }
     }
   })
 
@@ -1562,7 +1744,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     label: 'Select Next Verification Batch',
     description: '根据已生成的 Scenario 风险、未闭环状态和覆盖率反馈，返回下一批可执行场景。默认复用现有执行计划，只有明确 refresh 时才全量重建模型。',
     promptSnippet: 'Select the next evidence-driven scenario batch',
-    promptGuidelines: 'Implement or reuse the named sequence and checkers. Write scenario_hits.json after execution, then rebuild intelligence.',
+    promptGuidelines: 'Implement or reuse the named sequence and checkers. Bind scenarios via run_simulation(scenarioIds=...): scenario hits and the posture rebuild are automatic byproducts. Never hand-write scenario_hits.json.',
     parameters: Type.Object({
       limit: Type.Optional(Type.Number({ minimum: 1, maximum: 12, description: '本批数量，缺省 3；小批执行便于及时反馈' })),
       budgetSeconds: Type.Optional(Type.Number({ minimum: 1, maximum: 86400, description: '本批预计执行预算；P0 强制场景不因预算被饿死' })),

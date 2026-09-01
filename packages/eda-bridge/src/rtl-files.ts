@@ -3,13 +3,17 @@ import { join, resolve } from 'node:path'
 
 const EXCLUDED_DIRS = /^(obj_dir|__pycache__|node_modules|build|sim_build|04_verification)$/i
 const EXCLUDED_FILES = /^(_+)?(synth_|output_|result_|merged_|combined_|tmp_|temp_)/i
-const MACRO_VIEW = /(?:^|[\\/])macros[\\/]|_(?:behavioral|blackbox|phy_template)\.v$/i
+// macros/ 也可以包含设计侧 wrapper；只排除明确命名的互斥宏视图。
+const MACRO_VIEW = /_(?:behavioral|blackbox|phy_template)\.v$/i
 
 export interface RtlInputSet {
   designFiles: string[]
   simulationFiles: string[]
   libraryFiles: string[]
   physicalFiles: string[]
+  topModule?: string
+  includeDirs: string[]
+  defines: string[]
   manifestPath?: string
 }
 
@@ -39,11 +43,11 @@ export function readRtlInputs(workspaceDir: string): RtlInputSet {
   const rtlDir = resolve(workspaceDir, 'rtl')
   const manifestPath = join(rtlDir, 'design.json')
   if (!existsSync(manifestPath)) {
-    return { designFiles: collectRtlFiles(rtlDir).filter((file) => !MACRO_VIEW.test(file)), simulationFiles: [], libraryFiles: [], physicalFiles: [] }
+    return { designFiles: collectRtlFiles(rtlDir).filter((file) => !MACRO_VIEW.test(file)), simulationFiles: [], libraryFiles: [], physicalFiles: [], includeDirs: [], defines: [] }
   }
   let data: Record<string, unknown>
   try { data = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown> } catch {
-    return { designFiles: collectRtlFiles(rtlDir).filter((file) => !MACRO_VIEW.test(file)), simulationFiles: [], libraryFiles: [], physicalFiles: [], manifestPath }
+    return { designFiles: collectRtlFiles(rtlDir).filter((file) => !MACRO_VIEW.test(file)), simulationFiles: [], libraryFiles: [], physicalFiles: [], includeDirs: [], defines: [], manifestPath }
   }
   let designEntries = list(data.files)
   const filelistPath = resolveEntry(workspaceDir, rtlDir, typeof data.filelist === 'string' ? data.filelist : 'filelist.f')
@@ -58,6 +62,9 @@ export function readRtlInputs(workspaceDir: string): RtlInputSet {
     simulationFiles: unique(list(data.simulationFiles)),
     libraryFiles: unique(list(data.libraryFiles)),
     physicalFiles: unique(list(data.physicalFiles)),
+    topModule: typeof data.topModule === 'string' && data.topModule.trim() ? data.topModule.trim() : undefined,
+    includeDirs: unique(list(data.includeDirs)),
+    defines: list(data.defines),
     manifestPath
   }
 }

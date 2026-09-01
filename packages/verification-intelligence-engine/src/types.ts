@@ -309,6 +309,18 @@ export interface InteractionEdge { id: string; from: string; to: string; type: I
 export interface FeatureInteractionGraph { version: 1; generatedAt: string; nodes: InteractionNode[]; edges: InteractionEdge[] }
 export interface ReasoningClaim { kind: FactKind; text: string; references: string[] }
 export interface VerificationHypothesis { id: string; title: string; riskIds: string[]; rtlObjectIds: string[]; interactionEdgeIds: string[]; claims: ReasoningClaim[]; status: 'ACCEPTED' | 'REJECTED'; rejectionReasons: string[]; createdAt: string }
+
+/** Agent 主导登记的验证意图输入（B 方向：LLM 主导验证规划，引擎负责校验锚点真实性）。 */
+export interface AgentIntentInput {
+  title: string
+  objective: string
+  failureMode: string
+  passCriteria: string[]
+  anchors: { riskIds: string[]; requirementIds: string[]; rtlSignals: string[] }
+  recommendedMethod: 'simulation' | 'formal-candidate' | 'static'
+  preconditions?: string[]
+  observationPoints?: string[]
+}
 export interface ScenarioExecutionPlan { scenarioId: string; sequence: string; constraints: Record<string, string | number | boolean>; temporalConstraints: string[]; iterations: number; budgetSeconds: number; expected: string[]; checkers: string[]; priority: number; mandatory: boolean; reason: string }
 
 export type SpecGapCategory = 'SPEC_WITHOUT_RTL' | 'RTL_WITHOUT_SPEC' | 'SPEC_UNDEFINED' | 'TEMPORAL_UNDEFINED'
@@ -375,6 +387,8 @@ export interface RiskMarker {
 export interface VerificationScenario {
   id: string
   title: string
+  /** 场景来源：引擎穷举候选或 Agent 登记的验证意图；旧数据无此字段按 ENGINE_CANDIDATE 处理。 */
+  origin?: 'ENGINE_CANDIDATE' | 'AGENT_INTENT'
   riskIds: string[]
   requirementIds: string[]
   rtlObjects: string[]
@@ -408,6 +422,8 @@ export interface VerificationStateModel {
   scenarioCount: number
   statusCounts: Partial<Record<ScenarioStatus, number>>
   criticalOpen: string[]
+  /** 风险评分前 20% 且未被任何 AGENT_INTENT 场景锚定的高分风险候选（未覆盖兜底，仅告警不阻断）。 */
+  uncoveredRiskCandidates: RiskMarker[]
   scenarios: VerificationScenario[]
   regressions: Array<{ resultFile: string; passed: boolean; testsTotal: number; coverage: Record<string, number> }>
   analyzer: StructuralModel['analyzer']
