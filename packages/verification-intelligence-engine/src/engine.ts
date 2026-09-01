@@ -132,14 +132,67 @@ function requirementModel(workspace: string): RequirementModel {
   return { version: 1, generatedAt: new Date().toISOString(), requirements, unknowns, sourceFiles: files.map((file) => relative(workspace, file)) }
 }
 
+// design.json 语义与 packages/eda-bridge/src/rtl-files.ts 的 readRtlInputs 对齐的精简内联实现。
+// 注意：引擎源文件会被复制到 pi 侧运行，禁止跨包 import eda-bridge，也禁止新增外部依赖。
+interface RtlAnalysisInputs {
+  designFiles: string[]
+  libraryFiles: string[]
+  includeDirs: string[]
+  defines: string[]
+  topModule?: string
+  inputSource: 'design.json' | 'walk'
+}
+
+// 与 eda-bridge 一致：只排除明确命名的互斥宏视图（behavioral/blackbox/phy_template）。
+const MACRO_VIEW = /_(?:behavioral|blackbox|phy_template)\.v$/i
+
+function resolveRtlEntry(workspace: string, rtlDir: string, entry: string): string {
+  if (/^(?:[A-Za-z]:[\\/]|\/)/.test(entry)) return resolve(entry)
+  return resolve(entry.replace(/\\/g, '/').startsWith('rtl/') ? workspace : rtlDir, entry)
+}
+
+function readRtlInputs(workspace: string): RtlAnalysisInputs {
+  const rtlDir = join(workspace, 'rtl')
+  // design.json 缺失/损坏或清单为空时回退现有 walk 行为（保持兼容）
+  const fallback = (): RtlAnalysisInputs => ({ designFiles: walk(rtlDir, (file) => /\.(?:v|sv)$/i.test(file)), libraryFiles: [], includeDirs: [], defines: [], inputSource: 'walk' })
+  const manifestPath = join(rtlDir, 'design.json')
+  if (!existsSync(manifestPath)) return fallback()
+  let data: Record<string, unknown>
+  try { data = JSON.parse(readFileSync(manifestPath, 'utf-8')) as Record<string, unknown> } catch { return fallback() }
+  const stringList = (value: unknown): string[] => Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+  let designEntries = stringList(data.files)
+  if (designEntries.length === 0) {
+    const filelistPath = resolveRtlEntry(workspace, rtlDir, typeof data.filelist === 'string' ? data.filelist : 'filelist.f')
+    if (existsSync(filelistPath)) {
+      designEntries = readFileSync(filelistPath, 'utf-8').split(/\r?\n/)
+        .map((line) => line.replace(/\/\/.*$/, '').replace(/#.*$/, '').trim())
+        .filter((line) => line.length > 0 && !/^[+-]/.test(line))
+    }
+  }
+  if (designEntries.length === 0) return fallback()
+  const unique = (items: string[]): string[] => [...new Set(items.map((item) => resolveRtlEntry(workspace, rtlDir, item)).filter((item) => existsSync(item)))]
+  const topModule = typeof data.topModule === 'string' && data.topModule.trim() ? data.topModule.trim() : undefined
+  // simulationFiles / physicalFiles / rtl/macros 不进入结构分析；libraryFiles 以 slang -v 库文件方式按需搜索
+  return {
+    designFiles: unique(designEntries.filter((entry) => !MACRO_VIEW.test(entry))),
+    libraryFiles: unique(stringList(data.libraryFiles)),
+    includeDirs: unique(stringList(data.includeDirs)),
+    defines: stringList(data.defines),
+    topModule,
+    inputSource: 'design.json'
+  }
+}
+
 function structuralModel(workspace: string): StructuralModel {
-  const files = walk(join(workspace, 'rtl'), (file) => /\.(?:v|sv)$/i.test(file))
+  const inputs = readRtlInputs(workspace)
   const hash = createHash('sha256')
-  for (const file of files) {
+  for (const file of inputs.designFiles) {
     const text = readFileSync(file, 'utf-8')
     hash.update(relative(workspace, file)).update('\0').update(text).update('\0')
   }
-  return analyzeStructure({ workspace, files, rtlHash: hash.digest('hex'), featuresOf })
+  // 库文件不参与结构抽取，但其清单变化同样影响 elaboration 结果，计入 rtlHash
+  for (const file of inputs.libraryFiles) hash.update('lib:').update(relative(workspace, file)).update('\0')
+  return analyzeStructure({ workspace, files: inputs.designFiles, libraryFiles: inputs.libraryFiles, includeDirs: inputs.includeDirs, defines: inputs.defines, topModule: inputs.topModule, inputSource: inputs.inputSource, rtlHash: hash.digest('hex'), featuresOf })
 }
 
 function buildModuleVerificationStrategy(workspace: string, structure: StructuralModel, risks: RiskMarker[]): ModuleVerificationStrategy {

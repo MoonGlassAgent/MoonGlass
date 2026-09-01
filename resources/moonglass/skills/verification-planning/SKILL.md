@@ -102,6 +102,17 @@ is insufficient.
 Do not put executable tests in `docs/`. Test implementation belongs under
 `verification/<module>_tb/`.
 
+## Status reads and root-cause records
+
+- Use `verification/intelligence/execution-summary.json` as the only routine
+  status entry point. Never read `slang-ast.json`, `verification-state.json`,
+  or `feature-interaction-graph.json` in full; when more detail is needed, call
+  `select_next_verification_batch` or run a targeted query instead.
+- Once a fix is verified (the scenario moves from FAIL to PASS), call
+  `record_root_cause` to register the root cause: `rootCause` in at most 200
+  characters, `fix` as an action-level description in at most 120 characters,
+  and chain already-disproven hypotheses via `refutedHypotheses`.
+
 ## Progressive diagnostic control
 
 Do not use a universal simulation-cycle or wall-clock limit when the project has

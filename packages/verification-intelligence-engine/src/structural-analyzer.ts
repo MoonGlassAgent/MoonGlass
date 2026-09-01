@@ -4,7 +4,19 @@ import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path'
 import type { ClockResetDomain, Confidence, ControlFlowEdge, ControlFlowNode, ConeOfInfluence, ProtocolStructure, StateMachine, StructuralFact, StructuralModel, RegisterWriter, TemporalDependency } from './types.ts'
 
-interface AnalyzeInput { workspace: string; files: string[]; rtlHash: string; featuresOf: (text: string) => string[] }
+interface AnalyzeInput {
+  workspace: string
+  files: string[]
+  rtlHash: string
+  featuresOf: (text: string) => string[]
+  /** 库文件（如 SRAM blackbox 视图）：以 slang -v 方式按需搜索，不参与重复定义，也不进入结构抽取 */
+  libraryFiles?: string[]
+  includeDirs?: string[]
+  defines?: string[]
+  topModule?: string
+  /** 输入来源：rtl/design.json 清单或 walk 回退，如实记录进 analyzer.limitations */
+  inputSource?: 'design.json' | 'walk'
+}
 
 function lineOf(text: string, index: number): number { return text.slice(0, Math.max(0, index)).split(/\r?\n/).length }
 function executable(name: string): string | undefined {
@@ -84,7 +96,10 @@ export function analyzeStructure(input: AnalyzeInput): StructuralModel {
     if (priority) addFact(moduleName, moduleName, 'PRIORITY_CHAIN', '识别到 if/else-if 控制优先级', file, lineOf(text, priority.index), 'medium')
   }
 
-  let analyzer: StructuralModel['analyzer'] = { engine: 'moonglass-structural-fallback', limitations: ['未检测到 Slang，语义来自结构化保守抽取', '复杂宏、generate 与 class/UVM 结构需要 Slang 提升精度', '结构风险不等同于 RTL bug'] }
+  const inputNote = input.inputSource === 'design.json'
+    ? `结构分析输入来自 rtl/design.json 清单（主源文件 ${input.files.length} 个，库文件 ${(input.libraryFiles ?? []).length} 个经 slang -v 按需加载）`
+    : '结构分析输入来自 rtl/ 目录全量遍历回退（rtl/design.json 缺失、损坏或清单为空）'
+  let analyzer: StructuralModel['analyzer'] = { engine: 'moonglass-structural-fallback', limitations: ['未检测到 Slang，语义来自结构化保守抽取', '复杂宏、generate 与 class/UVM 结构需要 Slang 提升精度', '结构风险不等同于 RTL bug', inputNote] }
   const slang = executable('slang')
   if (slang && input.files.length) {
     // AST 是引擎中间产物（实测可达 10MB 级），落到系统临时目录而非工作区，
@@ -93,10 +108,17 @@ export function analyzeStructure(input: AnalyzeInput): StructuralModel {
     mkdirSync(astDir, { recursive: true })
     const astPath = join(astDir, `slang-ast-${input.rtlHash.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16) || 'unknown'}.json`)
     const env = analyzerEnv(slang)
-    const run = spawnSync(slang, ['--ast-json', astPath, '--ast-json-source-info', '--ignore-unknown-modules', ...input.files], { cwd: input.workspace, encoding: 'utf-8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, env })
+    // 主源文件与 -v 库文件分离：库文件（如 SRAM blackbox 视图）仅按需搜索，避免与仿真视图同名模块重复定义
+    const slangArgs = ['--ast-json', astPath, '--ast-json-source-info', '--ignore-unknown-modules']
+    for (const dir of input.includeDirs ?? []) slangArgs.push('-I', dir)
+    for (const define of input.defines ?? []) slangArgs.push('-D', define)
+    for (const library of input.libraryFiles ?? []) slangArgs.push('-v', library)
+    if (input.topModule) slangArgs.push('--top', input.topModule)
+    slangArgs.push(...input.files)
+    const run = spawnSync(slang, slangArgs, { cwd: input.workspace, encoding: 'utf-8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, env })
     if (run.status === 0 && existsSync(astPath)) {
       const version = spawnSync(slang, ['--version'], { encoding: 'utf-8', windowsHide: true, env }).stdout.trim()
-      analyzer = { engine: 'slang-ast', version, limitations: ['MoonGlass 消费 elaborated AST 的过程块、条件、case、赋值与符号引用，并与保守结构抽取交叉补充', '未启用 ast-json-detailed-types，避免大型 class/UVM 工程输出膨胀', 'COI 为静态信号依赖锥，不替代专业 CDC/RDC 或完整形式化语义分析'] }
+      analyzer = { engine: 'slang-ast', version, limitations: ['MoonGlass 消费 elaborated AST 的过程块、条件、case、赋值与符号引用，并与保守结构抽取交叉补充', '未启用 ast-json-detailed-types，避免大型 class/UVM 工程输出膨胀', 'COI 为静态信号依赖锥，不替代专业 CDC/RDC 或完整形式化语义分析', inputNote] }
       addFact('$design', '$root', 'SLANG_ELABORATED_AST', `Slang elaboration 完成：${version}`, astPath, 1)
       const astSize = statSync(astPath).size
       let consumed = false
