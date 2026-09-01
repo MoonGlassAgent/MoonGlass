@@ -10,7 +10,7 @@ MoonGlass 是面向 ASIC/SoC 设计工程师的 AI 工作台，以六阶段流�
 
 - [在线网页版说明书](https://moonglassagent.github.io/MoonGlass/)：适合直接打开和分享，支持标题、摘要和封面卡片。
 - [ASIC Agent 学术讨论稿](https://moonglassagent.github.io/MoonGlass/paper.html)：从代码生成到工程签核，系统讨论流程控制、验证证据和开放研究议程。
-- [傻瓜式 HTML 使用说明书](./docs/QUICK-START-ZH-CN.html)：从解压启动、配置模型到完成六阶段开发，适合第一次使用 MoonGlass 的用户。
+- [傻瓜式 HTML 使用说明书](https://moonglassagent.github.io/MoonGlass/QUICK-START-ZH-CN.html)：从解压启动、配置模型到完成六阶段开发，适合第一次使用 MoonGlass 的用户。
 - [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)：简明功能说明与工程注意事项。
 - [下载 MoonGlass v0.6.0 完整绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.6.0)
 
@@ -18,10 +18,10 @@ MoonGlass 是面向 ASIC/SoC 设计工程师的 AI 工作台，以六阶段流�
 
 以下文章来自 MoonGlass 在真实 ASIC Agent 开发与验证中的工程实践，用于开放讨论、工程评审与后续实验设计；它们不代表已经完成同行评审，也不构成商业 EDA 签核认证。
 
-- [从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流](./docs/paper.html) — 讨论需求、架构、RTL、验证、质量门禁、变更控制和工程证据。
-- [MoonGlass AIGV：面向 ASIC IP 的语义化、风险驱动与证据闭环验证方法学](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html) — 介绍 Verification Space、Multi-Oracle、风险加权 Mutation、Residual Risk 与机器签核建议。
-- [MoonGlass：长时 Agent 芯片开发的上下文与执行工程学](./docs/MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html) — 总结阶段会话隔离、上下文生命周期、模型适配、完成屏障、证据门禁与故障恢复。
-- [MoonGlass v0.8.0 最新开发报告](./docs/dev-summary-v0.8.0.md) — 区分已经实现、局部验证通过、当前工作区增量和正式发布边界。
+- [从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流](https://moonglassagent.github.io/MoonGlass/paper.html) — 讨论需求、架构、RTL、验证、质量门禁、变更控制和工程证据。
+- [MoonGlass AIGV：面向 ASIC IP 的语义化、风险驱动与证据闭环验证方法学](https://moonglassagent.github.io/MoonGlass/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html) — 介绍 Verification Space、Multi-Oracle、风险加权 Mutation、Residual Risk 与机器签核建议。
+- [MoonGlass：长时 Agent 芯片开发的上下文与执行工程学](https://moonglassagent.github.io/MoonGlass/MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html) — 总结阶段会话隔离、上下文生命周期、模型适配、完成屏障、证据门禁与故障恢复。
+- [MoonGlass v0.8.0 最新开发报告](https://moonglassagent.github.io/MoonGlass/dev-summary-v0.8.0.html) — 区分已经实现、局部验证通过、当前工作区增量和正式发布边界。
 
 ## 能做什么
 
@@ -93,7 +93,7 @@ RTL Design Browser 用于解析 Top、展开设计层次并查看模块实例关
 
 v0.6.0 重点增强主会话端到端验证能力，加入功能覆盖率、RTL 覆盖率、双通道结果合并、独立证据 Review 和验证签核门禁；同时增强总体报告、项目信息编辑、模型恢复显示和文件查找。完整功能请使用 Release 中的 Windows 绿色版。
 
-第一次使用建议先看 [傻瓜式 HTML 使用说明书](./docs/QUICK-START-ZH-CN.html)，工程说明见 [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)。
+第一次使用建议先看 [傻瓜式 HTML 使用说明书](https://moonglassagent.github.io/MoonGlass/QUICK-START-ZH-CN.html)，工程说明见 [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)。
 
 ## 授权
 
