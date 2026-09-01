@@ -87,6 +87,10 @@ const api: MoonGlassApi = {
     listSessions: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ListSessions, projectId),
     switchSession: (projectId: string, sessionName: string) => ipcRenderer.invoke(IPC.Agent.SwitchSession, projectId, sessionName),
     closeSession: (projectId: string, sessionName: string) => ipcRenderer.invoke(IPC.Agent.CloseSession, projectId, sessionName),
+    runVerifBatch: (projectId: string, scenarioIds: string[], options?: { batchIndex?: number }) =>
+      ipcRenderer.invoke(IPC.Agent.RunVerifBatch, projectId, scenarioIds, options),
+    runVerifBatches: (projectId: string, options?: { batchSize?: number; maxBatches?: number }) =>
+      ipcRenderer.invoke(IPC.Agent.RunVerifBatches, projectId, options),
     onEvent: (cb: (payload: AgentEventPayload) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, payload: AgentEventPayload): void =>
         cb(payload)

@@ -123,6 +123,17 @@ const MANAGED_PHASE_PROMPTS: Record<Phase, string> = {
   SYNTH: '完成综合评估：检查约束，生成 SDC，执行逻辑综合，汇总网表、单元、面积和时序估算及警告；明确区分估算与正式签核。'
 }
 
+// VERIF 托管（上下文治理第 3 批）：主会话只做规划与最终审查；
+// 批次场景由主进程经 runVerifBatches 逐批 spawn 平行会话执行，完成判定绑定工具登记证据。
+const MANAGED_VERIF_PLANNING_PROMPT =
+  '完成验证规划与环境准备：更新验证计划和覆盖率计划，搭建或修复验证环境并跑通一次基础回归确认环境可用；' +
+  '调用 build_verification_intelligence 生成风险候选与结构事实，圈定真实验证点并用 register_verification_intents 登记（锚定真实 riskIds/requirementIds/rtlSignals）。' +
+  '场景批次执行由 MoonGlass 主进程编排派发到独立批次会话，本会话只做规划，不要逐批执行场景回归。'
+const MANAGED_VERIF_REVIEW_PROMPT =
+  'VERIF 批次执行已结束。读取 verification/intelligence/execution-summary.json 核对批次结果与证据增量；' +
+  '调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始测试、日志、result.json 和覆盖率证据，存在阻断项时继续修复并回归；' +
+  '最后用实际机器可读产物和原始证据更新 docs/04_verification/ 文档、需求追溯和 docs/06_validation/ 验证报告。'
+
 function pendingDecisionRequests(): AgentDecisionRequest[] {
   const messages = useChatStore.getState().messages
   const answered = new Set(messages.flatMap((message) =>
@@ -809,7 +820,22 @@ export function WorkspacePage(): React.JSX.Element {
             appendLog(`一键托管：${PHASE_LABELS[phase]} 变更响应异常，记录风险并继续：${message}`)
           }
         }
-        try { await runManagedAgent(MANAGED_PHASE_PROMPTS[phase]) } catch (error) {
+        try {
+          if (phase === 'VERIF') {
+            // 第 3 批：VERIF 风险闭环改为“主会话规划 → 主进程逐批 spawn 批次会话执行 → 主会话最终审查”
+            await runManagedAgent(MANAGED_VERIF_PLANNING_PROMPT)
+            if (managedStopRef.current) throw new Error('用户停止托管')
+            const loop = await window.moonglass.agent.runVerifBatches(projectId)
+            appendLog(`一键托管：VERIF 批次编排完成 ${loop.batches.length} 批（${loop.stoppedBy}）：${loop.message}`)
+            if (loop.stoppedBy !== 'exhausted') {
+              totalRisks += 1
+              step.detail = `VERIF 批次编排中止（${loop.stoppedBy}）：${loop.message}`
+            }
+            await runManagedAgent(MANAGED_VERIF_REVIEW_PROMPT)
+          } else {
+            await runManagedAgent(MANAGED_PHASE_PROMPTS[phase])
+          }
+        } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
           if (isManagedPause(message)) throw error
           totalRisks += 1; step.detail = `阶段 Agent 异常已记录：${message}`

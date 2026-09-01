@@ -26,6 +26,8 @@ import type {
   ToolDetection,
   ToolInstallJob,
   ToolInstallResult,
+  VerifBatchLoopResult,
+  VerifBatchRunResult,
   WaveformOpenResult
 } from './types/moonglass'
 import type { OpenProcessLibrary, ProcessLibraryRecord } from './types/moonglass'
@@ -87,7 +89,10 @@ export const IPC = {
     Event: 'agent:event',
     ListSessions: 'agent:list-sessions',
     SwitchSession: 'agent:switch-session',
-    CloseSession: 'agent:close-session'
+    CloseSession: 'agent:close-session',
+    /** VERIF 批次编排（第 3 批）：单个批次 / 循环派发 */
+    RunVerifBatch: 'agent:run-verif-batch',
+    RunVerifBatches: 'agent:run-verif-batches'
   },
   Fs: {
     Tree: 'fs:tree',
@@ -207,6 +212,10 @@ export interface MoonGlassApi {
     switchSession(projectId: string, sessionName: string): Promise<AgentSessionInfo>
     /** 关闭并删除平行会话；主会话不可关闭 */
     closeSession(projectId: string, sessionName: string): Promise<AgentSessionInfo>
+    /** VERIF 批次编排（第 3 批）：派发单个批次会话执行指定场景，返回证据绑定的完成判定 */
+    runVerifBatch(projectId: string, scenarioIds: string[], options?: { batchIndex?: number }): Promise<VerifBatchRunResult>
+    /** VERIF 批次编排（第 3 批）：循环“选择下一批 → 派发批次会话”直至队列耗尽或熔断 */
+    runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number }): Promise<VerifBatchLoopResult>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
   }

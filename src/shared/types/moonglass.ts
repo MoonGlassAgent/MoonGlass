@@ -497,9 +497,47 @@ export interface AgentSessionInfo {
   providersReady: boolean
 }
 
+/** VERIF 批次完成判定（上下文治理第 3 批，决策 4：绑定工具登记证据，不读会话文本） */
+export interface VerifBatchVerdict {
+  /** 全齐：所有场景已登记 scenario_hits 且 posture 晚于批次开始 */
+  complete: boolean
+  /** 未在任何 verification/results/&#42;&#42;/scenario_hits.json 中登记的场景 ID */
+  missingScenarioIds: string[]
+  /** verification-posture.json 的 generatedAt；不存在或不可解析为 null */
+  postureGeneratedAt: string | null
+  /** posture 是否晚于批次开始时间 */
+  postureFresh: boolean
+  /** 结构化缺失说明（供熔断报告） */
+  reasons: string[]
+}
+
+/** VERIF 批次编排的单次批次结果（主进程 AgentService.runVerifBatch 返回） */
+export interface VerifBatchRunResult {
+  batchIndex: number
+  /** 批次平行会话逻辑名（phase-verif--batch-N） */
+  sessionName: string
+  scenarioIds: string[]
+  startedAt: string
+  finishedAt: string
+  status: 'completed' | 'circuit-broken' | 'error'
+  verdict: VerifBatchVerdict
+  /** 熔断原因（watchdog / diagnostic-control 无进展 / 证据缺失 / 会话异常） */
+  circuitBreaker: string | null
+  errorMessage: string | null
+  /** 批次会话 JSONL 的归档文件路径；未产生会话文件时为 null */
+  archivedTo: string | null
+}
+
+/** VERIF 批次编排循环结果（AgentService.runVerifBatches 返回） */
+export interface VerifBatchLoopResult {
+  batches: VerifBatchRunResult[]
+  /** exhausted=队列耗尽正常结束；circuit-break=批次熔断停止后续批次；max-batches=达到批次上限；error=编排异常 */
+  stoppedBy: 'exhausted' | 'circuit-break' | 'max-batches' | 'error'
+  message: string
+}
+
 /** Pi 当前会话累计用量；不同 Provider 可能省略费用或上下文估算。 */
-export interface AgentSessionStats {
-  sessionId?: string
+export interface AgentSessionStats {  sessionId?: string
   userMessages: number
   assistantMessages: number
   toolCalls: number

@@ -14,6 +14,7 @@ const suites = {
     'scripts/verification-intelligence-smoke.mjs',
     'scripts/verification-guidance-smoke.mjs',
     'scripts/scenario-hits-smoke.mjs',
+    'scripts/verif-batch-verdict-smoke.mjs',
     'scripts/formal-smoke.mjs'
   ],
   integration: [

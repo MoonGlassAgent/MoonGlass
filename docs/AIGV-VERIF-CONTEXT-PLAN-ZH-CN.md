@@ -82,35 +82,40 @@ buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): string
 
 ## 3. 分批实施清单
 
-### 第 1 批：读取纪律 + 源头止损（小改动）
+### 第 1 批：读取纪律 + 源头止损（小改动）✅ 已完成
 
-- [ ] `src/main/services/AgentService.ts` dirGuide：加大文件禁令清单（2.4）。
-- [ ] `packages/verification-intelligence-engine`：slang AST 不落工作区——
-      写系统临时目录（解析后删除）或 userData 缓存；工作区只保留 `slang-diagnostics.log`。
-      注意引擎以源码复制方式在 pi 侧运行，临时目录方案优先（无路径依赖）。
-- [ ] `resources/moonglass/pi-bridge/moonglass-tools.ts`：`run_simulation` 回显收紧——
-      PASS 只给结论行 + 产物路径；FAIL 给日志首尾各 N 行 + 失败指纹；全文留磁盘按需读。
-- [ ] VERIF 提示词模板同步禁令清单（`packages/prompts/src/templates.ts`）。
+- [x] `src/main/services/AgentService.ts` dirGuide：加大文件禁令清单（2.4）。
+- [x] `packages/verification-intelligence-engine`：slang AST 不落工作区——
+      写系统临时目录（按 rtlHash 命名，消费后删除，失败保留供调试）；工作区只保留 `slang-diagnostics.log`。
+- [x] `resources/moonglass/pi-bridge/moonglass-tools.ts`：`run_simulation` 回显收紧——
+      PASS 只给结论行 + 产物路径；FAIL 给首尾截断 + 失败指纹行。
+- [x] VERIF 提示词模板同步禁令清单（2.1.1）。
 
-### 第 2 批：摘要入口 + 根因工具化（引擎小版本）
+### 第 2 批：摘要入口 + 根因工具化（引擎小版本）✅ 已完成
 
-- [ ] `execution-summary.json` 生成（2.3），posture 保持不动（页面依赖）。
-- [ ] `record_root_cause` 工具 + `root-causes.json` + 引擎 rebuild 挂回证据（2.1）。
-- [ ] `review_verification_evidence` 增加 FAIL→PASS 无根因记录 warning。
-- [ ] `buildBatchPrompt` 确定性函数 + smoke（2.2）。
-- [ ] VERIF 阶段 compact 阈值调激进（AgentService 侧，阈值按阶段区分）。
-- [ ] smoke：`record_root_cause` 长度约束/链式字段；execution-summary ≤10KB；buildBatchPrompt 输出结构。
+- [x] `execution-summary.json` 生成（2.3），posture 保持不动（页面依赖）。
+- [x] `record_root_cause` 工具 + `root-causes.json` + 引擎 rebuild 挂回证据（2.1）。
+- [x] `review_verification_evidence` 增加 FAIL→PASS 无根因记录 warning。
+- [x] `buildBatchPrompt` 确定性函数 + smoke（2.2）。
+- [x] VERIF 阶段 compact 阈值调激进——pi 无 RPC 级配置，经 `.pi/settings.json`
+      `compaction.reserveTokens` 实现（VERIF 写 20% 窗口 = 80% 触发压缩，spawn 前按阶段写入）；
+      60% 提醒经 `getSessionStats` 轮询事件实现。
 
-### 第 3 批：主进程编排的批级隔离（AgentService 特性）
+### 第 3 批：主进程编排的批级隔离（AgentService 特性）✅ 已完成
 
-- [ ] VERIF 托管运行编排（主进程代码，非 LLM）：
-      `select_next_verification_batch` → `buildBatchPrompt` → spawn `phase-verif--batch-N`
-      （继承 AgentModelStore 阶段模型选择）→ 等待 settle。
-- [ ] 完成判定：校验批次 scenarioIds 均已出现在 scenario_hits 登记且 posture 重建时间戳
-      晚于批次开始；缺一 → 熔断路径。
-- [ ] 双重终止 + 自动 close + 归档（复用现有平行会话 closeSession/归档机制）。
-- [ ] 批次会话异常（watchdog / DIAGNOSTIC_ENHANCEMENT 升级无果）→ 结构化结果回报主流程。
-- [ ] 回归：阶段切换、平行会话隔离、归档清理的现有 smoke 必须保持绿。
+- [x] VERIF 托管运行编排（主进程代码，非 LLM）：
+      `AgentService.runVerifBatches` 循环：读 `scenario-execution-plan.json` 选择下一批
+      （对齐 `select_next_verification_batch` 默认路径）→ `buildBatchPrompt` →
+      spawn `phase-verif--batch-N`（后台平行会话，继承 AgentModelStore 阶段模型选择）→ 等待 settle。
+- [x] 完成判定：`verif-batch-verdict.ts#judgeBatchCompletion` 校验批次 scenarioIds 均已出现在
+      scenario_hits 登记且 posture 重建时间戳晚于批次开始；缺一 → 熔断路径。
+- [x] 双重终止 + 自动 close + 归档（`archiveBatchSession`，复用 restartSessionFresh 归档语义）。
+- [x] 批次会话异常（watchdog abort / DIAGNOSTIC_ENHANCEMENT 升级无果 / 证据缺失）→
+      结构化 `VerifBatchRunResult.circuitBreaker` 回报主流程，循环停止后续批次。
+- [x] IPC：`agent:run-verif-batch` / `agent:run-verif-batches`（契约 + preload + WorkspacePage
+      一键托管 VERIF 步骤接入）。
+- [x] 回归：阶段切换、平行会话隔离、归档清理的现有 smoke 保持绿；新增
+      `scripts/verif-batch-verdict-smoke.mjs`（完成判定 + 熔断路径 + 批次选择，入 core 套件）。
 
 ### 第 4 批（观察后定，本说明不承诺）
 

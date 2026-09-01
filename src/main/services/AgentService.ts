@@ -20,7 +20,8 @@ import { randomUUID } from 'node:crypto'
 import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
-import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase } from '@shared/types'
+import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound } from '@moonglass/verification-intelligence-engine'
+import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
 import { resolveModelContext } from '@shared/model-context'
 import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
@@ -29,6 +30,7 @@ import type { LlmProviderService } from './LlmProviderService.ts'
 import type { AgentModelStore } from './AgentModelStore.ts'
 import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
+import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
 
 /** pi 模型切换命令返回的 Model 对象最小字段 */
 interface PiModelInfo {
@@ -181,6 +183,8 @@ interface PiSession {
   /** 每轮重建的工具活动守护器，避免 Agent 陷入重复读写循环。 */
   watchdog: AgentRunWatchdog
   watchdogActionPending: boolean
+  /** VERIF 会话上下文占用 ≥60% 提醒的一次性标志（回落后重置） */
+  verifContextWarned: boolean
 }
 
 /** pi 消息（仅声明映射所需的最小形状） */
@@ -489,6 +493,7 @@ scripts/
 - 验证规划必须调用 \`build_verification_intelligence\`，根据 Requirement Model、RTL 结构事实、风险分类和 Coverage Feedback 选择最高价值 Scenario；不得把风险标记写成已确认 Bug，也不得生成无结构依据的任意 Feature 笛卡尔积。
 - 智能验证必须读取 \`verification-intent-registry.json\`、\`spec-gap-register.json\` 和 \`coverage-hole-register.json\`；覆盖缺口必须区分不可达、约束阻断、激励缺失、观察缺失、规格未定义与工具/插桩问题，不能只靠增加随机种子掩盖。
 - \`verification/intelligence/\` 下的 JSON（\`verification-posture.json\`、\`verification-state.json\`、\`scenario-registry.json\`、\`verification-intent-registry.json\`、\`coverage-hole-register.json\` 等）是 \`build_verification_intelligence\` 等工具生成的机器可读产物，Agent 禁止手工编辑或覆盖它们；\`verification/results/\` 下的 \`scenario_hits.json\` 由 \`run_simulation(scenarioIds=...)\` 自动登记，同样禁止手工编辑或覆盖。批次进度、规格裁决、门禁结论只能写入 \`docs/04_verification/\` 的 Markdown 报告或 \`verification/results/\` 下的其他证据文件。场景裁决（规格澄清/豁免/验证结果）必须调用 \`record_scenario_adjudication\` 工具写回，该工具会自动重新生成态势快照。
+- \`verification/intelligence/\` 下的 \`slang-ast.json\`、\`verification-state.json\`、\`feature-interaction-graph.json\` 是引擎中间产物或全量模型，体积可达数 MB 至十数 MB，禁止整读这些文件；Agent 日常状态读取的唯一入口是 \`verification/intelligence/execution-summary.json\`（≤10KB 摘要：进展计数、top-10 开放场景、阻断项与下一步建议），需要场景细节时以 \`select_next_verification_batch\` 的返回或按需定向查询为准，不得把整份 JSON 读入上下文。
 - 每个智能规划 Scenario 必须使用稳定 SCN-* ID；仿真通过 \`run_simulation\` 的 \`scenarioIds\` 参数绑定场景，reach/pass/证据由工具自动写入 \`verification/results/<module>/scenario_hits.json\`。关键 Scenario 必须验证、Formal 证明、证明不可达或经批准豁免，最后调用 \`review_verification_scenarios\`。
 - RTL 修复按影响分级：L1 语法/位宽/Lint/局部 Coding Bug 与 L2 不改变已批准规格的状态、握手、边界和异常修复可直接修改并自动完成定向复现、受影响回归、全量回归、覆盖率/Formal 与独立证据 Review；L3 接口、寄存器映射、时钟复位、数据宽度、PPA 目标、SRAM 组织等架构影响，或 L4 需求语义、优先级、并发行为、外部可见行为变化，必须用标题含 \`[L3]\` 或 \`[L4]\` 的结构化决策请求暂停并等待用户裁决。
 - 自动修复不得删除失败用例、削弱 Checker/Assertion/覆盖率目标、扩大 don't-care，或在没有规格依据时修改测试预期；RTL 与测试同时修改必须执行独立 Review。连续修复失败或影响扩散时升级为 L3。
@@ -527,6 +532,46 @@ argument-hint: "<模块名>"
     writeFileSync(join(promptsDir, 'verify.md'), verifyTemplate, 'utf-8')
   }
 
+  /**
+   * VERIF 上下文治理（第 2 批）：按阶段写工作区 `.pi/settings.json` 的 compaction 段。
+   * pi 不支持 RPC 级按会话配置阈值，但进程启动时加载项目级 settings.json
+   * （`compaction.reserveTokens`：上下文超过 contextWindow - reserveTokens 即自动压缩），
+   * 而 MoonGlass 阶段切换会重启 pi 进程，因此 spawn 前按阶段写入即可生效：
+   * VERIF 用更激进的 80% 触发（reserveTokens = 20% 上下文窗口），其他阶段恢复 pi 默认。
+   * 只管理带 moonglass 标记的段；用户自写的 compaction 配置不覆盖、不清理。
+   */
+  private applyPhaseCompactionSettings(workspace: string, phase: Phase, modelId: string | undefined): void {
+    const settingsPath = join(workspace, '.pi', 'settings.json')
+    let settings: Record<string, unknown> = {}
+    if (existsSync(settingsPath)) {
+      try {
+        settings = JSON.parse(readFileSync(settingsPath, 'utf-8')) as Record<string, unknown>
+      } catch {
+        console.warn('[agent-service] 工作区 .pi/settings.json 无法解析，跳过 compaction 阈值管理')
+        return
+      }
+    }
+    const existing = settings.compaction as Record<string, unknown> | undefined
+    const managedByUs = existing?.managedBy === 'moonglass-verif'
+    if (phase !== 'VERIF') {
+      if (!managedByUs) return
+      delete settings.compaction
+      writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+      return
+    }
+    if (existing && !managedByUs) return // 尊重用户自定义 compaction 配置
+    const contextWindow = modelId ? resolveModelContext(modelId)?.contextWindow : undefined
+    if (!contextWindow) {
+      console.warn(`[agent-service] VERIF 会话模型 ${modelId ?? '(未知)'} 上下文窗口未知，compaction 阈值保持 pi 默认`)
+      return
+    }
+    // 80% 触发自动压缩；keepRecentTokens 维持 pi 默认（20000）
+    const desired = { enabled: true, reserveTokens: Math.ceil(contextWindow * 0.2), managedBy: 'moonglass-verif' }
+    if (existing?.reserveTokens === desired.reserveTokens) return
+    settings.compaction = desired
+    writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
+  }
+
   private spawnSession(
     projectId: string,
     phase: Phase,
@@ -537,6 +582,11 @@ argument-hint: "<模块名>"
     const workspace = this.workspaceDir(projectId)
     mkdirSync(workspace, { recursive: true })
     this.writeSystemPrompt(projectId, phase)
+    // VERIF 阶段 compact 阈值调激进（其他阶段恢复默认）；模型选择沿用 ensureSession 的回退顺序
+    const intendedModel =
+      this.modelStore.get(projectId, sessionNameFromFile(targetSessionFile ?? this.sessionFilePath(projectId)))?.modelId
+      ?? this.readyProviders()[0]?.models[0]
+    this.applyPhaseCompactionSettings(workspace, phase, intendedModel)
 
     const providers = this.readyProviders()
     const sessionFile = resolve(targetSessionFile ?? this.sessionFilePath(projectId))
@@ -630,7 +680,8 @@ argument-hint: "<模块名>"
       activeSessionName: sessionName,
       isStreaming: false,
       watchdog: new AgentRunWatchdog(phase),
-      watchdogActionPending: false
+      watchdogActionPending: false,
+      verifContextWarned: false
     }
     this.sessions.set(projectId, session)
     return session
@@ -1180,6 +1231,260 @@ argument-hint: "<模块名>"
     return info
   }
 
+  // ==================== VERIF 批次编排（上下文治理第 3 批） ====================
+
+  /**
+   * 派发单个 VERIF 批次会话（主进程编排，批次 prompt 不经 LLM 主会话拼装）：
+   * buildBatchPrompt 确定性生成批次 prompt → spawn 后台平行会话 phase-verif--batch-N
+   * （显式继承 VERIF 阶段主会话的模型选择）→ 发送批次 prompt 并等待 settle →
+   * 证据绑定完成判定（scenario_hits 登记 + posture 重建时间戳）→ 双重终止后 close + 归档。
+   */
+  async runVerifBatch(projectId: string, scenarioIds: string[], options?: { batchIndex?: number; timeoutMs?: number }): Promise<VerifBatchRunResult> {
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
+    if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法派发 VERIF 批次会话')
+    const ids = [...new Set(scenarioIds.map((id) => id.trim().toUpperCase()))].filter(Boolean)
+    if (ids.length === 0) throw new Error('[agent-service] 批次场景列表为空')
+    const workspace = this.workspaceDir(projectId)
+    const batchIndex = options?.batchIndex ?? this.nextVerifBatchIndex(projectId)
+    const startedAt = new Date().toISOString()
+    const diagnosticBefore = readDiagnosticControl(workspace)
+    const emptyVerdict: VerifBatchVerdict = { complete: false, missingScenarioIds: ids, postureGeneratedAt: null, postureFresh: false, reasons: [] }
+    const finish = (partial: Pick<VerifBatchRunResult, 'status' | 'verdict' | 'circuitBreaker' | 'errorMessage'>, sessionName: string, archivedTo: string | null): VerifBatchRunResult => ({
+      batchIndex,
+      sessionName,
+      scenarioIds: ids,
+      startedAt,
+      finishedAt: new Date().toISOString(),
+      ...partial,
+      archivedTo
+    })
+
+    // 批次 prompt 由引擎确定性函数拼装（契约 §2.2），LLM 不经手
+    let promptText: string
+    try {
+      promptText = buildBatchPrompt(workspace, ids)
+    } catch (error) {
+      return finish({ status: 'error', verdict: emptyVerdict, circuitBreaker: null, errorMessage: `批次 prompt 生成失败：${error instanceof Error ? error.message : String(error)}` }, '', null)
+    }
+
+    // 平行会话文件：与 resetSession 相同的两行头；重名时追加时间戳后缀
+    let sessionName = `${phaseMainSessionName('VERIF')}--batch-${batchIndex}`
+    let sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    if (existsSync(sessionFile)) {
+      sessionName = `${sessionName}-${Date.now().toString(36)}`
+      sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    }
+    const now = new Date().toISOString()
+    writeFileSync(sessionFile, [
+      JSON.stringify({ type: 'session', version: 3, id: randomUUID(), timestamp: now, cwd: workspace }),
+      JSON.stringify({ type: 'session_info', id: randomUUID().slice(0, 8), parentId: null, timestamp: now, name: `VERIF 批次 ${batchIndex} (VERIF)` })
+    ].join('\n') + '\n', 'utf-8')
+
+    // 批次会话作为后台平行会话运行：主会话保持活动，批次流式事件不混入主会话 UI
+    const previousActive = this.sessions.get(projectId)
+    let session: PiSession
+    try {
+      session = this.spawnSession(projectId, 'VERIF', project.name, sessionFile)
+    } catch (error) {
+      rmSync(sessionFile, { force: true })
+      throw error
+    }
+    this.sessions.delete(projectId)
+    if (previousActive) this.sessions.set(projectId, previousActive)
+    this.backgroundFor(projectId).set(resolve(sessionFile), session)
+
+    let result: VerifBatchRunResult
+    try {
+      await session.client.waitReady()
+      // 决策 5：批次会话显式继承 VERIF 阶段主会话的模型选择（AgentModelStore）
+      const providers = this.readyProviders()
+      const inherited = this.modelStore.get(projectId, phaseMainSessionName('VERIF'))
+        ?? (previousActive?.phase === 'VERIF' ? previousActive.selectedModel : null)
+      const selection = inherited && providers.some((p) => p.id === inherited.providerId && p.models.includes(inherited.modelId))
+        ? inherited
+        : { providerId: providers[0]!.id, modelId: providers[0]!.models[0]! }
+      await this.setModelInternal(session, selection.providerId, selection.modelId)
+      this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
+
+      this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 已派发到平行会话 ${sessionName}：${ids.join('、')}` })
+      const run = await this.runBatchToSettled(session, promptText, options?.timeoutMs ?? 60 * 60_000)
+
+      // 完成判定（决策 4）：绑定工具登记证据，不读会话文本
+      const verdict = judgeBatchCompletion(workspace, ids, startedAt)
+      const diagnosticAfter = readDiagnosticControl(workspace)
+      const breakers: string[] = []
+      if (run.errorMessage) breakers.push(`批次会话异常：${run.errorMessage}`)
+      if (run.watchdogAbort) breakers.push(`watchdog 熔断：${run.watchdogAbort}`)
+      if (!verdict.complete) breakers.push(`证据缺失：${verdict.reasons.join('；')}`)
+      if (isDiagnosticStalled(diagnosticBefore, diagnosticAfter)) breakers.push('diagnostic-control 进入 DIAGNOSTIC_ENHANCEMENT 且本批诊断等级无进展')
+      if (breakers.length === 0) {
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 正常完成（证据齐）：${ids.join('、')}` })
+        result = finish({ status: 'completed', verdict, circuitBreaker: null, errorMessage: null }, sessionName, null)
+      } else {
+        const circuitBreaker = breakers.join('；')
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 熔断：${circuitBreaker}` })
+        result = finish({ status: 'circuit-broken', verdict, circuitBreaker, errorMessage: run.errorMessage }, sessionName, null)
+      }
+    } catch (error) {
+      result = finish({ status: 'error', verdict: emptyVerdict, circuitBreaker: null, errorMessage: error instanceof Error ? error.message : String(error) }, sessionName, null)
+    }
+    // 决策 7：正常完成或异常熔断后都 close + 归档，不堆积平行会话
+    result.archivedTo = this.archiveBatchSession(projectId, session)
+    return result
+  }
+
+  /**
+   * VERIF 批次编排循环：select_next_verification_batch 等价的主进程选择
+   * （复用 scenario-execution-plan.json，缺失时重建引擎产物）→ 逐批 runVerifBatch。
+   * 批次熔断（证据缺失 / watchdog / DIAGNOSTIC_ENHANCEMENT 无进展）即停止后续批次。
+   */
+  async runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number }): Promise<VerifBatchLoopResult> {
+    const batchSize = Math.max(1, Math.min(12, Math.trunc(options?.batchSize ?? 3)))
+    const maxBatches = Math.max(1, Math.trunc(options?.maxBatches ?? 20))
+    const workspace = this.workspaceDir(projectId)
+    const batches: VerifBatchRunResult[] = []
+    for (let index = 0; index < maxBatches; index += 1) {
+      let scenarioIds: string[]
+      try {
+        scenarioIds = this.selectVerifBatchScenarioIds(workspace, batchSize)
+      } catch (error) {
+        return { batches, stoppedBy: 'error', message: `批次选择失败：${error instanceof Error ? error.message : String(error)}` }
+      }
+      if (scenarioIds.length === 0) {
+        return { batches, stoppedBy: 'exhausted', message: '场景执行队列已空：没有待执行的 Scenario' }
+      }
+      let result: VerifBatchRunResult
+      try {
+        result = await this.runVerifBatch(projectId, scenarioIds, { batchIndex: this.nextVerifBatchIndex(projectId) })
+      } catch (error) {
+        return { batches, stoppedBy: 'error', message: `批次派发异常：${error instanceof Error ? error.message : String(error)}` }
+      }
+      batches.push(result)
+      if (result.status !== 'completed') {
+        return {
+          batches,
+          stoppedBy: 'circuit-break',
+          message: `批次 ${result.sessionName} 未正常完成（${result.circuitBreaker ?? result.errorMessage ?? '未知原因'}），已停止后续批次`
+        }
+      }
+    }
+    return { batches, stoppedBy: 'max-batches', message: `达到批次上限 ${maxBatches}，停止派发；可再次调用继续` }
+  }
+
+  /** 主进程侧批次选择：复用执行计划文件，缺失/损坏时重建引擎产物后重读（对齐 select_next_verification_batch 默认路径）。 */
+  private selectVerifBatchScenarioIds(workspace: string, limit: number): string[] {
+    let ids = readExecutionPlanBatch(workspace, limit)
+    if (ids === null) {
+      buildVerificationIntelligence(workspace)
+      ids = readExecutionPlanBatch(workspace, limit)
+      if (ids === null) throw new Error('scenario-execution-plan.json 缺失且重建后仍不可读，请先完成验证规划')
+    }
+    // 与 pi 工具一致：登记探索轮次，供饱和度（STALLED）检测
+    if (ids.length > 0) recordExplorationRound(workspace, ids)
+    return ids
+  }
+
+  /** 批次序号：扫描会话目录（含 archive）中已有的 phase-verif--batch-N，取 max+1。 */
+  private nextVerifBatchIndex(projectId: string): number {
+    const prefix = `session-${phaseMainSessionName('VERIF')}--batch-`
+    const pattern = new RegExp(`^${prefix}(\\d+)`)
+    let max = 0
+    const scan = (dir: string): void => {
+      if (!existsSync(dir)) return
+      for (const fileName of readdirSync(dir)) {
+        const match = pattern.exec(fileName)
+        if (match) max = Math.max(max, Number(match[1]))
+      }
+    }
+    const dir = this.sessionDir(projectId)
+    scan(dir)
+    scan(join(dir, 'archive'))
+    return max + 1
+  }
+
+  /**
+   * 批次会话的执行与观察：发送批次 prompt 并等待 settle；并行观察工具事件，
+   * watchdog steer/abort 语义与主会话一致（abort 即熔断信号）。返回不抛错，
+   * 异常经 errorMessage 上报，由调用方统一走完成判定。
+   */
+  private async runBatchToSettled(session: PiSession, promptText: string, timeoutMs: number): Promise<{ watchdogAbort: string | null; errorMessage: string | null }> {
+    let finished = false
+    let watchdogAbort: string | null = null
+    let steerPending = false
+    const watcher = (async () => {
+      while (!finished) {
+        const event = await session.client.waitForEvent(
+          (e) => e.type === 'tool_execution_start' || e.type === 'tool_execution_end' || e.type === 'agent_settled',
+          timeoutMs
+        ).catch(() => null)
+        if (!event || finished || event.type === 'agent_settled') return
+        const action: WatchdogAction | null = event.type === 'tool_execution_start'
+          ? session.watchdog.start(String(event.toolCallId ?? ''), String(event.toolName ?? ''), event.args ?? event.input ?? event.arguments)
+          : session.watchdog.end(String(event.toolCallId ?? ''), Boolean(event.isError))
+        if (!action || steerPending) continue
+        if (action.level === 'abort') {
+          watchdogAbort = action.reason
+          await session.client.command({ type: 'abort' }, 5_000).catch(() => undefined)
+          return
+        }
+        steerPending = true
+        void session.client.command({
+          type: 'prompt',
+          message: `[MoonGlass Watchdog]\n原因：${action.reason}\n恢复要求：${action.instruction}`,
+          streamingBehavior: 'steer'
+        }, 15_000)
+          .catch(() => undefined)
+          .finally(() => { steerPending = false })
+      }
+    })()
+
+    let errorMessage: string | null = null
+    try {
+      const settled = session.client.waitForEvent((event) => {
+        if (event.type === 'agent_settled') return true
+        if (event.type !== 'message_update') return false
+        const delta = (event.assistantMessageEvent ?? {}) as Record<string, unknown>
+        return delta.type === 'error'
+      }, timeoutMs)
+      const [, terminalEvent] = await Promise.all([
+        session.client.command({ type: 'prompt', message: promptText }, 15 * 60_000),
+        settled
+      ])
+      if (terminalEvent.type === 'message_update') {
+        const delta = (terminalEvent.assistantMessageEvent ?? {}) as Record<string, unknown>
+        errorMessage = String(delta.errorMessage ?? delta.error ?? 'Agent 执行失败')
+      }
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error)
+    } finally {
+      finished = true
+      await watcher
+    }
+    return { watchdogAbort, errorMessage }
+  }
+
+  /** 批次会话终止后的 close + 归档：销毁进程、摘除后台表、JSONL 复制到 archive/ 并删除活动文件（复用 restartSessionFresh 的归档语义）。 */
+  private archiveBatchSession(projectId: string, session: PiSession): string | null {
+    const background = this.backgroundSessions.get(projectId)
+    const key = resolve(session.currentSessionFile)
+    if (background?.get(key) === session) {
+      background.delete(key)
+      if (background.size === 0) this.backgroundSessions.delete(projectId)
+    }
+    session.client.dispose()
+    const file = session.currentSessionFile
+    if (!existsSync(file)) return null
+    const archiveDir = join(this.sessionDir(projectId), 'archive')
+    mkdirSync(archiveDir, { recursive: true })
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    const target = join(archiveDir, `${basename(file, '.jsonl')}-${stamp}.jsonl`)
+    copyFileSync(file, target)
+    rmSync(file, { force: true })
+    this.modelStore.delete(projectId, session.activeSessionName)
+    return target
+  }
+
   async abort(projectId: string): Promise<void> {
     const session = this.sessions.get(projectId)
     if (!session) return
@@ -1296,6 +1601,19 @@ argument-hint: "<模块名>"
         stats.contextUsage.percent = stats.contextUsage.tokens == null
           ? null
           : Math.min(100, (stats.contextUsage.tokens / metadata.contextWindow) * 100)
+        // VERIF 上下文治理（第 2 批）：60% 提醒（80% 自动压缩由 .pi/settings.json 的 compaction 段负责）
+        const percent = stats.contextUsage.percent
+        if (session.phase === 'VERIF' && percent != null) {
+          if (percent >= 60 && !session.verifContextWarned) {
+            session.verifContextWarned = true
+            this.emit(projectId, {
+              type: 'status',
+              message: `VERIF 会话上下文占用已达 ${Math.round(percent)}%；超过 80% 将自动压缩。建议优先读 execution-summary.json，避免整读大 JSON。`
+            })
+          } else if (percent < 50) {
+            session.verifContextWarned = false
+          }
+        }
       }
       return stats
     } catch (error) {

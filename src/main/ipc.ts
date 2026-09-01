@@ -270,6 +270,14 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     agent.closeSession(projectId, sessionName)
   )
 
+  // VERIF 批次编排（第 3 批）：主进程派发批次会话，完成判定绑定证据
+  ipcMain.handle(IPC.Agent.RunVerifBatch, (_e, projectId: string, scenarioIds: string[], options?: { batchIndex?: number }) =>
+    agent.runVerifBatch(projectId, scenarioIds, options)
+  )
+  ipcMain.handle(IPC.Agent.RunVerifBatches, (_e, projectId: string, options?: { batchSize?: number; maxBatches?: number }) =>
+    agent.runVerifBatches(projectId, options)
+  )
+
   // ==================== 项目文件 ====================
   ipcMain.handle(IPC.Fs.Tree, (_e, projectId: string) => files.tree(projectId))
 
