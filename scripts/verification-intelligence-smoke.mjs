@@ -1,7 +1,7 @@
-import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, registerVerificationIntents, recordScenarioAdjudication } from '../packages/verification-intelligence-engine/src/index.ts'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, registerVerificationIntents, recordScenarioAdjudication, recordRootCause } from '../packages/verification-intelligence-engine/src/index.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'moonglass-verification-intelligence-'))
 mkdirSync(join(root, 'docs', '02_requirements'), { recursive: true })
@@ -238,5 +238,47 @@ if (!waivedWithApproval.updated.includes(intentScenarioId) || waivedWithApproval
 const afterWaived = buildVerificationIntelligence(root)
 if (afterWaived.verificationState.scenarios.find((scenario) => scenario.id === intentScenarioId)?.status !== 'WAIVED') throw new Error('WAIVED 裁决未持久化到 scenario-registry')
 if (readdirSync(join(root, 'verification', 'intelligence')).some((name) => name.endsWith('.tmp'))) throw new Error('裁决链路原子写入遗留临时文件')
+
+// ===== VERIF 上下文治理第 2 批：recordRootCause + execution-summary =====
+const rcScenarioId = intentScenarioId
+// 长度约束：rootCause ≤200 字、fix ≤120 字（引擎层硬约束）
+let lengthRejected = false
+try { recordRootCause(root, { scenarioId: rcScenarioId, hypothesis: 'h', verdict: 'confirmed', refutedHypotheses: [], failureSignature: 'sig', rootCause: '超'.repeat(201), fix: '', evidence: [] }) } catch { lengthRejected = true }
+if (!lengthRejected) throw new Error('rootCause 超过 200 字未被拒绝')
+lengthRejected = false
+try { recordRootCause(root, { scenarioId: rcScenarioId, hypothesis: 'h', verdict: 'confirmed', refutedHypotheses: [], failureSignature: 'sig', rootCause: '正常根因', fix: '长'.repeat(121), evidence: [] }) } catch { lengthRejected = true }
+if (!lengthRejected) throw new Error('fix 超过 120 字未被拒绝')
+lengthRejected = false
+try { recordRootCause(root, { scenarioId: 'SCN-XXXX', hypothesis: 'h', verdict: 'open', refutedHypotheses: [], failureSignature: '', rootCause: '', fix: '', evidence: [] }) } catch { lengthRejected = true }
+if (!lengthRejected) throw new Error('非法 scenarioId 未被拒绝')
+// 链式字段：同 scenarioId 多条共存，refutedHypotheses 引用先前记录 id
+const rcOpen = recordRootCause(root, { scenarioId: rcScenarioId, hypothesis: '假设 A：计数器位宽不足', verdict: 'open', refutedHypotheses: [], failureSignature: 'abc123def456', rootCause: '', fix: '', evidence: ['verification/results/dma/result.json'] })
+if (!/^RC-[A-F0-9]{8}$/.test(rcOpen.id)) throw new Error(`根因记录 ID 不稳定：${rcOpen.id}`)
+const rcRefuted = recordRootCause(root, { scenarioId: rcScenarioId, hypothesis: '假设 A：计数器位宽不足', verdict: 'refuted', refutedHypotheses: [], failureSignature: 'abc123def456', rootCause: '', fix: '', evidence: [] })
+const rcConfirmed = recordRootCause(root, { scenarioId: rcScenarioId, hypothesis: '假设 B：首拍 flush 锁存参数错误', verdict: 'confirmed', refutedHypotheses: [rcRefuted.id], failureSignature: 'abc123def456', rootCause: '首拍 flush 时锁存沿用了上一事务参数', fix: '改首拍 flush 锁存参数', evidence: ['verification/results/dma/result.json'] })
+if (rcRefuted.id !== rcOpen.id) throw new Error('同场景同假设的 open→refuted 应复用同一稳定 ID')
+const rcFile = JSON.parse(readFileSync(join(root, 'verification', 'results', 'root-causes.json'), 'utf-8'))
+const rcChain = rcFile.records.filter((item) => item.scenarioId === rcScenarioId)
+if (rcChain.length !== 2) throw new Error(`同 scenarioId 多条记录未共存成链：${rcChain.length}`)
+if (rcConfirmed.refutedHypotheses[0] !== rcRefuted.id) throw new Error('链式追溯字段 refutedHypotheses 未保留')
+// rebuild：confirmed 根因挂回 scenario.evidence 并进入 signoff package
+const afterRootCause = buildVerificationIntelligence(root)
+const rcScenario = afterRootCause.verificationState.scenarios.find((scenario) => scenario.id === rcScenarioId)
+if (!rcScenario?.evidence.some((item) => item.includes('root-causes.json'))) throw new Error('confirmed 根因未挂回 scenario.evidence')
+if (!afterRootCause.verificationState.signoffPackage.evidenceFiles.some((item) => item.includes('root-causes.json'))) throw new Error('confirmed 根因未进入 signoff package 证据索引')
+if (!readFileSync(afterRootCause.paths.signoffReport, 'utf-8').includes('首拍 flush 时锁存沿用了上一事务参数')) throw new Error('签核报告未包含已确认根因')
+// execution-summary.json：存在、≤10KB、结构完整
+const summaryPath = join(root, 'verification', 'intelligence', 'execution-summary.json')
+if (!existsSync(summaryPath)) throw new Error('execution-summary.json 未生成')
+if (statSync(summaryPath).size > 10 * 1024) throw new Error(`execution-summary.json 超过 10KB：${statSync(summaryPath).size}`)
+if (afterRootCause.paths.executionSummary !== summaryPath) throw new Error('paths.executionSummary 未指向 execution-summary.json')
+const summary = JSON.parse(readFileSync(summaryPath, 'utf-8'))
+if (summary.progress?.scenarioCount !== afterRootCause.verificationState.scenarioCount || typeof summary.progress.closed !== 'number' || typeof summary.progress.open !== 'number' || typeof summary.progress.blocked !== 'number') throw new Error('execution-summary 进展计数缺失')
+if (!summary.progress.statusCounts || typeof summary.progress.statusCounts !== 'object') throw new Error('execution-summary 缺少各状态场景数')
+if (!Array.isArray(summary.topOpenScenarios) || summary.topOpenScenarios.length > 10) throw new Error('execution-summary top 开放场景超过 10 条')
+if (summary.topOpenScenarios.some((item) => Object.keys(item).sort().join(',') !== 'id,priority,status,title')) throw new Error('execution-summary top 场景必须仅含 id/title/status/priority')
+if (!Array.isArray(summary.blockers) || !Array.isArray(summary.nextActions) || !summary.closureStatus) throw new Error('execution-summary 缺少 blockers/nextActions/closureStatus')
+if (!summary.evidencePaths?.verificationPosture || !summary.evidencePaths?.rootCauses) throw new Error('execution-summary 缺少证据路径')
+if (JSON.stringify(summary.evidencePaths).includes('首拍 flush')) throw new Error('execution-summary 证据区只能含路径，不得含内容')
 
 console.log(`Verification Intelligence smoke passed: ${second.risks.length} risks, ${second.verificationState.scenarioCount} scenarios`)

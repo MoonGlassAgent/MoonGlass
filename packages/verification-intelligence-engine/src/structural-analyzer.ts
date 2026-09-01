@@ -1,5 +1,6 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path'
 import type { ClockResetDomain, Confidence, ControlFlowEdge, ControlFlowNode, ConeOfInfluence, ProtocolStructure, StateMachine, StructuralFact, StructuralModel, RegisterWriter, TemporalDependency } from './types.ts'
 
@@ -86,50 +87,69 @@ export function analyzeStructure(input: AnalyzeInput): StructuralModel {
   let analyzer: StructuralModel['analyzer'] = { engine: 'moonglass-structural-fallback', limitations: ['未检测到 Slang，语义来自结构化保守抽取', '复杂宏、generate 与 class/UVM 结构需要 Slang 提升精度', '结构风险不等同于 RTL bug'] }
   const slang = executable('slang')
   if (slang && input.files.length) {
-    const astPath = join(input.workspace, 'verification', 'intelligence', 'slang-ast.json')
-    mkdirSync(dirname(astPath), { recursive: true })
+    // AST 是引擎中间产物（实测可达 10MB 级），落到系统临时目录而非工作区，
+    // 避免 Agent 把全量 AST 读入上下文；解析消费后立即删除，失败时保留路径供调试。
+    const astDir = join(tmpdir(), 'moonglass-slang-ast')
+    mkdirSync(astDir, { recursive: true })
+    const astPath = join(astDir, `slang-ast-${input.rtlHash.replace(/[^a-zA-Z0-9]/g, '').slice(0, 16) || 'unknown'}.json`)
     const env = analyzerEnv(slang)
     const run = spawnSync(slang, ['--ast-json', astPath, '--ast-json-source-info', '--ignore-unknown-modules', ...input.files], { cwd: input.workspace, encoding: 'utf-8', windowsHide: true, maxBuffer: 64 * 1024 * 1024, env })
     if (run.status === 0 && existsSync(astPath)) {
       const version = spawnSync(slang, ['--version'], { encoding: 'utf-8', windowsHide: true, env }).stdout.trim()
-      analyzer = { engine: 'slang-ast', version, astPath: relative(input.workspace, astPath), limitations: ['MoonGlass 消费 elaborated AST 的过程块、条件、case、赋值与符号引用，并与保守结构抽取交叉补充', '未启用 ast-json-detailed-types，避免大型 class/UVM 工程输出膨胀', 'COI 为静态信号依赖锥，不替代专业 CDC/RDC 或完整形式化语义分析'] }
-      addFact('$design', '$root', 'SLANG_ELABORATED_AST', `Slang elaboration 完成：${version}`, relative(input.workspace, astPath), 1)
+      analyzer = { engine: 'slang-ast', version, limitations: ['MoonGlass 消费 elaborated AST 的过程块、条件、case、赋值与符号引用，并与保守结构抽取交叉补充', '未启用 ast-json-detailed-types，避免大型 class/UVM 工程输出膨胀', 'COI 为静态信号依赖锥，不替代专业 CDC/RDC 或完整形式化语义分析'] }
+      addFact('$design', '$root', 'SLANG_ELABORATED_AST', `Slang elaboration 完成：${version}`, astPath, 1)
       const astSize = statSync(astPath).size
-      if (astSize > 128 * 1024 * 1024) analyzer.limitations.unshift(`Slang AST 为 ${Math.round(astSize / 1024 / 1024)}MB，超过 128MB 消费上限；保留 AST 并使用结构抽取，避免阻塞工作区`)
-      const ast = astSize <= 128 * 1024 * 1024 ? JSON.parse(readFileSync(astPath, 'utf-8')) as Record<string, unknown> : undefined
-      const symbolName = (value: unknown): string => typeof value === 'string' ? value.replace(/^\d+\s+/, '') : ''
-      const namesIn = (value: unknown): string[] => {
-        if (!value || typeof value !== 'object') return []
-        const node = value as Record<string, unknown>; const own = node.kind === 'NamedValue' ? [symbolName(node.symbol)] : []
-        return [...new Set([...own, ...Object.values(node).flatMap(namesIn)].filter(Boolean))]
-      }
-      const visit = (value: unknown, module = '$root', parentControl?: string): void => {
-        if (!value || typeof value !== 'object') return
-        if (Array.isArray(value)) { for (const item of value) visit(item, module, parentControl); return }
-        const node = value as Record<string, unknown>; const kind = String(node.kind ?? '')
-        const activeModule = kind === 'InstanceBody' && typeof node.name === 'string' ? node.name : module
-        const rawFile = String(node.source_file_start ?? node.source_file ?? '')
-        const source = { file: rawFile ? relative(input.workspace, rawFile) : relative(input.workspace, astPath), line: Number(node.source_line_start ?? node.source_line ?? 1) }
-        let activeControl = parentControl
-        if (kind === 'ProceduralBlock' || kind === 'Conditional' || kind === 'Case') {
-          const controlKind: ControlFlowNode['kind'] = kind === 'ProceduralBlock' ? 'ENTRY' : kind === 'Case' ? 'CASE' : 'CONDITION'
-          const id = `CFG-${controlNodes.length + 1}`; controlNodes.push({ id, module: activeModule, kind: controlKind, label: kind === 'ProceduralBlock' ? String(node.procedureKind ?? kind) : namesIn(node.conditions ?? node.expr).join(' & ') || kind, source })
-          if (parentControl) controlEdges.push({ from: parentControl, to: id, relation: kind === 'Conditional' ? 'TRUE' : kind === 'Case' ? 'CASE_ITEM' : 'NEXT' })
-          activeControl = id
+      let consumed = false
+      try {
+        if (astSize > 128 * 1024 * 1024) {
+          analyzer.limitations.unshift(`Slang AST 为 ${Math.round(astSize / 1024 / 1024)}MB，超过 128MB 消费上限；使用结构抽取，AST 临时保留于 ${astPath} 供调试`)
+          analyzer.astPath = astPath
+        } else {
+          const ast = JSON.parse(readFileSync(astPath, 'utf-8')) as Record<string, unknown>
+          const symbolName = (value: unknown): string => typeof value === 'string' ? value.replace(/^\d+\s+/, '') : ''
+          const namesIn = (value: unknown): string[] => {
+            if (!value || typeof value !== 'object') return []
+            const node = value as Record<string, unknown>; const own = node.kind === 'NamedValue' ? [symbolName(node.symbol)] : []
+            return [...new Set([...own, ...Object.values(node).flatMap(namesIn)].filter(Boolean))]
+          }
+          const visit = (value: unknown, module = '$root', parentControl?: string): void => {
+            if (!value || typeof value !== 'object') return
+            if (Array.isArray(value)) { for (const item of value) visit(item, module, parentControl); return }
+            const node = value as Record<string, unknown>; const kind = String(node.kind ?? '')
+            const activeModule = kind === 'InstanceBody' && typeof node.name === 'string' ? node.name : module
+            const rawFile = String(node.source_file_start ?? node.source_file ?? '')
+            const source = { file: rawFile ? relative(input.workspace, rawFile) : astPath, line: Number(node.source_line_start ?? node.source_line ?? 1) }
+            let activeControl = parentControl
+            if (kind === 'ProceduralBlock' || kind === 'Conditional' || kind === 'Case') {
+              const controlKind: ControlFlowNode['kind'] = kind === 'ProceduralBlock' ? 'ENTRY' : kind === 'Case' ? 'CASE' : 'CONDITION'
+              const id = `CFG-${controlNodes.length + 1}`; controlNodes.push({ id, module: activeModule, kind: controlKind, label: kind === 'ProceduralBlock' ? String(node.procedureKind ?? kind) : namesIn(node.conditions ?? node.expr).join(' & ') || kind, source })
+              if (parentControl) controlEdges.push({ from: parentControl, to: id, relation: kind === 'Conditional' ? 'TRUE' : kind === 'Case' ? 'CASE_ITEM' : 'NEXT' })
+              activeControl = id
+            }
+            if (kind === 'Assignment') {
+              const sink = namesIn(node.left)[0]; const sources = namesIn(node.right).filter((name) => name !== sink)
+              const id = `CFG-${controlNodes.length + 1}`; controlNodes.push({ id, module: activeModule, kind: 'ASSIGNMENT', label: `${sink} <= ${sources.join(', ') || 'constant'}`, source })
+              if (activeControl) controlEdges.push({ from: activeControl, to: id, relation: 'NEXT' })
+              for (const sourceName of sources) if (!temporalDependencies.some((item) => item.module === activeModule && item.from === sourceName && item.to === sink)) temporalDependencies.push({ id: `TDEP-${temporalDependencies.length + 1}`, module: activeModule, from: sourceName, to: sink, relation: 'DEPENDS_ON', source })
+              if (sink) addFact(activeModule, sink, 'SLANG_AST_ASSIGNMENT', `Slang AST 确认写入 ${sink}，数据源：${sources.join(', ') || 'constant'}`, source.file, source.line)
+            }
+            for (const child of Object.values(node)) visit(child, activeModule, activeControl)
+          }
+          visit(ast)
+          consumed = true
+          analyzer.limitations.push('Slang AST 为临时中间产物，解析消费后已删除，不写入工作区')
         }
-        if (kind === 'Assignment') {
-          const sink = namesIn(node.left)[0]; const sources = namesIn(node.right).filter((name) => name !== sink)
-          const id = `CFG-${controlNodes.length + 1}`; controlNodes.push({ id, module: activeModule, kind: 'ASSIGNMENT', label: `${sink} <= ${sources.join(', ') || 'constant'}`, source })
-          if (activeControl) controlEdges.push({ from: activeControl, to: id, relation: 'NEXT' })
-          for (const sourceName of sources) if (!temporalDependencies.some((item) => item.module === activeModule && item.from === sourceName && item.to === sink)) temporalDependencies.push({ id: `TDEP-${temporalDependencies.length + 1}`, module: activeModule, from: sourceName, to: sink, relation: 'DEPENDS_ON', source })
-          if (sink) addFact(activeModule, sink, 'SLANG_AST_ASSIGNMENT', `Slang AST 确认写入 ${sink}，数据源：${sources.join(', ') || 'constant'}`, source.file, source.line)
-        }
-        for (const child of Object.values(node)) visit(child, activeModule, activeControl)
+      } finally {
+        if (consumed) rmSync(astPath, { force: true })
       }
-      if (ast) visit(ast)
     } else {
+      mkdirSync(join(input.workspace, 'verification', 'intelligence'), { recursive: true })
       writeFileSync(join(input.workspace, 'verification', 'intelligence', 'slang-diagnostics.log'), `${run.stdout}\n${run.stderr}`, 'utf-8')
       analyzer.limitations.unshift('Slang 已安装但 elaboration 失败，已自动回退；详见 slang-diagnostics.log')
+      if (existsSync(astPath)) {
+        analyzer.astPath = astPath
+        analyzer.limitations.push(`Slang 失败时的部分 AST 输出保留于 ${astPath} 供调试`)
+      }
     }
   }
   const dependenciesBySink = new Map<string, TemporalDependency[]>()

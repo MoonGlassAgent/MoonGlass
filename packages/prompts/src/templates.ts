@@ -157,8 +157,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'VERIF',
     injectMode: 'prepend',
-    version: '2.1.0',
-    updatedAt: '2026-08-31',
+    version: '2.1.1',
+    updatedAt: '2026-09-01',
     content: `当前处于【验证完备】阶段。
 
 ## 执行范围规则
@@ -190,6 +190,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 
 约束：
 - 必须基于 RTL 阶段的端口定义
+- 禁止整读 verification/intelligence/ 下的 slang-ast.json、verification-state.json、feature-interaction-graph.json（引擎中间产物/全量模型，体积过大）；日常状态读取唯一入口是 execution-summary.json（≤10KB 摘要），需要场景细节时以 select_next_verification_batch 的返回与按需定向读取为准，不得把整份 JSON 读入上下文
 - 行覆盖率目标 ≥90%
 - 分支覆盖率目标 ≥85%
 - 必须包含边界条件测试

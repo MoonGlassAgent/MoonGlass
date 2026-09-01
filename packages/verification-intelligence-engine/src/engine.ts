@@ -22,6 +22,7 @@ import type {
   RequirementFact,
   RequirementModel,
   RiskMarker,
+  RootCauseRecord,
   ScenarioStatus,
   ScenarioState,
   ScenarioCoordinates,
@@ -367,6 +368,39 @@ function readHypotheses(path: string): VerificationHypothesis[] {
 function readIntents(path: string): VerificationIntent[] {
   if (!existsSync(path)) return []
   try { return (JSON.parse(readFileSync(path, 'utf-8')) as { intents?: VerificationIntent[] }).intents ?? [] } catch { return [] }
+}
+
+/** root-causes.json 相对工作区路径（证据区，不进 intelligence/ 引擎产物区） */
+const ROOT_CAUSES_RELATIVE_PATH = join('verification', 'results', 'root-causes.json')
+/** execution-summary.json 硬指标：≤10KB，超限截断 top 列表（契约 §2.3） */
+const EXECUTION_SUMMARY_MAX_BYTES = 10 * 1024
+
+function readRootCauses(workspace: string): RootCauseRecord[] {
+  const path = join(workspace, ROOT_CAUSES_RELATIVE_PATH)
+  if (!existsSync(path)) return []
+  try { return (JSON.parse(readFileSync(path, 'utf-8')) as { records?: RootCauseRecord[] }).records ?? [] } catch { return [] }
+}
+
+/**
+ * 引擎 rebuild 时把 confirmed 根因挂到对应 scenario.evidence（root-causes.json 路径 +
+ * 记录内证据路径），使签核评审可回答"这个场景出过什么、怎么修的"；挂载后按机器规则
+ * 重算 scenario.state（evidence 轴），不手写状态。
+ */
+function attachConfirmedRootCauses(scenarios: VerificationScenario[], rootCauses: RootCauseRecord[]): void {
+  const confirmed = new Map<string, RootCauseRecord[]>()
+  for (const record of rootCauses) {
+    if (record.verdict !== 'confirmed' || !record.scenarioId) continue
+    const list = confirmed.get(record.scenarioId) ?? []
+    list.push(record)
+    confirmed.set(record.scenarioId, list)
+  }
+  if (confirmed.size === 0) return
+  for (const scenario of scenarios) {
+    const records = confirmed.get(scenario.id)
+    if (!records?.length) continue
+    scenario.evidence = [...new Set([...scenario.evidence, ROOT_CAUSES_RELATIVE_PATH, ...records.flatMap((record) => record.evidence)])]
+    scenario.state = scenarioState(scenario.status, scenario.evidence, scenario.reachCount, scenario.assertionPassed, scenario.state.freshness)
+  }
 }
 
 function buildExecutionPlan(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions']): ScenarioExecutionPlan[] {
@@ -779,23 +813,30 @@ function assessClosure(scenarios: VerificationScenario[], regressions: Verificat
   return { status, generatedAt: new Date().toISOString(), blockers, warnings, residualRisks, nextActions, metrics: { criticalTotal: critical.length, criticalClosed: criticalClosed.length, criticalClosurePercent: critical.length ? Math.round(criticalClosed.length * 100 / critical.length) : 100, regressionsPassed, blockingCoverageHoles, formalToolErrors, impactUnknown, explorationSaturation: explorationHistory.saturation.status, mutationScore: mutation.weightedScore } }
 }
 
-function buildSignoffPackage(rtlHash: string, space: VerificationSpaceSnapshot, closure: ClosureAssessment, residualRisks: ResidualRisk[], scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions'], formalResults: VerificationStateModel['formalResults'], mutation: MutationAssessment): SignoffPackage {
+function buildSignoffPackage(rtlHash: string, space: VerificationSpaceSnapshot, closure: ClosureAssessment, residualRisks: ResidualRisk[], scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions'], formalResults: VerificationStateModel['formalResults'], mutation: MutationAssessment, rootCauses: RootCauseRecord[] = []): SignoffPackage {
+  const confirmedRootCauses = rootCauses.filter((item) => item.verdict === 'confirmed')
   const evidenceFiles = [...new Set([
     ...scenarios.flatMap((item) => item.evidence),
     ...regressions.map((item) => item.resultFile),
     ...formalResults.flatMap((item) => [item.resultFile, ...item.propertyFiles, ...item.traces]),
-    ...mutation.records.flatMap((item) => item.evidence)
+    ...mutation.records.flatMap((item) => item.evidence),
+    // 已确认根因结论进入签核包证据索引：评审可回答"这个场景出过什么、怎么修的"
+    ...(confirmedRootCauses.length ? [ROOT_CAUSES_RELATIVE_PATH, ...confirmedRootCauses.flatMap((item) => item.evidence)] : [])
   ])].filter(Boolean)
   const packageId = `SIGNOFF-${createHash('sha256').update(`${rtlHash}\0${space.snapshotId}\0${closure.status}\0${closure.blockers.join('|')}\0${evidenceFiles.sort().join('|')}`).digest('hex').slice(0, 16).toUpperCase()}`
   const summary = closure.status === 'READY_FOR_HUMAN_SIGNOFF' ? '机器闭环条件已满足，等待具名工程审批。' : closure.status === 'CONDITIONALLY_READY' ? '核心条件满足，但仍有已批准残余风险需要在最终审批中确认。' : '存在未关闭的验证、工具、Mutation 或风险审批阻断。'
   return { version: 1, packageId, generatedAt: new Date().toISOString(), rtlHash, verificationSpaceSnapshotId: space.snapshotId, status: closure.status, summary, blockers: closure.blockers, warnings: closure.warnings, residualRisks, evidenceFiles }
 }
 
-function writeSignoffReport(path: string, pkg: SignoffPackage, mutation: MutationAssessment, multiOracle: MultiOracleEvaluation, history: ExplorationHistory): void {
+function writeSignoffReport(path: string, pkg: SignoffPackage, mutation: MutationAssessment, multiOracle: MultiOracleEvaluation, history: ExplorationHistory, rootCauses: RootCauseRecord[] = []): void {
   const blockers = pkg.blockers.map((item) => `- ${item}`).join('\n') || '- 无'
   const residual = pkg.residualRisks.map((item) => `| ${item.id} | ${item.category} | ${item.title.replace(/\|/g, '\\|')} | ${item.approved ? `已批准：${item.approval?.approver ?? '-'}` : '未批准'} |`).join('\n') || '| - | - | 无 | - |'
   const evidence = pkg.evidenceFiles.map((item) => `- \`${item}\``).join('\n') || '- 无'
-  writeFileSync(path, `# MoonGlass AIGV 2.0 Verification Sign-off Package\n\n- Package ID：\`${pkg.packageId}\`\n- 生成时间：${pkg.generatedAt}\n- RTL Hash：\`${pkg.rtlHash}\`\n- Verification Space：\`${pkg.verificationSpaceSnapshotId}\`\n- 机器结论：**${pkg.status}**\n- 说明：${pkg.summary}\n\n## 签核阻断\n\n${blockers}\n\n## 关键评价\n\n- Multi-Oracle：${multiOracle.assessments.filter((item) => item.status === 'PASS').length}/${multiOracle.assessments.length} PASS；冲突 ${multiOracle.conflicts.length}；关键证据不足 ${multiOracle.criticalInsufficient.length}\n- Risk-weighted Mutation：${mutation.weightedScore == null ? '无有效结果' : `${(mutation.weightedScore * 100).toFixed(1)}%`}；阈值 ${(mutation.threshold * 100).toFixed(1)}%；状态 ${mutation.status}\n- Novelty Saturation：${history.saturation.status}；${history.saturation.explanation}\n\n## Residual Risk Register\n\n| ID | 分类 | 风险 | 审批 |\n|---|---|---|---|\n${residual}\n\n## Evidence Index\n\n${evidence}\n\n> 本报告是机器签核建议，不替代具名工程责任人的最终批准。所有结论仅对上述 RTL、规格空间快照、工具配置和证据集合有效。\n`, 'utf-8')
+  const confirmedRootCauses = rootCauses.filter((item) => item.verdict === 'confirmed')
+  const rootCauseSection = confirmedRootCauses.length
+    ? `\n## 已确认根因\n\n| 记录 | Scenario | 根因 | 修复 |\n|---|---|---|---|\n${confirmedRootCauses.map((item) => `| ${item.id} | ${item.scenarioId} | ${item.rootCause.replace(/\|/g, '\\|')} | ${item.fix.replace(/\|/g, '\\|')} |`).join('\n')}\n`
+    : ''
+  writeFileSync(path, `# MoonGlass AIGV 2.0 Verification Sign-off Package\n\n- Package ID：\`${pkg.packageId}\`\n- 生成时间：${pkg.generatedAt}\n- RTL Hash：\`${pkg.rtlHash}\`\n- Verification Space：\`${pkg.verificationSpaceSnapshotId}\`\n- 机器结论：**${pkg.status}**\n- 说明：${pkg.summary}\n\n## 签核阻断\n\n${blockers}\n\n## 关键评价\n\n- Multi-Oracle：${multiOracle.assessments.filter((item) => item.status === 'PASS').length}/${multiOracle.assessments.length} PASS；冲突 ${multiOracle.conflicts.length}；关键证据不足 ${multiOracle.criticalInsufficient.length}\n- Risk-weighted Mutation：${mutation.weightedScore == null ? '无有效结果' : `${(mutation.weightedScore * 100).toFixed(1)}%`}；阈值 ${(mutation.threshold * 100).toFixed(1)}%；状态 ${mutation.status}\n- Novelty Saturation：${history.saturation.status}；${history.saturation.explanation}${rootCauseSection}\n\n## Residual Risk Register\n\n| ID | 分类 | 风险 | 审批 |\n|---|---|---|---|\n${residual}\n\n## Evidence Index\n\n${evidence}\n\n> 本报告是机器签核建议，不替代具名工程责任人的最终批准。所有结论仅对上述 RTL、规格空间快照、工具配置和证据集合有效。\n`, 'utf-8')
 }
 
 function buildVerificationSpace(requirements: RequirementModel, structure: StructuralModel, scenarios: VerificationScenario[]): VerificationSpaceSnapshot {
@@ -859,11 +900,67 @@ function readExplorationHistory(path: string, criticalOpen: number, snapshotId?:
   return { version: 1, updatedAt: new Date().toISOString(), rounds, saturation: summarizeExploration(rounds, criticalOpen, snapshotId) }
 }
 
+/**
+ * 生成 execution-summary.json（契约 §2.3）：Agent 日常状态读取的唯一入口，硬指标 ≤10KB。
+ * 内容只含计数、top-N 开放场景摘要、blockers/nextActions 与证据路径（非内容）；
+ * 超限时按 top 列表 → 文本条数 → 单条长度逐级截断，保证硬指标成立。
+ */
+function writeExecutionSummary(path: string, workspace: string, state: VerificationStateModel, paths: IntelligenceArtifacts['paths']): void {
+  const open = state.scenarios.filter((item) => item.state.closure === 'OPEN')
+  const closedCount = state.scenarioCount - open.length
+  const relativePath = (absolute: string): string => relative(workspace, absolute)
+  interface Summary {
+    version: 1
+    generatedAt: string
+    rtlHash: string
+    progress: { scenarioCount: number; statusCounts: Partial<Record<ScenarioStatus, number>>; closed: number; open: number; blocked: number }
+    topOpenScenarios: Array<{ id: string; title: string; status: ScenarioStatus; priority: number }>
+    closureStatus: ClosureAssessment['status']
+    blockers: string[]
+    nextActions: string[]
+    evidencePaths: Record<string, string>
+  }
+  const summary: Summary = {
+    version: 1,
+    generatedAt: state.generatedAt,
+    rtlHash: state.rtlHash,
+    progress: { scenarioCount: state.scenarioCount, statusCounts: state.statusCounts, closed: closedCount, open: open.length, blocked: state.closureAssessment.blockers.length },
+    topOpenScenarios: [...open].sort((a, b) => b.priority - a.priority).slice(0, 10).map((item) => ({ id: item.id, title: item.title, status: item.status, priority: item.priority })),
+    closureStatus: state.closureAssessment.status,
+    blockers: [...state.closureAssessment.blockers],
+    nextActions: [...state.closureAssessment.nextActions],
+    // 证据路径（非内容）：需要细节时按需读这些文件或用 select_next_verification_batch
+    evidencePaths: {
+      verificationPosture: relativePath(paths.verificationPosture),
+      scenarioRegistry: relativePath(paths.scenarioRegistry),
+      coverageHoleRegister: relativePath(paths.coverageHoles),
+      closureAssessment: relativePath(paths.closureAssessment),
+      signoffPackage: relativePath(paths.signoffPackage),
+      signoffReport: relativePath(paths.signoffReport),
+      rootCauses: ROOT_CAUSES_RELATIVE_PATH
+    }
+  }
+  let serialized = JSON.stringify(summary, null, 2)
+  if (Buffer.byteLength(serialized, 'utf-8') > EXECUTION_SUMMARY_MAX_BYTES) {
+    for (const keep of [5, 3, 0]) {
+      summary.topOpenScenarios = summary.topOpenScenarios.slice(0, keep)
+      serialized = JSON.stringify(summary, null, 2)
+      if (Buffer.byteLength(serialized, 'utf-8') <= EXECUTION_SUMMARY_MAX_BYTES) break
+    }
+  }
+  if (Buffer.byteLength(serialized, 'utf-8') > EXECUTION_SUMMARY_MAX_BYTES) {
+    summary.blockers = summary.blockers.slice(0, 5).map((item) => item.slice(0, 120))
+    summary.nextActions = summary.nextActions.slice(0, 5).map((item) => item.slice(0, 120))
+    serialized = JSON.stringify(summary, null, 2)
+  }
+  writeJsonAtomic(path, JSON.parse(serialized))
+}
+
 export function buildVerificationIntelligence(workspaceDir: string): IntelligenceArtifacts {
   const workspace = resolve(workspaceDir)
   const outputDir = join(workspace, 'verification', 'intelligence')
   mkdirSync(outputDir, { recursive: true })
-  const paths = { requirementModel: join(outputDir, 'requirement-model.json'), structuralModel: join(outputDir, 'structural-model.json'), riskRegister: join(outputDir, 'risk-register.json'), scenarioRegistry: join(outputDir, 'scenario-registry.json'), verificationState: join(outputDir, 'verification-state.json'), verificationPosture: join(outputDir, 'verification-posture.json'), report: join(outputDir, 'verification-intelligence-report.md'), interactionGraph: join(outputDir, 'feature-interaction-graph.json'), executionPlan: join(outputDir, 'scenario-execution-plan.json'), hypotheses: join(outputDir, 'verification-hypotheses.json'), specGaps: join(outputDir, 'spec-gap-register.json'), verificationIntents: join(outputDir, 'verification-intent-registry.json'), coverageHoles: join(outputDir, 'coverage-hole-register.json'), closureAssessment: join(outputDir, 'closure-assessment.json'), verificationSpace: join(outputDir, 'verification-space-snapshot.json'), explorationRound: join(outputDir, 'exploration-round.json'), explorationHistory: join(outputDir, 'exploration-history.json'), oracleRegistry: join(outputDir, 'oracle-registry.json'), oracleEvaluation: join(outputDir, 'oracle-evaluation.json'), mutationAssessment: join(outputDir, 'mutation-assessment.json'), residualRiskRegister: join(outputDir, 'residual-risk-register.json'), signoffPackage: join(outputDir, 'signoff-package.json'), signoffReport: join(outputDir, 'verification-signoff-package.md'), moduleVerificationStrategy: join(outputDir, 'module-verification-strategy.json') }
+  const paths = { requirementModel: join(outputDir, 'requirement-model.json'), structuralModel: join(outputDir, 'structural-model.json'), riskRegister: join(outputDir, 'risk-register.json'), scenarioRegistry: join(outputDir, 'scenario-registry.json'), verificationState: join(outputDir, 'verification-state.json'), verificationPosture: join(outputDir, 'verification-posture.json'), report: join(outputDir, 'verification-intelligence-report.md'), interactionGraph: join(outputDir, 'feature-interaction-graph.json'), executionPlan: join(outputDir, 'scenario-execution-plan.json'), hypotheses: join(outputDir, 'verification-hypotheses.json'), specGaps: join(outputDir, 'spec-gap-register.json'), verificationIntents: join(outputDir, 'verification-intent-registry.json'), coverageHoles: join(outputDir, 'coverage-hole-register.json'), closureAssessment: join(outputDir, 'closure-assessment.json'), verificationSpace: join(outputDir, 'verification-space-snapshot.json'), explorationRound: join(outputDir, 'exploration-round.json'), explorationHistory: join(outputDir, 'exploration-history.json'), oracleRegistry: join(outputDir, 'oracle-registry.json'), oracleEvaluation: join(outputDir, 'oracle-evaluation.json'), mutationAssessment: join(outputDir, 'mutation-assessment.json'), residualRiskRegister: join(outputDir, 'residual-risk-register.json'), signoffPackage: join(outputDir, 'signoff-package.json'), signoffReport: join(outputDir, 'verification-signoff-package.md'), moduleVerificationStrategy: join(outputDir, 'module-verification-strategy.json'), executionSummary: join(outputDir, 'execution-summary.json') }
   const requirements = requirementModel(workspace)
   const structure = structuralModel(workspace)
   const risks = deriveRisks(workspace, structure)
@@ -871,6 +968,9 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const fullScenarioModules = new Set(moduleVerificationStrategy.modules.filter((item) => item.level === 'UNIT_FOCUSED' || item.level === 'IP_SIGNOFF').map((item) => item.module))
   const scenarioRisks = risks.filter((risk) => fullScenarioModules.has(risk.object) || [...fullScenarioModules].some((module) => risk.object.startsWith(`${module}.`)))
   const scenarios = buildScenarios(requirements, structure, scenarioRisks, readPrevious(paths.scenarioRegistry), workspace)
+  // 契约 §2.1：confirmed 根因挂到对应 scenario.evidence（并进入 signoff package 证据索引）
+  const rootCauses = readRootCauses(workspace)
+  attachConfirmedRootCauses(scenarios, rootCauses)
   const regressions = collectResults(workspace)
   const formalResults = collectFormalResults(workspace)
   const mutationAssessment = collectMutationAssessment(workspace, structure.rtlHash)
@@ -892,7 +992,7 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const currentCriticalOpen = scenarios.filter((item) => item.criticality >= 0.8 && !['VERIFIED', 'EXCLUDED', 'WAIVED'].includes(item.state.closure)).length
   const explorationHistory = readExplorationHistory(paths.explorationHistory, currentCriticalOpen, verificationSpace.snapshotId)
   const closureAssessment = assessClosure(scenarios, regressions, formalResults, coverageHoles, multiOracle, explorationHistory, mutationAssessment, residualRiskRegister, uncoveredRiskCandidates)
-  const signoffPackage = buildSignoffPackage(structure.rtlHash, verificationSpace, closureAssessment, residualRiskRegister, scenarios, regressions, formalResults, mutationAssessment)
+  const signoffPackage = buildSignoffPackage(structure.rtlHash, verificationSpace, closureAssessment, residualRiskRegister, scenarios, regressions, formalResults, mutationAssessment, rootCauses)
   const statusCounts: VerificationStateModel['statusCounts'] = {}
   for (const scenario of scenarios) statusCounts[scenario.status] = (statusCounts[scenario.status] ?? 0) + 1
   const criticalOpen = scenarios.filter((item) => item.criticality >= 0.8 && !['VERIFIED', 'EXCLUDED', 'WAIVED'].includes(item.state.closure)).map((item) => item.id)
@@ -961,9 +1061,10 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   writeJsonAtomic(paths.residualRiskRegister, { version: 1, generatedAt: new Date().toISOString(), risks: residualRiskRegister })
   writeJsonAtomic(paths.signoffPackage, signoffPackage)
   writeJsonAtomic(paths.moduleVerificationStrategy, moduleVerificationStrategy)
-  writeSignoffReport(paths.signoffReport, signoffPackage, mutationAssessment, multiOracle, explorationHistory)
+  writeSignoffReport(paths.signoffReport, signoffPackage, mutationAssessment, multiOracle, explorationHistory, rootCauses)
   if (!existsSync(paths.hypotheses)) writeJsonAtomic(paths.hypotheses, { version: 1, hypotheses: [] })
   writeReport(paths.report, verificationState, risks)
+  writeExecutionSummary(paths.executionSummary, workspace, verificationState, paths)
   writeVerificationDocSnapshot(workspace, verificationState)
   return { requirementModel: requirements, structuralModel: structure, risks, verificationState, paths }
 }
@@ -1271,4 +1372,121 @@ export function reviewScenarioClosure(workspaceDir: string): { passed: boolean; 
     if (supplementalErrors) warnings.push(`${supplementalErrors} 项补强 Formal 未产生结论；需记录 C6/限制，但不单独阻断已有充分仿真证据的 Intent`)
     return { passed: blockers.length === 0, blockers, warnings, state }
   } catch { return { passed: false, blockers: ['verification-state.json 无法解析'], warnings: [] } }
+}
+
+/** recordRootCause 的输入（缺 id/createdAt，由引擎派生）。字段口径见契约 §2.1。 */
+export interface RootCauseInput {
+  scenarioId: string
+  hypothesis: string
+  verdict: 'confirmed' | 'refuted' | 'open'
+  refutedHypotheses: string[]
+  failureSignature: string
+  rootCause: string
+  fix: string
+  evidence: string[]
+}
+
+export const ROOT_CAUSE_MAX_LENGTH = 200
+export const ROOT_CAUSE_FIX_MAX_LENGTH = 120
+
+/**
+ * 把根因结论写/合并到 verification/results/root-causes.json（契约 §2.1）。
+ * 每条记录有稳定 id（RC-<sha1前8位大写>，由 scenarioId/hypothesis 派生；同假设裁决更新复用同 id）；
+ * 同 scenarioId 多条共存成链，refutedHypotheses 引用先前记录 id 做链式追溯。
+ * rootCause ≤200 字、fix ≤120 字为硬约束（schema 层的 maxLength 之外的引擎兜底）。
+ */
+export function recordRootCause(workspaceDir: string, input: RootCauseInput): RootCauseRecord {
+  const workspace = resolve(workspaceDir)
+  if (!/^SCN-[A-F0-9]{8}$/.test(input.scenarioId)) throw new Error(`scenarioId 不符合 ^SCN-[A-F0-9]{8}$：${input.scenarioId}`)
+  if (!input.hypothesis?.trim()) throw new Error('hypothesis 不能为空')
+  if (input.rootCause.length > ROOT_CAUSE_MAX_LENGTH) throw new Error(`rootCause 超过 ${ROOT_CAUSE_MAX_LENGTH} 字（当前 ${input.rootCause.length}）：根因结论必须是一句话，不是散文 blob`)
+  if (input.fix.length > ROOT_CAUSE_FIX_MAX_LENGTH) throw new Error(`fix 超过 ${ROOT_CAUSE_FIX_MAX_LENGTH} 字（当前 ${input.fix.length}）：只写动作级描述`)
+  if (input.verdict === 'confirmed' && !input.rootCause.trim()) throw new Error('verdict=confirmed 时 rootCause 不能为空')
+  const record: RootCauseRecord = {
+    ...input,
+    id: `RC-${createHash('sha1').update(`${input.scenarioId}${input.hypothesis}`).digest('hex').slice(0, 8).toUpperCase()}`,
+    createdAt: new Date().toISOString()
+  }
+  const path = join(workspace, ROOT_CAUSES_RELATIVE_PATH)
+  const existing = readRootCauses(workspace)
+  // 同 id（同场景 + 同假设）重复登记按更新处理（如 open→confirmed），链式历史其余记录原样保留
+  const index = existing.findIndex((item) => item.id === record.id)
+  if (index >= 0) existing.splice(index, 1, record)
+  else existing.push(record)
+  mkdirSync(dirname(path), { recursive: true })
+  writeJsonAtomic(path, { version: 1, generatedAt: new Date().toISOString(), records: existing })
+  return record
+}
+
+/**
+ * 确定性拼装批次会话 prompt（契约 §2.2，第 3 批由主进程编排消费，无 LLM 参与）：
+ * 批次 Intent 详情（objective/failureMode/passCriteria/锚点）+ 从 root-causes.json 按
+ * scenarioId 取出的已证伪假设与已确认根因 + 环境路径与纪律约束。
+ */
+export function buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): string {
+  const workspace = resolve(workspaceDir)
+  const registryPath = join(workspace, 'verification', 'intelligence', 'scenario-registry.json')
+  if (!existsSync(registryPath)) buildVerificationIntelligence(workspace)
+  const scenarios = readPrevious(registryPath)
+  const intents = readIntents(join(workspace, 'verification', 'intelligence', 'verification-intent-registry.json'))
+  const rootCauses = readRootCauses(workspace)
+  const byId = new Map(scenarios.map((item) => [item.id, item]))
+  const intentByScenarioId = new Map(intents.map((item) => [item.scenarioId, item]))
+
+  const sections: string[] = [
+    `# 验证批次任务（${scenarioIds.length} 个场景）`,
+    '',
+    '本批次由 MoonGlass 主进程编排派发。逐个完成以下场景的"到达 + 裁决 + 证据"闭环。'
+  ]
+  const missing: string[] = []
+  for (const scenarioId of scenarioIds) {
+    const scenario = byId.get(scenarioId)
+    if (!scenario) { missing.push(scenarioId); continue }
+    const intent = intentByScenarioId.get(scenarioId)
+    sections.push(
+      '',
+      `## 场景 ${scenarioId}：${scenario.title}`,
+      '',
+      `- 验证目标（objective）：${intent?.objective ?? scenario.expected.join('；')}`,
+      `- 失效反例（failureMode）：${intent?.failureMode ?? '反例：预期不成立'}`,
+      `- 判定标准（passCriteria）：`,
+      ...(intent?.passCriteria ?? scenario.expected).map((item) => `  - ${item}`),
+      `- 锚点：需求 ${scenario.requirementIds.join('、') || '无'}；风险 ${scenario.riskIds.join('、') || '无'}；RTL 对象 ${scenario.rtlObjects.join('、') || '无'}`,
+      `- 推荐方法：${scenario.method}；前置条件：${scenario.trigger.join('；') || '无'}`
+    )
+  }
+  if (missing.length) sections.push('', `⚠️ 以下场景 ID 不在 scenario-registry 中（须先核对 execution-summary.json）：${missing.join('、')}`)
+
+  const handoff: string[] = []
+  for (const scenarioId of scenarioIds) {
+    const records = rootCauses.filter((item) => item.scenarioId === scenarioId)
+    if (!records.length) continue
+    const refuted = records.filter((item) => item.verdict === 'refuted')
+    const confirmed = records.filter((item) => item.verdict === 'confirmed')
+    const openHypotheses = records.filter((item) => item.verdict === 'open')
+    handoff.push(`### ${scenarioId}`)
+    for (const item of confirmed) handoff.push(`- 已确认根因（${item.id}）：${item.rootCause}；修复：${item.fix}`)
+    for (const item of refuted) handoff.push(`- 已证伪假设（${item.id}，不得再沿此方向排查）：${item.hypothesis}`)
+    for (const item of openHypotheses) handoff.push(`- 待证假设（${item.id}）：${item.hypothesis}`)
+  }
+  sections.push(
+    '',
+    '## 根因交接（来自 verification/results/root-causes.json）',
+    '',
+    handoff.length ? handoff.join('\n') : '本批次场景暂无已登记的根因记录。FAIL 修复后必须用 record_root_cause 顺手登记根因结论。'
+  )
+
+  sections.push(
+    '',
+    '## 环境路径与纪律约束',
+    '',
+    `- 工作区根目录：${workspace}`,
+    `- RTL 源：rtl/（清单 rtl/filelist.f，元数据 rtl/design.json）`,
+    `- 证据目录：verification/results/<module>/（日志、result.json、波形）`,
+    `- 状态入口：verification/intelligence/execution-summary.json（日常只读此摘要）`,
+    `- scenario_hits 由 run_simulation(scenarioIds=...) 在执行后自动登记，禁止手写或修改 scenario_hits.json`,
+    `- 执行派生状态（VERIFIED/FAILED/REACHED/NOT_REACHED/PARTIAL/FORMAL_PROVED/FORMAL_UNREACHABLE）由证据自动派生，不得宣布；判断类裁决只能用 record_scenario_adjudication`,
+    `- 根因结论必须用 record_root_cause 落盘，不靠提示词纪律`
+  )
+  return sections.join('\n')
 }

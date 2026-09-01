@@ -114,7 +114,18 @@ for (const marker of [
   'scenarioIds',
   'writeScenarioHits',
   'rebuildVerificationPosture',
-  "Type.Literal('BLOCKED_BY_SPEC')"
+  "Type.Literal('BLOCKED_BY_SPEC')",
+  // VERIF 上下文治理第 2 批：record_root_cause 工具注册与 schema 约束（契约 §2.1）
+  "name: 'record_root_cause'",
+  'recordRootCause',
+  'refutedHypotheses',
+  'failureSignature',
+  'maxLength: 200',
+  'maxLength: 120',
+  "Type.Literal('confirmed')",
+  "Type.Literal('refuted')",
+  'root-causes.json',
+  '曾 FAIL 后转 PASS'
 ]) {
   if (!toolsSource.includes(marker)) {
     console.error(`[schema] moonglass-tools.ts 缺少标记：${marker}`)

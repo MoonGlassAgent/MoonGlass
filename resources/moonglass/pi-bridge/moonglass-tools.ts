@@ -12,7 +12,7 @@
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { createHash } from 'node:crypto'
-import { dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
 import {
@@ -28,7 +28,7 @@ import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { runFormalVerification } from './eda-bridge/formal'
 import { runDesignLint } from './eda-bridge/lint'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
-import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents } from './verification-intelligence/engine.ts'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause } from './verification-intelligence/engine.ts'
 
 type DiagnosticLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5'
 
@@ -1227,12 +1227,23 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           `**结构化结果**: ${result.resultPath}`,
           `**RTL 覆盖率**: ${result.coverage?.lineCoverage === undefined ? '未采集' : `行 ${result.coverage.lineCoverage}% / 条件 ${result.coverage.branchCoverage ?? '暂无'}%`}`,
           `**功能覆盖率**: ${result.coverage?.functionalCoverage === undefined ? '未提供' : `${result.coverage.functionalCoverage}%`}`,
-          '',
-          '### 输出日志',
-          '```',
-          result.log.slice(0, 3000),
-          '```',
         ]
+
+        // 回显收紧：PASS 只给结论行与产物路径；FAIL 只给日志首尾摘录与失败指纹行，
+        // 全文留在磁盘按需读取，避免大段日志挤占上下文。
+        if (!result.passed) {
+          const lines = result.log.split(/\r?\n/)
+          const fingerprintLines = lines.filter((line) => /error|fail|assert|mismatch|timeout|traceback|exception|fatal/i.test(line)).slice(-12)
+          report.push('', `### 输出日志摘录（完整日志见 ${result.simulationLogPath}）`, '')
+          if (lines.length <= 80) {
+            report.push('```', ...lines, '```')
+          } else {
+            report.push(`开头 30 行（共 ${lines.length} 行）：`, '```', ...lines.slice(0, 30), '```', '', '结尾 50 行：', '```', ...lines.slice(-50), '```')
+          }
+          if (fingerprintLines.length) {
+            report.push('', '失败指纹行：', '```', ...fingerprintLines, '```')
+          }
+        }
 
         if (result.vcdPath) {
           report.push('', '### 波形查看', '', `gtkwave ${result.vcdPath}`)
@@ -1583,7 +1594,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       const state = artifacts.verificationState
       const top = state.scenarios.slice(0, 10)
       return {
-        content: [{ type: 'text', text: `## Verification Intelligence\n\n- Requirement：${artifacts.requirementModel.requirements.length}\n- RTL Structural Fact：${artifacts.structuralModel.facts.length}\n- Risk Marker：${artifacts.risks.length}\n- Scenario：${state.scenarioCount}\n- Critical Open：${state.criticalOpen.length}\n- RTL Hash：${state.rtlHash}\n\n### 当前最高优先级\n${top.length ? top.map((item) => `- ${item.id} [${item.status}] priority=${item.priority}：${item.title}`).join('\n') : '- 未识别到 Scenario'}\n\n报告：${artifacts.paths.report}` }],
+        content: [{ type: 'text', text: `## Verification Intelligence\n\n- Requirement：${artifacts.requirementModel.requirements.length}\n- RTL Structural Fact：${artifacts.structuralModel.facts.length}\n- Risk Marker：${artifacts.risks.length}\n- Scenario：${state.scenarioCount}\n- Critical Open：${state.criticalOpen.length}\n- RTL Hash：${state.rtlHash}\n\n### 当前最高优先级\n${top.length ? top.map((item) => `- ${item.id} [${item.status}] priority=${item.priority}：${item.title}`).join('\n') : '- 未识别到 Scenario'}\n\n日常状态读取唯一入口（≤10KB 摘要）：${artifacts.paths.executionSummary}\n报告：${artifacts.paths.report}` }],
         details: { paths: artifacts.paths, scenarioCount: state.scenarioCount, criticalOpen: state.criticalOpen, topScenarios: top },
         isError: false
       }
@@ -1668,6 +1679,37 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         content: [{ type: 'text', text: `## 场景裁决写回\n\n- 更新：${result.updated.length}\n- 未找到：${result.missing.length}${result.missing.length ? `（${result.missing.join('、')}）` : ''}\n- 拒绝：${result.rejected.length}\n${result.rejected.map((item) => `  - ${item.scenarioId}：${item.reason}`).join('\n')}\n- 态势快照：${result.rebuilt ? '已重新生成，页面刷新即可见' : '未重建'}` }],
         details: result,
         isError: result.missing.length > 0 || result.rejected.length > 0
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'record_root_cause',
+    label: 'Record Root Cause',
+    description: '把 FAIL 排查的根因结论落盘到 verification/results/root-causes.json（证据区，非引擎产物）。rootCause 一句话（≤200 字）、fix 动作级（≤120 字）；同场景多条共存成链，refutedHypotheses 引用先前记录 id 做链式追溯。confirmed 根因在下次 rebuild 时自动挂到场景证据并进入签核包。',
+    promptSnippet: 'Record the confirmed or refuted root cause for a failed scenario',
+    promptGuidelines: 'Call when a run_simulation FAIL turns PASS, or when a hypothesis is confirmed/refuted during debugging. Keep rootCause to one sentence and fix to an action-level description. Never edit root-causes.json by hand.',
+    parameters: Type.Object({
+      scenarioId: Type.String({ pattern: '^SCN-[A-F0-9]{8}$', description: '关联的 Verification Scenario ID' }),
+      hypothesis: Type.String({ minLength: 1, description: '根因假设' }),
+      verdict: Type.Union([Type.Literal('confirmed'), Type.Literal('refuted'), Type.Literal('open')], { description: '本条假设的裁决' }),
+      refutedHypotheses: Type.Array(Type.String(), { description: '本条证伪的先前根因记录 id（RC-*，链式追溯）；无则传空数组' }),
+      failureSignature: Type.String({ description: '关联 diagnostic-control 失败指纹（run_simulation 返回的 12 位签名）；无则传空字符串' }),
+      rootCause: Type.String({ maxLength: 200, description: '≤200 字，一句话确认根因；open/refuted 可为空' }),
+      fix: Type.String({ maxLength: 120, description: '≤120 字，动作级修复描述（如"改 vbc_rate_ctrl 首拍 flush 锁存参数"）' }),
+      evidence: Type.Array(Type.String(), { description: '证据路径（日志/波形/result.json），不是内容' })
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      try {
+        const record = recordRootCause(ctx.cwd, params)
+        const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+        return {
+          content: [{ type: 'text', text: `## 根因登记\n\n- 记录 ID：${record.id}\n- 场景：${record.scenarioId}\n- 裁决：${record.verdict}\n- 落盘：verification/results/root-causes.json\n- ${rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次登记）：${rebuildError}` : '态势快照已自动重建；confirmed 根因已挂到场景证据并进入签核包'}` }],
+          details: { record },
+          isError: false
+        }
+      } catch (err) {
+        return { content: [{ type: 'text', text: `根因登记被拒绝：${err instanceof Error ? err.message : String(err)}` }], details: {}, isError: true }
       }
     }
   })
@@ -1842,6 +1884,31 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       const scenarioReview = reviewScenarioClosure(ctx.cwd)
       blockers.push(...scenarioReview.blockers.map((item) => `Scenario Closure：${item}`))
       warnings.push(...scenarioReview.warnings.map((item) => `Scenario Closure：${item}`))
+      // 软强制（契约 §2.1，不阻断）：diagnostic-control 显示曾 FAIL、当前 scenario_hits 已 PASS、
+      // 但 root-causes.json 无该场景 confirmed 记录 → 提醒补登记根因链
+      const failedModules = new Set<string>()
+      try {
+        const diagnostic = JSON.parse(readFileSync(join(resultsDir, 'diagnostic-control.json'), 'utf-8')) as { attempts?: Array<{ topModule?: string; passed?: boolean }> }
+        for (const attempt of diagnostic.attempts ?? []) if (attempt.passed === false && attempt.topModule) failedModules.add(attempt.topModule)
+      } catch { /* 无诊断账本或损坏时不产生该警告 */ }
+      const confirmedRootCauses = new Set<string>()
+      try {
+        const rootCauses = JSON.parse(readFileSync(join(resultsDir, 'root-causes.json'), 'utf-8')) as { records?: Array<{ scenarioId?: string; verdict?: string }> }
+        for (const record of rootCauses.records ?? []) if (record.verdict === 'confirmed' && record.scenarioId) confirmedRootCauses.add(record.scenarioId)
+      } catch { /* 无根因账本时按空集合处理 */ }
+      if (failedModules.size) {
+        for (const file of collectEvidenceFiles(resultsDir, (name) => name === 'scenario_hits.json')) {
+          if (!failedModules.has(basename(dirname(file)))) continue
+          try {
+            const hits = JSON.parse(readFileSync(file, 'utf-8')) as { scenarios?: Array<{ id?: string; passed?: boolean }> }
+            for (const scenario of hits.scenarios ?? []) {
+              if (scenario.passed === true && scenario.id && !confirmedRootCauses.has(scenario.id)) {
+                warnings.push(`场景 ${scenario.id} 曾 FAIL 后转 PASS，但 root-causes.json 无 confirmed 根因记录；请用 record_root_cause 补登记（含已证伪假设链）`)
+              }
+            }
+          } catch { /* 单个 hits 文件损坏不阻断审查 */ }
+        }
+      }
       for (const file of testFiles) {
         const code = readFileSync(file, 'utf-8')
         if (!/@cocotb\.test/.test(code)) warnings.push(`${relative(ctx.cwd, file)} 未发现 @cocotb.test`)

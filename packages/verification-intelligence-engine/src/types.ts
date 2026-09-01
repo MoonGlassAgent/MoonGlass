@@ -83,6 +83,31 @@ export interface NegativeSpaceEntry {
   approved: boolean
 }
 
+/**
+ * 根因结论落盘记录（VERIF 上下文治理第 2 批，契约 §2.1）。
+ * 写/合并到 verification/results/root-causes.json（证据区，不进 intelligence/ 引擎产物区）；
+ * 同 scenarioId 多条共存成链，refutedHypotheses 引用先前记录 id 实现链式追溯。
+ * rootCause ≤200 字、fix ≤120 字，由 recordRootCause 与 record_root_cause 工具 schema 双层强制。
+ */
+export interface RootCauseRecord {
+  /** 稳定 id：RC-<sha1前8位大写>，由 scenarioId/hypothesis/verdict 派生 */
+  id: string
+  scenarioId: string
+  hypothesis: string
+  verdict: 'confirmed' | 'refuted' | 'open'
+  /** 本条证伪的先前根因记录 id（链式追溯） */
+  refutedHypotheses: string[]
+  /** 关联 diagnostic-control 失败指纹 */
+  failureSignature: string
+  /** ≤200 字，一句话确认根因；open/refuted 可为空 */
+  rootCause: string
+  /** ≤120 字，动作级修复描述 */
+  fix: string
+  /** 证据路径（日志/波形/result.json），不是内容 */
+  evidence: string[]
+  createdAt: string
+}
+
 export interface VerificationSpaceSnapshot {
   version: 1
   snapshotId: string
@@ -285,7 +310,13 @@ export interface StructuralModel {
   rtlHash: string
   sourceFiles: string[]
   facts: StructuralFact[]
-  analyzer: { engine: 'slang-ast' | 'moonglass-structural-fallback'; version?: string; astPath?: string; limitations: string[] }
+  analyzer: {
+    engine: 'slang-ast' | 'moonglass-structural-fallback'
+    version?: string
+    /** Slang AST 为系统临时目录中间产物，正常解析消费后即删除；仅 elaboration 失败或超限时保留，此字段记录其绝对路径供调试 */
+    astPath?: string
+    limitations: string[]
+  }
   stateMachines: StateMachine[]
   registerWriters: RegisterWriter[]
   clockResetDomains: ClockResetDomain[]
@@ -476,5 +507,7 @@ export interface IntelligenceArtifacts {
     signoffPackage: string
     signoffReport: string
     moduleVerificationStrategy: string
+    /** Agent 日常状态读取唯一入口（≤10KB 摘要，VERIF 上下文治理第 2 批） */
+    executionSummary: string
   }
 }
