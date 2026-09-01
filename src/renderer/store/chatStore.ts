@@ -67,6 +67,15 @@ export const useChatStore = create<ChatState>((set, get) => {
         const history = await window.moonglass.agent.getMessages(projectId)
         set({ sessionInfo, messages: history, streaming: false, streamTargetId: null })
       }
+    } else {
+      // 发送前强制对齐会话阶段指纹：阶段可能刚被一键托管等流程推进，
+      // ensureSession 幂等——阶段未变是廉价校验，阶段已变会切换到目标阶段会话
+      const aligned = await window.moonglass.agent.ensureSession(projectId)
+      if (aligned.sessionName !== sessionInfo.sessionName || aligned.phase !== sessionInfo.phase) {
+        const history = aligned.providersReady ? await window.moonglass.agent.getMessages(projectId) : []
+        set({ sessionInfo: aligned, messages: history, streaming: false, streamTargetId: null })
+        sessionInfo = aligned
+      }
     }
     if (!sessionInfo?.providersReady) throw new Error('会话尚未就绪，请稍候（若持续无响应请重新进入工作区）')
     const userMsg: AgentUiMessage = {
