@@ -38,7 +38,14 @@ import type {
   BoundaryCondition,
   VerificationIntent,
   CoverageHole,
-  AgentIntentInput
+  AgentIntentInput,
+  VerificationWave,
+  WaveProgressItem,
+  SpecClauseMapping,
+  SpecClauseStatus,
+  SpecMappingMatrix,
+  ScenarioCluster,
+  ReclusterSuggestion
 } from './types.ts'
 import { analyzeStructure } from './structural-analyzer.ts'
 
@@ -83,6 +90,91 @@ const RISK_RULES: RiskRule[] = [
   { taxonomyId: 'R19', title: 'Interrupt Mask/Pending/Clear Collision', features: ['interrupt'], patterns: [/(?:irq|interrupt|intr_)\w*/i, /(?:mask|pending|clear|status)/i], trigger: ['中断置位', 'mask/clear 同周期变化'], expected: ['pending、mask 和外部中断输出一致'], method: 'formal-candidate', temporalDepth: 0.6, concurrency: 0.9 }
 ]
 
+// ==================== v0.8.6 波段化 + 规格映射完备性 + 聚类批次（契约 交流_20260901.txt §二 Q1-Q4） ====================
+
+/** 波段执行顺序：smoke → basic → corner → signoff。 */
+const WAVE_ORDER: VerificationWave[] = ['smoke', 'basic', 'corner', 'signoff']
+
+/** R01~R19 taxonomyId → 预定义 W2 主题名（契约 Q3 确定性底座；LLM 可补分类法未覆盖主题）。 */
+const TAXONOMY_TOPICS: Record<string, string> = {
+  R01: '并发碰撞', R02: '优先级仲裁', R04: '在途事务一致性', R05: '计数器边界', R07: '错误注入',
+  R08: '复位碰撞', R09: '软硬件并发', R10: '跨时钟域', R11: '超时处理', R12: '反压',
+  R13: '资源耗尽', R15: '错误恢复', R16: '忙时配置变更', R19: '中断并发'
+}
+
+/**
+ * 引擎穷举候选（ENGINE_CANDIDATE）的波段推导表（契约：由 taxonomyId 推导，默认 corner）：
+ * formal-candidate 方法归 W3 签核（Formal 属签核波段），其余（含 static）默认 W2 增补批——
+ * 风险开集场景属增补批选材，W1 基础功能只由锚定规格条款的 AGENT_INTENT 承载。
+ * 新增规则往表里加，不改逻辑。
+ */
+function deriveWaveForEngineCandidate(method: VerificationScenario['method']): VerificationWave {
+  if (method === 'formal-candidate') return 'signoff'
+  return 'corner'
+}
+
+/** 场景波段解析（旧数据兼容）：无 wave 字段时 AGENT_INTENT 默认 basic，ENGINE_CANDIDATE 按方法推导。 */
+function resolveWave(scenario: Pick<VerificationScenario, 'wave' | 'origin' | 'method'>): VerificationWave {
+  if (scenario.wave) return scenario.wave
+  return (scenario.origin ?? 'ENGINE_CANDIDATE') === 'AGENT_INTENT' ? 'basic' : deriveWaveForEngineCandidate(scenario.method)
+}
+
+/** 主题名归一化（契约 Q3 补充：trim/大小写/空白归一，按归一键去重聚合，防"错误注入/错误处理"式裂波）。 */
+function normalizeTopic(topic: string | undefined): string | undefined {
+  const normalized = topic?.trim().toLowerCase().replace(/\s+/g, ' ')
+  return normalized ? normalized : undefined
+}
+
+/** 由锚定风险推导预定义主题（取首个命中 taxonomyId 的主题名）。 */
+function deriveTopicFromRisks(risks: Array<Pick<RiskMarker, 'taxonomyId'>>): string | undefined {
+  for (const risk of risks) {
+    const topic = TAXONOMY_TOPICS[risk.taxonomyId]
+    if (topic) return topic
+  }
+  return undefined
+}
+
+function ruleMethodOf(taxonomyId: string): RiskRule['method'] | undefined {
+  return RISK_RULES.find((rule) => rule.taxonomyId === taxonomyId)?.method
+}
+
+/**
+ * 波段声明一致性校验规则表（契约 Q1：声明 + 引擎校验，防游离标签；可扩展）。
+ * 命中即拒绝登记。注意 anchors.riskIds 为必填，故 smoke 波段实际上不可经 Intent 登记
+ * （冒烟属环境验收，由环境检查工具承担）——这正是契约"声明 smoke 但锚定了任何风险 → 拒绝"的落点。
+ */
+const WAVE_ANCHOR_RULES: Array<{ waves: VerificationWave[]; matches: (taxonomyId: string) => boolean; reason: string }> = [
+  { waves: ['smoke'], matches: () => true, reason: 'smoke 波段为环境验收（reset/接口连通/单个正常事务），不得锚定任何风险；如需登记请声明 basic' },
+  { waves: ['smoke', 'basic'], matches: (taxonomyId) => ruleMethodOf(taxonomyId) === 'formal-candidate', reason: '锚定 formal-candidate 类风险（如 R02/R05/R19）不得声明 smoke/basic 波段' }
+]
+
+/**
+ * 文档性规格条款分类器（契约：宁可漏判成 verifiable 也不可误判——只命中明确结构/流程类措辞才排除）。
+ * 命中即 documentary，不进映射矩阵分母；理由写入条款记录。
+ */
+const DOCUMENTARY_RULES: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /文件头|版权|著作权|copyright|license|许可证/i, reason: '命中文件头/版权类措辞' },
+  { pattern: /命名规范|命名规则|命名约定|naming\s*(?:convention|rule)/i, reason: '命中命名规范类措辞' },
+  { pattern: /目录结构|目录组织|目录划分|交付物清单|交付物列表|deliverable/i, reason: '命中目录结构/交付物类措辞' },
+  { pattern: /编码规范|代码风格|coding\s*style|格式要求|缩进|注释规范|注释风格/i, reason: '命中编码/注释风格类措辞' },
+  { pattern: /评审流程|review\s*流程|变更记录|修订历史|修订记录|版本历史|版本记录|文档结构/i, reason: '命中流程/历史记录类措辞' },
+  { pattern: /初稿|定稿|变更描述|阶段规格定义/i, reason: '命中版本历史表数据行措辞' }
+]
+
+/** 断言级条款拆分：单条 SPEC 文本中的断言分隔符（枚举/分号/句号/inline 编号）。 */
+const CLAUSE_SEPARATORS = /；|;|。|(?:^|\s)(?:\d+[)．、]|（\d+）|\([a-z]\)|[a-z][)．])\s*/g
+/** 过短的拆分碎片不构成独立可判定断言，并回相邻条款 */
+const MIN_CLAUSE_LENGTH = 8
+
+/** 聚类约束（契约 Q4）：authoring 组上限 8 场景，执行批 2-3 个（一次 run_simulation）。 */
+const CLUSTER_AUTHORING_CAP = 8
+const EXECUTION_BATCH_SIZE = 3
+
+/** 方法 → 主 Oracle 判定域（聚类键"Oracle 域"的确定性推导）。 */
+function oracleDomainOf(method: VerificationScenario['method']): string {
+  return method === 'formal-candidate' ? 'formal-property' : method === 'static' ? 'architecture-invariant' : 'reference-model'
+}
+
 function walk(dir: string, accept: (path: string) => boolean): string[] {
   if (!existsSync(dir)) return []
   const files: string[] = []
@@ -110,6 +202,33 @@ function sourceLine(text: string, pattern: RegExp): number {
   return match ? text.slice(0, match.index).split(/\r?\n/).length : 1
 }
 
+/**
+ * 把一条 SPEC 文本拆分为可观察断言级子条款（契约 §二.1：一条 SPEC 常含多个可判定断言）。
+ * 拆分键为确定性分隔符（；;。与 inline 编号），过短碎片并回相邻条款；
+ * 单条款保持原 id 不变（旧 anchors 兼容），多条款派生 `${id}#a`、`#b`。
+ */
+function splitClauses(id: string, text: string): Array<{ clauseId: string; parentId?: string; text: string }> {
+  const parts = text.split(CLAUSE_SEPARATORS).map((part) => part.trim()).filter(Boolean)
+  if (parts.length <= 1) return [{ clauseId: id, text }]
+  const merged: string[] = []
+  for (const part of parts) {
+    if (part.length < MIN_CLAUSE_LENGTH && merged.length) merged[merged.length - 1] += `；${part}`
+    else merged.push(part)
+  }
+  if (merged.length <= 1) return [{ clauseId: id, text }]
+  // 拆分后的子条款首段仍可能带着原 id 前缀，剔除避免文本冗余
+  const strip = (part: string): string => part.replace(new RegExp(`^${id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\s*[:：|]?\\s*`), '').trim() || part
+  return merged.map((part, index) => ({ clauseId: `${id}#${String.fromCharCode(97 + index)}`, parentId: id, text: strip(part).slice(0, 500) }))
+}
+
+/** 文档性条款分类（确定性规则，理由写入条款记录；宁可漏判成 verifiable 不可误判）。 */
+function classifyClause(text: string): { clauseKind: 'verifiable' | 'documentary'; classificationReason?: string } {
+  for (const rule of DOCUMENTARY_RULES) {
+    if (rule.pattern.test(text)) return { clauseKind: 'documentary', classificationReason: `${rule.reason}：${text.slice(0, 60)}` }
+  }
+  return { clauseKind: 'verifiable' }
+}
+
 function requirementModel(workspace: string): RequirementModel {
   const files = walk(join(workspace, 'docs'), (file) => /\.(?:md|txt)$/i.test(file) && /(?:02_requirements|03_design)/i.test(file))
   const requirements: RequirementFact[] = []
@@ -122,7 +241,13 @@ function requirementModel(workspace: string): RequirementModel {
       for (const id of ids) {
         if (seen.has(id)) continue
         seen.add(id)
-        requirements.push({ id, text: line.replace(/^\s*[-|#]+\s*/, '').trim().slice(0, 500), features: featuresOf(line), priority: /\bP[012]\b/.exec(line)?.[0] as RequirementFact['priority'], kind: 'SPEC_FACT', source: { file: relative(workspace, file), line: index + 1 } })
+        const lineText = line.replace(/^\s*[-|#]+\s*/, '').trim().slice(0, 500)
+        const priority = /\bP[012]\b/.exec(line)?.[0] as RequirementFact['priority']
+        const source = { file: relative(workspace, file), line: index + 1 }
+        for (const clause of splitClauses(id, lineText)) {
+          const classification = classifyClause(clause.text)
+          requirements.push({ id: clause.clauseId, text: clause.text, features: featuresOf(clause.text), priority, kind: 'SPEC_FACT', clauseKind: classification.clauseKind, parentId: clause.parentId, classificationReason: classification.classificationReason, source })
+        }
       }
       const trimmed = line.trim()
       const isStructural = trimmed.startsWith('|') || trimmed.startsWith('#') || trimmed.startsWith('```')
@@ -456,25 +581,218 @@ function attachConfirmedRootCauses(scenarios: VerificationScenario[], rootCauses
   }
 }
 
-function buildExecutionPlan(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions']): ScenarioExecutionPlan[] {
+/**
+ * 执行计划（v0.8.6 契约 §4）：排序键 = 波段序（smoke→basic→corner→signoff）→ 聚类组 → 组内优先级。
+ * 波段执行门（"W1 不满不进 W2"，约束执行不约束登记）：最早存在未闭环场景的波段圈住全部更晚
+ * 波段，只有该波段的 OPEN 场景进入执行计划；更晚波段允许登记、不进计划。
+ * 聚类（规划期，两段式第一段）：键 = 模块 × 方法 × Oracle 域（+ corner 波段同主题），
+ * authoring 组上限 8 场景，组内执行批 2-3 个（一次 run_simulation 绑定一批 scenarioIds）。
+ */
+function buildExecutionPlan(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions']): { plans: ScenarioExecutionPlan[]; clusters: ScenarioCluster[] } {
   const values = regressions.flatMap((item) => Object.values(item.coverage))
   const baseline = values.length ? values.reduce((sum, value) => sum + value, 0) / values.length : 0
   // 同分时 AGENT_INTENT 优先于 ENGINE_CANDIDATE：origin 只作排序 tiebreaker，不改 priority 公式
   const intentFirst = (item: VerificationScenario): number => Number((item.origin ?? 'ENGINE_CANDIDATE') === 'AGENT_INTENT')
-  const originById = new Map(scenarios.map((item) => [item.id, intentFirst(item)]))
-  return scenarios.filter((item) => item.state.closure === 'OPEN').sort((a, b) => Number(b.criticality === 1) - Number(a.criticality === 1) || b.priority - a.priority || intentFirst(b) - intentFirst(a) || a.costFactor - b.costFactor).slice(0, 24).map((item, index) => ({
-    scenarioId: item.id,
-    sequence: item.method === 'formal-candidate' ? 'formal_harness' : item.features.includes('backpressure') ? 'backpressure_sequence' : item.features.includes('reset') ? 'reset_during_traffic_sequence' : item.features.includes('error') ? 'error_injection_sequence' : 'directed_random_sequence',
-    constraints: (item.method === 'formal-candidate' ? { formalMode: 'bmc_then_cover_then_prove', assumptionReviewRequired: true } : { seedClass: index < 4 ? 'focused' : 'diverse', preserveProtocolLegality: true }) as Record<string, string | number | boolean>,
-    temporalConstraints: item.trigger,
-    iterations: Math.max(10, Math.round(20 + item.priority * 180)),
-    budgetSeconds: Math.max(30, Math.round(60 + item.costFactor * 240)),
-    expected: item.expected,
-    checkers: item.method === 'formal-candidate' ? ['assert', 'cover', 'assumption_review'] : ['scoreboard', 'protocol_assertions', 'scenario_hit_recorder'],
-    priority: Number(Math.max(item.criticality === 1 ? 0.001 : 0, item.priority * (baseline > 90 ? 0.85 : 1) * (Object.values(item.coverageDelta).some((value) => value > 0) ? 0.8 : 1)).toFixed(3)),
-    mandatory: item.criticality === 1,
-    reason: `${item.reason} 当前状态 ${item.status}；到达 ${item.reachCount} 次；覆盖反馈均值 ${baseline.toFixed(1)}%；Scenario 覆盖增量 ${JSON.stringify(item.coverageDelta)}。`
-  })).sort((a, b) => b.priority - a.priority || (originById.get(b.scenarioId) ?? 0) - (originById.get(a.scenarioId) ?? 0))
+  const open = scenarios.filter((item) => item.state.closure === 'OPEN')
+  const openWaves = new Set(open.map(resolveWave))
+  const activeWave = WAVE_ORDER.find((wave) => openWaves.has(wave))
+  const gated = open.filter((item) => resolveWave(item) === activeWave)
+  const sorted = gated.sort((a, b) => Number(b.criticality === 1) - Number(a.criticality === 1) || b.priority - a.priority || intentFirst(b) - intentFirst(a) || a.costFactor - b.costFactor).slice(0, 24)
+
+  // 规划期聚类（确定性键；失败指纹再聚类在首轮执行后以 reclusterSuggestions 输出）
+  const groups = new Map<string, VerificationScenario[]>()
+  for (const scenario of sorted) {
+    const wave = resolveWave(scenario)
+    const module = scenario.rtlObjects[0]?.split('.')[0] ?? 'unknown'
+    const key = [wave, module, scenario.method, oracleDomainOf(scenario.method), wave === 'corner' ? normalizeTopic(scenario.topic) ?? '' : ''].join('\0')
+    const members = groups.get(key) ?? []
+    members.push(scenario)
+    groups.set(key, members)
+  }
+  const clusters: ScenarioCluster[] = []
+  for (const [key, members] of groups) {
+    const [wave, module, method, oracleDomain, topic] = key.split('\0') as [VerificationWave, string, VerificationScenario['method'], string, string]
+    // authoring 组上限 8 场景：超出按同键序拆为多个同键分组
+    for (let chunk = 0; chunk * CLUSTER_AUTHORING_CAP < members.length; chunk++) {
+      const scenarioIds = members.slice(chunk * CLUSTER_AUTHORING_CAP, (chunk + 1) * CLUSTER_AUTHORING_CAP).map((item) => item.id)
+      const executionBatches: string[][] = []
+      for (let index = 0; index < scenarioIds.length; index += EXECUTION_BATCH_SIZE) executionBatches.push(scenarioIds.slice(index, index + EXECUTION_BATCH_SIZE))
+      // 余 1 个的孤儿批并回上一批（保持每批 2-3 个）
+      if (executionBatches.length > 1 && executionBatches.at(-1)!.length === 1) {
+        const last = executionBatches.at(-1)!
+        last.unshift(executionBatches.at(-2)!.pop()!)
+      }
+      clusters.push({
+        clusterId: `CL-${createHash('sha1').update(`${key}\0${chunk}`).digest('hex').slice(0, 8).toUpperCase()}`,
+        wave, module, method, oracleDomain,
+        topic: topic || undefined,
+        scenarioIds,
+        executionBatches
+      })
+    }
+  }
+
+  const clusterOf = new Map(clusters.flatMap((cluster) => cluster.scenarioIds.map((id) => [id, cluster])))
+  const ordered = clusters.flatMap((cluster) => cluster.scenarioIds)
+  const byId = new Map(sorted.map((item) => [item.id, item]))
+  const plans = ordered.map((scenarioId, index) => {    const item = byId.get(scenarioId)!
+    const cluster = clusterOf.get(scenarioId)!
+    return {
+      scenarioId: item.id,
+      sequence: item.method === 'formal-candidate' ? 'formal_harness' : item.features.includes('backpressure') ? 'backpressure_sequence' : item.features.includes('reset') ? 'reset_during_traffic_sequence' : item.features.includes('error') ? 'error_injection_sequence' : 'directed_random_sequence',
+      constraints: (item.method === 'formal-candidate' ? { formalMode: 'bmc_then_cover_then_prove', assumptionReviewRequired: true } : { seedClass: index < 4 ? 'focused' : 'diverse', preserveProtocolLegality: true }) as Record<string, string | number | boolean>,
+      temporalConstraints: item.trigger,
+      iterations: Math.max(10, Math.round(20 + item.priority * 180)),
+      budgetSeconds: Math.max(30, Math.round(60 + item.costFactor * 240)),
+      expected: item.expected,
+      checkers: item.method === 'formal-candidate' ? ['assert', 'cover', 'assumption_review'] : ['scoreboard', 'protocol_assertions', 'scenario_hit_recorder'],
+      priority: Number(Math.max(item.criticality === 1 ? 0.001 : 0, item.priority * (baseline > 90 ? 0.85 : 1) * (Object.values(item.coverageDelta).some((value) => value > 0) ? 0.8 : 1)).toFixed(3)),
+      mandatory: item.criticality === 1,
+      reason: `${item.reason} 当前状态 ${item.status}；到达 ${item.reachCount} 次；覆盖反馈均值 ${baseline.toFixed(1)}%；Scenario 覆盖增量 ${JSON.stringify(item.coverageDelta)}。`,
+      wave: cluster.wave,
+      clusterId: cluster.clusterId
+    } satisfies ScenarioExecutionPlan
+  })
+  return { plans, clusters }
+}
+
+/**
+ * 规格映射矩阵（契约 §2，闭集完备性）：每个可验证（verifiable）断言级条款 →
+ * 锚定它的 AGENT_INTENT Intent（registerVerificationIntents 的 anchors.requirementIds）→
+ * 关联 Scenario → 证据与状态。文档性条款不进分母。条款锚定兼容母 id（锚 SPEC-ERR-001 覆盖其全部子条款）。
+ * 状态机：UNMAPPED / MAPPED_UNTESTED / PASSED / FAILED / WAIVED（FAILED 优先于 PASSED，
+ * WAIVED 要求全部映射场景经具名审批豁免）。
+ */
+function buildSpecMapping(requirements: RequirementModel, scenarios: VerificationScenario[], intents: VerificationIntent[]): SpecMappingMatrix {
+  const verifiable = requirements.requirements.filter((item) => (item.clauseKind ?? 'verifiable') === 'verifiable')
+  const documentaryCount = requirements.requirements.length - verifiable.length
+  const intentByScenarioId = new Map(intents.map((item) => [item.scenarioId, item]))
+  const agentScenarios = scenarios.filter((item) => (item.origin ?? 'ENGINE_CANDIDATE') === 'AGENT_INTENT')
+  const clauses: SpecClauseMapping[] = verifiable.map((clause) => {
+    const parentId = clause.parentId ?? clause.id
+    const mapped = agentScenarios.filter((scenario) => scenario.requirementIds.includes(clause.id) || scenario.requirementIds.includes(parentId))
+    const status: SpecClauseStatus = mapped.length === 0 ? 'UNMAPPED'
+      : mapped.some((scenario) => scenario.state.judgment === 'FAIL') ? 'FAILED'
+        : mapped.some((scenario) => scenario.state.judgment === 'PASS') ? 'PASSED'
+          : mapped.every((scenario) => scenario.state.closure === 'WAIVED') ? 'WAIVED'
+            : 'MAPPED_UNTESTED'
+    return {
+      clauseId: clause.id,
+      parentId,
+      text: clause.text,
+      status,
+      intentIds: mapped.map((scenario) => intentByScenarioId.get(scenario.id)?.id ?? '').filter(Boolean),
+      scenarioIds: mapped.map((scenario) => scenario.id),
+      evidence: [...new Set(mapped.flatMap((scenario) => scenario.evidence))]
+    }
+  })
+  const statusCounts: Record<SpecClauseStatus, number> = { UNMAPPED: 0, MAPPED_UNTESTED: 0, PASSED: 0, FAILED: 0, WAIVED: 0 }
+  for (const clause of clauses) statusCounts[clause.status] += 1
+  return { version: 1, generatedAt: new Date().toISOString(), clauseTotal: verifiable.length, documentaryCount, coveredClause: statusCounts.PASSED, statusCounts, clauses }
+}
+
+/**
+ * 波段进度（展示层契约 B.1）：W0-W3 四段；W1 进度挂规格映射矩阵（闭集），
+ * W2 按归一化主题聚合，W3.status 映射 closureAssessment.status。
+ */
+function buildWaveProgress(scenarios: VerificationScenario[], specMapping: SpecMappingMatrix, closure: ClosureAssessment['status']): WaveProgressItem[] {
+  const byWave = new Map<VerificationWave, VerificationScenario[]>()
+  for (const scenario of scenarios) {
+    const wave = resolveWave(scenario)
+    const members = byWave.get(wave) ?? []
+    members.push(scenario)
+    byWave.set(wave, members)
+  }
+  const passed = (item: VerificationScenario): boolean => item.state.judgment === 'PASS'
+  const statusOf = (members: VerificationScenario[]): WaveProgressItem['status'] =>
+    members.length === 0 ? 'pending'
+      : members.every((item) => item.state.closure !== 'OPEN') ? 'done'
+        : members.some((item) => item.state.closure !== 'OPEN' || passed(item)) ? 'in-progress' : 'pending'
+  const basic = byWave.get('basic') ?? []
+  const w1Status: WaveProgressItem['status'] = specMapping.clauseTotal > 0 && specMapping.coveredClause >= specMapping.clauseTotal ? 'done'
+    : specMapping.coveredClause > 0 || statusOf(basic) === 'in-progress' ? 'in-progress'
+      : statusOf(basic) === 'done' && specMapping.clauseTotal === 0 ? 'done' : 'pending'
+  const corner = byWave.get('corner') ?? []
+  const topicMap = new Map<string, { name: string; scenarioCount: number; passedCount: number }>()
+  for (const scenario of corner) {
+    const name = normalizeTopic(scenario.topic) ?? '未命名主题'
+    const entry = topicMap.get(name) ?? { name, scenarioCount: 0, passedCount: 0 }
+    entry.scenarioCount += 1
+    if (passed(scenario)) entry.passedCount += 1
+    topicMap.set(name, entry)
+  }
+  const signoff = byWave.get('signoff') ?? []
+  const smoke = byWave.get('smoke') ?? []
+  return [
+    { id: 'W0', wave: 'smoke', label: '冒烟', status: statusOf(smoke), scenarioCount: smoke.length, passedCount: smoke.filter(passed).length },
+    { id: 'W1', wave: 'basic', label: '基础功能', status: w1Status, scenarioCount: basic.length, passedCount: basic.filter(passed).length, specClauseTotal: specMapping.clauseTotal, specClauseCovered: specMapping.coveredClause },
+    { id: 'W2', wave: 'corner', label: '增补', status: statusOf(corner), scenarioCount: corner.length, passedCount: corner.filter(passed).length, topics: [...topicMap.values()] },
+    { id: 'W3', wave: 'signoff', label: '签核', status: closure === 'READY_FOR_HUMAN_SIGNOFF' ? 'done' : closure === 'CONDITIONALLY_READY' ? 'in-progress' : signoff.length ? 'in-progress' : 'pending', scenarioCount: signoff.length, passedCount: signoff.filter(passed).length }
+  ]
+}
+
+/**
+ * 再聚类建议（契约 Q4 两段式第二段）：首轮失败后按失败指纹收敛聚类。
+ * 指纹来源：root-causes.json（scenarioId 级）+ diagnostic-control.json（topModule 级）。
+ * 同组存在不同失败指纹 → 建议分裂；跨组共享同一指纹 → 建议合并。建议性质，不自动执行。
+ */
+function buildReclusterSuggestions(workspace: string, clusters: ScenarioCluster[], scenarios: VerificationScenario[]): ReclusterSuggestion[] {
+  if (clusters.length === 0) return []
+  const fingerprints = new Map<string, string>()
+  for (const record of readRootCauses(workspace)) {
+    if (record.scenarioId && record.failureSignature && record.failureSignature !== 'PASS') fingerprints.set(record.scenarioId, record.failureSignature)
+  }
+  const scenarioById = new Map(scenarios.map((item) => [item.id, item]))
+  try {
+    const diagnosticPath = join(workspace, 'verification', 'results', 'diagnostic-control.json')
+    if (existsSync(diagnosticPath)) {
+      const diagnostic = JSON.parse(readFileSync(diagnosticPath, 'utf-8')) as { attempts?: Array<{ topModule?: string; passed?: boolean; failureSignature?: string }> }
+      const moduleFingerprint = new Map<string, string>()
+      for (const attempt of diagnostic.attempts ?? []) {
+        if (!attempt.passed && attempt.topModule && attempt.failureSignature && attempt.failureSignature !== 'PASS') moduleFingerprint.set(attempt.topModule, attempt.failureSignature)
+      }
+      // 模块级指纹兜底：仅当场景自身无根因指纹时继承其模块最近失败指纹
+      for (const cluster of clusters) {
+        const moduleFp = moduleFingerprint.get(cluster.module)
+        if (!moduleFp) continue
+        for (const id of cluster.scenarioIds) if (!fingerprints.has(id) && scenarioById.has(id)) fingerprints.set(id, moduleFp)
+      }
+    }
+  } catch { /* 诊断账本损坏时不再聚类 */ }
+  const suggestions: ReclusterSuggestion[] = []
+  for (const cluster of clusters) {
+    const distinct = new Map<string, string[]>()
+    for (const id of cluster.scenarioIds) {
+      const fp = fingerprints.get(id)
+      if (!fp) continue
+      distinct.set(fp, [...(distinct.get(fp) ?? []), id])
+    }
+    if (distinct.size > 1) {
+      suggestions.push({
+        type: 'split', clusterIds: [cluster.clusterId], scenarioIds: [...distinct.values()].flat(),
+        failureSignature: [...distinct.keys()].join(','),
+        reason: `组 ${cluster.clusterId} 内存在 ${distinct.size} 种不同失败指纹（${[...distinct.entries()].map(([fp, ids]) => `${fp.slice(0, 6)}:${ids.length} 场景`).join('、')}），失败原因不可归并，建议按指纹拆组`
+      })
+    }
+  }
+  const clusterFp = new Map<string, string[]>()
+  for (const cluster of clusters) {
+    for (const id of cluster.scenarioIds) {
+      const fp = fingerprints.get(id)
+      if (!fp) continue
+      clusterFp.set(fp, [...new Set([...(clusterFp.get(fp) ?? []), cluster.clusterId])])
+    }
+  }
+  for (const [fp, clusterIds] of clusterFp) {
+    if (clusterIds.length > 1) {
+      suggestions.push({
+        type: 'merge', clusterIds, failureSignature: fp,
+        scenarioIds: clusters.filter((cluster) => clusterIds.includes(cluster.clusterId)).flatMap((cluster) => cluster.scenarioIds.filter((id) => fingerprints.get(id) === fp)),
+        reason: `组 ${clusterIds.join('、')} 共享同一失败指纹 ${fp.slice(0, 6)}，疑似同一根因，建议合并为一组统一诊断`
+      })
+    }
+  }
+  return suggestions
 }
 
 function coordinatesFor(structure: StructuralModel, scenario: VerificationScenario, risk: RiskMarker): ScenarioCoordinates {
@@ -587,7 +905,7 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
     const evidence = [...new Set([risk.source.file, ...(hit?.evidence ?? previousItem?.evidence ?? [])])]
     const reachCount = hit?.reachCount ?? previousItem?.reachCount ?? 0
     const assertionPassed = hit?.assertionPassed ?? previousItem?.assertionPassed
-    const scenario = { id, origin: 'ENGINE_CANDIDATE' as const, title: `${risk.title}: ${risk.features.join(' × ')}`, riskIds: [risk.id], requirementIds, rtlObjects: [risk.object], features: risk.features, trigger: nway ? risk.features.map((item) => `${item} 在同周期或相邻周期有效`) : rule.trigger, expected: nway ? ['这些共享信号的优先级与更新次数符合规格，无重复累加、丢失或错误裁决'] : rule.expected, method: nway ? 'formal-candidate' as const : rule.method, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash: structure.rtlHash, risk: risk.riskScore, interaction: risk.interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `结构规则 ${risk.taxonomyId} 命中 ${risk.object}；${risk.features.join('、')} 共享控制或时序语义。`, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? previousItem?.coverageDelta ?? {}, updatedAt: new Date().toISOString() } as VerificationScenario
+    const scenario = { id, origin: 'ENGINE_CANDIDATE' as const, wave: deriveWaveForEngineCandidate(nway ? 'formal-candidate' : rule.method), topic: TAXONOMY_TOPICS[risk.taxonomyId], title: `${risk.title}: ${risk.features.join(' × ')}`, riskIds: [risk.id], requirementIds, rtlObjects: [risk.object], features: risk.features, trigger: nway ? risk.features.map((item) => `${item} 在同周期或相邻周期有效`) : rule.trigger, expected: nway ? ['这些共享信号的优先级与更新次数符合规格，无重复累加、丢失或错误裁决'] : rule.expected, method: nway ? 'formal-candidate' as const : rule.method, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash: structure.rtlHash, risk: risk.riskScore, interaction: risk.interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `结构规则 ${risk.taxonomyId} 命中 ${risk.object}；${risk.features.join('、')} 共享控制或时序语义。`, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? previousItem?.coverageDelta ?? {}, updatedAt: new Date().toISOString() } as VerificationScenario
     scenario.coordinates = coordinatesFor(structure, scenario, risk)
     return scenario
   })
@@ -680,7 +998,7 @@ function buildVerificationIntents(structure: StructuralModel, scenarios: Verific
       '无 assertion failure、scoreboard mismatch、协议违规或未知态传播。',
       '结果必须关联原始日志、结构化 result、覆盖率及必要波形。'
     ]
-    return { id: `VI-${scenario.id.slice(4)}`, scenarioId: scenario.id, objective, rationale: scenario.reason, failureMode: `反例：${scenario.expected.join('；')} 不成立（如计数重复/丢失、优先级错误或状态矛盾）。`, sourceIds: [...scenario.requirementIds, ...scenario.riskIds], preconditions: scenario.trigger, stimulus: { events, temporalInteractions }, observations: scenario.rtlObjects, stimulusProcedure, observationPoints, expectedResults: scenario.expected, passCriteria, boundaries: boundaryConditions(structure, scenario), recommendedMethods: methods, evidence: scenario.evidence, status: scenario.status, priority: scenario.priority }
+    return { id: `VI-${scenario.id.slice(4)}`, scenarioId: scenario.id, objective, rationale: scenario.reason, failureMode: `反例：${scenario.expected.join('；')} 不成立（如计数重复/丢失、优先级错误或状态矛盾）。`, sourceIds: [...scenario.requirementIds, ...scenario.riskIds], preconditions: scenario.trigger, stimulus: { events, temporalInteractions }, observations: scenario.rtlObjects, stimulusProcedure, observationPoints, expectedResults: scenario.expected, passCriteria, boundaries: boundaryConditions(structure, scenario), recommendedMethods: methods, evidence: scenario.evidence, status: scenario.status, priority: scenario.priority, wave: resolveWave(scenario), topic: scenario.topic }
   })
 }
 
@@ -814,7 +1132,7 @@ function buildMultiOracle(workspace: string, rtlHash: string, scenarios: Verific
   return { version: 1, generatedAt: new Date().toISOString(), rtlHash, definitions, verdicts, assessments, criticalInsufficient: assessments.filter((item) => item.requiredIndependentPasses === 2 && item.status === 'INSUFFICIENT').map((item) => item.scenarioId), conflicts: assessments.filter((item) => item.status === 'CONFLICT').map((item) => item.scenarioId) }
 }
 
-function assessClosure(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions'], formalResults: VerificationStateModel['formalResults'], coverageHoles: CoverageHole[], multiOracle: MultiOracleEvaluation, explorationHistory: ExplorationHistory, mutation: MutationAssessment, residualRiskRegister: ResidualRisk[], uncoveredRiskCandidates: RiskMarker[]): ClosureAssessment {
+function assessClosure(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions'], formalResults: VerificationStateModel['formalResults'], coverageHoles: CoverageHole[], multiOracle: MultiOracleEvaluation, explorationHistory: ExplorationHistory, mutation: MutationAssessment, residualRiskRegister: ResidualRisk[], uncoveredRiskCandidates: RiskMarker[], specMapping: SpecMappingMatrix): ClosureAssessment {
   const blockers: string[] = []
   const warnings: string[] = []
   const residualRisks: string[] = []
@@ -848,6 +1166,9 @@ function assessClosure(scenarios: VerificationScenario[], regressions: Verificat
   if (formalToolErrors) warnings.push(`${formalToolErrors} 项 Formal 工具错误仅记录为 C6，不得解释为不可达或 RTL 缺陷`)
   // 高分风险未被任何 Agent 验证意图锚定仅作提示，不阻断签核（避免门禁口径漂移）
   if (uncoveredRiskCandidates.length) warnings.push(`${uncoveredRiskCandidates.length} 个高分风险候选未被任何验证意图覆盖：${uncoveredRiskCandidates.slice(0, 8).map((item) => item.id).join('、')}${uncoveredRiskCandidates.length > 8 ? ' 等' : ''}`)
+  // 无映射可验证规格条款（闭集完备性缺口）：Q2 先 warning 一个版本，NPU 试跑评估准确率后再升级 blocker
+  const unmappedClauses = specMapping.clauses.filter((item) => item.status === 'UNMAPPED')
+  if (unmappedClauses.length) warnings.push(`规格映射矩阵：${unmappedClauses.length}/${specMapping.clauseTotal} 个可验证规格条款尚无验证意图映射（UNMAPPED）：${unmappedClauses.slice(0, 8).map((item) => item.clauseId).join('、')}${unmappedClauses.length > 8 ? ' 等' : ''}`)
   const supplementalUnknown = formalResults.filter((item) => item.obligation === 'supplemental' && ['INCONCLUSIVE', 'BOUND_EXHAUSTED', 'ASSUMPTION_DEPENDENT'].includes(item.outcome)).length
   if (supplementalUnknown) residualRisks.push(`${supplementalUnknown} 项补强 Formal 未获得决定性结论`)
   if (impactUnknown) nextActions.push('先执行 RTL 变更影响分析与受影响回归，更新 Scenario freshness')
@@ -954,9 +1275,10 @@ function readExplorationHistory(path: string, criticalOpen: number, snapshotId?:
 }
 
 /**
- * 生成 execution-summary.json（契约 §2.3）：Agent 日常状态读取的唯一入口，硬指标 ≤10KB。
- * 内容只含计数、top-N 开放场景摘要、blockers/nextActions 与证据路径（非内容）；
- * 超限时按 top 列表 → 文本条数 → 单条长度逐级截断，保证硬指标成立。
+ * 生成 execution-summary.json（契约 §2.3 + 展示层契约 B）：Agent 日常状态读取的唯一入口，硬指标 ≤10KB。
+ * 内容只含计数、top-N 开放场景摘要、波段进度、规格映射计数与 top 未映射清单、blockers/nextActions
+ * 与证据路径（非内容）；超限时按 waveProgress.topics → specMapping.unmappedClause → top 列表 →
+ * 文本条数 → 单条长度逐级截断，保证硬指标成立。
  */
 function writeExecutionSummary(path: string, workspace: string, state: VerificationStateModel, paths: IntelligenceArtifacts['paths']): void {
   const open = state.scenarios.filter((item) => item.state.closure === 'OPEN')
@@ -968,6 +1290,9 @@ function writeExecutionSummary(path: string, workspace: string, state: Verificat
     rtlHash: string
     progress: { scenarioCount: number; statusCounts: Partial<Record<ScenarioStatus, number>>; closed: number; open: number; blocked: number }
     topOpenScenarios: Array<{ id: string; title: string; status: ScenarioStatus; priority: number }>
+    waveProgress: WaveProgressItem[]
+    specMapping: { clauseTotal: number; coveredClause: number; unmappedClause: Array<{ specId: string; clause: string }> }
+    reclusterSuggestionCount: number
     closureStatus: ClosureAssessment['status']
     blockers: string[]
     nextActions: string[]
@@ -979,6 +1304,13 @@ function writeExecutionSummary(path: string, workspace: string, state: Verificat
     rtlHash: state.rtlHash,
     progress: { scenarioCount: state.scenarioCount, statusCounts: state.statusCounts, closed: closedCount, open: open.length, blocked: state.closureAssessment.blockers.length },
     topOpenScenarios: [...open].sort((a, b) => b.priority - a.priority).slice(0, 10).map((item) => ({ id: item.id, title: item.title, status: item.status, priority: item.priority })),
+    waveProgress: state.waveProgress,
+    specMapping: {
+      clauseTotal: state.specMapping.clauseTotal,
+      coveredClause: state.specMapping.coveredClause,
+      unmappedClause: state.specMapping.clauses.filter((item) => item.status === 'UNMAPPED').slice(0, 10).map((item) => ({ specId: item.clauseId, clause: item.text.slice(0, 120) }))
+    },
+    reclusterSuggestionCount: state.reclusterSuggestions.length,
     closureStatus: state.closureAssessment.status,
     blockers: [...state.closureAssessment.blockers],
     nextActions: [...state.closureAssessment.nextActions],
@@ -994,6 +1326,16 @@ function writeExecutionSummary(path: string, workspace: string, state: Verificat
     }
   }
   let serialized = JSON.stringify(summary, null, 2)
+  // 展示层契约 B：超限时 waveProgress.topics 与 unmappedClause 先截断
+  if (Buffer.byteLength(serialized, 'utf-8') > EXECUTION_SUMMARY_MAX_BYTES) {
+    for (const wave of summary.waveProgress) delete wave.topics
+    for (const keep of [5, 3, 0]) {
+      summary.specMapping.unmappedClause = summary.specMapping.unmappedClause.slice(0, keep)
+      serialized = JSON.stringify(summary, null, 2)
+      if (Buffer.byteLength(serialized, 'utf-8') <= EXECUTION_SUMMARY_MAX_BYTES) break
+    }
+    serialized = JSON.stringify(summary, null, 2)
+  }
   if (Buffer.byteLength(serialized, 'utf-8') > EXECUTION_SUMMARY_MAX_BYTES) {
     for (const keep of [5, 3, 0]) {
       summary.topOpenScenarios = summary.topOpenScenarios.slice(0, keep)
@@ -1028,12 +1370,14 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const formalResults = collectFormalResults(workspace)
   const mutationAssessment = collectMutationAssessment(workspace, structure.rtlHash)
   const interactionGraph = buildInteractionGraph(requirements, structure, scenarios)
-  const executionPlan = buildExecutionPlan(scenarios, regressions)
+  const { plans: executionPlan, clusters: executionClusters } = buildExecutionPlan(scenarios, regressions)
   const verificationSpace = buildVerificationSpace(requirements, structure, scenarios)
   const explorationRound = buildExplorationRound(verificationSpace, scenarios, executionPlan)
   const hypotheses = readHypotheses(paths.hypotheses)
   const specGaps = deriveSpecGaps(requirements, structure, risks)
   const verificationIntents = buildVerificationIntents(structure, scenarios, readIntents(paths.verificationIntents))
+  const specMapping = buildSpecMapping(requirements, scenarios, verificationIntents)
+  const reclusterSuggestions = buildReclusterSuggestions(workspace, executionClusters, scenarios)
   const coverageHoles = classifyCoverageHoles(scenarios, regressions)
   const multiOracle = buildMultiOracle(workspace, structure.rtlHash, scenarios, formalResults)
   const residualRiskRegister = buildResidualRisks(workspace, scenarios, formalResults, mutationAssessment, verificationSpace)
@@ -1044,13 +1388,14 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const uncoveredRiskCandidates = risks.slice(0, topRiskCount).filter((risk) => !intentAnchoredRiskIds.has(risk.id) && !evidenceCoveredRiskIds.has(risk.id))
   const currentCriticalOpen = scenarios.filter((item) => item.criticality >= 0.8 && !['VERIFIED', 'EXCLUDED', 'WAIVED'].includes(item.state.closure)).length
   const explorationHistory = readExplorationHistory(paths.explorationHistory, currentCriticalOpen, verificationSpace.snapshotId)
-  const closureAssessment = assessClosure(scenarios, regressions, formalResults, coverageHoles, multiOracle, explorationHistory, mutationAssessment, residualRiskRegister, uncoveredRiskCandidates)
+  const closureAssessment = assessClosure(scenarios, regressions, formalResults, coverageHoles, multiOracle, explorationHistory, mutationAssessment, residualRiskRegister, uncoveredRiskCandidates, specMapping)
+  const waveProgress = buildWaveProgress(scenarios, specMapping, closureAssessment.status)
   const signoffPackage = buildSignoffPackage(structure.rtlHash, verificationSpace, closureAssessment, residualRiskRegister, scenarios, regressions, formalResults, mutationAssessment, rootCauses)
   const statusCounts: VerificationStateModel['statusCounts'] = {}
   for (const scenario of scenarios) statusCounts[scenario.status] = (statusCounts[scenario.status] ?? 0) + 1
   const criticalOpen = scenarios.filter((item) => item.criticality >= 0.8 && !['VERIFIED', 'EXCLUDED', 'WAIVED'].includes(item.state.closure)).map((item) => item.id)
   const structuralSummary = { fsm: structure.stateMachines.length, cfgNodes: structure.controlFlow.nodes.length, dependencies: structure.temporalDependencies.length, cones: structure.conesOfInfluence.length, protocols: structure.protocols.map((item) => ({ protocol: item.protocol, module: item.module })) }
-  const verificationState: VerificationStateModel = { version: 5, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, uncoveredRiskCandidates, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, hypotheses, formalResults, specGaps, verificationIntents, coverageHoles, closureAssessment, verificationSpace, explorationRound, explorationHistory, multiOracle, mutationAssessment, residualRiskRegister, signoffPackage, moduleVerificationStrategy, structuralSummary }
+  const verificationState: VerificationStateModel = { version: 6, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, uncoveredRiskCandidates, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, executionClusters, reclusterSuggestions, waveProgress, specMapping, hypotheses, formalResults, specGaps, verificationIntents, coverageHoles, closureAssessment, verificationSpace, explorationRound, explorationHistory, multiOracle, mutationAssessment, residualRiskRegister, signoffPackage, moduleVerificationStrategy, structuralSummary }
   writeJsonAtomic(paths.requirementModel, requirements)
   writeJsonAtomic(paths.structuralModel, structure)
   writeJsonAtomic(paths.riskRegister, { version: 1, generatedAt: new Date().toISOString(), risks })
@@ -1065,6 +1410,10 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
     scenarioCount: verificationState.scenarioCount,
     criticalOpen: verificationState.criticalOpen,
     uncoveredRiskCandidates,
+    waveProgress,
+    specMapping,
+    reclusterSuggestions,
+    executionClusters,
     verificationIntents: verificationIntents.map((intent) => ({
       id: intent.id,
       scenarioId: intent.scenarioId,
@@ -1075,6 +1424,8 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
       status: intent.status,
       priority: intent.priority,
       recommendedMethods: intent.recommendedMethods,
+      wave: intent.wave,
+      topic: intent.topic,
       preconditions: intent.preconditions,
       stimulusProcedure: intent.stimulusProcedure,
       observationPoints: intent.observationPoints,
@@ -1100,7 +1451,7 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
     analyzer: structure.analyzer
   })
   writeJsonAtomic(paths.interactionGraph, interactionGraph)
-  writeJsonAtomic(paths.executionPlan, { version: 1, generatedAt: new Date().toISOString(), plans: executionPlan })
+  writeJsonAtomic(paths.executionPlan, { version: 2, generatedAt: new Date().toISOString(), plans: executionPlan, clusters: executionClusters, reclusterSuggestions })
   writeJsonAtomic(paths.specGaps, { version: 1, generatedAt: new Date().toISOString(), gaps: specGaps })
   writeJsonAtomic(paths.verificationIntents, { version: 1, generatedAt: new Date().toISOString(), intents: verificationIntents })
   writeJsonAtomic(paths.coverageHoles, { version: 1, generatedAt: new Date().toISOString(), holes: coverageHoles })
@@ -1332,11 +1683,13 @@ export function registerVerificationIntents(workspaceDir: string, inputs: AgentI
   const workspace = resolve(workspaceDir)
   const artifacts = buildVerificationIntelligence(workspace)
   const riskIds = new Set(artifacts.risks.map((item) => item.id))
-  const requirementIds = new Set(artifacts.requirementModel.requirements.map((item) => item.id))
+  const riskById = new Map(artifacts.risks.map((item) => [item.id, item]))
+  // 断言级条款兼容：锚定母条款 id（SPEC-ERR-001）等价于锚定其全部子条款（SPEC-ERR-001#a…）
+  const requirementIds = new Set(artifacts.requirementModel.requirements.flatMap((item) => item.parentId ? [item.id, item.parentId] : [item.id]))
   const signalNames = structuralSignalNames(artifacts.structuralModel)
   const accepted: string[] = []
   const rejected: Array<{ title: string; reasons: string[] }> = []
-  const valid: Array<{ input: AgentIntentInput; scenarioId: string }> = []
+  const valid: Array<{ input: AgentIntentInput; scenarioId: string; wave: VerificationWave; topic?: string }> = []
   for (const input of inputs) {
     const reasons: string[] = []
     if (!input.title?.trim() || !input.objective?.trim() || !input.failureMode?.trim()) reasons.push('title、objective、failureMode 均不能为空')
@@ -1347,28 +1700,48 @@ export function registerVerificationIntents(workspaceDir: string, inputs: AgentI
     else if (input.anchors.requirementIds.some((id) => !requirementIds.has(id))) reasons.push(`requirementIds 不存在于 requirement-model：${input.anchors.requirementIds.filter((id) => !requirementIds.has(id)).join('、')}`)
     if (!input.anchors?.rtlSignals?.length) reasons.push('必须点名至少一个真实 RTL 信号（rtlSignals）')
     else if (input.anchors.rtlSignals.some((signal) => !signalNames.has(signal))) reasons.push(`rtlSignals 在结构模型中不存在（疑似幻觉信号，必须核对 structural-model.json 后修正）：${input.anchors.rtlSignals.filter((signal) => !signalNames.has(signal)).join('、')}`)
+    // 波段声明 + 一致性校验（契约 Q1：防游离标签；规则表 WAVE_ANCHOR_RULES 可扩展）
+    const wave: VerificationWave = input.wave ?? 'basic'
+    if (input.wave && !WAVE_ORDER.includes(input.wave)) reasons.push(`wave 取值非法：${input.wave}（允许 ${WAVE_ORDER.join('/')}）`)
+    else if (input.anchors?.riskIds?.length) {
+      const taxonomyIds = input.anchors.riskIds.map((id) => riskById.get(id)?.taxonomyId).filter((id): id is string => Boolean(id))
+      for (const rule of WAVE_ANCHOR_RULES) {
+        if (!rule.waves.includes(wave)) continue
+        const hit = taxonomyIds.filter((id) => rule.matches(id))
+        if (hit.length) reasons.push(`wave=${wave} 与锚定风险 ${hit.join('、')} 冲突：${rule.reason}`)
+      }
+    }
+    // 主题归一化（契约 Q3）：corner 波段必填或可由锚定风险 taxonomyId 推导预定义主题
+    let topic = normalizeTopic(input.topic)
+    if (wave === 'corner' && !topic) {
+      const anchoredRisks = (input.anchors?.riskIds ?? []).map((id) => riskById.get(id)).filter((risk): risk is RiskMarker => Boolean(risk))
+      topic = deriveTopicFromRisks(anchoredRisks)
+      if (!topic) reasons.push('wave=corner 必须提供 topic（增补批主题名），或锚定可推导预定义主题的风险')
+    }
     if (reasons.length) { rejected.push({ title: input.title ?? '(未命名)', reasons }); continue }
     const scenarioId = `SCN-${createHash('sha1').update(`${input.title.trim()}\0${input.anchors.rtlSignals[0]}`).digest('hex').slice(0, 8).toUpperCase()}`
-    valid.push({ input, scenarioId })
+    valid.push({ input, scenarioId, wave, topic })
     accepted.push(scenarioId)
   }
   let rebuilt = false
   if (valid.length) {
     const scenarios = artifacts.verificationState.scenarios
     const intents = artifacts.verificationState.verificationIntents
-    for (const { input, scenarioId } of valid) {
+    for (const { input, scenarioId, wave, topic } of valid) {
       const anchoredRisks = artifacts.risks.filter((risk) => input.anchors.riskIds.includes(risk.id))
       const risk = Math.max(0.5, ...anchoredRisks.map((item) => item.riskScore))
       const interaction = Math.max(0.5, ...anchoredRisks.map((item) => item.interaction))
-      const anchoredRequirements = artifacts.requirementModel.requirements.filter((item) => input.anchors.requirementIds.includes(item.id))
+      const anchoredRequirements = artifacts.requirementModel.requirements.filter((item) => input.anchors.requirementIds.includes(item.id) || input.anchors.requirementIds.includes(item.parentId ?? ''))
       const criticality = anchoredRequirements.some((item) => item.priority === 'P0') ? 1 : 0.8
       const costFactor = input.recommendedMethod === 'static' ? 1 : input.recommendedMethod === 'formal-candidate' ? 0.8 : 0.9
       const features = featuresOf(`${input.title} ${input.objective}`)
       const rtlObjects = [...new Set(input.anchors.rtlSignals.map((signal) => signal.split('.')[0]))]
       const existing = scenarios.find((item) => item.id === scenarioId)
       if (existing) {
-        // 重复登记按更新处理：刷新锚点与判定口径，保留已由证据派生的执行状态
+        // 重复登记按更新处理：刷新锚点、波段标签与判定口径，保留已由证据派生的执行状态
         existing.title = input.title.trim()
+        existing.wave = wave
+        existing.topic = topic
         existing.riskIds = [...input.anchors.riskIds]
         existing.requirementIds = [...input.anchors.requirementIds]
         existing.rtlObjects = rtlObjects
@@ -1381,7 +1754,7 @@ export function registerVerificationIntents(workspaceDir: string, inputs: AgentI
         const coverageGap = 1
         const confidenceFactor = 0.85
         const priority = Number((criticality * risk * interaction * coverageGap * confidenceFactor * costFactor).toFixed(3))
-        scenarios.push({ id: scenarioId, origin: 'AGENT_INTENT', title: input.title.trim(), riskIds: [...input.anchors.riskIds], requirementIds: [...input.anchors.requirementIds], rtlObjects, features, trigger: [...(input.preconditions ?? [])], expected: [...input.passCriteria], method: input.recommendedMethod, status, state: scenarioState(status, [], 0, undefined, 'CURRENT'), coordinates: { feature: features, boundary: [], interaction: [], temporal: [], systemState: [] }, rtlHash: artifacts.structuralModel.rtlHash, risk, interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `Agent 登记的验证意图（AGENT_INTENT），锚定 ${input.anchors.riskIds.join('、')}。`, evidence: [], reachCount: 0, coverageDelta: {}, updatedAt: new Date().toISOString() })
+        scenarios.push({ id: scenarioId, origin: 'AGENT_INTENT', wave, topic, title: input.title.trim(), riskIds: [...input.anchors.riskIds], requirementIds: [...input.anchors.requirementIds], rtlObjects, features, trigger: [...(input.preconditions ?? [])], expected: [...input.passCriteria], method: input.recommendedMethod, status, state: scenarioState(status, [], 0, undefined, 'CURRENT'), coordinates: { feature: features, boundary: [], interaction: [], temporal: [], systemState: [] }, rtlHash: artifacts.structuralModel.rtlHash, risk, interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `Agent 登记的验证意图（AGENT_INTENT），锚定 ${input.anchors.riskIds.join('、')}。`, evidence: [], reachCount: 0, coverageDelta: {}, updatedAt: new Date().toISOString() })
       }
       const recommendedMethods: VerificationIntent['recommendedMethods'] = input.recommendedMethod === 'formal-candidate' ? ['formal', 'assertion', 'simulation'] : input.recommendedMethod === 'static' ? ['static', 'assertion'] : ['simulation', 'assertion']
       const observationPoints = [...new Set([...(input.observationPoints ?? []), ...rtlObjects])]
@@ -1395,8 +1768,10 @@ export function registerVerificationIntents(workspaceDir: string, inputs: AgentI
         intent.preconditions = [...(input.preconditions ?? [])]
         intent.observationPoints = observationPoints
         intent.recommendedMethods = recommendedMethods
+        intent.wave = wave
+        intent.topic = topic
       } else {
-        intents.push({ id: `VI-${scenarioId.slice(4)}`, scenarioId, objective: input.objective.trim(), rationale: `Agent 登记的验证意图（AGENT_INTENT），锚定 ${input.anchors.riskIds.join('、')}。`, failureMode: input.failureMode.trim(), sourceIds: [...input.anchors.requirementIds, ...input.anchors.riskIds], preconditions: [...(input.preconditions ?? [])], stimulus: { events: features, temporalInteractions: [] }, observations: rtlObjects, stimulusProcedure: [], observationPoints, expectedResults: [...input.passCriteria], passCriteria: [...input.passCriteria], boundaries: [], recommendedMethods, evidence: [], status: 'PLANNED', priority: scenarios.find((item) => item.id === scenarioId)?.priority ?? 0 })
+        intents.push({ id: `VI-${scenarioId.slice(4)}`, scenarioId, objective: input.objective.trim(), rationale: `Agent 登记的验证意图（AGENT_INTENT），锚定 ${input.anchors.riskIds.join('、')}。`, failureMode: input.failureMode.trim(), sourceIds: [...input.anchors.requirementIds, ...input.anchors.riskIds], preconditions: [...(input.preconditions ?? [])], stimulus: { events: features, temporalInteractions: [] }, observations: rtlObjects, stimulusProcedure: [], observationPoints, expectedResults: [...input.passCriteria], passCriteria: [...input.passCriteria], boundaries: [], recommendedMethods, evidence: [], status: 'PLANNED', priority: scenarios.find((item) => item.id === scenarioId)?.priority ?? 0, wave, topic })
       }
     }
     writeJsonAtomic(artifacts.paths.scenarioRegistry, { version: 2, generatedAt: new Date().toISOString(), rtlHash: artifacts.structuralModel.rtlHash, scenarios })
@@ -1486,11 +1861,29 @@ export function buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): s
   const byId = new Map(scenarios.map((item) => [item.id, item]))
   const intentByScenarioId = new Map(intents.map((item) => [item.scenarioId, item]))
 
+  // 聚类组语义（v0.8.6 契约 §4）：批次来自同一 cluster 时明确"同模块同 Oracle 域、
+  // 一个测试文件 N 个 testcase、一次 run_simulation 绑定全部 scenarioIds"
+  let cluster: ScenarioCluster | undefined
+  try {
+    const planPath = join(workspace, 'verification', 'intelligence', 'scenario-execution-plan.json')
+    const plan = JSON.parse(readFileSync(planPath, 'utf-8')) as { clusters?: ScenarioCluster[] }
+    cluster = (plan.clusters ?? []).find((item) => scenarioIds.length > 0 && scenarioIds.every((id) => item.scenarioIds.includes(id)))
+  } catch { /* 无聚类视图时退化为普通批次 prompt */ }
+
   const sections: string[] = [
     `# 验证批次任务（${scenarioIds.length} 个场景）`,
     '',
     '本批次由 MoonGlass 主进程编排派发。逐个完成以下场景的"到达 + 裁决 + 证据"闭环。'
   ]
+  if (cluster) {
+    sections.push(
+      '',
+      `## 聚类组语义（${cluster.clusterId}）`,
+      '',
+      `本组 ${scenarioIds.length} 个场景同属一个聚类组：模块 ${cluster.module}、方法 ${cluster.method}、Oracle 域 ${cluster.oracleDomain}${cluster.topic ? `、主题「${cluster.topic}」` : ''}（波段 ${cluster.wave}）。`,
+      `按组 authoring：写一个测试文件，内含 ${scenarioIds.length} 个 testcase（每个场景一个 @cocotb.test），并用 run_simulation(scenarioIds=[${scenarioIds.join(', ')}]) 一次绑定全部 scenarioIds 登记证据。`
+    )
+  }
   const missing: string[] = []
   for (const scenarioId of scenarioIds) {
     const scenario = byId.get(scenarioId)

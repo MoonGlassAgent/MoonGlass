@@ -275,12 +275,21 @@ export interface ModuleVerificationStrategy {
 
 export interface SourceReference { file: string; line?: number; section?: string }
 
+/** 规格条款类别（v0.8.6 断言级条款）：documentary 为文档性条款（文件头/命名/版权/交付物等），不进映射矩阵分母。 */
+export type SpecClauseKind = 'verifiable' | 'documentary'
+
 export interface RequirementFact {
   id: string
   text: string
   features: string[]
   priority?: 'P0' | 'P1' | 'P2'
   kind: 'SPEC_FACT'
+  /** 条款类别；旧数据无此字段按 verifiable 处理 */
+  clauseKind?: SpecClauseKind
+  /** 断言级拆分时指向母条款 id（如 SPEC-ERR-001#a 的 parentId 为 SPEC-ERR-001）；单条款无此字段 */
+  parentId?: string
+  /** 文档性条款分类理由（确定性规则命中说明）；verifiable 条款可为空 */
+  classificationReason?: string
   source: SourceReference
 }
 
@@ -351,8 +360,81 @@ export interface AgentIntentInput {
   recommendedMethod: 'simulation' | 'formal-candidate' | 'static'
   preconditions?: string[]
   observationPoints?: string[]
+  /** 波段标签（v0.8.6 契约 Q1：LLM 声明 + 引擎校验一致性）；缺省按 basic 处理 */
+  wave?: VerificationWave
+  /** W2 增补批主题（corner 波段必填或可由锚定风险推导）；引擎做归一化去重聚合 */
+  topic?: string
 }
-export interface ScenarioExecutionPlan { scenarioId: string; sequence: string; constraints: Record<string, string | number | boolean>; temporalConstraints: string[]; iterations: number; budgetSeconds: number; expected: string[]; checkers: string[]; priority: number; mandatory: boolean; reason: string }
+
+/** 波段（v0.8.6 波段化契约 §四）：W0 冒烟 / W1 基础功能 / W2 增补 / W3 签核。 */
+export type VerificationWave = 'smoke' | 'basic' | 'corner' | 'signoff'
+
+/** 波段进度条目（展示层契约 B.1，execution-summary / posture 按此生产）。 */
+export interface WaveProgressItem {
+  id: 'W0' | 'W1' | 'W2' | 'W3'
+  wave: VerificationWave
+  label: string
+  status: 'done' | 'in-progress' | 'pending'
+  scenarioCount: number
+  passedCount: number
+  /** 仅 W1：可验证规格条款总数（断言级，已排除文档性条款） */
+  specClauseTotal?: number
+  /** 仅 W1：有 PASS 证据的条款数 */
+  specClauseCovered?: number
+  /** 仅 W2：按归一化主题聚合的增补批进度 */
+  topics?: Array<{ name: string; scenarioCount: number; passedCount: number }>
+}
+
+/** 规格条款映射状态机（v0.8.6 契约 §2，闭集完备性）。 */
+export type SpecClauseStatus = 'UNMAPPED' | 'MAPPED_UNTESTED' | 'PASSED' | 'FAILED' | 'WAIVED'
+
+export interface SpecClauseMapping {
+  clauseId: string
+  parentId: string
+  text: string
+  status: SpecClauseStatus
+  intentIds: string[]
+  scenarioIds: string[]
+  evidence: string[]
+}
+
+/** 规格映射矩阵（闭集完备性视图；UNMAPPED 仅进 warnings，Q2：先 warning 一个版本）。 */
+export interface SpecMappingMatrix {
+  version: 1
+  generatedAt: string
+  /** 可验证规格条款总数（断言级，已排除文档性条款） */
+  clauseTotal: number
+  /** 文档性条款数（不参与完备性分母） */
+  documentaryCount: number
+  /** 有 PASS 证据的条款数 */
+  coveredClause: number
+  statusCounts: Record<SpecClauseStatus, number>
+  clauses: SpecClauseMapping[]
+}
+
+/** 聚类组（v0.8.6 契约 Q4：模块 × 方法 × Oracle 域（+ corner 同主题），authoring 上限 8 场景）。 */
+export interface ScenarioCluster {
+  clusterId: string
+  wave: VerificationWave
+  module: string
+  method: VerificationScenario['method']
+  oracleDomain: string
+  topic?: string
+  scenarioIds: string[]
+  /** 执行批（一次 run_simulation 绑定 2-3 个 scenarioIds） */
+  executionBatches: string[][]
+}
+
+/** 再聚类建议（两段式第二段：首轮失败后按失败指纹建议分裂/合并，不自动执行）。 */
+export interface ReclusterSuggestion {
+  type: 'split' | 'merge'
+  clusterIds: string[]
+  scenarioIds: string[]
+  failureSignature: string
+  reason: string
+}
+
+export interface ScenarioExecutionPlan { scenarioId: string; sequence: string; constraints: Record<string, string | number | boolean>; temporalConstraints: string[]; iterations: number; budgetSeconds: number; expected: string[]; checkers: string[]; priority: number; mandatory: boolean; reason: string; wave?: VerificationWave; clusterId?: string }
 
 export type SpecGapCategory = 'SPEC_WITHOUT_RTL' | 'RTL_WITHOUT_SPEC' | 'SPEC_UNDEFINED' | 'TEMPORAL_UNDEFINED'
 export interface SpecGap { id: string; category: SpecGapCategory; title: string; requirementIds: string[]; rtlObjects: string[]; description: string; impact: string; action: string; confidence: Confidence; sources: SourceReference[] }
@@ -377,6 +459,10 @@ export interface VerificationIntent {
   evidence: string[]
   status: ScenarioStatus
   priority: number
+  /** 波段标签（v0.8.6）；旧数据无此字段按场景来源推导（AGENT_INTENT→basic，ENGINE_CANDIDATE→按 taxonomyId） */
+  wave?: VerificationWave
+  /** W2 增补批归一化主题（corner 波段） */
+  topic?: string
 }
 export type CoverageHoleClass = 'C1_UNREACHABLE' | 'C2_CONSTRAINT_BLOCKED' | 'C3_STIMULUS_MISSING' | 'C4_OBSERVATION_MISSING' | 'C5_SPEC_UNDEFINED' | 'C6_TOOL_INSTRUMENTATION'
 export interface CoverageHole {
@@ -420,6 +506,10 @@ export interface VerificationScenario {
   title: string
   /** 场景来源：引擎穷举候选或 Agent 登记的验证意图；旧数据无此字段按 ENGINE_CANDIDATE 处理。 */
   origin?: 'ENGINE_CANDIDATE' | 'AGENT_INTENT'
+  /** 波段标签（v0.8.6）；旧数据无此字段由 resolveWave 按来源/方法推导 */
+  wave?: VerificationWave
+  /** W2 增补批归一化主题 */
+  topic?: string
   riskIds: string[]
   requirementIds: string[]
   rtlObjects: string[]
@@ -447,7 +537,7 @@ export interface VerificationScenario {
 }
 
 export interface VerificationStateModel {
-  version: 5
+  version: 6
   generatedAt: string
   rtlHash: string
   scenarioCount: number
@@ -460,6 +550,14 @@ export interface VerificationStateModel {
   analyzer: StructuralModel['analyzer']
   interactionGraph: FeatureInteractionGraph
   executionPlan: ScenarioExecutionPlan[]
+  /** 聚类视图（v0.8.6）：与 executionPlan 同一批 OPEN 场景的分组，选批按 cluster 取执行批 */
+  executionClusters: ScenarioCluster[]
+  /** 首轮失败后按失败指纹的再聚类建议（建议性质，不自动执行） */
+  reclusterSuggestions: ReclusterSuggestion[]
+  /** 波段进度（W0-W3，展示层契约 B.1） */
+  waveProgress: WaveProgressItem[]
+  /** 规格映射矩阵（闭集完备性视图，展示层契约 B.2） */
+  specMapping: SpecMappingMatrix
   hypotheses: VerificationHypothesis[]
   formalResults: FormalResult[]
   specGaps: SpecGap[]

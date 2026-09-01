@@ -125,7 +125,16 @@ for (const marker of [
   "Type.Literal('confirmed')",
   "Type.Literal('refuted')",
   'root-causes.json',
-  '曾 FAIL 后转 PASS'
+  '曾 FAIL 后转 PASS',
+  // v0.8.6：register_verification_intents 波段/主题 schema 与聚类批次返回
+  "Type.Literal('smoke')",
+  "Type.Literal('basic')",
+  "Type.Literal('corner')",
+  "Type.Literal('signoff')",
+  'topic',
+  'wave',
+  'executionBatches',
+  '聚类组'
 ]) {
   if (!toolsSource.includes(marker)) {
     console.error(`[schema] moonglass-tools.ts 缺少标记：${marker}`)

@@ -1399,17 +1399,40 @@ argument-hint: "<模块名>"
     return { batches, stoppedBy: 'max-batches', message: `达到批次上限 ${maxBatches}，停止派发；可再次调用继续` }
   }
 
-  /** 主进程侧批次选择：复用执行计划文件，缺失/损坏时重建引擎产物后重读（对齐 select_next_verification_batch 默认路径）。 */
+  /**
+   * 主进程侧批次选择（v0.8.6 聚类批次）：优先读 scenario-execution-plan.json 的聚类视图，
+   * 返回当前 cluster 的下一个执行批（2-3 个场景，同模块同 Oracle 域，一次 run_simulation 绑定）；
+   * 无聚类视图（旧版计划文件）时回退平铺 plans 前 limit 个。缺失/损坏时重建引擎产物后重读
+   * （对齐 select_next_verification_batch 默认路径）。
+   */
   private selectVerifBatchScenarioIds(workspace: string, limit: number): string[] {
-    let ids = readExecutionPlanBatch(workspace, limit)
+    let ids = this.readClusterBatch(workspace, limit) ?? readExecutionPlanBatch(workspace, limit)
     if (ids === null) {
       buildVerificationIntelligence(workspace)
-      ids = readExecutionPlanBatch(workspace, limit)
+      ids = this.readClusterBatch(workspace, limit) ?? readExecutionPlanBatch(workspace, limit)
       if (ids === null) throw new Error('scenario-execution-plan.json 缺失且重建后仍不可读，请先完成验证规划')
     }
     // 与 pi 工具一致：登记探索轮次，供饱和度（STALLED）检测
     if (ids.length > 0) recordExplorationRound(workspace, ids)
     return ids
+  }
+
+  /**
+   * 聚类批次读取：取首个 cluster 的首个执行批（executionBatches[0]，已与 OPEN 场景对齐）。
+   * 计划文件缺 clusters 字段（旧版）返回 null，由调用方回退平铺 plans。
+   */
+  private readClusterBatch(workspace: string, limit: number): string[] | null {
+    const planPath = join(workspace, 'verification', 'intelligence', 'scenario-execution-plan.json')
+    try {
+      const data = JSON.parse(readFileSync(planPath, 'utf-8')) as { clusters?: Array<{ scenarioIds?: unknown; executionBatches?: unknown }> }
+      if (!Array.isArray(data.clusters) || data.clusters.length === 0) return null
+      const batch = data.clusters[0]?.executionBatches
+      if (!Array.isArray(batch) || !Array.isArray(batch[0])) return null
+      const ids = (batch[0] as unknown[]).map((id) => String(id ?? '')).filter(Boolean).slice(0, Math.max(1, limit))
+      return ids.length ? ids : null
+    } catch {
+      return null
+    }
   }
 
   /** 批次序号：扫描会话目录（含 archive）中已有的 phase-verif--batch-N，取 max+1。 */

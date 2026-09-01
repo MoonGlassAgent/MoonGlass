@@ -1629,9 +1629,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'register_verification_intents',
     label: 'Register Verification Intents',
-    description: '登记 Agent 主导的验证意图：点名真实 RTL 信号、具体失效反例与具体判定标准，并锚定现有 riskIds / requirementIds。引擎校验锚点真实性，幻觉信号或不存在的 ID 会被拒绝；接受后生成 origin=AGENT_INTENT 的 Scenario（同分排序优先于引擎穷举候选）并自动重建验证态势。',
+    description: '登记 Agent 主导的验证意图：点名真实 RTL 信号、具体失效反例与具体判定标准，并锚定现有 riskIds / requirementIds。引擎校验锚点真实性与波段一致性，幻觉信号、不存在的 ID 或波段与锚定风险冲突会被拒绝；接受后生成 origin=AGENT_INTENT 的 Scenario（同分排序优先于引擎穷举候选）并自动重建验证态势。',
     promptSnippet: 'Register LLM-planned verification intents grounded in real signals and risks',
-    promptGuidelines: 'Read risk-register.json, requirement-model.json and structural-model.json first. Every rtlSignal must be a real signal from the structural model. Fix rejected anchors and re-register; never bypass by editing registry JSON.',
+    promptGuidelines: 'Read risk-register.json, requirement-model.json and structural-model.json first. Every rtlSignal must be a real signal from the structural model. Declare wave consistently with anchored risks (corner requires a topic). Fix rejected anchors and re-register; never bypass by editing registry JSON.',
     parameters: Type.Object({
       intents: Type.Array(Type.Object({
         title: Type.String({ minLength: 1, description: '验证点标题' }),
@@ -1640,10 +1640,12 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         passCriteria: Type.Array(Type.String(), { minItems: 1, description: '具体判定标准' }),
         anchors: Type.Object({
           riskIds: Type.Array(Type.String(), { minItems: 1, description: 'risk-register.json 中现有的 Risk ID' }),
-          requirementIds: Type.Array(Type.String(), { minItems: 1, description: 'requirement-model.json 中现有的 REQ/SPEC ID' }),
+          requirementIds: Type.Array(Type.String(), { minItems: 1, description: 'requirement-model.json 中现有的 REQ/SPEC ID（断言级子条款 SPEC-xxx#a 或母条款均可）' }),
           rtlSignals: Type.Array(Type.String(), { minItems: 1, description: 'structural-model.json 中真实存在的信号，支持 module.signal 或裸信号名' })
         }, { description: '锚点：引擎逐项校验真实性，幻觉引用一律拒绝' }),
         recommendedMethod: Type.Union([Type.Literal('simulation'), Type.Literal('formal-candidate'), Type.Literal('static')], { description: '推荐验证方法' }),
+        wave: Type.Optional(Type.Union([Type.Literal('smoke'), Type.Literal('basic'), Type.Literal('corner'), Type.Literal('signoff')], { description: '波段标签（缺省 basic）：smoke 冒烟不得锚定任何风险；basic 基础功能（规格条款 happy path）；corner 增补批（需 topic）；signoff 签核。锚定 formal-candidate 类风险（R02/R05/R19 等）不得声明 smoke/basic' })),
+        topic: Type.Optional(Type.String({ description: 'W2 增补批主题名（仅 wave=corner 需要；引擎归一化后去重聚合，R01~R19 预定义主题为底座）' })),
         preconditions: Type.Optional(Type.Array(Type.String())),
         observationPoints: Type.Optional(Type.Array(Type.String()))
       }), { minItems: 1 })
@@ -1784,7 +1786,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'select_next_verification_batch',
     label: 'Select Next Verification Batch',
-    description: '根据已生成的 Scenario 风险、未闭环状态和覆盖率反馈，返回下一批可执行场景。默认复用现有执行计划，只有明确 refresh 时才全量重建模型。',
+    description: '根据已生成的 Scenario 风险、未闭环状态和覆盖率反馈，返回下一批可执行场景（v0.8.6：按聚类组返回执行批，同模块同 Oracle 域，一次 run_simulation 绑定全部 scenarioIds）。默认复用现有执行计划，只有明确 refresh 时才全量重建模型。',
     promptSnippet: 'Select the next evidence-driven scenario batch',
     promptGuidelines: 'Implement or reuse the named sequence and checkers. Bind scenarios via run_simulation(scenarioIds=...): scenario hits and the posture rebuild are automatic byproducts. Never hand-write scenario_hits.json.',
     parameters: Type.Object({
@@ -1794,28 +1796,44 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const planPath = resolve(ctx.cwd, 'verification', 'intelligence', 'scenario-execution-plan.json')
-      let available: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; mandatory?: boolean; reason: string }> = []
+      let available: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; mandatory?: boolean; reason: string; wave?: string; clusterId?: string }> = []
+      let clusters: Array<{ clusterId: string; wave: string; module: string; oracleDomain: string; topic?: string; scenarioIds: string[]; executionBatches: string[][] }> = []
       let refreshed = Boolean(params.refresh)
       if (!refreshed && existsSync(planPath)) {
         try {
-          const cached = JSON.parse(readFileSync(planPath, 'utf-8')) as { plans?: typeof available }
+          const cached = JSON.parse(readFileSync(planPath, 'utf-8')) as { plans?: typeof available; clusters?: typeof clusters }
           available = cached.plans ?? []
+          clusters = cached.clusters ?? []
         } catch { refreshed = true }
       } else if (!existsSync(planPath)) refreshed = true
-      if (refreshed) available = buildVerificationIntelligence(ctx.cwd).verificationState.executionPlan
-      const plans: typeof available = []
+      if (refreshed) {
+        const rebuilt = buildVerificationIntelligence(ctx.cwd)
+        available = rebuilt.verificationState.executionPlan
+        clusters = rebuilt.verificationState.executionClusters
+      }
       const limit = Number(params.limit ?? 3)
-      let remainingBudget = Number(params.budgetSeconds ?? Number.POSITIVE_INFINITY)
-      for (const plan of available) {
-        if (plans.length >= limit) break
-        if (!plan.mandatory && plan.budgetSeconds > remainingBudget) continue
-        plans.push(plan)
-        remainingBudget = Math.max(0, remainingBudget - plan.budgetSeconds)
+      // v0.8.6 聚类选批：有聚类视图且无显式预算约束时，返回当前 cluster 的下一个执行批
+      let plans: typeof available = []
+      let clusterNote = ''
+      if (clusters.length > 0 && params.budgetSeconds === undefined) {
+        const cluster = clusters[0]
+        const batchIds = cluster.executionBatches[0] ?? []
+        const byId = new Map(available.map((item) => [item.scenarioId, item]))
+        plans = batchIds.map((id) => byId.get(id)).filter((item): item is (typeof available)[number] => Boolean(item)).slice(0, limit)
+        clusterNote = `聚类组 ${cluster.clusterId}（模块 ${cluster.module} · ${cluster.oracleDomain}${cluster.topic ? ` · 主题「${cluster.topic}」` : ''}，波段 ${cluster.wave}）：本组场景同模块同 Oracle 域，写一个测试文件含 ${plans.length} 个 testcase，run_simulation(scenarioIds=[${plans.map((item) => item.scenarioId).join(', ')}]) 一次绑定全部 scenarioIds。`
+      } else {
+        let remainingBudget = Number(params.budgetSeconds ?? Number.POSITIVE_INFINITY)
+        for (const plan of available) {
+          if (plans.length >= limit) break
+          if (!plan.mandatory && plan.budgetSeconds > remainingBudget) continue
+          plans.push(plan)
+          remainingBudget = Math.max(0, remainingBudget - plan.budgetSeconds)
+        }
       }
       const explorationHistory = recordExplorationRound(ctx.cwd, plans.map((item) => item.scenarioId))
       return {
-        content: [{ type: 'text', text: `## 下一批验证任务\n\n- 计划来源：${refreshed ? '已重建' : '增量复用'}\n- 本批数量：${plans.length}\n\n${plans.map((item, index) => `${index + 1}. ${item.scenarioId} · ${item.sequence} · ${item.iterations} 次 / ${item.budgetSeconds}s\n   - ${item.reason}`).join('\n') || '当前没有待执行的 Scenario。'}\n\n机器可读计划：verification/intelligence/scenario-execution-plan.json` }],
-        details: { plans, path: planPath, refreshed, requestedBudgetSeconds: params.budgetSeconds, remainingBudgetSeconds: Number.isFinite(remainingBudget) ? remainingBudget : null, saturation: explorationHistory.saturation },
+        content: [{ type: 'text', text: `## 下一批验证任务\n\n- 计划来源：${refreshed ? '已重建' : '增量复用'}\n- 本批数量：${plans.length}\n${clusterNote ? `\n${clusterNote}\n` : ''}\n${plans.map((item, index) => `${index + 1}. ${item.scenarioId} · ${item.sequence} · ${item.iterations} 次 / ${item.budgetSeconds}s${item.wave ? ` · ${item.wave}` : ''}\n   - ${item.reason}`).join('\n') || '当前没有待执行的 Scenario。'}\n\n机器可读计划：verification/intelligence/scenario-execution-plan.json` }],
+        details: { plans, path: planPath, refreshed, requestedBudgetSeconds: params.budgetSeconds, saturation: explorationHistory.saturation },
         isError: false
       }
     }

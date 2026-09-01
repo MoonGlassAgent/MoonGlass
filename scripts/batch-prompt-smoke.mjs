@@ -33,7 +33,11 @@ writeFileSync(join(root, 'verification', 'results', 'dma', 'result.json'), JSON.
 const artifacts = buildVerificationIntelligence(root)
 const scenarios = artifacts.verificationState.scenarios
 if (scenarios.length < 3) throw new Error(`fixture 场景不足 3 个：${scenarios.length}`)
-const batchIds = scenarios.slice(0, 3).map((scenario) => scenario.id)
+// v0.8.6 聚类批次：批次取自当前 cluster 的执行批（同模块同 Oracle 域，2-3 个）
+const cluster = artifacts.verificationState.executionClusters[0]
+if (!cluster || !Array.isArray(cluster.executionBatches) || cluster.executionBatches.length === 0) throw new Error('执行计划缺少聚类视图')
+const batchIds = cluster.executionBatches[0]
+if (batchIds.length < 1 || batchIds.length > 3) throw new Error(`执行批超出 2-3 个约束：${batchIds.length}`)
 
 // 根因交接数据：第一个场景一条 confirmed + 一条 refuted（链式）
 const refuted = recordRootCause(root, { scenarioId: batchIds[0], hypothesis: '假设：abort 优先级高于 bvalid', verdict: 'refuted', refutedHypotheses: [], failureSignature: 'deadbeef0001', rootCause: '', fix: '', evidence: [] })
@@ -61,6 +65,11 @@ if (!prompt.includes('纪律约束')) throw new Error('批次 prompt 缺少纪�
 if (!prompt.includes('run_simulation(scenarioIds=...)') || !prompt.includes('禁止手写')) throw new Error('纪律约束缺少 scenario_hits 自动登记条款')
 if (!prompt.includes('执行派生状态') || !prompt.includes('不得宣布')) throw new Error('纪律约束缺少执行派生状态条款')
 if (!prompt.includes('execution-summary.json')) throw new Error('纪律约束缺少状态入口路径')
+
+// v0.8.6 聚类组语义段：同模块同 Oracle 域、一个测试文件 N 个 testcase、一次绑定全部 scenarioIds
+if (!prompt.includes(`聚类组语义（${cluster.clusterId}）`)) throw new Error('批次 prompt 缺少聚类组语义段')
+if (!prompt.includes(`模块 ${cluster.module}`) || !prompt.includes(`Oracle 域 ${cluster.oracleDomain}`)) throw new Error('聚类组语义缺少模块/Oracle 域')
+if (!prompt.includes(`内含 ${batchIds.length} 个 testcase`) || !prompt.includes('一次绑定全部 scenarioIds')) throw new Error('聚类组语义缺少组 authoring 指引')
 
 // 未知场景 ID 不得静默丢弃
 const withUnknown = buildBatchPrompt(root, ['SCN-FFFFFFFF'])

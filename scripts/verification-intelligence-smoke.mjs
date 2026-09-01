@@ -13,6 +13,8 @@ writeFileSync(join(root, 'docs', '02_requirements', 'product_requirements.md'), 
 
 - REQ-DMA-001 P0: abort stops new requests while outstanding responses may complete.
 - REQ-DMA-002 P0: timeout and late response priority shall be deterministic.
+- SPEC-ERR-001 P1: 错误响应必须返回 SLVERR；错误状态必须锁存直到软件清除。
+- SPEC-DOC-001 P2: 模块文件头必须包含版权信息与命名规范说明。
 `, 'utf-8')
 
 writeFileSync(join(root, 'rtl', 'dma_wr_ctrl.v'), `
@@ -65,7 +67,22 @@ writeFileSync(join(root, 'verification', 'results', 'dma', 'result.json'), JSON.
 }, null, 2), 'utf-8')
 
 const first = buildVerificationIntelligence(root)
-if (first.requirementModel.requirements.length !== 2) throw new Error('Requirement Model 未提取稳定需求')
+if (first.requirementModel.requirements.length !== 5) throw new Error(`Requirement Model 断言级条款提取错误：${first.requirementModel.requirements.map((item) => item.id).join(',')}`)
+// ===== v0.8.6：断言级条款拆分 + 文档性条款分类 =====
+const clauseA = first.requirementModel.requirements.find((item) => item.id === 'SPEC-ERR-001#a')
+const clauseB = first.requirementModel.requirements.find((item) => item.id === 'SPEC-ERR-001#b')
+if (!clauseA || !clauseB || clauseA.parentId !== 'SPEC-ERR-001' || clauseB.parentId !== 'SPEC-ERR-001') throw new Error('SPEC 多断言条款未拆分为断言级子条款（#a/#b）')
+const docClause = first.requirementModel.requirements.find((item) => item.id === 'SPEC-DOC-001')
+if (docClause?.clauseKind !== 'documentary' || !docClause.classificationReason) throw new Error('文件头/版权类条款未被分类为 documentary 或缺少分类理由')
+if (first.requirementModel.requirements.filter((item) => (item.clauseKind ?? 'verifiable') === 'verifiable').length !== 4) throw new Error('可验证条款计数错误（documentary 应被排除）')
+// ===== v0.8.6：规格映射矩阵（闭集完备性，尚无 Intent 映射 → 全部 UNMAPPED，仅 warning 不 blocker） =====
+const firstMapping = first.verificationState.specMapping
+if (firstMapping.clauseTotal !== 4 || firstMapping.documentaryCount !== 1) throw new Error(`映射矩阵分母错误：clauseTotal=${firstMapping.clauseTotal} documentary=${firstMapping.documentaryCount}`)
+if (firstMapping.statusCounts.UNMAPPED !== 4 || firstMapping.coveredClause !== 0) throw new Error('无 Intent 登记时全部可验证条款应为 UNMAPPED')
+if (!first.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('UNMAPPED 条款未进入 closureAssessment.warnings')
+if (first.verificationState.closureAssessment.blockers.some((item) => item.includes('UNMAPPED'))) throw new Error('Q2：UNMAPPED 条款不得进入 blockers（先 warning 一个版本）')
+if (!Array.isArray(first.verificationState.waveProgress) || first.verificationState.waveProgress.length !== 4) throw new Error('波段进度未生成 W0-W3 四段')
+if (first.verificationState.waveProgress[1].specClauseTotal !== 4) throw new Error('W1 未挂规格映射矩阵计数')
 if (first.structuralModel.facts.length === 0) throw new Error('Structural Model 为空')
 if (first.structuralModel.stateMachines.length === 0) throw new Error('未提取 FSM')
 if (first.structuralModel.registerWriters.length === 0) throw new Error('未提取寄存器写入关系')
@@ -153,8 +170,10 @@ const saturated = buildVerificationIntelligence(root)
 if (saturated.verificationState.explorationHistory.saturation.status !== 'EMPIRICALLY_SATURATED') throw new Error('连续无新增探索未形成经验性饱和')
 const review = reviewScenarioClosure(root)
 if (!review.passed) throw new Error(`Scenario Closure 应通过：${review.blockers.join('; ')}`)
-if (saturated.verificationState.closureAssessment.status !== 'READY_FOR_HUMAN_SIGNOFF') throw new Error('完整关键证据与探索饱和后应进入人工签核就绪状态')
-if (saturated.verificationState.signoffPackage.status !== 'READY_FOR_HUMAN_SIGNOFF' || !saturated.verificationState.signoffPackage.packageId.startsWith('SIGNOFF-')) throw new Error('最终 Sign-off Package 未生成')
+// v0.8.6 Q2：规格映射矩阵存在 UNMAPPED 条款时 warning 使结论降为 CONDITIONALLY_READY（不阻断签核）
+if (saturated.verificationState.closureAssessment.status !== 'CONDITIONALLY_READY') throw new Error(`UNMAPPED 条款 warning 应使结论为 CONDITIONALLY_READY：${saturated.verificationState.closureAssessment.status}`)
+if (!saturated.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('签核结论缺少 UNMAPPED 条款 warning')
+if (saturated.verificationState.signoffPackage.status !== 'CONDITIONALLY_READY' || !saturated.verificationState.signoffPackage.packageId.startsWith('SIGNOFF-')) throw new Error('最终 Sign-off Package 未生成')
 if (!readFileSync(saturated.paths.signoffReport, 'utf-8').includes(saturated.verificationState.signoffPackage.packageId)) throw new Error('可读签核报告未绑定最终 Sign-off Package')
 
 const conflictPath = join(root, 'verification', 'results', 'dma', 'oracle_verdicts.json')
@@ -280,5 +299,95 @@ if (summary.topOpenScenarios.some((item) => Object.keys(item).sort().join(',') !
 if (!Array.isArray(summary.blockers) || !Array.isArray(summary.nextActions) || !summary.closureStatus) throw new Error('execution-summary 缺少 blockers/nextActions/closureStatus')
 if (!summary.evidencePaths?.verificationPosture || !summary.evidencePaths?.rootCauses) throw new Error('execution-summary 缺少证据路径')
 if (JSON.stringify(summary.evidencePaths).includes('首拍 flush')) throw new Error('execution-summary 证据区只能含路径，不得含内容')
+
+// ===== v0.8.6：波段标签校验（Q1）+ 主题归一（Q3）+ 聚类批次与执行门（Q4） =====
+const latest = buildVerificationIntelligence(root)
+// 条款状态机 WAIVED：REQ-DMA-001 被已具名审批豁免的 Intent 锚定
+const waivedClause = latest.verificationState.specMapping.clauses.find((item) => item.clauseId === 'REQ-DMA-001')
+if (waivedClause?.status !== 'WAIVED') throw new Error(`已豁免 Intent 锚定的条款应为 WAIVED：${waivedClause?.status}`)
+// Q1：声明 smoke 锚定任何风险 → 拒绝；声明 basic 锚定 formal-candidate 类风险（R05）→ 拒绝
+const formalRisk = latest.risks.find((risk) => risk.taxonomyId === 'R05')
+if (!formalRisk) throw new Error('fixture 缺少 R05 计数器边界风险（formal-candidate）')
+const waveRejected = registerVerificationIntents(root, [
+  { title: '冒烟伪登记', objective: 'x', failureMode: 'x', passCriteria: ['x'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['REQ-DMA-002'], rtlSignals: [bareSignal] }, recommendedMethod: 'simulation', wave: 'smoke' },
+  { title: '基础伪登记', objective: 'x', failureMode: 'x', passCriteria: ['x'], anchors: { riskIds: [formalRisk.id], requirementIds: ['REQ-DMA-002'], rtlSignals: [bareSignal] }, recommendedMethod: 'simulation', wave: 'basic' }
+])
+if (waveRejected.accepted.length !== 0 || waveRejected.rejected.length !== 2) throw new Error(`wave 一致性校验未拒绝非法声明：${JSON.stringify(waveRejected)}`)
+if (!waveRejected.rejected.every((item) => item.reasons.some((reason) => reason.includes('冲突') && reason.includes('不得')))) throw new Error('wave 拒绝缺少冲突原因说明')
+// Q3：topic 归一并（trim/大小写/空白归一后按归一键聚合，防"错误注入"裂成两波）
+const cornerReg = registerVerificationIntents(root, [
+  { title: '错误路径定向验证', objective: '验证 abort 路径错误处理', failureMode: '反例：错误状态未锁存', passCriteria: ['错误状态锁存直到软件清除'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['SPEC-ERR-001#a'], rtlSignals: [qualifiedSignal] }, recommendedMethod: 'simulation', wave: 'corner', topic: '错误注入' },
+  { title: '错误恢复定向验证', objective: '验证错误清除后恢复', failureMode: '反例：恢复失败', passCriteria: ['恢复后正常事务可继续'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['SPEC-ERR-001#b'], rtlSignals: [bareSignal] }, recommendedMethod: 'simulation', wave: 'corner', topic: '  错误注入  ' }
+])
+if (cornerReg.accepted.length !== 2) throw new Error(`corner 意图登记失败：${JSON.stringify(cornerReg.rejected)}`)
+const afterCorner = buildVerificationIntelligence(root)
+const w2 = afterCorner.verificationState.waveProgress.find((item) => item.id === 'W2')
+const errorTopic = w2?.topics?.find((item) => item.name === '错误注入')
+// 归一并：两个登记意图（'错误注入' 与 '  错误注入  '）+ R07 引擎候选应聚合为同一主题条目，无裂波
+if (!errorTopic || errorTopic.scenarioCount !== 3) throw new Error(`topic 归一并失败（应聚合为单主题 3 场景）：${JSON.stringify(w2?.topics)}`)
+if (w2?.topics?.filter((item) => item.name.trim().toLowerCase().replace(/\s+/g, ' ') === '错误注入').length !== 1) throw new Error('同一归一键的主题裂成多波')
+const mappedClause = afterCorner.verificationState.specMapping.clauses.find((item) => item.clauseId === 'SPEC-ERR-001#a')
+if (mappedClause?.status !== 'MAPPED_UNTESTED' || mappedClause.scenarioIds.length !== 1) throw new Error(`锚定后条款应进入 MAPPED_UNTESTED：${JSON.stringify(mappedClause)}`)
+// 聚类视图：plans 全部带 wave/clusterId 且与 clusters 平铺一致；组 ≤8、执行批 2-3、同组同模块
+const planFile = JSON.parse(readFileSync(join(root, 'verification', 'intelligence', 'scenario-execution-plan.json'), 'utf-8'))
+if (planFile.version !== 2 || !Array.isArray(planFile.clusters) || planFile.clusters.length === 0) throw new Error('执行计划缺少聚类视图（version 2 + clusters）')
+if (!planFile.plans.every((plan) => plan.wave && plan.clusterId)) throw new Error('计划条目缺少 wave/clusterId')
+if (JSON.stringify(planFile.clusters.flatMap((cluster) => cluster.scenarioIds)) !== JSON.stringify(planFile.plans.map((plan) => plan.scenarioId))) throw new Error('聚类视图与平铺 plans 不一致')
+for (const cluster of planFile.clusters) {
+  if (cluster.scenarioIds.length > 8) throw new Error(`authoring 组超过 8 场景上限：${cluster.clusterId}`)
+  for (const batch of cluster.executionBatches) if (batch.length < 1 || batch.length > 3) throw new Error(`执行批超出 2-3 个约束：${cluster.clusterId}`)
+  const members = cluster.scenarioIds.map((id) => afterCorner.verificationState.scenarios.find((scenario) => scenario.id === id))
+  if (new Set(members.map((scenario) => scenario.rtlObjects[0]?.split('.')[0])).size !== 1) throw new Error(`同组场景模块不一致：${cluster.clusterId}`)
+}
+// W1 不满不进 W2：登记 basic 意图后，corner/signoff 波段不进入执行计划（允许登记，约束执行）
+const gatingReg = registerVerificationIntents(root, [
+  { title: 'REQ-DMA-002 基础功能验证', objective: '验证 timeout 与迟到响应优先级确定', failureMode: '反例：优先级不确定', passCriteria: ['timeout 优先于迟到响应完成'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['REQ-DMA-002'], rtlSignals: [qualifiedSignal] }, recommendedMethod: 'simulation', wave: 'basic' }
+])
+if (gatingReg.accepted.length !== 1) throw new Error('basic 意图登记失败')
+const gated = buildVerificationIntelligence(root)
+if (gated.verificationState.executionPlan.length === 0 || !gated.verificationState.executionPlan.every((plan) => plan.wave === 'basic')) throw new Error('W1 未闭环时 corner/signoff 不得进入执行计划')
+if (gated.verificationState.specMapping.clauses.find((item) => item.clauseId === 'REQ-DMA-002')?.status !== 'MAPPED_UNTESTED') throw new Error('basic 意图锚定后 REQ-DMA-002 应为 MAPPED_UNTESTED')
+// 关闭全部 basic 波段场景（模拟 W1 填满）→ corner 重新进入执行计划；REQ-DMA-002 条款 PASSED
+const openBasic = gated.verificationState.scenarios.filter((item) => item.state.closure === 'OPEN' && item.wave === 'basic')
+if (openBasic.length === 0) throw new Error('应存在待闭环的 basic 场景')
+writeFileSync(join(root, 'verification', 'results', 'dma', 'scenario_hits.json'), JSON.stringify({
+  rtlHash: gated.structuralModel.rtlHash,
+  scenarios: openBasic.map((scenario) => ({ id: scenario.id, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'dma.fst'] }))
+}, null, 2), 'utf-8')
+const ungated = buildVerificationIntelligence(root)
+if (ungated.verificationState.executionPlan.length === 0 || !ungated.verificationState.executionPlan.every((plan) => plan.wave === 'corner')) throw new Error('W1 闭环后应由 corner 波段进入执行计划')
+if (ungated.verificationState.specMapping.clauses.find((item) => item.clauseId === 'REQ-DMA-002')?.status !== 'PASSED') throw new Error('有 PASS 证据的条款应为 PASSED')
+if (ungated.verificationState.specMapping.coveredClause < 1) throw new Error('coveredClause 未统计 PASSED 条款')
+// 再聚类建议（两段式第二段）：同组不同失败指纹 → 分裂；跨组同指纹 → 合并
+const planNow = JSON.parse(readFileSync(join(root, 'verification', 'intelligence', 'scenario-execution-plan.json'), 'utf-8'))
+const splitTarget = planNow.clusters.find((cluster) => cluster.scenarioIds.length >= 2)
+if (!splitTarget) throw new Error('应存在 ≥2 场景的聚类组用于再聚类测试')
+recordRootCause(root, { scenarioId: splitTarget.scenarioIds[0], hypothesis: '假设：时钟偏移', verdict: 'open', refutedHypotheses: [], failureSignature: 'aaaa1111bbbb', rootCause: '', fix: '', evidence: [] })
+recordRootCause(root, { scenarioId: splitTarget.scenarioIds[1], hypothesis: '假设：计数器溢出', verdict: 'open', refutedHypotheses: [], failureSignature: 'cccc2222dddd', rootCause: '', fix: '', evidence: [] })
+const withFingerprints = buildVerificationIntelligence(root)
+if (!withFingerprints.verificationState.reclusterSuggestions.some((item) => item.type === 'split' && item.clusterIds.includes(splitTarget.clusterId))) throw new Error('同组不同失败指纹未产生分裂建议')
+if (planNow.clusters.length >= 2) {
+  const [clusterOne, clusterTwo] = planNow.clusters
+  recordRootCause(root, { scenarioId: clusterOne.scenarioIds[0], hypothesis: '假设：共享根因', verdict: 'open', refutedHypotheses: [], failureSignature: 'eeee3333ffff', rootCause: '', fix: '', evidence: [] })
+  recordRootCause(root, { scenarioId: clusterTwo.scenarioIds[0], hypothesis: '假设：共享根因', verdict: 'open', refutedHypotheses: [], failureSignature: 'eeee3333ffff', rootCause: '', fix: '', evidence: [] })
+  const withMerge = buildVerificationIntelligence(root)
+  if (!withMerge.verificationState.reclusterSuggestions.some((item) => item.type === 'merge')) throw new Error('跨组同失败指纹未产生合并建议')
+}
+// execution-summary 新增区块（展示层契约 B）：waveProgress + specMapping，仍 ≤10KB
+const summary2Path = join(root, 'verification', 'intelligence', 'execution-summary.json')
+const summary2 = JSON.parse(readFileSync(summary2Path, 'utf-8'))
+if (!Array.isArray(summary2.waveProgress) || summary2.waveProgress.length !== 4) throw new Error('execution-summary 缺少 waveProgress 四段')
+if (typeof summary2.specMapping?.clauseTotal !== 'number' || typeof summary2.specMapping?.coveredClause !== 'number' || !Array.isArray(summary2.specMapping?.unmappedClause)) throw new Error('execution-summary 缺少 specMapping 区块')
+if (!summary2.specMapping.unmappedClause.every((item) => item.specId && item.clause)) throw new Error('unmappedClause 形状不符展示层契约 B.2')
+if (statSync(summary2Path).size > 10 * 1024) throw new Error('execution-summary 超过 10KB 硬指标')
+// 旧数据兼容：registry 中无 wave/topic 字段的场景不崩，波段由来源/方法推导
+const legacyRegistryPath = join(root, 'verification', 'intelligence', 'scenario-registry.json')
+const legacyRegistry = JSON.parse(readFileSync(legacyRegistryPath, 'utf-8'))
+for (const scenario of legacyRegistry.scenarios) { delete scenario.wave; delete scenario.topic }
+writeFileSync(legacyRegistryPath, JSON.stringify(legacyRegistry, null, 2), 'utf-8')
+const legacy = buildVerificationIntelligence(root)
+if (!Array.isArray(legacy.verificationState.waveProgress) || legacy.verificationState.waveProgress.length !== 4) throw new Error('旧数据（无 wave 字段）重建后波段进度缺失')
+if (!legacy.verificationState.executionPlan.every((plan) => plan.wave)) throw new Error('旧数据场景波段推导失败')
+if (!legacy.verificationState.specMapping || legacy.verificationState.executionClusters === undefined) throw new Error('旧数据重建缺少 v0.8.6 区块')
 
 console.log(`Verification Intelligence smoke passed: ${second.risks.length} risks, ${second.verificationState.scenarioCount} scenarios`)
