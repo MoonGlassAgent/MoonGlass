@@ -117,7 +117,8 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Phase.CompleteProject, (_e, projectId: string) => {
     const project = projects.get(projectId)
     if (!project) return null
-    return projects.save(phaseEngine.completeProject(project))
+    // SYNTH 收口挂 PPA 条款门禁（synthesis 通道条款须有综合报告证据闭环）
+    return projects.save(phaseEngine.completeProject(project, projects.workspaceDir(projectId)))
   })
 
   // 仅运行门禁检查（不推进阶段），供「重新检查」按钮使用

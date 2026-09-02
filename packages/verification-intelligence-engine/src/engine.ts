@@ -43,6 +43,7 @@ import type {
   WaveProgressItem,
   SpecClauseMapping,
   SpecClauseStatus,
+  SpecClauseChannel,
   SpecMappingMatrix,
   ScenarioCluster,
   ReclusterSuggestion
@@ -228,12 +229,39 @@ function splitClauses(id: string, text: string): Array<{ clauseId: string; paren
   return merged.map((part, index) => ({ clauseId: `${id}#${String.fromCharCode(97 + index)}`, parentId: id, text: strip(part).slice(0, 500) }))
 }
 
-/** 文档性条款分类（确定性规则，理由写入条款记录；宁可漏判成 verifiable 不可误判）。 */
-function classifyClause(text: string): { clauseKind: 'verifiable' | 'documentary'; classificationReason?: string } {
+/**
+ * 验收通道分类规则（契约"PPA 条款混入 VERIF 完备性分母"§二，确定性规则）。
+ * synthesis：条款文本含面积/时序/功耗/门数/频率等 PPA 措辞且带数值目标（数值是硬条件，
+ * 无量值的定性表述不判 synthesis，防止误伤功能条款）。
+ * static：CDC/跨时钟域/同步器/结构静态检查类措辞。
+ * 宁漏勿冤：均不命中时归 simulation，由人工裁决纠偏。
+ */
+const SYNTHESIS_CLAUSE_KEYWORD = /面积|功耗|门数|时钟频率|工作频率|主频|频率|综合时序|\bWNS\b|\bTNS\b|时序(?:目标|要求|约束)|\barea\b|\bpower\b|gate\s*count|\bfrequency\b|\btiming\b/i
+// 数值目标：数字+单位（容忍表格 `|` 分隔数值与单位两列）或 比较符+数字（≤ 2.0 / WNS ≥ 0）
+const SYNTHESIS_NUMERIC_TARGET = /\d+(?:\.\d+)?\s*\|?\s*(?:%|mhz|ghz|khz|hz|ns|ps|ms|mw|uw|μw|w|um2|um²|μm2|μm²|mm2|mm²|gates?|门)|[≤≥<>≦≧]\s*\d+(?:\.\d+)?/i
+const STATIC_CLAUSE_RULES: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /\bCDC\b|\bRDC\b|跨时钟域|clock[- ]domain crossing/i, reason: '命中 CDC/跨时钟域静态检查类措辞' },
+  { pattern: /同步器|synchronizer/i, reason: '命中同步器结构检查类措辞' },
+  { pattern: /结构检查|静态检查|可综合性检查/i, reason: '命中结构/静态检查类措辞' }
+]
+
+function classifyChannel(text: string): { channel: SpecClauseChannel; reason: string } {
+  if (SYNTHESIS_CLAUSE_KEYWORD.test(text) && SYNTHESIS_NUMERIC_TARGET.test(text)) {
+    return { channel: 'synthesis', reason: '命中 PPA 数值目标措辞（面积/时序/功耗/门数/频率）' }
+  }
+  for (const rule of STATIC_CLAUSE_RULES) {
+    if (rule.pattern.test(text)) return { channel: 'static', reason: rule.reason }
+  }
+  return { channel: 'simulation', reason: '未命中 PPA/静态检查规则，按功能行为条款处理（宁漏勿冤）' }
+}
+
+/** 条款分类（确定性规则，理由写入条款记录；documentary 宁可漏判成 verifiable 不可误判，channel 宁漏勿冤归 simulation）。 */
+function classifyClause(text: string): { clauseKind: 'verifiable' | 'documentary'; channel?: SpecClauseChannel; classificationReason?: string } {
   for (const rule of DOCUMENTARY_RULES) {
     if (rule.pattern.test(text)) return { clauseKind: 'documentary', classificationReason: `${rule.reason}：${text.slice(0, 60)}` }
   }
-  return { clauseKind: 'verifiable' }
+  const { channel, reason } = classifyChannel(text)
+  return { clauseKind: 'verifiable', channel, classificationReason: `验收通道=${channel}：${reason}` }
 }
 
 function requirementModel(workspace: string): RequirementModel {
@@ -253,7 +281,7 @@ function requirementModel(workspace: string): RequirementModel {
         const source = { file: relative(workspace, file), line: index + 1 }
         for (const clause of splitClauses(id, lineText)) {
           const classification = classifyClause(clause.text)
-          requirements.push({ id: clause.clauseId, text: clause.text, features: featuresOf(clause.text), priority, kind: 'SPEC_FACT', clauseKind: classification.clauseKind, parentId: clause.parentId, classificationReason: classification.classificationReason, source })
+          requirements.push({ id: clause.clauseId, text: clause.text, features: featuresOf(clause.text), priority, kind: 'SPEC_FACT', clauseKind: classification.clauseKind, channel: classification.channel, parentId: clause.parentId, classificationReason: classification.classificationReason, source })
         }
       }
       const trimmed = line.trim()
@@ -669,6 +697,9 @@ function buildExecutionPlan(scenarios: VerificationScenario[], regressions: Veri
  * 关联 Scenario → 证据与状态。文档性条款不进分母。条款锚定兼容母 id（锚 SPEC-ERR-001 覆盖其全部子条款）。
  * 状态机：UNMAPPED / MAPPED_UNTESTED / PASSED / FAILED / WAIVED（FAILED 优先于 PASSED，
  * WAIVED 要求全部映射场景经具名审批豁免）。
+ * 通道口径（2026-09-02 契约）：synthesis 通道条款照常入矩阵追踪并标注 acceptancePhase='SYNTH'，
+ * 但不进 VERIF 完备性分母（clauseTotal/coveredClause 只计 simulation+static），单列
+ * synthesisClauseTotal/synthesisClauseClosed 供 SYNTH 门禁与展示层消费。
  * blockedBySpecCount：BLOCKED_BY_SPEC 场景计数（含低优先级），规格缺口可见性（契约回应 §二）。
  */
 function buildSpecMapping(requirements: RequirementModel, scenarios: VerificationScenario[], intents: VerificationIntent[]): SpecMappingMatrix {
@@ -686,11 +717,14 @@ function buildSpecMapping(requirements: RequirementModel, scenarios: Verificatio
         : mapped.some((scenario) => scenario.state.judgment === 'PASS' && scenario.state.freshness === 'CURRENT') ? 'PASSED'
           : mapped.every((scenario) => scenario.state.closure === 'WAIVED') ? 'WAIVED'
             : 'MAPPED_UNTESTED'
+    const channel = clause.channel ?? 'simulation'
     return {
       clauseId: clause.id,
       parentId,
       text: clause.text,
       status,
+      channel,
+      acceptancePhase: channel === 'synthesis' ? 'SYNTH' : undefined,
       intentIds: mapped.map((scenario) => intentByScenarioId.get(scenario.id)?.id ?? '').filter(Boolean),
       scenarioIds: mapped.map((scenario) => scenario.id),
       evidence: [...new Set(mapped.flatMap((scenario) => scenario.evidence))]
@@ -698,8 +732,15 @@ function buildSpecMapping(requirements: RequirementModel, scenarios: Verificatio
   })
   const statusCounts: Record<SpecClauseStatus, number> = { UNMAPPED: 0, MAPPED_UNTESTED: 0, PASSED: 0, FAILED: 0, WAIVED: 0 }
   for (const clause of clauses) statusCounts[clause.status] += 1
+  // 通道口径（契约 §二）：clauseTotal/coveredClause 只计 VERIF 通道（simulation+static），
+  // synthesis 通道条款照常入矩阵追踪（标注 SYNTH 阶段验收）但不进 VERIF 完备性分母
+  const channels: Record<SpecClauseChannel, number> = { simulation: 0, static: 0, synthesis: 0 }
+  for (const clause of clauses) channels[clause.channel ?? 'simulation'] += 1
+  const verifClauses = clauses.filter((clause) => (clause.channel ?? 'simulation') !== 'synthesis')
+  const synthesisClauses = clauses.filter((clause) => clause.channel === 'synthesis')
+  const synthesisClauseClosed = synthesisClauses.filter((clause) => clause.status === 'PASSED' || clause.status === 'WAIVED').length
   const blockedBySpecCount = scenarios.filter((item) => item.status === 'BLOCKED_BY_SPEC').length
-  return { version: 1, generatedAt: new Date().toISOString(), clauseTotal: verifiable.length, documentaryCount, coveredClause: statusCounts.PASSED, statusCounts, blockedBySpecCount, clauses }
+  return { version: 1, generatedAt: new Date().toISOString(), clauseTotal: verifClauses.length, documentaryCount, coveredClause: verifClauses.filter((clause) => clause.status === 'PASSED').length, channels, synthesisClauseTotal: synthesisClauses.length, synthesisClauseClosed, statusCounts, blockedBySpecCount, clauses }
 }
 
 /**
@@ -926,6 +967,7 @@ function clauseScenarioId(clauseId: string): string {
  *   （候选生命周期完全由条款状态驱动；FAILED 条款保留候选，失败证据不丢）；
  * - 派生候选绝不可无证据闭环——闭环仍只认 scenario_hits 工具登记；
  * - 派生后该条款在矩阵中变为 MAPPED_UNTESTED（buildSpecMapping 把 CLAUSE_DERIVED 计入映射）。
+ * - synthesis 通道（PPA）条款不派生 VERIF basic 候选：其验收在 SYNTH 阶段，由综合报告证据闭环。
  */
 function deriveClauseScenarios(requirements: RequirementModel, base: VerificationScenario[], previous: VerificationScenario[], hits: ReturnType<typeof scenarioHits>, structure: StructuralModel): VerificationScenario[] {
   const preliminary = buildSpecMapping(requirements, base.filter((item) => item.origin !== 'CLAUSE_DERIVED'), [])
@@ -933,6 +975,8 @@ function deriveClauseScenarios(requirements: RequirementModel, base: Verificatio
   const requirementById = new Map(requirements.requirements.map((item) => [item.id, item]))
   const candidates: VerificationScenario[] = []
   for (const clause of preliminary.clauses) {
+    // synthesis 通道条款不派生 VERIF 的 basic 候选（契约 §二：其验收在 SYNTH 阶段，由综合报告证据闭环）
+    if (clause.channel === 'synthesis') continue
     const id = clauseScenarioId(clause.clauseId)
     const prev = previousById.get(id)
     if (clause.status === 'PASSED' || clause.status === 'WAIVED') continue
@@ -1278,8 +1322,9 @@ function assessClosure(scenarios: VerificationScenario[], regressions: Verificat
   if (formalToolErrors) warnings.push(`${formalToolErrors} 项 Formal 工具错误仅记录为 C6，不得解释为不可达或 RTL 缺陷`)
   // 高分风险未被任何 Agent 验证意图锚定仅作提示，不阻断签核（避免门禁口径漂移）
   if (uncoveredRiskCandidates.length) warnings.push(`${uncoveredRiskCandidates.length} 个高分风险候选未被任何验证意图覆盖：${uncoveredRiskCandidates.slice(0, 8).map((item) => item.id).join('、')}${uncoveredRiskCandidates.length > 8 ? ' 等' : ''}`)
-  // 无映射可验证规格条款（闭集完备性缺口）：Q2 先 warning 一个版本，NPU 试跑评估准确率后再升级 blocker
-  const unmappedClauses = specMapping.clauses.filter((item) => item.status === 'UNMAPPED')
+  // 无映射可验证规格条款（闭集完备性缺口）：Q2 先 warning 一个版本，NPU 试跑评估准确率后再升级 blocker；
+  // 通道口径：synthesis 通道条款不在 VERIF 阶段产生 UNMAPPED warning（其验收义务在 SYNTH 门禁）
+  const unmappedClauses = specMapping.clauses.filter((item) => item.status === 'UNMAPPED' && (item.channel ?? 'simulation') !== 'synthesis')
   if (unmappedClauses.length) warnings.push(`规格映射矩阵：${unmappedClauses.length}/${specMapping.clauseTotal} 个可验证规格条款尚无验证意图映射（UNMAPPED）：${unmappedClauses.slice(0, 8).map((item) => item.clauseId).join('、')}${unmappedClauses.length > 8 ? ' 等' : ''}`)
   // 低优先级规格缺口可见性（契约回应 §二）：BLOCKED_BY_SPEC 低于阻断阈值时虽不阻断，但本质是无法验证，不得隐形
   const lowPriorityBlocked = scenarios.filter((item) => item.status === 'BLOCKED_BY_SPEC' && item.priority < COVERAGE_HOLE_BLOCKING_PRIORITY).length
@@ -1406,7 +1451,15 @@ function writeExecutionSummary(path: string, workspace: string, state: Verificat
     progress: { scenarioCount: number; statusCounts: Partial<Record<ScenarioStatus, number>>; closed: number; open: number; blocked: number }
     topOpenScenarios: Array<{ id: string; title: string; status: ScenarioStatus; priority: number }>
     waveProgress: WaveProgressItem[]
-    specMapping: { clauseTotal: number; coveredClause: number; blockedBySpecCount: number; unmappedClause: Array<{ specId: string; clause: string }> }
+    specMapping: {
+      clauseTotal: number
+      coveredClause: number
+      blockedBySpecCount: number
+      channels: Record<SpecClauseChannel, number>
+      synthesisClauseTotal: number
+      synthesisClauseClosed: number
+      unmappedClause: Array<{ specId: string; clause: string }>
+    }
     reclusterSuggestionCount: number
     closureStatus: ClosureAssessment['status']
     blockers: string[]
@@ -1424,7 +1477,11 @@ function writeExecutionSummary(path: string, workspace: string, state: Verificat
       clauseTotal: state.specMapping.clauseTotal,
       coveredClause: state.specMapping.coveredClause,
       blockedBySpecCount: state.specMapping.blockedBySpecCount,
-      unmappedClause: state.specMapping.clauses.filter((item) => item.status === 'UNMAPPED').slice(0, 10).map((item) => ({ specId: item.clauseId, clause: item.text.slice(0, 120) }))
+      channels: state.specMapping.channels,
+      synthesisClauseTotal: state.specMapping.synthesisClauseTotal,
+      synthesisClauseClosed: state.specMapping.synthesisClauseClosed,
+      // 通道口径：synthesis 条款不进 VERIF 的 UNMAPPED 清单（SYNTH 阶段验收，单列计数）
+      unmappedClause: state.specMapping.clauses.filter((item) => item.status === 'UNMAPPED' && (item.channel ?? 'simulation') !== 'synthesis').slice(0, 10).map((item) => ({ specId: item.clauseId, clause: item.text.slice(0, 120) }))
     },
     reclusterSuggestionCount: state.reclusterSuggestions.length,
     closureStatus: state.closureAssessment.status,
@@ -1925,6 +1982,23 @@ export function reviewScenarioClosure(workspaceDir: string): { passed: boolean; 
     if (supplementalErrors) warnings.push(`${supplementalErrors} 项补强 Formal 未产生结论；需记录 C6/限制，但不单独阻断已有充分仿真证据的 Intent`)
     return { passed: blockers.length === 0, blockers, warnings, state }
   } catch { return { passed: false, blockers: ['verification-state.json 无法解析'], warnings: [] } }
+}
+
+/**
+ * SYNTH 阶段 PPA 门禁（2026-09-02 契约 §二）：synthesis 通道条款由综合报告证据闭环（SYNTH 阶段验收），
+ * 存在未闭环（无 PASSED/WAIVED 证据）的 synthesis 条款即阻断 SYNTH 收口。
+ * 无 verification-state.json / 无 synthesis 条款时直接放行（total=0 即无 PPA 验收义务）。
+ */
+export function reviewSynthesisClauses(workspaceDir: string): { passed: boolean; blockers: string[]; total: number; open: number } {
+  const path = join(resolve(workspaceDir), 'verification', 'intelligence', 'verification-state.json')
+  if (!existsSync(path)) return { passed: true, blockers: [], total: 0, open: 0 }
+  try {
+    const state = JSON.parse(readFileSync(path, 'utf-8')) as VerificationStateModel
+    const synthesisClauses = (state.specMapping?.clauses ?? []).filter((clause) => clause.channel === 'synthesis')
+    const open = synthesisClauses.filter((clause) => clause.status !== 'PASSED' && clause.status !== 'WAIVED')
+    const blockers = open.map((clause) => `PPA 条款 ${clause.clauseId} 尚无综合报告证据闭环（SYNTH 阶段验收）：${clause.text.slice(0, 60)}`)
+    return { passed: blockers.length === 0, blockers, total: synthesisClauses.length, open: open.length }
+  } catch { return { passed: true, blockers: [], total: 0, open: 0 } }
 }
 
 /** recordRootCause 的输入（缺 id/createdAt，由引擎派生）。字段口径见契约 §2.1。 */

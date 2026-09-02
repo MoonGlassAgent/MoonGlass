@@ -151,6 +151,15 @@ for (const forbidden of ["Type.Literal('VERIFIED')", "Type.Literal('FAILED')", "
     process.exit(1)
   }
 }
+// 2026-09-02 契约（PPA 通道）：run_logic_synthesis 支持 scenarioIds —— 综合成功即登记 scenario_hits 并重建态势
+const synthesisBlock = toolsSource.slice(toolsSource.indexOf("name: 'run_logic_synthesis'"), toolsSource.indexOf("name: 'run_cdc_check'"))
+for (const marker of ['scenarioIds', "'^SCN-[A-F0-9]{8}$'", 'writeScenarioHits', 'rebuildVerificationPosture', 'scenario_hits.json']) {
+  if (!synthesisBlock.includes(marker)) {
+    console.error(`[schema] run_logic_synthesis 缺少 PPA 证据通道标记：${marker}`)
+    child.kill()
+    process.exit(1)
+  }
+}
 console.log('[schema] register_verification_intents / scenarioIds / 裁决缩权标记齐全')
 child.kill()
 process.exit(extErrors.length === 0 ? 0 : 1)

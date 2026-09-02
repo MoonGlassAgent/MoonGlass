@@ -278,6 +278,13 @@ export interface SourceReference { file: string; line?: number; section?: string
 /** 规格条款类别（v0.8.6 断言级条款）：documentary 为文档性条款（文件头/命名/版权/交付物等），不进映射矩阵分母。 */
 export type SpecClauseKind = 'verifiable' | 'documentary'
 
+/**
+ * 条款验收通道（channel，2026-09-02 契约"PPA 条款混入 VERIF 完备性分母"）：
+ * verifiable 条款按验收手段分通道——simulation/static 由 VERIF 闭环，synthesis（PPA 数值目标）由 SYNTH 闭环。
+ * 确定性规则分类（classifyClause），宁漏勿冤：拿不准归 simulation，由人工裁决纠偏。
+ */
+export type SpecClauseChannel = 'simulation' | 'static' | 'synthesis'
+
 export interface RequirementFact {
   id: string
   text: string
@@ -286,9 +293,11 @@ export interface RequirementFact {
   kind: 'SPEC_FACT'
   /** 条款类别；旧数据无此字段按 verifiable 处理 */
   clauseKind?: SpecClauseKind
+  /** 验收通道（仅 verifiable 条款有意义；旧数据无此字段按 simulation 处理） */
+  channel?: SpecClauseChannel
   /** 断言级拆分时指向母条款 id（如 SPEC-ERR-001#a 的 parentId 为 SPEC-ERR-001）；单条款无此字段 */
   parentId?: string
-  /** 文档性条款分类理由（确定性规则命中说明）；verifiable 条款可为空 */
+  /** 条款分类理由（documentary 命中说明 / verifiable 的 channel 分类说明，确定性规则命中理由） */
   classificationReason?: string
   source: SourceReference
 }
@@ -393,6 +402,10 @@ export interface SpecClauseMapping {
   parentId: string
   text: string
   status: SpecClauseStatus
+  /** 验收通道；旧数据无此字段按 simulation 处理。synthesis 条款标注 SYNTH 阶段验收，不进 VERIF 完备性分母 */
+  channel?: SpecClauseChannel
+  /** synthesis 通道条款的验收阶段标注（展示层直接消费） */
+  acceptancePhase?: 'SYNTH'
   intentIds: string[]
   scenarioIds: string[]
   evidence: string[]
@@ -402,12 +415,18 @@ export interface SpecClauseMapping {
 export interface SpecMappingMatrix {
   version: 1
   generatedAt: string
-  /** 可验证规格条款总数（断言级，已排除文档性条款） */
+  /** VERIF 通道（simulation+static）可验证条款总数——VERIF 完备性分母；synthesis 通道条款不计入 */
   clauseTotal: number
   /** 文档性条款数（不参与完备性分母） */
   documentaryCount: number
-  /** 有 PASS 证据的条款数 */
+  /** VERIF 通道中有 PASS 证据的条款数 */
   coveredClause: number
+  /** 按验收通道的可验证条款分布（全矩阵口径） */
+  channels: Record<SpecClauseChannel, number>
+  /** synthesis 通道条款总数（SYNTH 阶段验收，单列，不进 VERIF 分母） */
+  synthesisClauseTotal: number
+  /** synthesis 通道已闭环（PASSED/WAIVED）条款数 */
+  synthesisClauseClosed: number
   statusCounts: Record<SpecClauseStatus, number>
   /** BLOCKED_BY_SPEC 场景计数（含低优先级；规格缺口可见性，不隐形不阻断） */
   blockedBySpecCount: number

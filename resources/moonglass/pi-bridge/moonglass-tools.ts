@@ -1380,9 +1380,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'run_logic_synthesis',
     label: 'Run Logic Synthesis',
-    description: '调用 Yosys 完成逻辑综合，输出门级 Verilog 网表、JSON 网表、日志和 Markdown 报告。无 Liberty 时报告通用单元数；提供 Liberty 时执行工艺映射并尝试解析面积和 ABC 延迟。',
+    description: '调用 Yosys 完成逻辑综合，输出门级 Verilog 网表、JSON 网表、日志和 Markdown 报告。无 Liberty 时报告通用单元数；提供 Liberty 时执行工艺映射并尝试解析面积和 ABC 延迟。提供 scenarioIds 时综合成功即自动把 PASS 登记到 scenario_hits.json（PPA 条款的 SYNTH 阶段验收证据）并重建验证态势；scenario_hits.json 由工具独占写入，禁止手工编辑。',
     promptSnippet: 'Run Yosys logic synthesis and generate netlist and reports',
-    promptGuidelines: 'Pass SRAM blackbox views in libraryFiles, never behavioral/physical views. Report macro PPA separately from Yosys standard-cell area.',
+    promptGuidelines: 'Pass SRAM blackbox views in libraryFiles, never behavioral/physical views. Report macro PPA separately from Yosys standard-cell area. In SYNTH phase, bind scenarioIds of intents anchored on synthesis-channel (PPA) clauses so acceptance evidence is auto-registered.',
     parameters: Type.Object({
       rtlFiles: Type.Optional(Type.Array(Type.String(), { description: 'RTL 文件列表；缺省时扫描工作区' })),
       libraryFiles: Type.Optional(Type.Array(Type.String(), { description: '宏/库 blackbox Verilog；使用 read_verilog -lib' })),
@@ -1391,6 +1391,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       targetLibrary: Type.Optional(Type.String({ description: 'Liberty .lib 工艺库路径；缺省使用 MoonGlass 工艺库索引选定的默认库，未配置则执行通用综合' })),
       outputDir: Type.Optional(Type.String({ description: '输出目录，缺省为 imp/synthesis' })),
       outputName: Type.Optional(Type.String({ description: '输出文件名前缀，缺省为顶层模块名' })),
+      scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本次综合定向闭环的场景 ID（锚定 synthesis 通道 PPA 条款的意图场景）；综合成功且报告生成时自动登记 scenario_hits' })),
       effort: Type.Optional(Type.Union([
         Type.Literal('low'),
         Type.Literal('medium'),
@@ -1423,6 +1424,22 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           targetLibrary: params.targetLibrary ? resolve(ctx.cwd, params.targetLibrary as string) : undefined,
           effort: params.effort as 'low' | 'medium' | 'high' | undefined
         })
+        // PPA 条款验收证据管线（与 run_simulation 同语义）：综合成功且报告生成时按 scenarioIds 自动登记
+        // scenario_hits（passed=综合成功，证据=报告/网表路径，rtlHash 由 writeScenarioHits 自算），并重建验证态势
+        const hits = writeScenarioHits(resolve(ctx.cwd), params.topModule as string, {
+          scenarioIds: params.scenarioIds as string[] | undefined,
+          passed: true,
+          rtlFiles,
+          evidence: [result.reportPath, result.netlistPath]
+        })
+        const report: string[] = []
+        if (params.scenarioIds) {
+          report.push('', '### Scenario 证据登记', '')
+          if (hits.registered.length) report.push(`已自动登记 ${hits.registered.length} 个场景到 scenario_hits.json：${hits.registered.join('、')}`)
+          for (const warning of hits.warnings) report.push(`⚠️ ${warning}`)
+          const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+          report.push(rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次综合结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见')
+        }
         return {
           content: [{
             type: 'text',
@@ -1436,10 +1453,11 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
               `**单元数量**: ${result.area.cells}`,
               `**面积**: ${result.area.value ?? '不可用'}（${result.area.message}）`,
               `**时序**: ${result.timing.delayNs !== undefined ? `${result.timing.delayNs} ns` : '不可用'}（${result.timing.message}）`,
-              `**警告**: ${result.warnings.length}`
+              `**警告**: ${result.warnings.length}`,
+              ...report
             ].join('\n')
           }],
-          details: result
+          details: { ...result, scenarioHits: hits.registered }
         }
       } catch (err) {
         return {

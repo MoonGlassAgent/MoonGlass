@@ -11,7 +11,7 @@ import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { join, relative } from 'node:path'
 import { runLint, runDesignLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
-import { buildVerificationIntelligence, reviewScenarioClosure } from '@moonglass/verification-intelligence-engine'
+import { buildVerificationIntelligence, reviewScenarioClosure, reviewSynthesisClauses } from '@moonglass/verification-intelligence-engine'
 import {
   PHASE_ORDER,
   type ChipProject,
@@ -826,9 +826,19 @@ export class PhaseEngine implements MoonGlassService {
   }
 
   /** 最终阶段收口：SYNTH 由 active 变为 completed，项目由此可判定完成。 */
-  completeProject(project: ChipProject): ChipProject {
+  completeProject(project: ChipProject, workspaceDir?: string): ChipProject {
     if (project.currentPhase !== 'SYNTH' || project.phases.SYNTH.status !== 'active') {
       throw new Error('[phase-engine] 只有进行中的 SYNTH 阶段可以完成项目')
+    }
+    // SYNTH 门禁接 PPA 条款（契约 2026-09-02"PPA 条款混入 VERIF 完备性分母"§二）：
+    // synthesis 通道条款由综合报告证据闭环；存在未闭环 PPA 条款时阻断收口。
+    // 参照 verificationScenarioClosure 的挂法：先重建验证态势再评审（无 synthesis 条款时 total=0 直接放行）。
+    if (workspaceDir) {
+      buildVerificationIntelligence(workspaceDir)
+      const review = reviewSynthesisClauses(workspaceDir)
+      if (!review.passed) {
+        throw new Error(`[phase-engine] SYNTH 门禁未通过（PPA 条款 ${review.total - review.open}/${review.total} 已闭环）：\n${review.blockers.join('\n')}`)
+      }
     }
     const now = new Date().toISOString()
     project.phases.SYNTH.status = 'completed'

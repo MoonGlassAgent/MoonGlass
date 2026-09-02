@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, registerVerificationIntents, recordScenarioAdjudication, recordRootCause } from '../packages/verification-intelligence-engine/src/index.ts'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, reviewSynthesisClauses, registerVerificationIntents, recordScenarioAdjudication, recordRootCause } from '../packages/verification-intelligence-engine/src/index.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'moonglass-verification-intelligence-'))
 mkdirSync(join(root, 'docs', '02_requirements'), { recursive: true })
@@ -15,6 +15,8 @@ writeFileSync(join(root, 'docs', '02_requirements', 'product_requirements.md'), 
 - REQ-DMA-002 P0: timeout and late response priority shall be deterministic.
 - SPEC-ERR-001 P1: 错误响应必须返回 SLVERR；错误状态必须锁存直到软件清除。
 - SPEC-DOC-001 P2: 模块文件头必须包含版权信息与命名规范说明。
+- SPEC-PPA-001 P1: 面积不超过 5000 门；时钟频率不低于 200 MHz；功耗不超过 50 mW。
+- SPEC-CDC-001 P1: 跨时钟域信号必须经过两级同步器。
 `, 'utf-8')
 
 writeFileSync(join(root, 'rtl', 'dma_wr_ctrl.v'), `
@@ -67,30 +69,49 @@ writeFileSync(join(root, 'verification', 'results', 'dma', 'result.json'), JSON.
 }, null, 2), 'utf-8')
 
 const first = buildVerificationIntelligence(root)
-if (first.requirementModel.requirements.length !== 5) throw new Error(`Requirement Model 断言级条款提取错误：${first.requirementModel.requirements.map((item) => item.id).join(',')}`)
+if (first.requirementModel.requirements.length !== 9) throw new Error(`Requirement Model 断言级条款提取错误：${first.requirementModel.requirements.map((item) => item.id).join(',')}`)
 // ===== v0.8.6：断言级条款拆分 + 文档性条款分类 =====
 const clauseA = first.requirementModel.requirements.find((item) => item.id === 'SPEC-ERR-001#a')
 const clauseB = first.requirementModel.requirements.find((item) => item.id === 'SPEC-ERR-001#b')
 if (!clauseA || !clauseB || clauseA.parentId !== 'SPEC-ERR-001' || clauseB.parentId !== 'SPEC-ERR-001') throw new Error('SPEC 多断言条款未拆分为断言级子条款（#a/#b）')
 const docClause = first.requirementModel.requirements.find((item) => item.id === 'SPEC-DOC-001')
 if (docClause?.clauseKind !== 'documentary' || !docClause.classificationReason) throw new Error('文件头/版权类条款未被分类为 documentary 或缺少分类理由')
-if (first.requirementModel.requirements.filter((item) => (item.clauseKind ?? 'verifiable') === 'verifiable').length !== 4) throw new Error('可验证条款计数错误（documentary 应被排除）')
-// ===== v0.8.6：规格映射矩阵（闭集完备性，尚无 Intent 映射 → 全部 UNMAPPED，仅 warning 不 blocker） =====
+if (first.requirementModel.requirements.filter((item) => (item.clauseKind ?? 'verifiable') === 'verifiable').length !== 8) throw new Error('可验证条款计数错误（documentary 应被排除）')
+// ===== 2026-09-02 契约：条款验收通道（channel）分类 =====
+const ppaA = first.requirementModel.requirements.find((item) => item.id === 'SPEC-PPA-001#a')
+const ppaB = first.requirementModel.requirements.find((item) => item.id === 'SPEC-PPA-001#b')
+const ppaC = first.requirementModel.requirements.find((item) => item.id === 'SPEC-PPA-001#c')
+if (!ppaA || !ppaB || !ppaC) throw new Error('PPA 复合条款未拆分为断言级子条款')
+if (ppaA.channel !== 'synthesis' || ppaB.channel !== 'synthesis' || ppaC.channel !== 'synthesis') throw new Error(`面积/频率/功耗数值目标条款应分类为 synthesis 通道：${ppaA.channel}/${ppaB.channel}/${ppaC.channel}`)
+if (!ppaA.classificationReason?.includes('synthesis')) throw new Error('synthesis 通道分类理由未写入 classificationReason')
+const cdcClause = first.requirementModel.requirements.find((item) => item.id === 'SPEC-CDC-001')
+if (cdcClause?.channel !== 'static' || !cdcClause.classificationReason?.includes('static')) throw new Error(`跨时钟域/同步器条款应分类为 static 通道：${cdcClause?.channel}`)
+const simClause = first.requirementModel.requirements.find((item) => item.id === 'REQ-DMA-001')
+if (simClause?.channel !== 'simulation') throw new Error('功能行为条款应默认 simulation 通道（宁漏勿冤）')
+if (docClause.channel !== undefined) throw new Error('documentary 条款不应携带验收通道')
+// ===== v0.8.6：规格映射矩阵（闭集完备性，尚无 Intent 映射 → VERIF 通道全部 UNMAPPED，仅 warning 不 blocker） =====
+// 通道口径：clauseTotal 只计 VERIF 通道（simulation+static=5），synthesis 通道（3）单列不进分母
 const firstMapping = first.verificationState.specMapping
-if (firstMapping.clauseTotal !== 4 || firstMapping.documentaryCount !== 1) throw new Error(`映射矩阵分母错误：clauseTotal=${firstMapping.clauseTotal} documentary=${firstMapping.documentaryCount}`)
-// v0.8.6 延续（交流_20260901 回复 §三）：clause 派生 basic 候选使 UNMAPPED 清零、条款进入 MAPPED_UNTESTED
-if (firstMapping.statusCounts.UNMAPPED !== 0 || firstMapping.statusCounts.MAPPED_UNTESTED !== 4 || firstMapping.coveredClause !== 0) throw new Error(`clause 派生后全部可验证条款应为 MAPPED_UNTESTED：${JSON.stringify(firstMapping.statusCounts)}`)
-if (first.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('派生候选已映射全部条款，不应再有 UNMAPPED warning')
+if (firstMapping.clauseTotal !== 5 || firstMapping.documentaryCount !== 1) throw new Error(`映射矩阵分母错误：clauseTotal=${firstMapping.clauseTotal} documentary=${firstMapping.documentaryCount}`)
+if (firstMapping.channels.simulation !== 4 || firstMapping.channels.static !== 1 || firstMapping.channels.synthesis !== 3) throw new Error(`通道分布错误：${JSON.stringify(firstMapping.channels)}`)
+if (firstMapping.synthesisClauseTotal !== 3 || firstMapping.synthesisClauseClosed !== 0) throw new Error(`synthesis 条款单列计数错误：${firstMapping.synthesisClauseTotal}/${firstMapping.synthesisClauseClosed}`)
+const synthMappings = firstMapping.clauses.filter((item) => item.channel === 'synthesis')
+if (synthMappings.length !== 3 || !synthMappings.every((item) => item.acceptancePhase === 'SYNTH' && item.status === 'UNMAPPED')) throw new Error('synthesis 条款应照常入矩阵追踪并标注 SYNTH 阶段验收')
+// v0.8.6 延续（交流_20260901 回复 §三）：clause 派生 basic 候选使 VERIF 通道 UNMAPPED 清零、条款进入 MAPPED_UNTESTED；
+// synthesis 通道条款不派生候选（验收在 SYNTH），保持 UNMAPPED 但不产生 warning
+if (firstMapping.statusCounts.UNMAPPED !== 3 || firstMapping.statusCounts.MAPPED_UNTESTED !== 5 || firstMapping.coveredClause !== 0) throw new Error(`clause 派生后 VERIF 通道条款应为 MAPPED_UNTESTED、synthesis 保持 UNMAPPED：${JSON.stringify(firstMapping.statusCounts)}`)
+if (first.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('派生候选已映射全部 VERIF 通道条款，synthesis 条款不产生 UNMAPPED warning')
 if (first.verificationState.closureAssessment.blockers.some((item) => item.includes('UNMAPPED'))) throw new Error('Q2：UNMAPPED 条款不得进入 blockers（先 warning 一个版本）')
 // ===== clause 派生 basic 候选（origin=CLAUSE_DERIVED）=====
 const derivedCandidates = first.verificationState.scenarios.filter((scenario) => scenario.origin === 'CLAUSE_DERIVED')
-if (derivedCandidates.length !== 4) throw new Error(`4 个可验证条款应各派生一个 basic 候选：${derivedCandidates.length}`)
+if (derivedCandidates.length !== 5) throw new Error(`5 个 VERIF 通道可验证条款应各派生一个 basic 候选：${derivedCandidates.length}`)
 if (!derivedCandidates.every((scenario) => scenario.wave === 'basic' && scenario.status === 'PLANNED' && scenario.requirementIds.length === 1)) throw new Error('派生候选应为 wave=basic / PLANNED / 单条款锚定')
 if (!derivedCandidates.every((scenario) => scenario.state.closure === 'OPEN' && scenario.evidence.length === 0)) throw new Error('派生候选绝不可无证据闭环（闭环只认 scenario_hits）')
 if (!derivedCandidates.every((scenario) => scenario.title.includes('基础功能'))) throw new Error('派生候选标题应直接引用条款')
+if (derivedCandidates.some((scenario) => scenario.requirementIds.some((id) => id.startsWith('SPEC-PPA-001')))) throw new Error('synthesis 通道条款不得派生 VERIF 的 basic 候选（验收在 SYNTH 阶段）')
 if (derivedCandidates.some((scenario) => scenario.priority >= 0.2)) throw new Error('派生候选 priority 应低于 Coverage Hole 阻断阈值（Q2 不阻断语义）')
 const derivedIntents = first.verificationState.verificationIntents.filter((intent) => derivedCandidates.some((scenario) => scenario.id === intent.scenarioId))
-if (derivedIntents.length !== 4 || !derivedIntents.every((intent) => intent.wave === 'basic' && intent.objective.includes('验证规格条款'))) throw new Error('派生候选缺少对应 Intent（目标应引用条款文本）')
+if (derivedIntents.length !== 5 || !derivedIntents.every((intent) => intent.wave === 'basic' && intent.objective.includes('验证规格条款'))) throw new Error('派生候选缺少对应 Intent（目标应引用条款文本）')
 // blockedBySpecCount：BLOCKED_BY_SPEC 场景计数（含低优先级）+ 低优先级规格缺口 warning
 const blockedScenarios = first.verificationState.scenarios.filter((scenario) => scenario.status === 'BLOCKED_BY_SPEC')
 const lowPriorityBlocked = blockedScenarios.filter((scenario) => scenario.priority < 0.2)
@@ -100,8 +121,8 @@ if (!first.verificationState.closureAssessment.warnings.some((item) => item.incl
 if (!Array.isArray(first.verificationState.waveProgress) || first.verificationState.waveProgress.length !== 4) throw new Error('波段进度未生成 W0-W3 四段')
 // W1 进度挂 specMapping：clauseTotal>0 且未全覆盖 → in-progress；scenarioCount 展示实际 basic 场景数
 const w1First = first.verificationState.waveProgress[1]
-if (w1First.specClauseTotal !== 4 || w1First.specClauseCovered !== 0) throw new Error('W1 未挂规格映射矩阵计数')
-if (w1First.status !== 'in-progress' || w1First.scenarioCount !== 4 || w1First.passedCount !== 0) throw new Error(`W1 状态/计数错误：${JSON.stringify(w1First)}`)
+if (w1First.specClauseTotal !== 5 || w1First.specClauseCovered !== 0) throw new Error('W1 未挂规格映射矩阵计数（VERIF 通道口径）')
+if (w1First.status !== 'in-progress' || w1First.scenarioCount !== 5 || w1First.passedCount !== 0) throw new Error(`W1 状态/计数错误：${JSON.stringify(w1First)}`)
 if (first.structuralModel.facts.length === 0) throw new Error('Structural Model 为空')
 if (first.structuralModel.stateMachines.length === 0) throw new Error('未提取 FSM')
 if (first.structuralModel.registerWriters.length === 0) throw new Error('未提取寄存器写入关系')
@@ -189,8 +210,8 @@ const saturated = buildVerificationIntelligence(root)
 if (saturated.verificationState.explorationHistory.saturation.status !== 'EMPIRICALLY_SATURATED') throw new Error('连续无新增探索未形成经验性饱和')
 const review = reviewScenarioClosure(root)
 if (!review.passed) throw new Error(`Scenario Closure 应通过：${review.blockers.join('; ')}`)
-// clause 派生后：全部条款经派生候选的 hit 证据 PASSED（UNMAPPED 清零），不再有 Q2 warning 降档
-if (saturated.verificationState.specMapping.statusCounts.PASSED !== 4 || saturated.verificationState.specMapping.coveredClause !== 4) throw new Error(`派生候选闭环后全部条款应 PASSED：${JSON.stringify(saturated.verificationState.specMapping.statusCounts)}`)
+// clause 派生后：VERIF 通道全部条款经派生候选的 hit 证据 PASSED（UNMAPPED 仅剩 synthesis 通道），不再有 Q2 warning 降档
+if (saturated.verificationState.specMapping.statusCounts.PASSED !== 5 || saturated.verificationState.specMapping.coveredClause !== 5) throw new Error(`派生候选闭环后 VERIF 通道全部条款应 PASSED：${JSON.stringify(saturated.verificationState.specMapping.statusCounts)}`)
 if (saturated.verificationState.waveProgress[1].status !== 'done') throw new Error('coveredClause=clauseTotal 时 W1 应为 done')
 if (saturated.verificationState.closureAssessment.status !== 'READY_FOR_HUMAN_SIGNOFF') throw new Error(`条款全覆盖且无其余 warning 时应恢复 READY_FOR_HUMAN_SIGNOFF：${saturated.verificationState.closureAssessment.status}`)
 if (saturated.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('条款全覆盖后不应再有 UNMAPPED warning')
@@ -422,6 +443,30 @@ const legacy = buildVerificationIntelligence(root)
 if (!Array.isArray(legacy.verificationState.waveProgress) || legacy.verificationState.waveProgress.length !== 4) throw new Error('旧数据（无 wave 字段）重建后波段进度缺失')
 if (!legacy.verificationState.executionPlan.every((plan) => plan.wave)) throw new Error('旧数据场景波段推导失败')
 if (!legacy.verificationState.specMapping || legacy.verificationState.executionClusters === undefined) throw new Error('旧数据重建缺少 v0.8.6 区块')
+
+// ===== SYNTH 门禁接 PPA（2026-09-02 契约 §二）：reviewSynthesisClauses 阻断/放行 =====
+const synthReviewOpen = reviewSynthesisClauses(root)
+if (synthReviewOpen.passed || synthReviewOpen.total !== 3 || synthReviewOpen.open !== 3) throw new Error(`synthesis 条款未闭环时 SYNTH 门禁应阻断：${JSON.stringify({ passed: synthReviewOpen.passed, total: synthReviewOpen.total, open: synthReviewOpen.open })}`)
+if (!synthReviewOpen.blockers.every((item) => item.includes('SYNTH 阶段验收'))) throw new Error('SYNTH 门禁 blocker 缺少阶段验收标注')
+// SYNTH 阶段 Agent 登记 static 方法意图（锚定 synthesis 条款）→ 综合证据（scenario_hits）闭环
+const synthIntentReg = registerVerificationIntents(root, [{ title: 'PPA 综合验收', objective: '验证面积/频率/功耗满足规格数值目标', failureMode: '反例：综合报告面积/频率/功耗超标', passCriteria: ['综合报告面积/频率/功耗全部达标'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['SPEC-PPA-001#a', 'SPEC-PPA-001#b', 'SPEC-PPA-001#c'], rtlSignals: [qualifiedSignal] }, recommendedMethod: 'static' }])
+if (synthIntentReg.accepted.length !== 1) throw new Error(`锚定 synthesis 条款的 static 意图登记失败：${JSON.stringify(synthIntentReg.rejected)}`)
+const synthScenarioId = synthIntentReg.accepted[0]
+const preCloseBuild = buildVerificationIntelligence(root)
+const synthClausesMapped = preCloseBuild.verificationState.specMapping.clauses.filter((item) => item.channel === 'synthesis')
+if (!synthClausesMapped.every((item) => item.status === 'MAPPED_UNTESTED' && item.scenarioIds.includes(synthScenarioId))) throw new Error('synthesis 条款锚定意图后应为 MAPPED_UNTESTED')
+writeFileSync(join(root, 'verification', 'results', 'dma', 'scenario_hits.json'), JSON.stringify({
+  rtlHash: preCloseBuild.structuralModel.rtlHash,
+  scenarios: [{ id: synthScenarioId, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'dma.fst'] }]
+}, null, 2), 'utf-8')
+const synthClosed = buildVerificationIntelligence(root)
+if (synthClosed.verificationState.specMapping.synthesisClauseClosed !== 3) throw new Error(`综合报告证据闭环后 synthesisClauseClosed 应为 3：${synthClosed.verificationState.specMapping.synthesisClauseClosed}`)
+if (synthClosed.verificationState.specMapping.clauseTotal !== 5) throw new Error('synthesis 证据闭环不得改变 VERIF 通道分母')
+const synthReviewClosed = reviewSynthesisClauses(root)
+if (!synthReviewClosed.passed || synthReviewClosed.open !== 0 || synthReviewClosed.total !== 3) throw new Error(`synthesis 条款闭环后 SYNTH 门禁应放行：${JSON.stringify(synthReviewClosed)}`)
+// 无 verification-state.json 的工作区无 PPA 验收义务（放行，total=0）
+const noStateReview = reviewSynthesisClauses(mkdtempSync(join(tmpdir(), 'moonglass-vi-nostate-')))
+if (!noStateReview.passed || noStateReview.total !== 0) throw new Error('无验证状态模型时 SYNTH PPA 门禁应放行')
 
 // ===== W1 进度挂 specMapping：clauseTotal=0 → pending（修"0/0 场景却 in-progress"空转） =====
 const emptyRoot = mkdtempSync(join(tmpdir(), 'moonglass-vi-empty-'))
