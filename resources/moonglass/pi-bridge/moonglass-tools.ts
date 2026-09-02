@@ -1654,7 +1654,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       onUpdate?.({ content: [{ type: 'text', text: '正在校验锚点并登记验证意图…' }] })
       const result = registerVerificationIntents(ctx.cwd, params.intents)
       return {
-        content: [{ type: 'text', text: `## 验证意图登记\n\n- 接受：${result.accepted.length}${result.accepted.length ? `（${result.accepted.join('、')}）` : ''}\n- 拒绝：${result.rejected.length}\n${result.rejected.map((item) => `  - ${item.title}：${item.reasons.join('；')}`).join('\n')}\n- 态势快照：${result.rebuilt ? '已自动重建，页面刷新即可见' : '未重建'}\n\n被拒绝的锚点必须核对 risk-register / requirement-model / structural-model 后修正重登，不得绕过。` }],
+        content: [{ type: 'text', text: `## 验证意图登记\n\n- 接受：${result.accepted.length}${result.accepted.length ? `（${result.accepted.join('、')}）` : ''}\n- 拒绝：${result.rejected.length}\n${result.rejected.map((item) => `  - ${item.title}：${item.reasons.join('；')}`).join('\n')}\n- 态势快照：${result.rebuilt ? '已自动重建，页面刷新即可见' : '未重建'}${result.warnings?.length ? `\n- 提醒：${result.warnings.join('；')}` : ''}\n\n被拒绝的锚点必须核对 risk-register / requirement-model / structural-model 后修正重登，不得绕过。` }],
         details: result,
         isError: result.rejected.length > 0
       }

@@ -113,10 +113,11 @@ function deriveWaveForEngineCandidate(method: VerificationScenario['method']): V
   return 'corner'
 }
 
-/** 场景波段解析（旧数据兼容）：无 wave 字段时 AGENT_INTENT 默认 basic，ENGINE_CANDIDATE 按方法推导。 */
+/** 场景波段解析（旧数据兼容）：无 wave 字段时 AGENT_INTENT / CLAUSE_DERIVED 默认 basic，ENGINE_CANDIDATE 按方法推导。 */
 function resolveWave(scenario: Pick<VerificationScenario, 'wave' | 'origin' | 'method'>): VerificationWave {
   if (scenario.wave) return scenario.wave
-  return (scenario.origin ?? 'ENGINE_CANDIDATE') === 'AGENT_INTENT' ? 'basic' : deriveWaveForEngineCandidate(scenario.method)
+  const origin = scenario.origin ?? 'ENGINE_CANDIDATE'
+  return origin === 'AGENT_INTENT' || origin === 'CLAUSE_DERIVED' ? 'basic' : deriveWaveForEngineCandidate(scenario.method)
 }
 
 /** 主题名归一化（契约 Q3 补充：trim/大小写/空白归一，按归一键去重聚合，防"错误注入/错误处理"式裂波）。 */
@@ -169,6 +170,12 @@ const MIN_CLAUSE_LENGTH = 8
 /** 聚类约束（契约 Q4）：authoring 组上限 8 场景，执行批 2-3 个（一次 run_simulation）。 */
 const CLUSTER_AUTHORING_CAP = 8
 const EXECUTION_BATCH_SIZE = 3
+
+/** Coverage Hole 阻断阈值（priority ≥ 阈值才阻断签核；低于此值的 BLOCKED_BY_SPEC 为"低优先级规格缺口"）。 */
+const COVERAGE_HOLE_BLOCKING_PRIORITY = 0.2
+
+/** corner 登记软提醒阈值（契约回应 §三.方案 B）：specMapping 条款覆盖率低于此值时登记 corner 返回 warning（不拒绝）。 */
+export const CORNER_COVERAGE_WARNING_THRESHOLD = 0.8
 
 /** 方法 → 主 Oracle 判定域（聚类键"Oracle 域"的确定性推导）。 */
 function oracleDomainOf(method: VerificationScenario['method']): string {
@@ -658,22 +665,25 @@ function buildExecutionPlan(scenarios: VerificationScenario[], regressions: Veri
 
 /**
  * 规格映射矩阵（契约 §2，闭集完备性）：每个可验证（verifiable）断言级条款 →
- * 锚定它的 AGENT_INTENT Intent（registerVerificationIntents 的 anchors.requirementIds）→
+ * 锚定它的 Intent（AGENT_INTENT 登记 / CLAUSE_DERIVED 派生候选的 requirementIds）→
  * 关联 Scenario → 证据与状态。文档性条款不进分母。条款锚定兼容母 id（锚 SPEC-ERR-001 覆盖其全部子条款）。
  * 状态机：UNMAPPED / MAPPED_UNTESTED / PASSED / FAILED / WAIVED（FAILED 优先于 PASSED，
  * WAIVED 要求全部映射场景经具名审批豁免）。
+ * blockedBySpecCount：BLOCKED_BY_SPEC 场景计数（含低优先级），规格缺口可见性（契约回应 §二）。
  */
 function buildSpecMapping(requirements: RequirementModel, scenarios: VerificationScenario[], intents: VerificationIntent[]): SpecMappingMatrix {
   const verifiable = requirements.requirements.filter((item) => (item.clauseKind ?? 'verifiable') === 'verifiable')
   const documentaryCount = requirements.requirements.length - verifiable.length
   const intentByScenarioId = new Map(intents.map((item) => [item.scenarioId, item]))
-  const agentScenarios = scenarios.filter((item) => (item.origin ?? 'ENGINE_CANDIDATE') === 'AGENT_INTENT')
+  // CLAUSE_DERIVED 派生候选同样锚定条款（使被派生条款进入 MAPPED_UNTESTED）；闭环仍只认其 scenario_hits 证据
+  const mappedScenarios = scenarios.filter((item) => item.origin === 'AGENT_INTENT' || item.origin === 'CLAUSE_DERIVED')
   const clauses: SpecClauseMapping[] = verifiable.map((clause) => {
     const parentId = clause.parentId ?? clause.id
-    const mapped = agentScenarios.filter((scenario) => scenario.requirementIds.includes(clause.id) || scenario.requirementIds.includes(parentId))
+    const mapped = mappedScenarios.filter((scenario) => scenario.requirementIds.includes(clause.id) || scenario.requirementIds.includes(parentId))
+    // PASSED 要求当前（CURRENT）证据：陈旧（IMPACT_UNKNOWN/STALE）的 PASS 不算覆盖，防止旧证据虚报条款闭环
     const status: SpecClauseStatus = mapped.length === 0 ? 'UNMAPPED'
       : mapped.some((scenario) => scenario.state.judgment === 'FAIL') ? 'FAILED'
-        : mapped.some((scenario) => scenario.state.judgment === 'PASS') ? 'PASSED'
+        : mapped.some((scenario) => scenario.state.judgment === 'PASS' && scenario.state.freshness === 'CURRENT') ? 'PASSED'
           : mapped.every((scenario) => scenario.state.closure === 'WAIVED') ? 'WAIVED'
             : 'MAPPED_UNTESTED'
     return {
@@ -688,7 +698,8 @@ function buildSpecMapping(requirements: RequirementModel, scenarios: Verificatio
   })
   const statusCounts: Record<SpecClauseStatus, number> = { UNMAPPED: 0, MAPPED_UNTESTED: 0, PASSED: 0, FAILED: 0, WAIVED: 0 }
   for (const clause of clauses) statusCounts[clause.status] += 1
-  return { version: 1, generatedAt: new Date().toISOString(), clauseTotal: verifiable.length, documentaryCount, coveredClause: statusCounts.PASSED, statusCounts, clauses }
+  const blockedBySpecCount = scenarios.filter((item) => item.status === 'BLOCKED_BY_SPEC').length
+  return { version: 1, generatedAt: new Date().toISOString(), clauseTotal: verifiable.length, documentaryCount, coveredClause: statusCounts.PASSED, statusCounts, blockedBySpecCount, clauses }
 }
 
 /**
@@ -709,9 +720,11 @@ function buildWaveProgress(scenarios: VerificationScenario[], specMapping: SpecM
       : members.every((item) => item.state.closure !== 'OPEN') ? 'done'
         : members.some((item) => item.state.closure !== 'OPEN' || passed(item)) ? 'in-progress' : 'pending'
   const basic = byWave.get('basic') ?? []
-  const w1Status: WaveProgressItem['status'] = specMapping.clauseTotal > 0 && specMapping.coveredClause >= specMapping.clauseTotal ? 'done'
-    : specMapping.coveredClause > 0 || statusOf(basic) === 'in-progress' ? 'in-progress'
-      : statusOf(basic) === 'done' && specMapping.clauseTotal === 0 ? 'done' : 'pending'
+  // W1 status 改挂规格映射矩阵（闭集，契约回应 §三.3）：不再由 basic 场景数量推导，
+  // 修掉"0/0 场景却 in-progress"的空转；scenarioCount/passedCount 保留为实际 basic 场景展示口径
+  const w1Status: WaveProgressItem['status'] = specMapping.clauseTotal === 0 ? 'pending'
+    : specMapping.coveredClause >= specMapping.clauseTotal ? 'done'
+      : 'in-progress'
   const corner = byWave.get('corner') ?? []
   const topicMap = new Map<string, { name: string; scenarioCount: number; passedCount: number }>()
   for (const scenario of corner) {
@@ -880,6 +893,80 @@ function scenarioHits(workspace: string): Map<string, { status: ScenarioStatus; 
   return hits
 }
 
+/**
+ * 用最新 hit 证据刷新上一轮回存场景的状态（AGENT_INTENT 保留与 CLAUSE_DERIVED 幂等合并共用）：
+ * 状态合并口径 = hit 证据优先于上一轮状态，证据新鲜度按 rtlHash 判定。
+ */
+function refreshScenarioWithHits(item: VerificationScenario, hits: ReturnType<typeof scenarioHits>, rtlHash: string): VerificationScenario {
+  const hit = hits.get(item.id)
+  let status = hit?.status ?? item.status
+  const rtlChanged = Boolean(item.rtlHash && item.rtlHash !== rtlHash)
+  const currentEvidence = Boolean(hit && (hit.rtlHash ? hit.rtlHash === rtlHash : !rtlChanged && item.state?.freshness !== 'IMPACT_UNKNOWN'))
+  const freshness: ScenarioState['freshness'] = currentEvidence ? 'CURRENT' : rtlChanged ? 'IMPACT_UNKNOWN' : item.state?.freshness ?? 'CURRENT'
+  if (freshness !== 'CURRENT' && ['VERIFIED', 'FORMAL_PROVED'].includes(status)) status = 'PARTIAL'
+  const evidence = [...new Set(hit?.evidence ?? item.evidence ?? [])]
+  const reachCount = hit?.reachCount ?? item.reachCount ?? 0
+  const assertionPassed = hit?.assertionPassed ?? item.assertionPassed
+  return { ...item, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? item.coverageDelta ?? {}, updatedAt: new Date().toISOString() }
+}
+
+/** 条款派生场景 ID：sha1('CLAUSE\0' + clauseId) 前 8 位大写——同条款跨 rebuild 复用同 ID（幂等）。 */
+function clauseScenarioId(clauseId: string): string {
+  return `SCN-${createHash('sha1').update(`CLAUSE\0${clauseId}`).digest('hex').slice(0, 8).toUpperCase()}`
+}
+
+/**
+ * clause 派生 basic 候选（origin=CLAUSE_DERIVED，交流_20260901.txt 回复 §三.方案 A）：
+ * 对规格映射矩阵中尚无证据闭环的可验证条款自动派生 wave=basic 场景候选（每条款一个，
+ * 标题/目标直接引用条款文本，初始 PLANNED，锚定该 clause 的 requirementIds）。
+ * 与 ENGINE_CANDIDATE 的开集风险穷举不同：每个候选锚定一条具体条款文本，天然可证伪，总量被闭集封顶。
+ * 证据纪律：
+ * - 派生资格用"不含 CLAUSE_DERIVED 的矩阵"预判，避免派生候选自我证成；
+ * - 已被其他证据覆盖（PASSED）或具名豁免（WAIVED）的条款不派生，已有派生候选同步退出
+ *   （候选生命周期完全由条款状态驱动；FAILED 条款保留候选，失败证据不丢）；
+ * - 派生候选绝不可无证据闭环——闭环仍只认 scenario_hits 工具登记；
+ * - 派生后该条款在矩阵中变为 MAPPED_UNTESTED（buildSpecMapping 把 CLAUSE_DERIVED 计入映射）。
+ */
+function deriveClauseScenarios(requirements: RequirementModel, base: VerificationScenario[], previous: VerificationScenario[], hits: ReturnType<typeof scenarioHits>, structure: StructuralModel): VerificationScenario[] {
+  const preliminary = buildSpecMapping(requirements, base.filter((item) => item.origin !== 'CLAUSE_DERIVED'), [])
+  const previousById = new Map(previous.filter((item) => item.origin === 'CLAUSE_DERIVED').map((item) => [item.id, item]))
+  const requirementById = new Map(requirements.requirements.map((item) => [item.id, item]))
+  const candidates: VerificationScenario[] = []
+  for (const clause of preliminary.clauses) {
+    const id = clauseScenarioId(clause.clauseId)
+    const prev = previousById.get(id)
+    if (clause.status === 'PASSED' || clause.status === 'WAIVED') continue
+    const requirement = requirementById.get(clause.clauseId)
+    const features = requirement?.features ?? featuresOf(clause.text)
+    const criticality = requirement?.priority === 'P0' ? 1 : 0.8
+    // 派生候选为确定性中等风险画像：priority 恒低于 Coverage Hole 阻断阈值（Q2 语义——
+    // 未覆盖条款先不升级 blocker；执行门已由"basic 波段未闭环挡更晚波段"承担）
+    const risk = 0.5
+    const interaction = 0.5
+    const coverageGap = 1
+    const confidenceFactor = 0.85
+    const costFactor = 0.9
+    const priority = Number((criticality * risk * interaction * coverageGap * confidenceFactor * costFactor).toFixed(3))
+    const status: ScenarioStatus = 'PLANNED'
+    const fresh: VerificationScenario = {
+      id, origin: 'CLAUSE_DERIVED', wave: 'basic',
+      title: `基础功能（${clause.clauseId}）：${clause.text.slice(0, 120)}`,
+      riskIds: [], requirementIds: [clause.clauseId], rtlObjects: [], features,
+      trigger: ['DUT 完成复位并处于正常工作状态'], expected: [clause.text], method: 'simulation',
+      status, state: scenarioState(status, [], 0, undefined, 'CURRENT'),
+      coordinates: { feature: features, boundary: [], interaction: [], temporal: [], systemState: [] },
+      rtlHash: structure.rtlHash, risk, interaction, coverageGap, criticality, confidenceFactor, costFactor, priority,
+      reason: `规格映射矩阵派生（条款状态 ${clause.status}）：条款 ${clause.clauseId} 尚无验证证据闭环，自动生成 basic 波段候选；闭环仍只认 scenario_hits 工具登记证据。`,
+      evidence: [], reachCount: 0, coverageDelta: {}, updatedAt: new Date().toISOString()
+    }
+    // 幂等合并：同条款复用同 ID，状态/证据按 previous + hit 合并（与 AGENT_INTENT 保留逻辑同口径），
+    // 文本类字段（title/expected/features/锚点）取最新规格文本
+    const merged = prev ? { ...prev, title: fresh.title, expected: fresh.expected, requirementIds: fresh.requirementIds, features: fresh.features, wave: 'basic' as const, origin: 'CLAUSE_DERIVED' as const } : fresh
+    candidates.push(refreshScenarioWithHits(merged, hits, structure.rtlHash))
+  }
+  return candidates
+}
+
 function buildScenarios(requirements: RequirementModel, structure: StructuralModel, risks: RiskMarker[], previous: VerificationScenario[], workspace: string): VerificationScenario[] {
   const previousById = new Map(previous.map((item) => [item.id, item]))
   const hits = scenarioHits(workspace)
@@ -912,19 +999,10 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
   // AGENT_INTENT 场景以 scenario-registry 为唯一事实源：全量 rebuild 必须把上一轮登记的
   // Agent 意图场景一并重投影（并用最新 hit 证据刷新状态），否则登记结果会在重建时丢失。
   const derivedIds = new Set(derived.map((item) => item.id))
-  const preserved = previous.filter((item) => item.origin === 'AGENT_INTENT' && !derivedIds.has(item.id)).map((item) => {
-    const hit = hits.get(item.id)
-    let status = hit?.status ?? item.status
-    const rtlChanged = Boolean(item.rtlHash && item.rtlHash !== structure.rtlHash)
-    const currentEvidence = Boolean(hit && (hit.rtlHash ? hit.rtlHash === structure.rtlHash : !rtlChanged && item.state?.freshness !== 'IMPACT_UNKNOWN'))
-    const freshness: ScenarioState['freshness'] = currentEvidence ? 'CURRENT' : rtlChanged ? 'IMPACT_UNKNOWN' : item.state?.freshness ?? 'CURRENT'
-    if (freshness !== 'CURRENT' && ['VERIFIED', 'FORMAL_PROVED'].includes(status)) status = 'PARTIAL'
-    const evidence = [...new Set(hit?.evidence ?? item.evidence ?? [])]
-    const reachCount = hit?.reachCount ?? item.reachCount ?? 0
-    const assertionPassed = hit?.assertionPassed ?? item.assertionPassed
-    return { ...item, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash: structure.rtlHash, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? item.coverageDelta ?? {}, updatedAt: new Date().toISOString() }
-  })
-  return [...derived, ...preserved].sort((a, b) => b.priority - a.priority)
+  const preserved = previous.filter((item) => item.origin === 'AGENT_INTENT' && !derivedIds.has(item.id)).map((item) => refreshScenarioWithHits(item, hits, structure.rtlHash))
+  // CLAUSE_DERIVED 派生候选不走保留通道：每轮按条款状态重派生（幂等），previous 仅用于状态合并
+  const clauseDerived = deriveClauseScenarios(requirements, [...derived, ...preserved], previous, hits, structure)
+  return [...derived, ...preserved, ...clauseDerived].sort((a, b) => b.priority - a.priority)
 }
 
 function readPrevious(path: string): VerificationScenario[] {
@@ -975,6 +1053,40 @@ function buildVerificationIntents(structure: StructuralModel, scenarios: Verific
       const existing = previousByScenarioId.get(scenario.id)
       if (existing) return { ...existing, evidence: scenario.evidence, status: scenario.status, priority: scenario.priority }
     }
+    if (scenario.origin === 'CLAUSE_DERIVED') {
+      // 条款派生候选的 Intent：目标/判定直接引用条款文本（可证伪），不套风险交互模板；
+      // 已有 Intent 保留原文（Agent 可经 refine_verification_intents 精炼），仅刷新机器字段
+      const existing = previousByScenarioId.get(scenario.id)
+      if (existing) return { ...existing, evidence: scenario.evidence, status: scenario.status, priority: scenario.priority }
+      const clauseId = scenario.requirementIds[0] ?? ''
+      const clauseText = scenario.expected[0] ?? scenario.title
+      return {
+        id: `VI-${scenario.id.slice(4)}`, scenarioId: scenario.id,
+        objective: `验证规格条款 ${clauseId} 的基础功能行为：${clauseText}`,
+        rationale: scenario.reason,
+        failureMode: `反例：${clauseText} 不成立`,
+        sourceIds: [...scenario.requirementIds],
+        preconditions: scenario.trigger,
+        stimulus: { events: scenario.features, temporalInteractions: [] },
+        observations: scenario.rtlObjects,
+        stimulusProcedure: [
+          `将 DUT 初始化到正常工作状态（${scenario.trigger.join('；') || '复位完成'}）`,
+          `按规格条款 ${clauseId} 构造正常功能激励（happy path），逐条覆盖条款断言`,
+          `记录 ${scenario.id} hit、输入事务、关键内部状态和输出响应`
+        ],
+        observationPoints: [...scenario.rtlObjects],
+        expectedResults: scenario.expected,
+        passCriteria: [
+          `Checker/Assertion 必须证明：${clauseText}`,
+          '场景产生可追踪的 Scenario hit（reached=true 且 passed=true）',
+          '无 assertion failure、scoreboard mismatch 或协议违规',
+          '结果必须关联原始日志、结构化 result 与覆盖率'
+        ],
+        boundaries: [], recommendedMethods: ['simulation', 'assertion'],
+        evidence: scenario.evidence, status: scenario.status, priority: scenario.priority,
+        wave: 'basic'
+      }
+    }
     const events = scenario.features.slice(0, 4)
     const temporalInteractions = events.length >= 2 ? [
       { relation: 'BEFORE' as const, offsetCycles: -1, events },
@@ -1021,7 +1133,7 @@ function classifyCoverageHoles(scenarios: VerificationScenario[], regressions: V
       ...scenario.expected.map((item) => `检查：${item}`)
     ]
     const closureEvidence = ['scenario_hits.json 中该场景 reached=true 且 passed=true', 'Checker/Assertion 原始结果', '结构化回归结果与覆盖率增量', '失败时保留可定位波形；Formal 场景保留 property/result/trace']
-    return { id: `HOLE-${scenario.id.slice(4)}`, scenarioId: scenario.id, scenarioTitle: scenario.title, classification, confidence, evidence: scenario.evidence, reason, missingTarget: `${scenario.rtlObjects.join('、')} 中 ${scenario.features.map(featureLabel).join('、')} 的时序交互尚未形成“到达 + 裁决 + 证据”闭环。`, requiredStimulus, requiredObservation, closureEvidence, recommendedAction: action, blocking: scenario.priority >= 0.2 }
+    return { id: `HOLE-${scenario.id.slice(4)}`, scenarioId: scenario.id, scenarioTitle: scenario.title, classification, confidence, evidence: scenario.evidence, reason, missingTarget: `${scenario.rtlObjects.join('、')} 中 ${scenario.features.map(featureLabel).join('、')} 的时序交互尚未形成“到达 + 裁决 + 证据”闭环。`, requiredStimulus, requiredObservation, closureEvidence, recommendedAction: action, blocking: scenario.priority >= COVERAGE_HOLE_BLOCKING_PRIORITY }
   })
 }
 
@@ -1169,6 +1281,9 @@ function assessClosure(scenarios: VerificationScenario[], regressions: Verificat
   // 无映射可验证规格条款（闭集完备性缺口）：Q2 先 warning 一个版本，NPU 试跑评估准确率后再升级 blocker
   const unmappedClauses = specMapping.clauses.filter((item) => item.status === 'UNMAPPED')
   if (unmappedClauses.length) warnings.push(`规格映射矩阵：${unmappedClauses.length}/${specMapping.clauseTotal} 个可验证规格条款尚无验证意图映射（UNMAPPED）：${unmappedClauses.slice(0, 8).map((item) => item.clauseId).join('、')}${unmappedClauses.length > 8 ? ' 等' : ''}`)
+  // 低优先级规格缺口可见性（契约回应 §二）：BLOCKED_BY_SPEC 低于阻断阈值时虽不阻断，但本质是无法验证，不得隐形
+  const lowPriorityBlocked = scenarios.filter((item) => item.status === 'BLOCKED_BY_SPEC' && item.priority < COVERAGE_HOLE_BLOCKING_PRIORITY).length
+  if (lowPriorityBlocked) warnings.push(`低优先级规格缺口 ${lowPriorityBlocked} 项（非阻断，本质是无法验证）`)
   const supplementalUnknown = formalResults.filter((item) => item.obligation === 'supplemental' && ['INCONCLUSIVE', 'BOUND_EXHAUSTED', 'ASSUMPTION_DEPENDENT'].includes(item.outcome)).length
   if (supplementalUnknown) residualRisks.push(`${supplementalUnknown} 项补强 Formal 未获得决定性结论`)
   if (impactUnknown) nextActions.push('先执行 RTL 变更影响分析与受影响回归，更新 Scenario freshness')
@@ -1291,7 +1406,7 @@ function writeExecutionSummary(path: string, workspace: string, state: Verificat
     progress: { scenarioCount: number; statusCounts: Partial<Record<ScenarioStatus, number>>; closed: number; open: number; blocked: number }
     topOpenScenarios: Array<{ id: string; title: string; status: ScenarioStatus; priority: number }>
     waveProgress: WaveProgressItem[]
-    specMapping: { clauseTotal: number; coveredClause: number; unmappedClause: Array<{ specId: string; clause: string }> }
+    specMapping: { clauseTotal: number; coveredClause: number; blockedBySpecCount: number; unmappedClause: Array<{ specId: string; clause: string }> }
     reclusterSuggestionCount: number
     closureStatus: ClosureAssessment['status']
     blockers: string[]
@@ -1308,6 +1423,7 @@ function writeExecutionSummary(path: string, workspace: string, state: Verificat
     specMapping: {
       clauseTotal: state.specMapping.clauseTotal,
       coveredClause: state.specMapping.coveredClause,
+      blockedBySpecCount: state.specMapping.blockedBySpecCount,
       unmappedClause: state.specMapping.clauses.filter((item) => item.status === 'UNMAPPED').slice(0, 10).map((item) => ({ specId: item.clauseId, clause: item.text.slice(0, 120) }))
     },
     reclusterSuggestionCount: state.reclusterSuggestions.length,
@@ -1679,7 +1795,7 @@ function structuralSignalNames(structure: StructuralModel): Set<string> {
  * （SCN- + sha1(title\0首个锚定信号) 前 8 位大写，与 buildScenarios 同规则）与对应 Intent
  * （objective/failureMode/passCriteria 直接来自输入，不经模板套话），写回注册表后全量 rebuild。
  */
-export function registerVerificationIntents(workspaceDir: string, inputs: AgentIntentInput[]): { accepted: string[]; rejected: Array<{ title: string; reasons: string[] }>; rebuilt: boolean } {
+export function registerVerificationIntents(workspaceDir: string, inputs: AgentIntentInput[]): { accepted: string[]; rejected: Array<{ title: string; reasons: string[] }>; rebuilt: boolean; warnings: string[] } {
   const workspace = resolve(workspaceDir)
   const artifacts = buildVerificationIntelligence(workspace)
   const riskIds = new Set(artifacts.risks.map((item) => item.id))
@@ -1779,7 +1895,16 @@ export function registerVerificationIntents(workspaceDir: string, inputs: AgentI
     buildVerificationIntelligence(workspace)
     rebuilt = true
   }
-  return { accepted, rejected, rebuilt }
+  // corner 登记软提醒（契约回应 §三.方案 B）：specMapping 覆盖率低于阈值时 warning 提示先补 basic，不拒绝登记
+  const warnings: string[] = []
+  const specMapping = artifacts.verificationState.specMapping
+  if (valid.some((item) => item.wave === 'corner') && specMapping.clauseTotal > 0) {
+    const coverage = specMapping.coveredClause / specMapping.clauseTotal
+    if (coverage < CORNER_COVERAGE_WARNING_THRESHOLD) {
+      warnings.push(`基础功能条款覆盖率 ${Math.round(coverage * 100)}%（${specMapping.coveredClause}/${specMapping.clauseTotal}），建议先补 basic 波段（corner 登记已接受，不阻断）`)
+    }
+  }
+  return { accepted, rejected, rebuilt, warnings }
 }
 
 export function reviewScenarioClosure(workspaceDir: string): { passed: boolean; blockers: string[]; warnings: string[]; state?: VerificationStateModel } {

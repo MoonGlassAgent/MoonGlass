@@ -409,6 +409,8 @@ export interface SpecMappingMatrix {
   /** 有 PASS 证据的条款数 */
   coveredClause: number
   statusCounts: Record<SpecClauseStatus, number>
+  /** BLOCKED_BY_SPEC 场景计数（含低优先级；规格缺口可见性，不隐形不阻断） */
+  blockedBySpecCount: number
   clauses: SpecClauseMapping[]
 }
 
@@ -504,8 +506,8 @@ export interface RiskMarker {
 export interface VerificationScenario {
   id: string
   title: string
-  /** 场景来源：引擎穷举候选或 Agent 登记的验证意图；旧数据无此字段按 ENGINE_CANDIDATE 处理。 */
-  origin?: 'ENGINE_CANDIDATE' | 'AGENT_INTENT'
+  /** 场景来源：引擎穷举候选、Agent 登记的验证意图，或规格条款派生的 basic 候选；旧数据无此字段按 ENGINE_CANDIDATE 处理。 */
+  origin?: 'ENGINE_CANDIDATE' | 'AGENT_INTENT' | 'CLAUSE_DERIVED'
   /** 波段标签（v0.8.6）；旧数据无此字段由 resolveWave 按来源/方法推导 */
   wave?: VerificationWave
   /** W2 增补批归一化主题 */

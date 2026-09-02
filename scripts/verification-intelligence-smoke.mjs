@@ -78,11 +78,30 @@ if (first.requirementModel.requirements.filter((item) => (item.clauseKind ?? 've
 // ===== v0.8.6：规格映射矩阵（闭集完备性，尚无 Intent 映射 → 全部 UNMAPPED，仅 warning 不 blocker） =====
 const firstMapping = first.verificationState.specMapping
 if (firstMapping.clauseTotal !== 4 || firstMapping.documentaryCount !== 1) throw new Error(`映射矩阵分母错误：clauseTotal=${firstMapping.clauseTotal} documentary=${firstMapping.documentaryCount}`)
-if (firstMapping.statusCounts.UNMAPPED !== 4 || firstMapping.coveredClause !== 0) throw new Error('无 Intent 登记时全部可验证条款应为 UNMAPPED')
-if (!first.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('UNMAPPED 条款未进入 closureAssessment.warnings')
+// v0.8.6 延续（交流_20260901 回复 §三）：clause 派生 basic 候选使 UNMAPPED 清零、条款进入 MAPPED_UNTESTED
+if (firstMapping.statusCounts.UNMAPPED !== 0 || firstMapping.statusCounts.MAPPED_UNTESTED !== 4 || firstMapping.coveredClause !== 0) throw new Error(`clause 派生后全部可验证条款应为 MAPPED_UNTESTED：${JSON.stringify(firstMapping.statusCounts)}`)
+if (first.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('派生候选已映射全部条款，不应再有 UNMAPPED warning')
 if (first.verificationState.closureAssessment.blockers.some((item) => item.includes('UNMAPPED'))) throw new Error('Q2：UNMAPPED 条款不得进入 blockers（先 warning 一个版本）')
+// ===== clause 派生 basic 候选（origin=CLAUSE_DERIVED）=====
+const derivedCandidates = first.verificationState.scenarios.filter((scenario) => scenario.origin === 'CLAUSE_DERIVED')
+if (derivedCandidates.length !== 4) throw new Error(`4 个可验证条款应各派生一个 basic 候选：${derivedCandidates.length}`)
+if (!derivedCandidates.every((scenario) => scenario.wave === 'basic' && scenario.status === 'PLANNED' && scenario.requirementIds.length === 1)) throw new Error('派生候选应为 wave=basic / PLANNED / 单条款锚定')
+if (!derivedCandidates.every((scenario) => scenario.state.closure === 'OPEN' && scenario.evidence.length === 0)) throw new Error('派生候选绝不可无证据闭环（闭环只认 scenario_hits）')
+if (!derivedCandidates.every((scenario) => scenario.title.includes('基础功能'))) throw new Error('派生候选标题应直接引用条款')
+if (derivedCandidates.some((scenario) => scenario.priority >= 0.2)) throw new Error('派生候选 priority 应低于 Coverage Hole 阻断阈值（Q2 不阻断语义）')
+const derivedIntents = first.verificationState.verificationIntents.filter((intent) => derivedCandidates.some((scenario) => scenario.id === intent.scenarioId))
+if (derivedIntents.length !== 4 || !derivedIntents.every((intent) => intent.wave === 'basic' && intent.objective.includes('验证规格条款'))) throw new Error('派生候选缺少对应 Intent（目标应引用条款文本）')
+// blockedBySpecCount：BLOCKED_BY_SPEC 场景计数（含低优先级）+ 低优先级规格缺口 warning
+const blockedScenarios = first.verificationState.scenarios.filter((scenario) => scenario.status === 'BLOCKED_BY_SPEC')
+const lowPriorityBlocked = blockedScenarios.filter((scenario) => scenario.priority < 0.2)
+if (firstMapping.blockedBySpecCount !== blockedScenarios.length) throw new Error(`blockedBySpecCount 计数错误：${firstMapping.blockedBySpecCount} ≠ ${blockedScenarios.length}`)
+if (lowPriorityBlocked.length === 0) throw new Error('fixture 应包含低优先级 BLOCKED_BY_SPEC 场景')
+if (!first.verificationState.closureAssessment.warnings.some((item) => item.includes(`低优先级规格缺口 ${lowPriorityBlocked.length} 项`))) throw new Error('低优先级规格缺口未进入 closure warnings')
 if (!Array.isArray(first.verificationState.waveProgress) || first.verificationState.waveProgress.length !== 4) throw new Error('波段进度未生成 W0-W3 四段')
-if (first.verificationState.waveProgress[1].specClauseTotal !== 4) throw new Error('W1 未挂规格映射矩阵计数')
+// W1 进度挂 specMapping：clauseTotal>0 且未全覆盖 → in-progress；scenarioCount 展示实际 basic 场景数
+const w1First = first.verificationState.waveProgress[1]
+if (w1First.specClauseTotal !== 4 || w1First.specClauseCovered !== 0) throw new Error('W1 未挂规格映射矩阵计数')
+if (w1First.status !== 'in-progress' || w1First.scenarioCount !== 4 || w1First.passedCount !== 0) throw new Error(`W1 状态/计数错误：${JSON.stringify(w1First)}`)
 if (first.structuralModel.facts.length === 0) throw new Error('Structural Model 为空')
 if (first.structuralModel.stateMachines.length === 0) throw new Error('未提取 FSM')
 if (first.structuralModel.registerWriters.length === 0) throw new Error('未提取寄存器写入关系')
@@ -100,7 +119,7 @@ if (!first.verificationState.verificationIntents.some((intent) => intent.boundar
 if (first.verificationState.specGaps.length === 0) throw new Error('未识别 Spec Gap')
 if (first.verificationState.coverageHoles.length === 0) throw new Error('未分类 Coverage Hole')
 if (!first.verificationState.scenarios.every((scenario) => scenario.state?.closure && scenario.rtlHash === first.structuralModel.rtlHash)) throw new Error('AIGV 2.0 Scenario 多轴状态未生成')
-if (!first.verificationState.scenarios.every((scenario) => scenario.coordinates?.feature.length && scenario.coordinates.interaction.length)) throw new Error('Scenario 五维坐标未生成')
+if (!first.verificationState.scenarios.filter((scenario) => scenario.origin !== 'CLAUSE_DERIVED').every((scenario) => scenario.coordinates?.feature.length && scenario.coordinates.interaction.length)) throw new Error('Scenario 五维坐标未生成（CLAUSE_DERIVED 候选锚定条款而非 RTL 风险，坐标允许为空）')
 if (first.verificationState.verificationSpace.candidateCount !== first.verificationState.scenarioCount) throw new Error('Verification Space 候选集合不完整')
 if (!first.verificationState.verificationSpace.snapshotId.startsWith('VSPACE-')) throw new Error('Verification Space 缺少稳定版本 ID')
 if (first.verificationState.explorationRound.selectedScenarioIds.length === 0) throw new Error('Explorer 未生成本轮选择')
@@ -170,10 +189,12 @@ const saturated = buildVerificationIntelligence(root)
 if (saturated.verificationState.explorationHistory.saturation.status !== 'EMPIRICALLY_SATURATED') throw new Error('连续无新增探索未形成经验性饱和')
 const review = reviewScenarioClosure(root)
 if (!review.passed) throw new Error(`Scenario Closure 应通过：${review.blockers.join('; ')}`)
-// v0.8.6 Q2：规格映射矩阵存在 UNMAPPED 条款时 warning 使结论降为 CONDITIONALLY_READY（不阻断签核）
-if (saturated.verificationState.closureAssessment.status !== 'CONDITIONALLY_READY') throw new Error(`UNMAPPED 条款 warning 应使结论为 CONDITIONALLY_READY：${saturated.verificationState.closureAssessment.status}`)
-if (!saturated.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('签核结论缺少 UNMAPPED 条款 warning')
-if (saturated.verificationState.signoffPackage.status !== 'CONDITIONALLY_READY' || !saturated.verificationState.signoffPackage.packageId.startsWith('SIGNOFF-')) throw new Error('最终 Sign-off Package 未生成')
+// clause 派生后：全部条款经派生候选的 hit 证据 PASSED（UNMAPPED 清零），不再有 Q2 warning 降档
+if (saturated.verificationState.specMapping.statusCounts.PASSED !== 4 || saturated.verificationState.specMapping.coveredClause !== 4) throw new Error(`派生候选闭环后全部条款应 PASSED：${JSON.stringify(saturated.verificationState.specMapping.statusCounts)}`)
+if (saturated.verificationState.waveProgress[1].status !== 'done') throw new Error('coveredClause=clauseTotal 时 W1 应为 done')
+if (saturated.verificationState.closureAssessment.status !== 'READY_FOR_HUMAN_SIGNOFF') throw new Error(`条款全覆盖且无其余 warning 时应恢复 READY_FOR_HUMAN_SIGNOFF：${saturated.verificationState.closureAssessment.status}`)
+if (saturated.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('条款全覆盖后不应再有 UNMAPPED warning')
+if (saturated.verificationState.signoffPackage.status !== 'READY_FOR_HUMAN_SIGNOFF' || !saturated.verificationState.signoffPackage.packageId.startsWith('SIGNOFF-')) throw new Error('最终 Sign-off Package 未生成')
 if (!readFileSync(saturated.paths.signoffReport, 'utf-8').includes(saturated.verificationState.signoffPackage.packageId)) throw new Error('可读签核报告未绑定最终 Sign-off Package')
 
 const conflictPath = join(root, 'verification', 'results', 'dma', 'oracle_verdicts.json')
@@ -215,7 +236,7 @@ if (!baseline.verificationState.uncoveredRiskCandidates.every((risk) => risk.id 
 if (!baseline.verificationState.closureAssessment.warnings.some((item) => item.includes('未被任何验证意图覆盖'))) throw new Error('未覆盖风险候选未进入 Closure 警告（应仅告警不阻断）')
 const baselinePosture = JSON.parse(readFileSync(baseline.paths.verificationPosture, 'utf-8'))
 if (!Array.isArray(baselinePosture.uncoveredRiskCandidates) || baselinePosture.uncoveredRiskCandidates.length !== baseline.verificationState.uncoveredRiskCandidates.length) throw new Error('Verification Posture 未携带 uncoveredRiskCandidates')
-if (!baseline.verificationState.scenarios.every((scenario) => (scenario.origin ?? 'ENGINE_CANDIDATE') === 'ENGINE_CANDIDATE')) throw new Error('引擎穷举场景应标记 origin=ENGINE_CANDIDATE')
+if (!baseline.verificationState.scenarios.every((scenario) => ['ENGINE_CANDIDATE', 'CLAUSE_DERIVED'].includes(scenario.origin ?? 'ENGINE_CANDIDATE'))) throw new Error('引擎穷举场景应标记 origin=ENGINE_CANDIDATE、条款派生候选应标记 origin=CLAUSE_DERIVED')
 
 // ===== WS2 B 方向：registerVerificationIntents 锚点校验与持久化 =====
 const anchorRisk = baseline.verificationState.uncoveredRiskCandidates[0]
@@ -228,6 +249,7 @@ const intentRegistration = registerVerificationIntents(root, [
   { title: '不存在风险锚点', objective: '验证不存在风险', failureMode: '反例：不存在', passCriteria: ['不存在'], anchors: { riskIds: ['RISK-9999'], requirementIds: ['REQ-DMA-001'], rtlSignals: [bareSignal] }, recommendedMethod: 'simulation' }
 ])
 if (intentRegistration.accepted.length !== 1 || intentRegistration.rejected.length !== 2) throw new Error(`意图登记接受/拒绝计数错误：${JSON.stringify(intentRegistration)}`)
+if (intentRegistration.warnings.length !== 0) throw new Error('非 corner 登记不应产生覆盖率软提醒')
 if (!intentRegistration.rebuilt) throw new Error('意图登记接受后未自动全量重建')
 if (!intentRegistration.rejected.every((item) => item.reasons.length > 0)) throw new Error('被拒绝意图缺少中文拒绝原因')
 const intentScenarioId = intentRegistration.accepted[0]
@@ -320,6 +342,8 @@ const cornerReg = registerVerificationIntents(root, [
   { title: '错误恢复定向验证', objective: '验证错误清除后恢复', failureMode: '反例：恢复失败', passCriteria: ['恢复后正常事务可继续'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['SPEC-ERR-001#b'], rtlSignals: [bareSignal] }, recommendedMethod: 'simulation', wave: 'corner', topic: '  错误注入  ' }
 ])
 if (cornerReg.accepted.length !== 2) throw new Error(`corner 意图登记失败：${JSON.stringify(cornerReg.rejected)}`)
+// corner 登记软提醒（方案 B）：此时条款覆盖率 0/4 < 0.8，应 warning 提示先补 basic（不拒绝登记）
+if (cornerReg.warnings.length !== 1 || !cornerReg.warnings[0].includes('建议先补 basic 波段') || !cornerReg.warnings[0].includes('0%')) throw new Error(`corner 登记缺少覆盖率软提醒：${JSON.stringify(cornerReg.warnings)}`)
 const afterCorner = buildVerificationIntelligence(root)
 const w2 = afterCorner.verificationState.waveProgress.find((item) => item.id === 'W2')
 const errorTopic = w2?.topics?.find((item) => item.name === '错误注入')
@@ -327,7 +351,8 @@ const errorTopic = w2?.topics?.find((item) => item.name === '错误注入')
 if (!errorTopic || errorTopic.scenarioCount !== 3) throw new Error(`topic 归一并失败（应聚合为单主题 3 场景）：${JSON.stringify(w2?.topics)}`)
 if (w2?.topics?.filter((item) => item.name.trim().toLowerCase().replace(/\s+/g, ' ') === '错误注入').length !== 1) throw new Error('同一归一键的主题裂成多波')
 const mappedClause = afterCorner.verificationState.specMapping.clauses.find((item) => item.clauseId === 'SPEC-ERR-001#a')
-if (mappedClause?.status !== 'MAPPED_UNTESTED' || mappedClause.scenarioIds.length !== 1) throw new Error(`锚定后条款应进入 MAPPED_UNTESTED：${JSON.stringify(mappedClause)}`)
+if (mappedClause?.status !== 'MAPPED_UNTESTED' || mappedClause.scenarioIds.length !== 2) throw new Error(`锚定后条款应进入 MAPPED_UNTESTED（corner 意图 + 派生候选两个场景）：${JSON.stringify(mappedClause)}`)
+if (!mappedClause.scenarioIds.some((id) => afterCorner.verificationState.scenarios.find((scenario) => scenario.id === id)?.origin === 'CLAUSE_DERIVED')) throw new Error('MAPPED_UNTESTED 条款应同时锚定派生候选')
 // 聚类视图：plans 全部带 wave/clusterId 且与 clusters 平铺一致；组 ≤8、执行批 2-3、同组同模块
 const planFile = JSON.parse(readFileSync(join(root, 'verification', 'intelligence', 'scenario-execution-plan.json'), 'utf-8'))
 if (planFile.version !== 2 || !Array.isArray(planFile.clusters) || planFile.clusters.length === 0) throw new Error('执行计划缺少聚类视图（version 2 + clusters）')
@@ -347,6 +372,9 @@ if (gatingReg.accepted.length !== 1) throw new Error('basic 意图登记失败')
 const gated = buildVerificationIntelligence(root)
 if (gated.verificationState.executionPlan.length === 0 || !gated.verificationState.executionPlan.every((plan) => plan.wave === 'basic')) throw new Error('W1 未闭环时 corner/signoff 不得进入执行计划')
 if (gated.verificationState.specMapping.clauses.find((item) => item.clauseId === 'REQ-DMA-002')?.status !== 'MAPPED_UNTESTED') throw new Error('basic 意图锚定后 REQ-DMA-002 应为 MAPPED_UNTESTED')
+// 派生候选属 basic 波段，参与"W1 未闭环挡 W2"执行门
+const gatedDerivedInPlan = gated.verificationState.executionPlan.filter((plan) => gated.verificationState.scenarios.find((scenario) => scenario.id === plan.scenarioId)?.origin === 'CLAUSE_DERIVED')
+if (gatedDerivedInPlan.length === 0) throw new Error('CLAUSE_DERIVED 派生候选未进入 W1 执行计划')
 // 关闭全部 basic 波段场景（模拟 W1 填满）→ corner 重新进入执行计划；REQ-DMA-002 条款 PASSED
 const openBasic = gated.verificationState.scenarios.filter((item) => item.state.closure === 'OPEN' && item.wave === 'basic')
 if (openBasic.length === 0) throw new Error('应存在待闭环的 basic 场景')
@@ -358,6 +386,11 @@ const ungated = buildVerificationIntelligence(root)
 if (ungated.verificationState.executionPlan.length === 0 || !ungated.verificationState.executionPlan.every((plan) => plan.wave === 'corner')) throw new Error('W1 闭环后应由 corner 波段进入执行计划')
 if (ungated.verificationState.specMapping.clauses.find((item) => item.clauseId === 'REQ-DMA-002')?.status !== 'PASSED') throw new Error('有 PASS 证据的条款应为 PASSED')
 if (ungated.verificationState.specMapping.coveredClause < 1) throw new Error('coveredClause 未统计 PASSED 条款')
+// PASSED 条款不派生：REQ-DMA-002 已由 basic 意图证据闭环，其派生候选应退出
+if (ungated.verificationState.scenarios.some((scenario) => scenario.origin === 'CLAUSE_DERIVED' && scenario.requirementIds.includes('REQ-DMA-002'))) throw new Error('已被证据覆盖（PASSED）的条款不应保留派生候选')
+// 派生候选 ID 幂等：同条款跨 rebuild 复用同一 SCN ID
+const derivedReqA = ungated.verificationState.scenarios.filter((scenario) => scenario.origin === 'CLAUSE_DERIVED' && scenario.requirementIds.includes('SPEC-ERR-001#a'))
+if (derivedReqA.length !== 1 || derivedReqA[0].status !== 'VERIFIED') throw new Error('派生候选 hit 证据未跨 rebuild 幂等合并')
 // 再聚类建议（两段式第二段）：同组不同失败指纹 → 分裂；跨组同指纹 → 合并
 const planNow = JSON.parse(readFileSync(join(root, 'verification', 'intelligence', 'scenario-execution-plan.json'), 'utf-8'))
 const splitTarget = planNow.clusters.find((cluster) => cluster.scenarioIds.length >= 2)
@@ -377,7 +410,7 @@ if (planNow.clusters.length >= 2) {
 const summary2Path = join(root, 'verification', 'intelligence', 'execution-summary.json')
 const summary2 = JSON.parse(readFileSync(summary2Path, 'utf-8'))
 if (!Array.isArray(summary2.waveProgress) || summary2.waveProgress.length !== 4) throw new Error('execution-summary 缺少 waveProgress 四段')
-if (typeof summary2.specMapping?.clauseTotal !== 'number' || typeof summary2.specMapping?.coveredClause !== 'number' || !Array.isArray(summary2.specMapping?.unmappedClause)) throw new Error('execution-summary 缺少 specMapping 区块')
+if (typeof summary2.specMapping?.clauseTotal !== 'number' || typeof summary2.specMapping?.coveredClause !== 'number' || typeof summary2.specMapping?.blockedBySpecCount !== 'number' || !Array.isArray(summary2.specMapping?.unmappedClause)) throw new Error('execution-summary 缺少 specMapping 区块（含 blockedBySpecCount）')
 if (!summary2.specMapping.unmappedClause.every((item) => item.specId && item.clause)) throw new Error('unmappedClause 形状不符展示层契约 B.2')
 if (statSync(summary2Path).size > 10 * 1024) throw new Error('execution-summary 超过 10KB 硬指标')
 // 旧数据兼容：registry 中无 wave/topic 字段的场景不崩，波段由来源/方法推导
@@ -389,5 +422,52 @@ const legacy = buildVerificationIntelligence(root)
 if (!Array.isArray(legacy.verificationState.waveProgress) || legacy.verificationState.waveProgress.length !== 4) throw new Error('旧数据（无 wave 字段）重建后波段进度缺失')
 if (!legacy.verificationState.executionPlan.every((plan) => plan.wave)) throw new Error('旧数据场景波段推导失败')
 if (!legacy.verificationState.specMapping || legacy.verificationState.executionClusters === undefined) throw new Error('旧数据重建缺少 v0.8.6 区块')
+
+// ===== W1 进度挂 specMapping：clauseTotal=0 → pending（修"0/0 场景却 in-progress"空转） =====
+const emptyRoot = mkdtempSync(join(tmpdir(), 'moonglass-vi-empty-'))
+mkdirSync(join(emptyRoot, 'docs', '02_requirements'), { recursive: true })
+mkdirSync(join(emptyRoot, 'rtl'), { recursive: true })
+writeFileSync(join(emptyRoot, 'rtl', 'passthrough.v'), 'module passthrough(input a, output b); assign b = a; endmodule\n', 'utf-8')
+const emptyBuild = buildVerificationIntelligence(emptyRoot)
+if (emptyBuild.verificationState.specMapping.clauseTotal !== 0) throw new Error('空规格 fixture 条款数应为 0')
+if (emptyBuild.verificationState.waveProgress[1].status !== 'pending') throw new Error(`无可验证条款时 W1 应 pending：${emptyBuild.verificationState.waveProgress[1].status}`)
+if (emptyBuild.verificationState.waveProgress[1].scenarioCount !== 0) throw new Error('无可验证条款时不应派生 basic 候选')
+
+// ===== W1 done：派生候选经 scenario_hits 闭环 → 条款 PASSED → coveredClause=clauseTotal =====
+const doneRoot = mkdtempSync(join(tmpdir(), 'moonglass-vi-done-'))
+mkdirSync(join(doneRoot, 'docs', '02_requirements'), { recursive: true })
+mkdirSync(join(doneRoot, 'rtl'), { recursive: true })
+mkdirSync(join(doneRoot, 'verification', 'results', 'mini'), { recursive: true })
+writeFileSync(join(doneRoot, 'docs', '02_requirements', 'product_requirements.md'), `
+# Mini Requirements
+
+- REQ-BASE-001 P0: counter increments by one when advance is asserted and wraps at maximum.
+`, 'utf-8')
+writeFileSync(join(doneRoot, 'rtl', 'mini_counter.v'), `
+module mini_counter(input clk, input rst_n, input advance, output reg [7:0] cnt);
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) cnt <= 0;
+    else if (advance) cnt <= cnt + 1;
+  end
+endmodule
+`, 'utf-8')
+const doneFirst = buildVerificationIntelligence(doneRoot)
+const doneDerived = doneFirst.verificationState.scenarios.filter((scenario) => scenario.origin === 'CLAUSE_DERIVED')
+if (doneDerived.length !== 1 || doneDerived[0].requirementIds[0] !== 'REQ-BASE-001') throw new Error(`单条款项目应派生恰好一个 basic 候选：${doneDerived.length}`)
+if (doneFirst.verificationState.waveProgress[1].status !== 'in-progress') throw new Error('条款未覆盖时 W1 应 in-progress')
+// 派生候选进 W1 执行门：basic 未闭环时 corner/signoff（如 R05 formal 候选）不进执行计划
+if (doneFirst.verificationState.executionPlan.length === 0 || !doneFirst.verificationState.executionPlan.every((plan) => plan.wave === 'basic')) throw new Error('派生候选未进入 W1 执行门（corner/signoff 应被挡）')
+writeFileSync(join(doneRoot, 'verification', 'results', 'mini', 'results_icarus.xml'), '<testsuite tests="2" failures="0"/>', 'utf-8')
+writeFileSync(join(doneRoot, 'verification', 'results', 'mini', 'mini.fst'), 'waveform-evidence', 'utf-8')
+writeFileSync(join(doneRoot, 'verification', 'results', 'mini', 'scenario_hits.json'), JSON.stringify({
+  rtlHash: doneFirst.structuralModel.rtlHash,
+  scenarios: [{ id: doneDerived[0].id, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'mini.fst'] }]
+}, null, 2), 'utf-8')
+const doneSecond = buildVerificationIntelligence(doneRoot)
+if (doneSecond.verificationState.scenarios.find((scenario) => scenario.id === doneDerived[0].id)?.status !== 'VERIFIED') throw new Error('派生候选 scenario_hits 证据未闭环')
+if (doneSecond.verificationState.specMapping.statusCounts.PASSED !== 1 || doneSecond.verificationState.specMapping.coveredClause !== 1) throw new Error('派生候选闭环后条款应 PASSED')
+if (doneSecond.verificationState.waveProgress[1].status !== 'done') throw new Error(`coveredClause=clauseTotal 时 W1 应 done：${doneSecond.verificationState.waveProgress[1].status}`)
+rmSync(emptyRoot, { recursive: true, force: true })
+rmSync(doneRoot, { recursive: true, force: true })
 
 console.log(`Verification Intelligence smoke passed: ${second.risks.length} risks, ${second.verificationState.scenarioCount} scenarios`)
