@@ -665,8 +665,12 @@ export function enterPhase(project: ChipProject, to: Phase): ChipProject {
   if (!PHASE_ORDER.includes(to)) throw new Error(`[phase-engine] 未知阶段: ${to}`)
   const now = new Date().toISOString()
   project.currentPhase = to
-  project.phases[to].status = 'active'
-  project.phases[to].startedAt = project.phases[to].startedAt ?? now
+  // 仅进入未完成阶段时置 active；已完成/已跳过阶段保持原状态——
+  // 双击查看已完成阶段不得把它回退成“进行中”
+  if (project.phases[to].status !== 'completed' && project.phases[to].status !== 'skipped') {
+    project.phases[to].status = 'active'
+    project.phases[to].startedAt = project.phases[to].startedAt ?? now
+  }
   project.updatedAt = now
   return project
 }

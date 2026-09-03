@@ -484,6 +484,12 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handleEnterPhase = async (to: Phase): Promise<void> => {
     if (!project || project.currentPhase === to) return
+    // 切换阶段会重建 Agent 会话进程；托管或 Agent 执行中需用户确认，避免误双击中断执行
+    if (managedRunning) {
+      if (!window.confirm(`一键托管正在进行中。进入“${PHASE_LABELS[to]}”将中断当前阶段的 Agent 执行，确认继续？`)) return
+    } else if (useChatStore.getState().streaming) {
+      if (!window.confirm(`当前阶段的 Agent 正在执行。进入“${PHASE_LABELS[to]}”将中断它，确认继续？`)) return
+    }
     try {
       const entered = await window.moonglass.phase.enter(projectId, to)
       if (entered) {
