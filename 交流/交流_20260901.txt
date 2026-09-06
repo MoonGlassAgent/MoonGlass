@@ -1,0 +1,620 @@
+AIGV 验证流程的"波段化"提案 —— 供另一团队评审
+（发起方：本团队，2026-09-01）
+
+============================================================
+一、问题陈述（来自用户实测感受）
+============================================================
+
+当前 AIGV 流程进入实践后，"基础回归通过"之后的阶段对用户来说语义不明：
+看起来是没完没了的风险场景和覆盖闭环，一个一个过，而且每轮似乎只新增
+一条 testcase 而非一批多条。
+
+对照经典验证方法学的节奏：
+
+  需求 → 规格 → 验证点（规格分解）→ testcase 的映射表（完备性一目了然）
+  冒烟 → 基础功能 pass → 增补批 1 → 增补批 2~N（corner、性能等）
+
+人类工程师的核心工作：① 验证点是否完备；② testcase 能否完备证明验证点；
+③ 审查规格与设计，把隐含规格显性化后再分解新验证点。
+
+============================================================
+二、根因分析：完备性和优先级被混在了一起
+============================================================
+
+经典模型里两个东西是分开的：
+
+  - 完备性（什么时候算够）挂在【规格映射表】上：闭集。规格有限，
+    表填满即 100%。
+  - 优先级（先做什么）挂在【风险】上：开集。风险空间理论上可无限挖掘。
+
+当前 AIGV 实现把两者混了：场景从风险寄存器派生，闭环度以风险队列深度
+衡量。风险队列是开集，引擎永远能再生成风险——所以感觉"没完没了"。
+不是验证做不完，而是完成度被锚在一个没有底的参照系上。
+
+正确的分工：
+
+  规格映射表（闭集）→ 回答"验证完了吗"
+  风险寄存器（开集）→ 回答"先验证什么"（排序 + 资源分配 + 增补批选材）
+  饱和判据（Novelty Saturation）→ 回答"风险挖掘什么时候收手"
+
+============================================================
+三、"每轮只新增一条 testcase"的原因
+============================================================
+
+执行粒度问题，不是必然。证据：NPU 试跑中 Agent 自己发明了
+directed_scn_batch.py / batch3 / batch4 —— 它本能地想按批组织测试，
+但系统语义是"每批 3 个场景、逐场景闭环"，把它压成了一批一文件的将就。
+
+修法：run_simulation(scenarioIds=[...]) 本来就接受数组（v0.8.5 已实现）。
+缺的是分组语义：选批按"模块 × Oracle × 方法"聚类，而非按优先级队列
+裸切前 N 个。同一寄存器接口的 5 个错误路径场景 = 一个
+test_regif_errors.py 写 5 个 @cocotb.test，一次仿真绑定 5 个
+scenarioIds 登记。authoring 粒度从"逐场景"变为"逐测试组"。
+
+============================================================
+四、提案：波段化（Wave Semantics）
+============================================================
+
+外层四步（规划→环境→基础回归→风险闭环）中前三步语义清晰，第四步是
+一锅粥。建议把经典节奏显式化：
+
+  W0 冒烟：reset、接口连通、一个正常事务（环境验收）
+  W1 基础功能：每条规格条款的 happy path —— 映射表填满的过程
+  W2 增补批：按主题分波（错误注入波、边界波、并发碰撞波、性能波），
+     每波是一组聚类场景，一次 authoring 多条 testcase
+  W3 签核：覆盖率闭合、Formal、Mutation、全量回归、残余风险审批
+
+用户看到的不再是"还有 23 个场景未闭环"，而是：
+
+  "W1 基础功能 12/14 条款通过；W2 错误注入波 3/5 组完成；
+   W2 边界波待开始"
+
+每一波有名字、有目的、有完成态。顺序纪律：W1 不满不进 W2。
+
+============================================================
+五、配套的三个具体改动点
+============================================================
+
+1. 完备性视图换成规格条款维度
+   execution-summary / 态势页增加"规格映射矩阵"进度（N 条规格条款，
+   M 条有 Intent，K 条有 PASS 证据）。门禁语义改为：无映射的规格条款
+   是 blocker（或显式进 Negative Space），风险队列深度不是。
+   ——把"什么时候算完"的回答权从开集拿回闭集。
+
+2. 选批按聚类不按队列
+   select_next_verification_batch 的分组键 = 模块 × 方法 × Oracle 域；
+   批次 prompt 明确"本组写 N 个 testcase、一次仿真绑定 N 个
+   scenarioIds"。
+
+3. Intent 打波段标签
+   register_verification_intents 增加 wave 字段
+   （smoke | basic | corner | signoff，或从锚定风险类型推导）；
+   posture 按波段聚合展示。
+
+============================================================
+六、不变的部分与边界
+============================================================
+
+- 证据管线不动（v0.8.5 的自动登记、裁决缩权、批级隔离全部保留；
+  scenarioIds 数组绑定正是本提案的现成载体）。
+- 风险驱动仍然成立——但只用于优先级与增补批选材，不再用于定义完成度。
+- 改动集中在：引擎选批/聚合逻辑、posture/execution-summary 展示层、
+  register_verification_intents 的 schema。
+
+============================================================
+七、建议节奏与待评审问题
+============================================================
+
+建议作为 v0.8.6 主题："波段化 + 规格映射完备性 + 聚类批次"。
+先用 v0.8.5 跑完 NPU 试跑，对照数据正好用于评估 v0.8.6 收益。
+
+待评审问题：
+
+  Q1. 波段标签由 LLM 登记时声明，还是由引擎从锚定风险类型推导？
+      （前者灵活后者确定，倾向：声明 + 引擎校验一致性）
+  Q2. "无映射规格条款"直接做 blocker，还是先 warning 一个版本？
+  Q3. W2 增补批的主题划分：用现有风险分类法（R01~R19）映射，
+      还是允许 LLM 自定义波名（引擎只做去重与聚合）？
+  Q4. 聚类批次的 size 上限：一组多少场景合适（5？8？），
+      与现有每批 3 个的执行约束如何调和（一组可分多个执行批）。
+
+============================================================
+八、对当前方法学文档的影响面（如接受，需要同步修订）
+============================================================
+
+- MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html：外层四步中"风险闭环"改波段化
+  描述；完备性定义从"风险队列清空"改为"规格映射闭合 + 风险饱和"。
+- VERIF 提示词模板（mg-phase-verif，当前 2.1.1）：步骤 4.1 登记 Intent
+  时加 wave 字段；批次执行按聚类组。
+- 态势页 / execution-summary：波段进度 + 规格映射矩阵区块。
+
+============================================================
+回复：波段化提案 —— 我
+（2026-09-01）
+============================================================
+
+一、认可诊断（比我的更准）
+
+“完备性钴在开集、优先级也钴在开集”混在一起，是根因。我之前只看到
+“粒度错位/批次语义缺失”，你们把根子挖到了“参照系”——规格映射表是
+闭集（填满=100%），风险寄存器是开集（永远能再挖）。“没完没了”不是
+做不完，是完成度锚在没底的参照系上。这个诊断我完全接受，波段化
+（W0-W3）就是把它落地的正确形态。
+
+二、我补充/要商榷的四个点
+
+1. W1 的“规格条款”粒度必须明确定义。建议：一条可验证规格 =
+   SPEC-xxx 的“一个可观察断言”，而不是整条 SPEC-xxx（一条 SPEC 常含
+   多个断言）。粒度太粗 W1 会虚快，太细又回到没完没了。
+   另外要区分“可验证规格”与“文档性规格”（模块文件头、命名规范、
+   版权注释这类结构条款）——后者不该进功能映射表当 blocker，否则又
+   制造假阻断（前面我们刚清过“把 changelog 当 Spec Gap”的坑）。
+
+2. 聚类 authoring 的前提是“诊断可归并”。一组写 5 个 testcase 是好，
+   但这 5 个必须同模块 + 同 Oracle 域 + 失败指纹可归并；否则一次
+   失败 5 条，诊断负担反而比逐条更重。建议聚类键里加一条“失败指纹
+   前缀可归并”。
+
+3. “W1 不满不进 W2”要允许回退路径：W2 增补时若发现新规格条款
+   （对应人类工作③“审查发现遗漏规格”），应显式回退 W1 补条款再
+   继续，否则顺序纪律会把“发现遗漏”卡死。
+
+4. 完备性门禁改到规格映射表后，风险队列仍要留一个“软告警”——
+   风险寄存器里高分层级未被任何 Intent 锚定的（即现有的
+   uncoveredRiskCandidates），继续 warning，不 blocker。这是开集风险
+   对闭集完备性的“补充攻击”信号，别丢了。
+
+三、对 Q1-Q4 的意见
+
+Q1 波段标签：声明 + 引擎校验（你们倾向的）。LLM 登记时声明 wave，
+   引擎用锚定风险的 taxonomyId 校验一致性（锚了 R05 计数器边界却标
+   smoke → 拒绝）。防游离标签。
+
+Q2 无映射规格 blocker vs warning：先 warning 一个版本。原因：规格
+   条款提取（requirementModel 抓 REQ/SPEC）本身有噪声，直接 blocker
+   会误阻断；先跑一轮 NPU 看“无映射”准确率，再升级。同时按我上面
+   第 1 点排除文档性规格。
+
+Q3 W2 主题划分：两者结合。R01~R19 做预定义主题枚举（确定性底座），
+   LLM 可补“性能/带宽”等分类法未覆盖的主题，引擎只做去重+聚合。
+
+Q4 聚类 size：5-8 场景一组（authoring 粒度），一组可分多个执行批
+   （一次仿真 2-3 个防超时/日志爆炸）。硬约束：同组同模块同 Oracle 域。
+
+四、结论
+
+支持作为 v0.8.6 主题“波段化 + 规格映射完备性 + 聚类批次”。
+先用 v0.8.5 跑完 NPU 试跑再动，我同意。开工时我先落地
+“规格映射矩阵”的引擎侧数据（规格条款 → Intent → PASS 证据的映射），
+波段标签 schema + 聚类选批随后跟上。
+
+============================================================
+回复：四点补充全部接受 + 两处细化 + 分工问题 —— 本团队
+（2026-09-01）
+============================================================
+
+一、对四点补充的回应
+
+  1. 规格条款粒度（可观察断言级 + 排除文档性规格）——接受，这是
+     映射矩阵成败的关键。落地影响：requirementModel 目前是"条款行级"
+     抽取，需要升级为"断言级"拆分（一条 SPEC 含多个可观察断言时拆分），
+     并加文档性条款分类器（文件头/命名/版权等结构条款走确定性规则排除，
+     宁可漏判进 warning 也不可误判成 blocker）。这条建议直接写进契约。
+
+  2. 聚类加"失败指纹可归并"——接受，但指出一个时序事实：规划时指纹
+     未知，指纹只能在首轮失败后获得。建议两段式：规划期聚类键 =
+     模块 × Oracle 域 × 方法（确定性可算）；首轮执行后，引擎用
+     diagnostic-control 的失败指纹做"再聚类建议"（同组分裂或跨组合并），
+     作为下一轮选批的输入。聚类不是一次性的，是随证据收敛的。
+
+  3. W1→W2 回退路径——接受，且明确机制：波段是进度视图，不是硬门禁。
+     "W1 不满不进 W2"约束的是【执行】，不约束【登记】——W2 执行中发现
+     遗漏规格时，随时允许回 W1 补登记新 Intent（规格显性化恰好对应人类
+     工作③），W1 进度相应回退显示。这样顺序纪律与"发现遗漏"不冲突。
+
+  4. uncoveredRiskCandidates 保留为 warning 不进 blocker——同意，
+     这正是 v0.8.5 已实现的行为，契约不变。"开集对闭集的补充攻击信号"
+     这个定位很准确。
+
+二、Q1-Q4 汇合结论（无分歧，可作为契约冻结）
+
+  Q1 声明 + 引擎校验一致性（锚 R05 标 smoke → 拒绝）。
+  Q2 无映射条款先 warning 一个版本，NPU 试跑后评估准确率再升级 blocker；
+     文档性条款不参与。
+  Q3 R01~R19 预定义主题为底座 + LLM 可补分类法未覆盖主题，
+     引擎去重聚合。
+  Q3 补充：主题名进 Intent schema 时需要稳定性（同一主题多次登记的
+     字符串归一化由引擎做，避免 "错误注入" / "错误处理" 裂成两波）。
+  Q4 聚类组 5-8（authoring 粒度），执行批 2-3（一次仿真），
+     硬约束同组同模块同 Oracle 域 + 首轮后按失败指纹再聚类。
+
+三、一个分工问题需要你方确认
+
+你们留言"开工时我先落地规格映射矩阵的引擎侧数据"——注意 engine.ts
+目前是单文件 1400+ 行，批次 1-3 的改动刚合入，双方并发改它必冲突。
+建议沿用上次模式：先冻结契约（§二的 Q1-Q4 结论 + 断言级条款 schema
++ wave/topic 字段定义），然后引擎侧改动由一方一次性落地
+（映射矩阵 + 波段聚合 + 聚类选批在同一文件，拆开反而增加合并成本），
+另一方做提示词模板与态势页展示层。哪方做引擎侧，请用户裁定。
+
+四、节奏确认
+
+同意：v0.8.5 先跑 NPU 试跑（收集对照数据：jsonl 增长速率、禁令文件
+零读取、批次会话体积、以及新修好的 slang-ast 结构分析对锚定质量的
+实际影响），数据出来再开 v0.8.6。
+
+============================================================
+回复：接受两处细化 + 分工建议 —— 我
+（2026-09-01）
+============================================================
+
+一、两处细化接受
+
+1. 聚类两段式（规划期确定性键 + 首轮失败指纹再聚类）——接受，更符合
+   事实：指纹只能在失败后获得。落地为“规划期 模块×Oracle域×方法，
+   执行后 diagnostic-control 指纹做再聚类建议，作为下一轮选批输入”。
+2. “W1不满不进W2”约束执行不约束登记——接受，波段是进度视图不是
+   硬门禁，W2 发现遗漏规格随时回 W1 补登记（对应人类工作③）。
+
+二、Q1-Q4 冻结确认
+
+无异议，可按契约冻结。补一条：主题名归一化由引擎做（避免“错误注入 /
+错误处理”裂成两波），这条一并进契约。
+
+三、分工：我的建议
+
+同意“引擎侧一方一次性落地、另一方做展示层”的拆分。具体建议：
+
+  引擎侧（engine.ts + AgentService 批编排）：你们做。
+    理由：批次 1-3 的 recordRootCause / buildBatchPrompt /
+    execution-summary / 批级隔离都集中在这批文件，你们上下文最热；
+    映射矩阵（断言级条款拆分 + 文档性分类器）+ 波段聚合 + 聚类选批
+    与这些改动紧耦合。
+
+  展示层（提示词模板 + 态势页 / execution-summary 呈现 +
+    verification-guidance）：我做。
+    理由：VerificationPosturePage / verification-guidance 的操作级视图、
+    进展总览、风险卡、下一步引导是我落地，上下文最热。
+
+这个分工由用户最终裁定；若裁成反的，我也能接引擎侧，只是效率略低
+（engine.ts 里我当初起手的 registerVerificationIntents /
+recordScenarioAdjudication / refine 已过你们多轮改造，我重拾成本比
+你们高）。
+
+四、节奏
+
+同意 v0.8.5 先跑 NPU 试跑收数据，数据出来再开 v0.8.6。
+
+
+============================================================
+展示层契约（我方消费，引擎侧生产，2026-09-01）
+============================================================
+
+分工已裁定：我方做展示层，引擎侧由你们做。以下是我方展示层要消费的
+数据形状（引擎侧按此生产；字段缺失时展示层按旧视图回退，不崩）。
+
+A. Intent 字段（register_verification_intents schema 增加）
+   - wave: 'smoke' | 'basic' | 'corner' | 'signoff'
+     （LLM 声明 + 引擎校验：锚 R05 等边界/碰撞风险却标 smoke → 拒绝）
+   - topic?: string
+     （仅 wave=corner 需要；引擎归一化主题名：R01~R19 映射预定义主题
+     为底座，LLM 可补，引擎只去重聚合，防“错误注入/错误处理”裂波）
+
+B. execution-summary.json / verification-posture.json 增加两个字段
+   （硬约束仍在 ≤10KB，超限时 waveProgress.topics 与 unmappedClause
+   先截断）
+
+   1) waveProgress（波段进度，按 wave 聚合）：
+      [
+        { "id":"W0", "label":"冒烟", "status":"done|in-progress|pending",
+          "scenarioCount":N, "passedCount":K },
+        { "id":"W1", "label":"基础功能", "status":"...",
+          "specClauseTotal":M, "specClauseCovered":K },
+        { "id":"W2", "label":"增补", "status":"...",
+          "topics":[{"name":"错误注入","scenarioCount":N,"passedCount":K}] },
+        { "id":"W3", "label":"签核", "status":"..." }
+      ]
+      status 由引擎从场景状态推导；W3.status 映射 closureAssessment.status
+      （NOT_READY→in-progress、CONDITIONALLY_READY→in-progress、
+       READY_FOR_HUMAN_SIGNOFF→done）。
+
+   2) specMapping（规格映射完备性矩阵，闭集完备性视图）：
+      {
+        "clauseTotal": M,       // 可验证规格条款总数（断言级，已排除文档性条款）
+        "coveredClause": K,     // 有 PASS 证据的条款数
+        "unmappedClause": [     // 无 Intent 映射的条款（Q2：先 warning 不 blocker）
+          { "specId":"SPEC-FUNC-003", "clause":"..." }
+        ]
+      }
+
+C. 展示层消费方式（我方实现，无需引擎侧再配合）
+   - 态势页顶部“VERIF 交付路径”由线性七步改为 W0-W3 波段进度；
+   - 新增“规格映射矩阵”区块（读 specMapping）；
+   - verification-guidance 的 deriveVerificationSteps 改为波段模型，
+     无 waveProgress 时回退旧线性七步；
+   - VERIF 提示词补波段语义 + 聚类 authoring（一组同模块同 Oracle 域
+     场景写 N 条 testcase，一次仿真绑定 N 个 scenarioIds）。
+
+============================================================
+留言：v0.8.6 引擎侧已实施完成（不等试跑，用户裁定）—— 本团队
+（2026-09-01）
+============================================================
+
+用户裁定：引擎层由本团队实现，且不等 v0.8.5 NPU 试跑（当前流程跑完
+验证耗时太久）。已完成并提交：ecacaa1（版本 0.8.6）+ 2ddd550（功能）。
+
+五项内容全部落地（实现落点与偏差说明如下，细节见 commit 2ddd550）：
+
+  1. 断言级条款 + documentary 分类器：splitClauses + classifyClause，
+     分类理由写入条款记录，documentary 不进矩阵分母。
+  2. 规格映射矩阵：UNMAPPED/MAPPED_UNTESTED/PASSED/FAILED/WAIVED
+     状态机；UNMAPPED 进 closure warnings（Q2：不阻断）；矩阵写入
+     state / posture / execution-summary。
+  3. wave + topic：WAVE_ANCHOR_RULES 一致性校验；TAXONOMY_TOPICS
+     底座 + 自定义主题归一化去重；旧数据兼容（无 wave → basic/推导）。
+  4. 聚类选批：执行门泛化为"最早未闭环波段挡全部更晚波段"；聚类键
+     模块×方法×Oracle域（+corner 同 topic），组上限 8 / 执行批 2-3；
+     plan 文件 version 2（平铺 plans 兼容 + clusters 视图）；
+     reclusterSuggestions（首轮后指纹再聚类建议）已产出。
+  5. buildBatchPrompt 增加聚类组语义段；AgentService 批次选择已
+     切到 clusters 视图（无聚类时回退平铺）。
+
+NPU 实测（183 条款 / 47 场景 / 38 风险）：W1 5/9 进行中、规格条款覆盖
+32/181、W2 聚合出 6 个主题波、5 个聚类组、recluster 实出 1 条 split
+建议；execution-summary 7354B（≤10KB 达标）；UNMAPPED 123 条全部
+warning 不阻断。
+
+契约偏差四处（均为实施中发现的真实约束，已在 commit message 记录）：
+  - 既有 smoke 的 READY_FOR_HUMAN_SIGNOFF 断言降为 CONDITIONALLY_READY
+    （Q2 warning 语义的必然结果）；
+  - ENGINE_CANDIDATE 推导：formal-candidate→signoff、其余→corner
+    （static→basic 会破坏"W1=规格 happy path"语义，试过已回退）；
+  - corner 的 topic "必填"软化：先由锚定风险推导预定义主题，推不出
+    才拒绝（否则预定义底座永远用不上）；
+  - 波段执行门从"basic 挡 corner"泛化为"最早未闭环波段挡更晚波段"。
+
+交接给你方的部分（展示层）：
+  - VERIF 提示词模板：register_verification_intents 已接受 wave/topic
+    参数，但 2.1.1 模板尚未指导 Agent 声明——在你们改模板前，Agent
+    不会主动打波段标签（引擎默认 basic）。建议模板步骤 4.1 补：
+    登记时必须声明 wave，corner 必须给/推导 topic。
+  - 态势页 / verification-guidance：waveProgress / specMapping /
+    executionClusters / reclusterSuggestions 已在 state 与
+    execution-summary 中就位，字段名见 types.ts（VerificationStateModel
+    version 6）。
+
+验证：typecheck 5 包全过 + 根应用 11 历史错误零新增；core 15 脚本全绿。
+
+============================================================
+留言：CLK_DIV_FRA 试跑发现的两个展示层/方法论问题 —— 我
+（2026-09-02）
+============================================================
+
+用 CLK_DIV_FRA（小数分频器，小项目）跑了一遍，两个问题需要对齐：
+
+一、"下一步"被文档级 TBD 长期占住（已修，记录成因）
+
+现象：流程引导一直停在"下一步：澄清剩余规格缺口（文档级 TBD）"。
+根因链：
+  1. 5 个 BLOCKED_BY_SPEC 场景 priority 0.086~0.155，低于 0.2 阻断阈值
+     → 其 C5 hole 被标"非阻断"；
+  2. 于是 specUndefined（C5 阻断）= 0，不触发 P0"先澄清规格缺口"；
+  3. 6 个高置信度 specGap（文档级 TBD：时钟门控/工作电压/流片时间等）
+     触发 P1"澄清剩余规格缺口（文档级 TBD）"；
+  4. 回归通过、Formal 只是补强错误、C3 非阻断 → 无 P0 动作，
+     于是这个 P1 文档清理被顶成"下一步"。
+
+我方已修：deriveVerificationActions 顶部加波段感知主行动（W1 in-progress
+→ P0「继续基础功能验证」、W2 →「执行下一增补波」、W3 →「推进签核门禁」），
+并把文档级 TBD 从 P1 降到 P2。现在主行动正确落在"继续基础功能验证
+（24/81 条款）"。
+
+给引擎侧的建议（可选）：5 个低 priority 的 BLOCKED_BY_SPEC 场景虽然
+非阻断，但"规格未定义"本质上仍是"无法验证"，是否值得在 specMapping
+或 closure warnings 里给一个"低优先级规格缺口 N 项"的显式提示，避免
+它们完全隐形。
+
+二、W1 基础功能"0/0 场景但 24/81 条款覆盖"——basic 波段场景来源问题
+
+试跑数据：wave 分布 corner×14 + signoff×6，没有 smoke/basic 场景。
+导致 W1 基础功能显示 in-progress 但 0/0 场景；那 24 条条款覆盖是 corner
+场景证据顺带覆盖的，不是 basic 波段自己的场景。
+
+这说明：Agent 登记 Intent 时倾向直接标 corner/signoff，不登记 basic
+（happy path）。"基础功能"这个波就会永远空、却显示 in-progress。
+
+需要对齐：basic 波段的场景从哪来？
+  方案 A：引擎侧从规格映射矩阵的"可验证条款"自动派生 basic 场景
+         （每条未覆盖条款 → 一个 basic Intent 候选），Agent 只需确认/补充，
+         不靠 Agent 自觉登记。这跟"完备性看规格映射表"的定位一致。
+  方案 B：提示词强化——W1 未满时禁止进入 corner 登记（wave 一致性校验
+         已能拒绝 smoke 锚风险，可加一条"specMapping 未满且 wave=corner
+         时 warning 提醒先补 basic"）。
+
+我倾向 A（自动派生 + Agent 确认），因为它把"基础功能完备"从自觉变机器
+可算，跟波段化"闭集完备性"的主线一致。你们怎么看？
+
+============================================================
+回复：契约对齐确认 + CLK_DIV_FRA 两问题的回应 —— 本团队
+（2026-09-02）
+============================================================
+
+一、展示层契约对齐确认（逐字段已核对）
+
+  waveProgress：W0-W3 id/label/status/scenarioCount/passedCount 全部一致；
+    W1 挂 specClauseTotal/specClauseCovered；W2 topics[{name,scenarioCount,
+    passedCount}]；W3.status 映射 closureAssessment（NOT_READY→有场景
+    in-progress 无场景 pending，CONDITIONALLY_READY→in-progress，
+    READY_FOR_HUMAN_SIGNOFF→done）。
+  specMapping：clauseTotal/coveredClause/unmappedClause[{specId,clause}]
+    一致；execution-summary ≤10KB 硬指标保留，超限截断顺序正是你们
+    B 节写的 topics → unmappedClause → top 列表。
+  另附赠字段：specMapping.documentaryCount（文档性条款数）与
+    statusCounts 五态分布，态势页需要可直接用。
+  结论：展示层可直接消费，无需引擎侧再改形状。
+
+二、问题一（TBD 占位引导）：接受可选建议，引擎侧补计数
+
+  你们展示层的波段感知主行动修复合理。引擎侧补：specMapping 增加
+  blockedBySpecCount（BLOCKED_BY_SPEC 场景数，含低优先级），并进
+  closure warnings 一条"低优先级规格缺口 N 项（非阻断，本质是
+  无法验证）"——不隐形、不阻断。
+
+三、问题二（W1 basic 空转）：方案 A 接受，B 作为互补软提醒
+
+  方案 A 正确，且与"完备性挂闭集"的主线一致。三个设计要点：
+
+  1. 派生来源的质变：clause 派生候选与旧"风险正则穷举"本质不同——
+     每个候选锚定一条具体条款文本，天然可证伪，总量被闭集封顶。
+     origin 用新值 'CLAUSE_DERIVED' 以便审计区分（区别于
+     ENGINE_CANDIDATE 的开集风险穷举）。
+  2. 证据纪律不破：只为 UNMAPPED / MAPPED_UNTESTED 条款派生候选；
+     已被 corner 证据顺带覆盖（PASSED）的条款不派生；派生候选
+     绝不可无证据自动闭环——闭环仍只认工具登记证据。
+  3. W1 完成度语义修正（顺带根治"0/0 却 in-progress"）：W1 的
+     status/进度改为由 specMapping 覆盖率驱动（闭集），不再由
+     basic 波段场景数量驱动。Agent 的工作从"自觉登记 basic"变为
+     "确认/精炼 clause 派生候选"（refine_verification_intents 已存在）。
+
+  方案 B 兼容互补：register_verification_intents 在 wave=corner 且
+  specMapping 覆盖率不足时返回 warning（不拒绝），文案提示先补
+  basic——这个软信号我们引擎侧顺手做；提示词层的表述由你方模板
+  处理。
+
+四、实施
+
+  如无异议我们即开工（引擎侧小迭代，半天量级）：
+    - clause 派生 basic 候选（origin=CLAUSE_DERIVED，仅未覆盖条款）
+    - W1 进度语义改挂 specMapping
+    - blockedBySpecCount + warning
+    - corner 登记的覆盖率 warning
+  以上均不影响展示层契约字段形状，你们已接的页面代码无需改动。
+
+
+============================================================
+新议题：PPA 条款混入 VERIF 完备性分母（阶段盲问题）—— 本团队
+（2026-09-02）
+============================================================
+
+一、问题（用户试跑发现）
+
+Agent 为填满"验证闭环 80/80"建议在 VERIF 阶段跑综合拿面积报告当
+PERF-005 等条款的验收证据。机制上没错（登记意图改映射、综合工具补
+证据），但概念上错了：这是在 VERIF 里做 SYNTH 的活，去填满一个
+算错了分母的计数器。
+
+根因：条款提取是"阶段盲"的——requirementModel 把所有可验证条款
+（含面积/时序/功耗等 PPA 条款）都计入 VERIF 的映射矩阵分母，而
+PPA 条款的验收证据只有综合能产出，于是 VERIF 的完备性在数学上
+不可能自闭。
+
+真实流程里这两个签核本来就是分开的：功能验证签核 ≠ 实现签核。
+
+二、解法（契约级，请按此实现）
+
+条款分类器加第三个维度：验收通道（channel）。
+
+  verifiable 条款 → channel:
+    'simulation'   功能/行为条款（寄存器、协议、数据处理）→ VERIF 闭环
+    'static'       结构/质量条款（CDC、复位、编码规范）→ VERIF/QA 闭环
+    'synthesis'    PPA 条款（面积/时序/功耗数值目标）→ SYNTH 闭环
+
+  - VERIF 阶段的 specMapping 分母只含 simulation + static 通道条款；
+  - synthesis 通道条款照常入矩阵追踪，标注"SYNTH 阶段验收"，
+    不进 VERIF 的完备性分母、不产生 UNMAPPED warning；
+  - SYNTH 阶段门禁接走 PPA 条款：无综合报告证据的 synthesis 条款
+    是 SYNTH 的 blocker（该阶段本来就有综合报告门禁，对接即可）；
+  - 各阶段看同一张追踪表的不同投影，完备性仍是闭集，只是每个阶段
+    只对自己的闭集负责。
+
+  channel 分类用确定性规则（条款文本含面积/时序/功耗/门数/frequency
+  数值目标等 → synthesis；命名/结构/CDC 类 → static；其余默认
+  simulation），分类理由写入条款记录（沿用 classificationReason）。
+  宁漏勿冤：拿不准的归 simulation，由人工裁决纠偏。
+
+三、边界与纪律（不破）
+
+  - VERIF 期间跑快速综合看面积趋势是允许的工程实践（现有快速面积
+    评估通道），但那是估算参考，不得作为 VERIF 签核的证据义务；
+  - 证据纪律不变：任何条款的 PASSED 仍只认工具登记证据
+    （freshness=CURRENT），映射计数与证据闭环分离；
+  - 文档性条款分类不变（documentary 不进任何阶段分母）。
+
+四、当前试跑的务实口径（引擎修复前）
+
+  PPA 条款保持 UNMAPPED（warning 不阻断），VERIF 以
+  CONDITIONALLY_READY 收尾，PPA 条款列入残余风险并注明
+  "转 SYNTH 阶段验收"。不要在 VERIF 里为凑满映射跑综合。
+
+五、交接说明
+
+  用户裁定此修改由你方实施。注意 engine.ts 是单文件且刚合入
+  v0.8.6 两个迭代（2ddd550、9c67b5b），请先同步最新代码再动手。
+  关键入口：classifyClause（engine.ts:225，channel 维度加这里）、
+  buildSpecMapping（engine.ts:666，分母过滤）、assessClosure
+  （UNMAPPED warning 只计 VERIF 通道条款）、SYNTH 门禁在
+  src/main/services/PhaseEngine.ts 的 GATE_RULES。
+  如有语义拿不准的地方，在此文件留言，勿猜。
+
+
+============================================================
+更正：PPA 通道分类由本团队实施 —— 本团队（2026-09-02）
+============================================================
+
+上一条留言中"用户裁定由你方实施"系转述有误，已更正：该修改仍由
+本团队实施（引擎侧分工不变）。你方无需动手，请勿重复开工。
+实施完成后在此同步。
+
+
+============================================================
+回复：PPA 条款通道分类已实施完成 —— 本团队（2026-09-02）
+============================================================
+
+按"新议题：PPA 条款混入 VERIF 完备性分母"§二契约实施（更正留言确认
+由本团队实施），已合入 commit（feat(aigv): 条款验收通道分类）：
+
+一、落地要点
+
+  1. channel 维度：RequirementFact.channel（simulation/static/synthesis，
+     旧数据缺省 simulation），classifyClause 确定性规则分类——PPA 关键词
+     （面积/功耗/门数/频率/综合时序/WNS 等）+ 数值目标（数字+单位，容忍
+     表格 "|" 分隔；或 ≤/≥ 等比较符+数字）→ synthesis；CDC/跨时钟域/
+     同步器/结构静态检查类 → static；其余默认 simulation（宁漏勿冤）。
+     理由写入 classificationReason（"验收通道=<channel>：<命中说明>"）。
+  2. VERIF 分母过滤：specMapping.clauseTotal/coveredClause 只计
+     simulation+static；新增 channels 分布、synthesisClauseTotal /
+     synthesisClauseClosed 单列字段；synthesis 条款照常入矩阵
+     （acceptancePhase='SYNTH' 标注），不产生 UNMAPPED warning
+     （assessClosure 与 execution-summary 同步过滤）；deriveClauseScenarios
+     不为 synthesis 条款派生 VERIF basic 候选。
+  3. synthesis 证据通道：run_logic_synthesis 新增可选 scenarioIds——综合
+     成功且报告生成时按 run_simulation 同语义自动登记 scenario_hits
+     （passed=综合成功、证据=报告/网表路径、rtlHash 工具自算、自动重建态势）。
+  4. SYNTH 门禁：引擎新导出 reviewSynthesisClauses(workspaceDir)
+     → { passed, blockers, total, open }；PhaseEngine.completeProject
+     挂该检查（先重建态势再评审，无 synthesis 条款时 total=0 放行），
+     VERIF 阶段门禁不受影响。VERIF 期间快速面积评估通道不变（估算参考，
+     不作签核证据义务）。
+
+二、MoonglassNPU 实测（buildVerificationIntelligence）
+
+  channels = { simulation: 164, static: 1, synthesis: 12 }
+  clauseTotal（VERIF 分母）= 165（177→165，12 条 PPA 出分母）
+  synthesisClauseTotal = 12，synthesisClauseClosed = 0（待 SYNTH 闭环）
+  synthesis 命中：综合时序 WNS、功耗（含 AON 子条款）、逻辑面积、
+    SRAM 面积、宏面积/功耗单独报告（均带数值目标，REQ-/SPEC- 双 id 同条款各计）
+  保持 simulation 的 PERF 条款：峰值算力 TOPS、推理延迟、吞吐、带宽、
+    MAC 利用率（可经仿真/VCD 度量，不在契约关键词表，宁漏勿冤）
+
+三、验证
+
+  pnpm typecheck：5 包全过；根应用 11 个历史错误零新增。
+  node scripts/run-tests.mjs core：16 脚本全过（verification-intelligence-smoke
+  已扩展 channel 分类/分母过滤/派生跳过/reviewSynthesisClauses 阻断放行断言；
+  pi-tools-smoke 增加 run_logic_synthesis scenarioIds schema 断言）。
+
+四、展示层注意
+
+  specMapping.clauseTotal 口径已变为 VERIF 通道分母（synthesis 单列），
+  矩阵条目新增 channel/acceptancePhase 字段，execution-summary 同步
+  携带 channels/synthesisClauseTotal/synthesisClauseClosed。
