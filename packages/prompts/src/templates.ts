@@ -168,15 +168,22 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 - 已存在且通过校验的规划、环境和证据应增量复用，不得每次从头重建九份文档或全部 Testbench。
 
 完整验证闭环任务是：
+
+完整验证闭环按波段推进（完备性看规格映射表，不是风险队列深度）：
+- W0 冒烟：reset、接口连通、一个正常事务（环境验收）。
+- W1 基础功能：每条可验证规格条款的 happy path——规格映射表填满的过程。
+- W2 增补批：按主题分波（错误注入波、边界波、并发碰撞波、性能波），同组聚类场景一次 authoring 多条 testcase。
+- W3 签核：覆盖率闭合、Formal、Mutation、全量回归、残余风险审批。
+“验证完了吗”由 W1 的规格映射矩阵（可验证规格条款 → Intent → PASS 证据）回答；“先验证什么”由风险寄存器排序回答；“风险挖掘何时收手”由探索饱和回答。
 1. 先使用 verification-planning 技能校验 docs/04_verification/ 三份权威基线计划，并用统一追踪主链 REQ/SPEC → VI → SCN → TEST/COVER/PROPERTY → EVIDENCE → SIGNOFF 贯通 AIGV 六份方法/闭环文档；禁止维护两套测试清单
 1.1 读取并审查 module-verification-strategy.json：顶层 IP 执行 IP_SIGNOFF，高风险子模块执行 UNIT_FOCUSED，普通子模块执行 UNIT_SMOKE 或 STATIC_ONLY；不得把每个 .v 文件当成独立 DUT 重复完整 AIGV
 1.2 验证深度由风险决定，Oracle 类型由模块语义决定；Golden Model 由独立判定、故障定位和验证收敛收益决定，不得因子模块简单而禁止，也不得为了形式完整复制 RTL
 2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
 3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb", simulator="icarus") 完成功能回归
 4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成风险候选、结构事实、Spec Gap、Verification Intent、时间交互、边界条件、Coverage Hole 分类和排序后的 Scenario Registry；每个 Intent 必须是包含前置状态、定向激励、观察点、通过标准和证据要求的可证伪工程目标，不能用 taxonomy 或 feature 组合代替；引擎穷举的 Scenario 只是候选池，不是必须逐条执行的任务清单；风险标记与 Spec Gap 不是 Bug 结论
-4.1 build 完成后，读取规格、risk-register.json 与 structural-model.json，自己圈定 5~10 个最高价值的真实验证点：每个必须点名具体 RTL 信号（rtlSignals，必须能在结构模型中查到，支持 module.signal 或裸信号名）、具体失效反例（failureMode）、具体判定标准（passCriteria），并锚定现有 riskIds 与 requirementIds；然后调用 register_verification_intents 登记（origin=AGENT_INTENT，同分排序优先于引擎穷举候选）。被拒绝的锚点必须核对注册表/结构模型修正后重新登记，不得绕过或手写注册表。引擎穷举的 ENGINE_CANDIDATE 场景保留为候选池，可用 refine_verification_intents 精炼其 objective/failureMode/passCriteria 表述
+4.1 build 完成后，读取规格、risk-register.json 与 structural-model.json，自己圈定 5~10 个最高价值的真实验证点：每个必须点名具体 RTL 信号（rtlSignals，必须能在结构模型中查到，支持 module.signal 或裸信号名）、具体失效反例（failureMode）、具体判定标准（passCriteria）、波段标签 wave（smoke/basic/corner/signoff；W2 增补必须带主题 topic，如错误注入/边界/并发碰撞/性能，引擎归一化防裂波），并锚定现有 riskIds 与 requirementIds；然后调用 register_verification_intents 登记（origin=AGENT_INTENT，同分排序优先于引擎穷举候选）。被拒绝的锚点必须核对注册表/结构模型修正后重新登记，不得绕过或手写注册表。引擎穷举的 ENGINE_CANDIDATE 场景保留为候选池，可用 refine_verification_intents 精炼其 objective/failureMode/passCriteria 表述
 5. 读取 feature-interaction-graph.json；需要语义补充时调用 register_verification_hypotheses，每个推理必须引用 Risk/RTL Object/Interaction Edge，并区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN
-6. 调用 select_next_verification_batch(limit=3)，优先复用现有执行计划，每轮最多处理三个最高优先级 Scenario；按 scenario-execution-plan.json 配置或复用 Cocotb sequence/driver、约束、时序条件、checker、迭代次数和预算；禁止无结构依据的任意笛卡尔积
+6. 调用 select_next_verification_batch，按“模块 × Oracle 域 × 方法”聚类选批（一组 5~8 个同组场景）；同组场景一次 authoring 写 N 条 testcase（如一个 test_regif_errors.py 写 5 个 @cocotb.test），一次 run_simulation 绑定这 N 个 scenarioIds 登记；执行后按失败指纹再聚类建议下一轮。优先复用现有执行计划，禁止无结构依据的任意笛卡尔积
 7. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification：先用 Yosys 兼容的过程式 immediate assert/assume/cover，不得使用 property/endproperty、assert property、default clocking、disable iff、|->、|=> 或 ##；Liveness 必须有规格依据的环境响应 assumption。标明 required/supplemental，先 BMC/cover，再对适合的不变量 prove；BMC PASS 只能算有限深度检查，不能宣称已证明
 8. Windows 使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。昂贵的全量 Coverage、广泛 Formal 和全量回归只在基础稳定、受影响批次稳定及签核前执行，不得在每次局部修复后重复；不得另写临时 runner 绕过工具
 9. 将仿真日志、result.json、oracle_verdicts.json、coverage 数据、Formal result/log/property/trace 和 VCD/FST 写入固定证据目录；scenario_hits.json 由 run_simulation(scenarioIds=...) 在执行后自动登记（FAIL 同样登记为证据），禁止手写或修改该文件；oracle_verdicts 必须绑定当前 rtlHash，Scoreboard、Assertion、Protocol、Formal 等分别写 verdict，禁止用单个 passed 冒充多个独立 Oracle

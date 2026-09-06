@@ -1,3 +1,5 @@
+import type { SpecMapping, WaveProgressEntry } from '@shared/types'
+
 export const CLOSED_VERIFICATION_STATUSES = new Set(['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'])
 
 export interface GuidanceRisk {
@@ -58,6 +60,10 @@ export interface GuidanceState {
   explorationHistory?: { saturation: { status: string; completedRounds: number; noProgressStreak: number; explanation: string } }
   mutationAssessment?: { status: string; weightedScore: number | null; threshold: number; blockingSurvivors: string[] }
   residualRiskRegister?: Array<{ id: string; title: string; approved: boolean; approvalRequired: boolean }>
+  /** 波段进度（W0-W3，展示层契约；缺失时回退旧线性七步） */
+  waveProgress?: WaveProgressEntry[]
+  /** 规格映射完备性矩阵（展示层契约） */
+  specMapping?: SpecMapping
 }
 
 /** 归一化后数组字段均非空的态势。 */
@@ -173,6 +179,42 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
   const mutation = s.mutationAssessment
   const unapprovedResidual = s.residualRiskRegister?.filter((item) => item.approvalRequired && !item.approved) ?? []
 
+  // 波段感知主行动（展示层契约）：waveProgress 存在时，按 W1→W2→W3 波段状态给出主行动，
+  // 避免被“文档级 TBD 清理”这类低价值动作长期占住“下一步”。
+  if (s.waveProgress?.length) {
+    const w1 = s.waveProgress.find((w) => w.id === 'W1')
+    const w2 = s.waveProgress.find((w) => w.id === 'W2')
+    const w3 = s.waveProgress.find((w) => w.id === 'W3')
+    if (w1 && w1.status === 'in-progress' && (w1.specClauseTotal ?? 0) > (w1.specClauseCovered ?? 0)) {
+      actions.push({
+        id: 'wave-w1',
+        priority: 'P0',
+        title: '继续基础功能验证',
+        detail: `规格映射矩阵 ${w1.specClauseCovered}/${w1.specClauseTotal} 条款已覆盖，补齐剩余可验证规格的 happy path`,
+        count: (w1.specClauseTotal ?? 0) - (w1.specClauseCovered ?? 0),
+        prompt: '继续 W1 基础功能：为规格映射矩阵中尚未覆盖的可验证规格条款补充验证 Intent 与 testcase（每条条款至少一条 happy path），用 register_verification_intents 登记（wave=basic），run_simulation 绑定 scenarioIds 执行。'
+      })
+    } else if (w2 && w2.status === 'in-progress') {
+      actions.push({
+        id: 'wave-w2',
+        priority: 'P0',
+        title: '执行下一增补波',
+        detail: w2.topics?.length ? `增补波：${w2.topics.map((t) => t.name).join('、')}` : '继续 W2 增补验证',
+        count: Math.max(0, (w2.scenarioCount ?? 0) - (w2.passedCount ?? 0)),
+        prompt: '继续 W2 增补：按主题波执行剩余场景（wave=corner + topic），同组聚类一次 authoring 多条 testcase，run_simulation 绑定多个 scenarioIds。'
+      })
+    } else if (w3 && w3.status === 'in-progress') {
+      actions.push({
+        id: 'wave-w3',
+        priority: 'P0',
+        title: '推进签核门禁',
+        detail: 'W2 增补已完成，处理覆盖率/Formal/Mutation/残余风险等签核门禁',
+        count: 1,
+        prompt: '推进 W3 签核：执行覆盖率闭合、Formal、Mutation、全量回归，处理残余风险审批，完成后 review_verification_evidence。'
+      })
+    }
+  }
+
   // P0：C5 规格未定义是最大阻断——不澄清就无法裁决
   if (specUndefined.length > 0) {
     actions.push({
@@ -184,10 +226,10 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
       prompt: nextStepPrompt('先澄清规格缺口', specUndefined.map((h) => h.scenarioId), `逐条关联需求、规格与 RTL 对象，澄清被阻场景的判定语义${moduleHint}；能从已批准文档裁决的直接更新追踪，涉及外部可见语义变化的发起用户决策，不要自行猜测。`)
     })
   } else if (highSpecGaps.length > 0) {
-    // 文档级规格缺口（TBD 待定稿），不阻断当前场景执行
+    // 文档级规格缺口（TBD 待定稿），不阻断当前场景执行，优先级低于真实验证工作
     actions.push({
       id: 'clarify-spec-docs',
-      priority: 'P1',
+      priority: 'P2',
       title: '澄清剩余规格缺口（文档级 TBD）',
       detail: `${highSpecGaps.length} 项高置信度规格缺口待定稿`,
       count: highSpecGaps.length,
@@ -393,6 +435,16 @@ export function deriveVerificationSteps(state: GuidanceState | null): Verificati
     ...['环境就绪', '基础回归', '风险场景', '覆盖闭环', 'Formal 补强', '验证签核'].map((label, index) => ({ id: `pending-${index}`, label, status: 'pending' as const, detail: '等待前序步骤' }))
   ]
   const s = normalizeGuidanceState(state)
+  // 波段化（展示层契约）：有 waveProgress 时用 W0-W3 波段视图
+  if (s.waveProgress?.length) {
+    return s.waveProgress.map((wave) => ({
+      id: wave.id,
+      label: wave.label,
+      status: wave.status === 'done' ? 'completed' as const : wave.status === 'in-progress' ? 'running' as const : 'pending' as const,
+      detail: waveDetail(wave)
+    }))
+  }
+  // 旧线性七步（引擎侧未产出 waveProgress 时回退）
   const intents = s.verificationIntents
   const closed = intents.filter((item) => CLOSED_VERIFICATION_STATUSES.has(item.status)).length
   const closure = intents.length ? Math.round(closed * 100 / intents.length) : 0
@@ -410,4 +462,15 @@ export function deriveVerificationSteps(state: GuidanceState | null): Verificati
     { id: 'signoff', label: '验证签核', status: closure === 100 && regressionsPassed && blockingHoles === 0 && formalFailed === 0 ? 'completed' : 'pending', detail: closure === 100 && blockingHoles === 0 ? '等待独立证据审查' : '等待前序闭环' }
   ]
   return steps
+}
+
+/** 波段步骤详情：W1 用规格条款，W2 用主题波，其余用通过数。 */
+function waveDetail(wave: WaveProgressEntry): string {
+  if (wave.id === 'W1' && wave.specClauseTotal !== undefined) {
+    return `${wave.specClauseCovered ?? 0}/${wave.specClauseTotal} 条款通过`
+  }
+  if (wave.id === 'W2' && wave.topics?.length) {
+    return `${wave.topics.length} 波：${wave.topics.map((topic) => `${topic.name} ${topic.passedCount}/${topic.scenarioCount}`).join('、')}`
+  }
+  return `${wave.passedCount}/${wave.scenarioCount} 通过`
 }

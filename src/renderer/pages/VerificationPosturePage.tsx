@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, Circle, FileSearch, Play, RefreshCw, ShieldCheck, Wrench, XCircle } from 'lucide-react'
-import type { ChipProject, VerificationRunStatus } from '@shared/types'
+import type { ChipProject, SpecMapping, VerificationRunStatus, WaveProgressEntry } from '@shared/types'
 import { useChatStore } from '../store/chatStore'
 import { deriveTopRisks, deriveVerificationActions, deriveVerificationSteps } from '../verification-guidance'
 
@@ -37,6 +37,8 @@ interface VerificationState {
   moduleVerificationStrategy?: ModuleVerificationStrategy
   structuralSummary?: { fsm: number; cfgNodes: number; dependencies: number; cones: number; protocols: Array<{ protocol: string; module: string }> }
   analyzer?: { engine: string; version?: string; limitations: string[] }
+  waveProgress?: WaveProgressEntry[]
+  specMapping?: SpecMapping
 }
 interface DiagnosticControl { mode: 'NORMAL_DEBUG' | 'DIAGNOSTIC_ENHANCEMENT' | 'CLOSED'; activeCase: string; recommendation: string; attempts: Array<{ diagnosticLevel: string; passed: boolean; createdAt: string; observations: string[] }> }
 interface ModuleVerificationStrategy {
@@ -58,6 +60,13 @@ interface ModuleVerificationStrategy {
 const CLOSED = new Set(['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'])
 const SPEC_GAP_CATEGORY_LABELS: Record<string, string> = {
   SPEC_WITHOUT_RTL: '有规格无 RTL', RTL_WITHOUT_SPEC: '有 RTL 无规格', SPEC_UNDEFINED: '规格未定义', TEMPORAL_UNDEFINED: '时序语义未定义'
+}
+const CLAUSE_STATUS_LABELS: Record<string, { label: string; cls: string }> = {
+  UNMAPPED: { label: '未映射', cls: 'bg-amber-100 text-amber-700' },
+  MAPPED_UNTESTED: { label: '已映射未测', cls: 'bg-zinc-100 text-zinc-600' },
+  PASSED: { label: '通过', cls: 'bg-emerald-100 text-emerald-700' },
+  FAILED: { label: '失败', cls: 'bg-red-100 text-red-700' },
+  WAIVED: { label: '豁免', cls: 'bg-zinc-100 text-zinc-600' }
 }
 /** 识别被误当为 Spec Gap 的 markdown 版本历史表格行等垃圾数据。 */
 const looksLikeGarbage = (text: string): boolean => /\|\s*\d+\.\d+\s*\|/.test(text) || /版本历史|变更描述|日期|作者/.test(text)
@@ -198,7 +207,7 @@ export function VerificationPosturePage(): React.JSX.Element {
       setState({
         generatedAt: parsed.generatedAt ?? new Date(0).toISOString(), rtlHash: parsed.rtlHash ?? '', scenarioCount: parsed.scenarioCount ?? 0,
         criticalOpen: parsed.criticalOpen ?? [], verificationIntents: parsed.verificationIntents ?? [], specGaps: parsed.specGaps ?? [], coverageHoles: parsed.coverageHoles ?? [],
-        regressions: parsed.regressions ?? [], formalResults: parsed.formalResults ?? [], closureAssessment: parsed.closureAssessment, verificationSpace: parsed.verificationSpace, explorationRound: parsed.explorationRound, explorationHistory: parsed.explorationHistory, multiOracle: parsed.multiOracle, mutationAssessment: parsed.mutationAssessment, residualRiskRegister: parsed.residualRiskRegister, signoffPackage: parsed.signoffPackage, moduleVerificationStrategy: parsed.moduleVerificationStrategy, structuralSummary: parsed.structuralSummary, analyzer: parsed.analyzer
+        regressions: parsed.regressions ?? [], formalResults: parsed.formalResults ?? [], closureAssessment: parsed.closureAssessment, verificationSpace: parsed.verificationSpace, explorationRound: parsed.explorationRound, explorationHistory: parsed.explorationHistory, multiOracle: parsed.multiOracle, mutationAssessment: parsed.mutationAssessment, residualRiskRegister: parsed.residualRiskRegister, signoffPackage: parsed.signoffPackage, moduleVerificationStrategy: parsed.moduleVerificationStrategy, structuralSummary: parsed.structuralSummary, analyzer: parsed.analyzer, waveProgress: parsed.waveProgress, specMapping: parsed.specMapping
       })
       try {
         const riskFile = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/risk-register.json') as { risks?: RiskMarker[] } | null
@@ -245,6 +254,15 @@ export function VerificationPosturePage(): React.JSX.Element {
   const topHoles = useMemo(() => {
     const holes = state?.coverageHoles ?? []
     return [...holes.filter((h) => h.blocking), ...holes.filter((h) => !h.blocking)].slice(0, 20)
+  }, [state])
+  const clauseRows = useMemo(() => {
+    const sm = state?.specMapping
+    if (!sm) return []
+    const rows = sm.clauses?.length
+      ? sm.clauses.map((c) => ({ specId: c.clauseId, clause: c.text, status: c.status }))
+      : (sm.unmappedClause ?? []).map((c) => ({ specId: c.specId, clause: c.clause, status: 'UNMAPPED' as const }))
+    // 未映射置顶，其余按 ID 排序
+    return rows.sort((a, b) => (a.status === 'UNMAPPED' ? -1 : b.status === 'UNMAPPED' ? 1 : a.specId.localeCompare(b.specId)))
   }, [state])
 
   const runAction = useCallback(async (id: string, prompt: string) => {
@@ -305,7 +323,8 @@ export function VerificationPosturePage(): React.JSX.Element {
         {state.closureAssessment && <div className="mt-3 grid grid-cols-2 gap-4 border-t border-black/10 pt-3 text-xs"><div><b className="text-zinc-700">机器签核阻断</b><div className="mt-1 space-y-1 text-zinc-600">{state.closureAssessment.blockers.slice(0, 4).map((item) => <div key={item}>• {item}</div>)}{state.closureAssessment.blockers.length === 0 && <div className="text-emerald-700">没有机器签核阻断项</div>}</div></div><div><b className="text-zinc-700">AIGV 2.0 下一步</b><div className="mt-1 space-y-1 text-zinc-600">{state.closureAssessment.nextActions.slice(0, 4).map((item) => <div key={item}>→ {item}</div>)}</div></div></div>}
       </section>
 
-      <section className="border-b border-zinc-200 bg-white px-5 py-4"><div className="mb-3 flex items-end justify-between"><div><h2 className="text-sm font-semibold">VERIF 交付路径</h2><p className="mt-1 text-xs text-zinc-500">从规划到签核的当前状态与阻断位置</p></div><span className="text-xs text-zinc-400">下一步：{primaryAction?.title ?? '保持证据并完成签核'}</span></div><div className="grid grid-cols-7 gap-2">{steps.map((step, index) => <div key={step.id} className="relative min-w-0 border-t-2 pt-2" style={{ borderColor: step.status === 'completed' ? '#10b981' : step.status === 'blocked' ? '#ef4444' : step.status === 'running' ? '#f59e0b' : '#d4d4d8' }}><div className="flex items-center gap-1.5"><span className={`h-2 w-2 shrink-0 rounded-full ${step.status === 'completed' ? 'bg-emerald-500' : step.status === 'blocked' ? 'bg-red-500' : step.status === 'running' ? 'bg-amber-500' : 'bg-zinc-300'}`} /><strong className="truncate text-xs">{step.label}</strong>{index < steps.length - 1 && <ArrowRight size={12} className="ml-auto text-zinc-300" />}</div><div className="mt-1 truncate text-[10px] text-zinc-500" title={step.detail}>{step.detail}</div></div>)}</div></section>
+      <section className="border-b border-zinc-200 bg-white px-5 py-4"><div className="mb-3 flex items-end justify-between"><div><h2 className="text-sm font-semibold">{state.waveProgress ? '验证波段' : 'VERIF 交付路径'}</h2><p className="mt-1 text-xs text-zinc-500">{state.waveProgress ? 'W0 冒烟 → W1 基础功能 → W2 增补 → W3 签核；完备性看规格映射表，不是风险队列深度' : '从规划到签核的当前状态与阻断位置'}</p></div><span className="text-xs text-zinc-400">下一步：{primaryAction?.title ?? '保持证据并完成签核'}</span></div><div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>{steps.map((step, index) => <div key={step.id} className="relative min-w-0 border-t-2 pt-2" style={{ borderColor: step.status === 'completed' ? '#10b981' : step.status === 'blocked' ? '#ef4444' : step.status === 'running' ? '#f59e0b' : '#d4d4d8' }}><div className="flex items-center gap-1.5"><span className={`h-2 w-2 shrink-0 rounded-full ${step.status === 'completed' ? 'bg-emerald-500' : step.status === 'blocked' ? 'bg-red-500' : step.status === 'running' ? 'bg-amber-500' : 'bg-zinc-300'}`} /><strong className="truncate text-xs">{step.label}</strong>{index < steps.length - 1 && <ArrowRight size={12} className="ml-auto text-zinc-300" />}</div><div className="mt-1 truncate text-[10px] text-zinc-500" title={step.detail}>{step.detail}</div></div>)}</div></section>
+      {state.specMapping && <section className="border-b border-zinc-200 bg-white px-5 py-4"><div className="mb-3 flex items-end justify-between"><div><h2 className="text-sm font-semibold">规格映射矩阵</h2><p className="mt-1 text-xs text-zinc-500">可验证规格条款 → Intent → PASS 证据；未映射为完备性缺口（warning 不阻断）</p></div><span className={`text-sm font-semibold ${state.specMapping.coveredClause === state.specMapping.clauseTotal ? 'text-emerald-700' : 'text-amber-700'}`}>完备性 {state.specMapping.coveredClause}/{state.specMapping.clauseTotal}{typeof state.specMapping.documentaryCount === 'number' ? ` · 文档性 ${state.specMapping.documentaryCount}` : ''}</span></div>{clauseRows.length > 0 ? <div className="max-h-[28rem] overflow-auto border-y border-zinc-200"><table className="w-full table-fixed text-left text-xs"><thead className="sticky top-0 bg-zinc-50 text-zinc-500"><tr><th className="w-24 px-2 py-2 font-medium">状态</th><th className="w-44 px-2 py-2 font-medium">条款 ID</th><th className="px-2 py-2 font-medium">条款内容</th></tr></thead><tbody>{clauseRows.map((clause) => { const badge = CLAUSE_STATUS_LABELS[clause.status] ?? { label: clause.status, cls: 'bg-zinc-100 text-zinc-600' }; return <tr key={clause.specId} className="border-t border-zinc-100 align-top"><td className="px-2 py-1.5"><span className={`inline-block px-1.5 py-0.5 text-[10px] font-semibold ${badge.cls}`}>{badge.label}</span></td><td className="px-2 py-1.5 font-mono text-zinc-700">{clause.specId}</td><td className="px-2 py-1.5 text-zinc-600" title={clause.clause}>{clause.clause}</td></tr>})}</tbody></table></div> : <div className="flex items-center gap-2 px-2 py-4 text-sm text-emerald-700"><CheckCircle2 size={16} />所有可验证规格条款均已有验证映射。</div>}</section>}
 
       {state.verificationSpace && <section className="grid grid-cols-[1.3fr_repeat(6,minmax(80px,0.7fr))] border-b border-zinc-200 bg-zinc-900 px-5 py-3 text-white"><div className="min-w-0"><div className="text-[10px] text-zinc-400">Verification Space Snapshot</div><div className="truncate font-mono text-xs text-emerald-300">{state.verificationSpace.snapshotId}</div><div className="mt-1 text-[10px] text-zinc-400">本轮 {state.explorationRound?.roundId ?? '-'} · 选择 {state.explorationRound?.selectedScenarioIds.length ?? 0} 项 · 预计 {state.explorationRound?.expectedCostSeconds ?? 0}s</div><div className={`mt-1 text-[10px] ${state.explorationHistory?.saturation.status === 'STALLED' ? 'text-red-300' : state.explorationHistory?.saturation.status === 'EMPIRICALLY_SATURATED' ? 'text-emerald-300' : 'text-amber-300'}`}>探索：{state.explorationHistory?.saturation.status ?? '尚未记录'} · {state.explorationHistory?.saturation.explanation ?? '调用下一批验证任务后开始累计真实探索轮次'}</div></div>{[['候选', state.verificationSpace.candidateCount], ['Negative', state.verificationSpace.negativeCount], ['Feature', state.verificationSpace.dimensions.features], ['Boundary', state.verificationSpace.dimensions.boundaries], ['Interaction', state.verificationSpace.dimensions.interactions], ['State', state.verificationSpace.dimensions.systemStates]].map(([label, value]) => <div key={String(label)} className="border-l border-zinc-700 px-3"><div className="text-[10px] text-zinc-400">{label}</div><div className="mt-1 text-lg font-semibold">{value}</div></div>)}</section>}
 

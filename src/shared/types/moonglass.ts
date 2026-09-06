@@ -542,6 +542,32 @@ export interface VerifBatchLoopResult {
   message: string
 }
 
+/** 波段进度条目（W0-W3，展示层契约，引擎侧生产） */
+export interface WaveProgressEntry {
+  id: 'W0' | 'W1' | 'W2' | 'W3'
+  label: string
+  status: 'done' | 'in-progress' | 'pending'
+  scenarioCount: number
+  passedCount: number
+  /** W1 专用：可验证规格条款总数 / 已覆盖数 */
+  specClauseTotal?: number
+  specClauseCovered?: number
+  /** W2 专用：增补波主题列表 */
+  topics?: Array<{ name: string; scenarioCount: number; passedCount: number }>
+}
+
+/** 规格映射完备性矩阵（展示层契约，引擎侧生产） */
+export interface SpecMapping {
+  clauseTotal: number
+  coveredClause: number
+  /** 文档性条款数（不参与完备性分母） */
+  documentaryCount?: number
+  /** 无映射条款（execution-summary 精简形状） */
+  unmappedClause?: Array<{ specId: string; clause: string }>
+  /** 全量条款映射（posture/state 完整形状，状态机 UNMAPPED/MAPPED_UNTESTED/PASSED/FAILED/WAIVED） */
+  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[] }>
+}
+
 /** Pi 当前会话累计用量；不同 Provider 可能省略费用或上下文估算。 */
 export interface AgentSessionStats {  sessionId?: string
   userMessages: number
