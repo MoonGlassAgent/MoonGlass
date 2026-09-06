@@ -7,7 +7,9 @@
  * Provider 配置经权限受限的一次性文件注入桥接扩展。
  *
  * 会话模型：每个项目、每个阶段拥有独立主会话和若干平行会话。阶段推进/回退时
- * 自动切换到目标阶段的独立 JSONL，只继承模型选择，不继承其他阶段的消息历史。
+ * 自动切换到目标阶段的独立 JSONL，只继承模型选择，不继承其他阶段的消息历史；
+ * 切换时正在执行的会话不中断，挂入 backgroundSessions 后台续跑，settle 后
+ * 自动释放进程并通知 UI（切回该阶段时可取回进程或从 JSONL 恢复）。
  * 平行会话拥有独立历史，且只能在所属阶段内创建和切换。
  *
  * TODO(Phase 4): 芯片工具集以 pi 扩展注册；按阶段限制工具白名单
@@ -22,6 +24,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound } from '@moonglass/verification-intelligence-engine'
 import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
+import { PHASE_LABELS } from '@shared/types'
 import { resolveModelContext } from '@shared/model-context'
 import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
@@ -188,6 +191,10 @@ interface PiSession {
   watchdogActionPending: boolean
   /** VERIF 会话上下文占用 ≥60% 提醒的一次性标志（回落后重置） */
   verifContextWarned: boolean
+  /** 阶段切换时被挂入后台继续运行的会话；settle 后自动 dispose 并通知 UI */
+  parkedByPhaseSwitch?: boolean
+  /** 后台运行期间是否出现过 LLM 错误（用于完成/失败通知文案） */
+  parkedRunFailed?: boolean
 }
 
 const TOOL_OUTPUT_MAX = 2000
@@ -203,8 +210,8 @@ export class AgentService implements MoonGlassService {
   private backgroundSessions = new Map<string, Map<string, PiSession>>()
   private piBinPath = ''
   private bridgeDir = ''
-  private emit: (projectId: string, event: AgentStreamEvent) => void = () => {}
-  private readonly pendingStreamEvents = new Map<string, { events: AgentStreamEvent[]; timer: NodeJS.Timeout }>()
+  private emit: (projectId: string, event: AgentStreamEvent, sessionName?: string) => void = () => {}
+  private readonly pendingStreamEvents = new Map<string, { sessionName?: string; events: AgentStreamEvent[]; timer: NodeJS.Timeout }>()
   private projects: ProjectService
   private llm: LlmProviderService
   private modelStore: AgentModelStore
@@ -323,6 +330,41 @@ export class AgentService implements MoonGlassService {
     this.backgroundSessions.delete(projectId)
   }
 
+  /**
+   * 阶段切换挂后台的会话 settle 后的自动处置：摘除后台表并 dispose 进程
+   * （释放资源；JSONL 保留，切回该阶段时 pi 可从文件恢复历史），
+   * 同时向 UI 发送完成/失败通知。
+   */
+  private settleParkedSession(session: PiSession): void {
+    session.parkedByPhaseSwitch = false
+    const projectId = session.projectId
+    const background = this.backgroundSessions.get(projectId)
+    const key = resolve(session.currentSessionFile)
+    if (background?.get(key) === session) {
+      background.delete(key)
+      if (background.size === 0) this.backgroundSessions.delete(projectId)
+    }
+    session.client.dispose()
+    const phaseLabel = PHASE_LABELS[session.phase]
+    this.emit(projectId, {
+      type: 'status',
+      message: session.parkedRunFailed
+        ? `${phaseLabel} 阶段的后台任务已失败；切回该阶段可查看完整记录。`
+        : `${phaseLabel} 阶段的后台任务已完成；切回该阶段可查看结果。`
+    }, session.activeSessionName)
+  }
+
+  /** 切走后仍在后台执行的阶段列表（去重），供阶段栏显示运行标记 */
+  private runningBackgroundPhases(projectId: string): Phase[] {
+    const background = this.backgroundSessions.get(projectId)
+    if (!background) return []
+    const phases: Phase[] = []
+    for (const session of background.values()) {
+      if (session.isStreaming && !phases.includes(session.phase)) phases.push(session.phase)
+    }
+    return phases
+  }
+
   /** 项目目录切换前释放该项目的全部 Pi 进程，后续进入项目时会从新路径重新创建。 */
   prepareProjectMigration(projectId: string): void {
     const pending = this.pendingStreamEvents.get(projectId)
@@ -335,12 +377,17 @@ export class AgentService implements MoonGlassService {
   }
 
   /** 由主进程入口注入事件推送通道（webContents.send） */
-  attachEmitter(emit: (projectId: string, event: AgentStreamEvent) => void): void {
+  attachEmitter(emit: (projectId: string, event: AgentStreamEvent, sessionName?: string) => void): void {
     this.emit = emit
   }
 
-  private queueStreamEvent(projectId: string, event: AgentStreamEvent): void {
-    const pending = this.pendingStreamEvents.get(projectId)
+  private queueStreamEvent(projectId: string, sessionName: string | undefined, event: AgentStreamEvent): void {
+    let pending = this.pendingStreamEvents.get(projectId)
+    // 会话切换（阶段切换/平行会话切换）时先冲刷旧会话的队列，避免跨会话合并 delta
+    if (pending && pending.sessionName !== sessionName) {
+      this.flushStreamEvents(projectId)
+      pending = undefined
+    }
     if (pending) {
       const last = pending.events.at(-1)
       if (event.type === 'text-delta' && last?.type === 'text-delta') {
@@ -354,7 +401,7 @@ export class AgentService implements MoonGlassService {
     }
     const events = [event]
     const timer = setTimeout(() => this.flushStreamEvents(projectId), 50)
-    this.pendingStreamEvents.set(projectId, { events, timer })
+    this.pendingStreamEvents.set(projectId, { sessionName, events, timer })
   }
 
   private flushStreamEvents(projectId: string): void {
@@ -362,7 +409,7 @@ export class AgentService implements MoonGlassService {
     if (!pending) return
     clearTimeout(pending.timer)
     this.pendingStreamEvents.delete(projectId)
-    for (const event of pending.events) this.emit(projectId, event)
+    for (const event of pending.events) this.emit(projectId, event, pending.sessionName)
   }
 
   /** 已启用且配置了 Key、且有可用模型的 Provider */
@@ -630,10 +677,20 @@ argument-hint: "<模块名>"
           session.isStreaming = true
           session.watchdog = new AgentRunWatchdog(session.phase)
           session.watchdogActionPending = false
+          session.parkedRunFailed = false
         }
-        if (event.type === 'agent_settled') session.isStreaming = false
+        if (event.type === 'agent_settled') {
+          session.isStreaming = false
+          // 阶段切换挂后台的会话：settle 后释放进程并通知 UI
+          if (session.parkedByPhaseSwitch) this.settleParkedSession(session)
+        }
+        // 后台运行期间记录 LLM 错误，供 settle 通知区分完成/失败
+        if (session.parkedByPhaseSwitch && event.type === 'message_update') {
+          const delta = (event.assistantMessageEvent ?? {}) as Record<string, unknown>
+          if (delta.type === 'error') session.parkedRunFailed = true
+        }
         this.observeWatchdogEvent(projectId, session, event)
-        if (this.sessions.get(projectId) === session) this.handlePiEvent(projectId, event)
+        if (this.sessions.get(projectId) === session) this.handlePiEvent(session, event)
       },
       onExit: (code, stderrTail) => {
         // 防止旧进程异步退出时误删已重建的新会话
@@ -643,13 +700,21 @@ argument-hint: "<模块名>"
           this.emit(projectId, {
             type: 'error',
             message: `pi 进程退出 (code=${code})${stderrTail ? `\n${stderrTail.slice(-500)}` : ''}`
-          })
+          }, session.activeSessionName)
           return
         }
         const background = this.backgroundSessions.get(projectId)
         if (background?.get(resolve(session.currentSessionFile)) === session) {
           background.delete(resolve(session.currentSessionFile))
           if (background.size === 0) this.backgroundSessions.delete(projectId)
+          // 挂后台的阶段会话进程异常退出：通知 UI（会话 JSONL 已保留，切回后可从文件恢复）
+          if (session.parkedByPhaseSwitch) {
+            session.parkedByPhaseSwitch = false
+            this.emit(projectId, {
+              type: 'status',
+              message: `${PHASE_LABELS[session.phase]} 阶段的后台任务进程已退出 (code=${code})；切回该阶段可查看已保存的会话记录。`
+            }, session.activeSessionName)
+          }
         }
       }
     })
@@ -695,19 +760,33 @@ argument-hint: "<模块名>"
         isStreaming: false,
         modelLabel: '',
         selectedModel: null,
-        providersReady: false
+        providersReady: false,
+        backgroundRunningPhases: this.runningBackgroundPhases(projectId)
       }
     }
 
     const fingerprint = this.providersFingerprint()
     let session = this.sessions.get(projectId)
 
-    // Provider 配置变更或阶段变化都需要重启 pi 进程（两者都只能在进程启动时生效）。
-    // 阶段变化后切换到目标阶段自己的 JSONL，避免需求/架构/失败轨迹污染 RTL 等下游阶段。
-    if (session && (session.fingerprint !== fingerprint || session.phase !== project.currentPhase)) {
+    if (session && session.fingerprint !== fingerprint) {
+      // Provider 配置变更：pi 进程的 Provider 注册表在启动时固化，必须销毁重建（含后台会话）。
       session.client.dispose()
       this.sessions.delete(projectId)
       this.disposeBackgroundSessions(projectId)
+      session = undefined
+    } else if (session && session.phase !== project.currentPhase) {
+      // 阶段切换：切换到目标阶段自己的 JSONL，避免需求/架构/失败轨迹污染 RTL 等下游阶段。
+      // 正在执行的会话不中断，挂入 backgroundSessions 继续运行（settle 后自动处置）；
+      // 空闲会话直接销毁以省资源。后台会话跨阶段保留，不再随切换清空。
+      this.flushStreamEvents(projectId)
+      this.sessions.delete(projectId)
+      if (session.isStreaming) {
+        session.parkedByPhaseSwitch = true
+        session.parkedRunFailed = false
+        this.backgroundFor(projectId).set(resolve(session.currentSessionFile), session)
+      } else {
+        session.client.dispose()
+      }
       session = undefined
     }
 
@@ -719,22 +798,34 @@ argument-hint: "<模块名>"
       const targetSessionFile = rememberedSessionFile && existsSync(rememberedSessionFile)
         ? rememberedSessionFile
         : this.phaseSessionFilePath(projectId, project.currentPhase)
-      session = this.spawnSession(projectId, project.currentPhase, project.name, targetSessionFile)
-      await session.client.waitReady()
+      // 切回的阶段会话进程仍在后台运行：直接取回挂为前台，不重复 spawn
+      const background = this.backgroundSessions.get(projectId)
+      const resumed = background?.get(resolve(targetSessionFile))
+      if (resumed && resumed.phase === project.currentPhase) {
+        background!.delete(resolve(targetSessionFile))
+        if (background!.size === 0) this.backgroundSessions.delete(projectId)
+        resumed.parkedByPhaseSwitch = false
+        this.sessions.set(projectId, resumed)
+        session = resumed
+        this.modelStore.setActiveSession(projectId, session.activeSessionName)
+      } else {
+        session = this.spawnSession(projectId, project.currentPhase, project.name, targetSessionFile)
+        await session.client.waitReady()
 
-      // 阶段会话优先恢复自己的模型；首次进入阶段时继承上一活动会话的模型选择，但不继承历史。
-      const previousSelection = rememberedSessionName
-        ? this.modelStore.get(projectId, rememberedSessionName)
-        : undefined
-      const selection = this.modelStore.get(projectId, session.activeSessionName) ?? previousSelection
-      const initial =
-        selection && providers.some((p) => p.id === selection.providerId && p.models.includes(selection.modelId))
-          ? selection
-          : { providerId: providers[0].id, modelId: providers[0].models[0] }
+        // 阶段会话优先恢复自己的模型；首次进入阶段时继承上一活动会话的模型选择，但不继承历史。
+        const previousSelection = rememberedSessionName
+          ? this.modelStore.get(projectId, rememberedSessionName)
+          : undefined
+        const selection = this.modelStore.get(projectId, session.activeSessionName) ?? previousSelection
+        const initial =
+          selection && providers.some((p) => p.id === selection.providerId && p.models.includes(selection.modelId))
+            ? selection
+            : { providerId: providers[0].id, modelId: providers[0].models[0] }
 
-      await this.setModelInternal(session, initial.providerId, initial.modelId)
-      this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
-      this.modelStore.setActiveSession(projectId, session.activeSessionName)
+        await this.setModelInternal(session, initial.providerId, initial.modelId)
+        this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
+        this.modelStore.setActiveSession(projectId, session.activeSessionName)
+      }
     }
 
     return {
@@ -744,7 +835,8 @@ argument-hint: "<模块名>"
       isStreaming: session.isStreaming,
       modelLabel: session.modelLabel,
       selectedModel: session.selectedModel,
-      providersReady: true
+      providersReady: true,
+      backgroundRunningPhases: this.runningBackgroundPhases(projectId)
     }
   }
 
@@ -783,7 +875,7 @@ argument-hint: "<模块名>"
       this.emit(projectId, {
         type: 'status',
         message: `模型第 ${attempt} 轮因长度限制截断且未执行工具，MoonGlass 正在要求其跳过重复规划并立即落盘。`
-      })
+      }, session.activeSessionName)
       message = `[MoonGlass 执行恢复 ${attempt}/2]\n` +
         '上一轮只输出了思考过程，并在生成任何工具调用前因长度限制截断。' +
         '禁止重复规划、复述模块清单或一次性设计全部实现。现在立即调用一个实际工具完成最小可验证动作：' +
@@ -899,7 +991,8 @@ argument-hint: "<模块名>"
       isStreaming: false,
       modelLabel: replacement.modelLabel,
       selectedModel: replacement.selectedModel,
-      providersReady: true
+      providersReady: true,
+      backgroundRunningPhases: this.runningBackgroundPhases(projectId)
     }
   }
 
@@ -1147,7 +1240,8 @@ argument-hint: "<模块名>"
         isStreaming: current.isStreaming,
         modelLabel: current.modelLabel,
         selectedModel: current.selectedModel,
-        providersReady: true
+        providersReady: true,
+        backgroundRunningPhases: this.runningBackgroundPhases(projectId)
       }
     }
 
@@ -1194,7 +1288,8 @@ argument-hint: "<模块名>"
       isStreaming: session.isStreaming,
       modelLabel: session.modelLabel,
       selectedModel: session.selectedModel,
-      providersReady: true
+      providersReady: true,
+      backgroundRunningPhases: this.runningBackgroundPhases(projectId)
     }
   }
 
@@ -1328,7 +1423,7 @@ argument-hint: "<模块名>"
       await this.setModelInternal(session, selection.providerId, selection.modelId)
       this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
 
-      this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 已派发到平行会话 ${sessionName}：${ids.join('、')}` })
+      this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 已派发到平行会话 ${sessionName}：${ids.join('、')}` }, sessionName)
       const run = await this.runBatchToSettled(session, promptText, options?.timeoutMs ?? 60 * 60_000, batchIndex)
 
       // 完成判定（决策 4）：绑定工具登记证据，不读会话文本
@@ -1341,11 +1436,11 @@ argument-hint: "<模块名>"
       if (!verdict.complete) breakers.push(`证据缺失：${verdict.reasons.join('；')}`)
       if (isDiagnosticStalled(diagnosticBefore, diagnosticAfter)) breakers.push('diagnostic-control 进入 DIAGNOSTIC_ENHANCEMENT 且本批诊断等级无进展')
       if (breakers.length === 0) {
-        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 正常完成（证据齐）：${ids.join('、')}` })
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 正常完成（证据齐）：${ids.join('、')}` }, sessionName)
         result = finish({ status: 'completed', verdict, circuitBreaker: null, errorMessage: null }, sessionName)
       } else {
         const circuitBreaker = breakers.join('；')
-        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 熔断：${circuitBreaker}` })
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 熔断：${circuitBreaker}` }, sessionName)
         result = finish({ status: 'circuit-broken', verdict, circuitBreaker, errorMessage: run.errorMessage }, sessionName)
       }
     } catch (error) {
@@ -1490,7 +1585,7 @@ argument-hint: "<模块名>"
             this.emit(session.projectId, {
               type: 'status',
               message: `批次 ${batchIndex ?? '?'}：run_simulation 结束（${outcome}${ids ? `，scenarioIds=${ids}` : ''}）`
-            })
+            }, session.activeSessionName)
           }
         }
         const action: WatchdogAction | null = event.type === 'tool_execution_start'
@@ -1645,7 +1740,8 @@ argument-hint: "<模块名>"
       isStreaming: false,
       modelLabel: session.modelLabel,
       selectedModel: session.selectedModel,
-      providersReady: true
+      providersReady: true,
+      backgroundRunningPhases: this.runningBackgroundPhases(projectId)
     }
   }
 
@@ -1725,7 +1821,7 @@ argument-hint: "<模块名>"
             this.emit(projectId, {
               type: 'status',
               message: `VERIF 会话上下文占用已达 ${Math.round(percent)}%；超过 80% 将自动压缩。建议优先读 execution-summary.json，避免整读大 JSON。`
-            })
+            }, session.activeSessionName)
           } else if (percent < 50) {
             session.verifContextWarned = false
           }
@@ -1762,7 +1858,7 @@ argument-hint: "<模块名>"
       this.emit(projectId, {
         type: 'error',
         message: `MoonGlass 已触发 Agent 循环熔断：${action.reason}\n${action.instruction}`
-      })
+      }, session.activeSessionName)
       void session.client.command({ type: 'abort' }, 5_000)
         .catch((error) => console.warn('[agent-service] Watchdog 中止命令失败', error))
         .finally(() => {
@@ -1775,7 +1871,7 @@ argument-hint: "<模块名>"
     this.emit(projectId, {
       type: 'status',
       message: `MoonGlass 检测到执行正在退化：${action.reason}，已要求 Agent 切换收敛策略。`
-    })
+    }, session.activeSessionName)
     void session.client.command({
       type: 'prompt',
       message: `[MoonGlass Watchdog]\n原因：${action.reason}\n恢复要求：${action.instruction}`,
@@ -1787,23 +1883,25 @@ argument-hint: "<模块名>"
 
   // ==================== pi 事件 → AgentStreamEvent ====================
 
-  private handlePiEvent(projectId: string, event: Record<string, unknown>): void {
+  private handlePiEvent(session: PiSession, event: Record<string, unknown>): void {
+    const projectId = session.projectId
+    const sessionName = session.activeSessionName
     const type = event.type as string
     switch (type) {
       case 'agent_start':
         this.flushStreamEvents(projectId)
-        this.emit(projectId, { type: 'agent-start' })
+        this.emit(projectId, { type: 'agent-start' }, sessionName)
         break
       case 'agent_settled':
         this.flushStreamEvents(projectId)
-        this.emit(projectId, { type: 'agent-settled' })
+        this.emit(projectId, { type: 'agent-settled' }, sessionName)
         break
       case 'message_update': {
         const delta = (event.assistantMessageEvent ?? {}) as Record<string, unknown>
         if (delta.type === 'text_delta') {
-          this.queueStreamEvent(projectId, { type: 'text-delta', delta: String(delta.delta ?? '') })
+          this.queueStreamEvent(projectId, sessionName, { type: 'text-delta', delta: String(delta.delta ?? '') })
         } else if (delta.type === 'thinking_delta') {
-          this.queueStreamEvent(projectId, { type: 'thinking-delta', delta: String(delta.delta ?? '') })
+          this.queueStreamEvent(projectId, sessionName, { type: 'thinking-delta', delta: String(delta.delta ?? '') })
         } else if (delta.type === 'error') {
           // Pi 0.84+ 的 RPC 只发送增量事件，不再携带累计 message/partial。
           // 保留旧字段回退，以兼容历史测试和旧版事件录制。
@@ -1811,7 +1909,7 @@ argument-hint: "<模块名>"
           this.emit(projectId, {
             type: 'error',
             message: String(delta.errorMessage ?? delta.error ?? partial.errorMessage ?? 'LLM 请求失败')
-          })
+          }, sessionName)
         }
         break
       }
@@ -1822,7 +1920,7 @@ argument-hint: "<模块名>"
           toolName: String(event.toolName ?? ''),
           toolCallId: String(event.toolCallId ?? ''),
           input: this.formatToolInput(event.args ?? event.input ?? event.arguments)
-        })
+        }, sessionName)
         break
       case 'tool_execution_end': {
         this.flushStreamEvents(projectId)
@@ -1835,7 +1933,7 @@ argument-hint: "<模块名>"
           isError: Boolean(event.isError),
           output: output.length > TOOL_OUTPUT_MAX ? output.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : output,
           decisionRequest: parseDecisionRequest(output)
-        })
+        }, sessionName)
         break
       }
       case 'tool_execution_update': {
@@ -1847,12 +1945,12 @@ argument-hint: "<模块名>"
           toolName: String(event.toolName ?? ''),
           toolCallId: String(event.toolCallId ?? ''),
           text: text.length > TOOL_OUTPUT_MAX ? text.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : text
-        })
+        }, sessionName)
         break
       }
       case 'auto_retry_end':
         if (event.success === false) {
-          this.emit(projectId, { type: 'error', message: String(event.finalError ?? '自动重试失败') })
+          this.emit(projectId, { type: 'error', message: String(event.finalError ?? '自动重试失败') }, sessionName)
         }
         break
       default:

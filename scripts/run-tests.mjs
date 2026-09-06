@@ -4,6 +4,7 @@ const suites = {
   core: [
     'scripts/rtl-engine-smoke.mjs',
     'scripts/agent-interaction-smoke.mjs',
+    'scripts/agent-event-routing-smoke.mjs',
     'scripts/agent-run-watchdog-smoke.mjs',
     'scripts/sram-generator-smoke.mjs',
     'scripts/doc-repository-validator-smoke.mjs',

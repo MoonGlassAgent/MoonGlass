@@ -294,6 +294,8 @@ export function WorkspacePage(): React.JSX.Element {
   const [viewerFontSize, setViewerFontSize] = useState(() => Number(localStorage.getItem('moonglass:viewer-font-size')) || 13)
   const [markdownPreview, setMarkdownPreview] = useState(true)
   const agentStreaming = useChatStore((s) => s.streaming)
+  // 切走后仍在后台执行的阶段（阶段栏据此显示运行标记）
+  const backgroundRunningPhases = useChatStore((s) => s.sessionInfo?.backgroundRunningPhases)
   const sendAgentPrompt = useChatStore((s) => s.sendAndWait)
   const ensureAgent = useChatStore((s) => s.ensure)
   const abortAgent = useChatStore((s) => s.abort)
@@ -484,11 +486,10 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handleEnterPhase = async (to: Phase): Promise<void> => {
     if (!project || project.currentPhase === to) return
-    // 切换阶段会重建 Agent 会话进程；托管或 Agent 执行中需用户确认，避免误双击中断执行
+    // 切换阶段不再中断正在运行的 Agent（转后台续跑）；托管中仍需确认，
+    // 因为托管流程依赖阶段推进顺序，手动切换会打乱编排
     if (managedRunning) {
-      if (!window.confirm(`一键托管正在进行中。进入“${PHASE_LABELS[to]}”将中断当前阶段的 Agent 执行，确认继续？`)) return
-    } else if (useChatStore.getState().streaming) {
-      if (!window.confirm(`当前阶段的 Agent 正在执行。进入“${PHASE_LABELS[to]}”将中断它，确认继续？`)) return
+      if (!window.confirm('一键托管进行中，托管流程依赖阶段推进顺序，手动切换阶段可能打乱编排。确认切换？')) return
     }
     try {
       const entered = await window.moonglass.phase.enter(projectId, to)
@@ -1099,6 +1100,7 @@ export function WorkspacePage(): React.JSX.Element {
           onFixGateIssues={(phase, results) => void handleFixGateIssues(phase, results)}
           onRespondChange={(phase) => void handleRespondChange(phase)}
           onResetPhase={(phase, mode) => void handleResetPhase(phase, mode)}
+          backgroundRunningPhases={backgroundRunningPhases}
           gate={gate}
         />
 

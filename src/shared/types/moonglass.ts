@@ -479,6 +479,8 @@ export type AgentStreamEvent =
 /** agent:event 推送负载 */
 export interface AgentEventPayload {
   projectId: string
+  /** 事件来源会话的逻辑名（如 phase-rtl）；渲染层据此把流式事件路由到对应会话的聊天面板 */
+  sessionName?: string
   event: AgentStreamEvent
 }
 
@@ -495,6 +497,8 @@ export interface AgentSessionInfo {
   selectedModel: { providerId: string; modelId: string } | null
   /** 是否存在已启用且配置了 API Key 的 Provider */
   providersReady: boolean
+  /** 切走后仍在后台执行的阶段列表（阶段栏据此显示运行标记） */
+  backgroundRunningPhases?: Phase[]
 }
 
 /** VERIF 批次完成判定（上下文治理第 3 批，决策 4：绑定工具登记证据，不读会话文本） */

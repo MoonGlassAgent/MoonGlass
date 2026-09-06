@@ -49,6 +49,8 @@ interface PhaseBoardProps {
   onFixGateIssues?: (phase: Phase, results: GateCheckResult[]) => void
   onRespondChange?: (phase: Phase) => void
   onResetPhase?: (phase: Phase, mode: 'archive' | 'purge') => void
+  /** 切走后仍有 Agent 在后台执行的阶段（显示运行标记） */
+  backgroundRunningPhases?: Phase[]
   /** 最近一次推进尝试的门禁结果（含被阻断的情况） */
   gate?: GatePanelData | null
 }
@@ -63,6 +65,7 @@ export function PhaseBoard({
   onFixGateIssues,
   onRespondChange,
   onResetPhase,
+  backgroundRunningPhases,
   gate
 }: PhaseBoardProps): React.JSX.Element {
   const currentIdx = PHASE_ORDER.indexOf(project.currentPhase)
@@ -94,6 +97,13 @@ export function PhaseBoard({
                 <span className={`h-2 w-2 rounded-full ${changePending ? 'bg-yellow-500' : STATUS_DOTS[status]}`} />
                 <span className="font-medium">{phase}</span>
                 <span className="text-xs opacity-70">{PHASE_LABELS[phase]}</span>
+                {backgroundRunningPhases?.includes(phase) && (
+                  <span
+                    title={`${PHASE_LABELS[phase]}阶段的 Agent 仍在后台运行，双击进入该阶段可查看进度`}
+                    aria-label={`${PHASE_LABELS[phase]}后台运行中`}
+                    className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500"
+                  />
+                )}
                 {changePending && changeNotice && (
                   <button
                     type="button"

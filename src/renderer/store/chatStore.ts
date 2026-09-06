@@ -8,6 +8,7 @@
 import { create } from 'zustand'
 import type { AgentEventPayload, AgentSessionInfo, AgentStreamEvent, AgentUiMessage } from '@shared/types'
 import { parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
+import { isBackgroundSessionNotice, shouldApplyAgentEvent } from '@shared/agent-event-routing'
 
 interface ChatState {
   projectId: string | null
@@ -51,9 +52,19 @@ const appendStream = (current: string, delta: string): string => {
 
 export const useChatStore = create<ChatState>((set, get) => {
   const handleEvent = (payload: AgentEventPayload): void => {
-    const { projectId } = get()
+    const { projectId, sessionInfo } = get()
     if (payload.projectId !== projectId) return
+    // 事件按会话路由：只有当前活动会话的流式事件进入聊天面板；
+    // 切走后仍在后台运行的会话（阶段切换挂后台、VERIF 批次）只放行 status 通知。
+    if (!shouldApplyAgentEvent(payload, sessionInfo?.sessionName)) return
     applyEvent(set, payload.event)
+    // 后台会话的 status 通知（如"XX 阶段的后台任务已完成"）：
+    // 顺带刷新会话信息，让阶段栏的后台运行标记及时消失
+    if (isBackgroundSessionNotice(payload, sessionInfo?.sessionName)) {
+      window.moonglass.agent.ensureSession(projectId)
+        .then((info) => { if (get().projectId === projectId) set({ sessionInfo: info }) })
+        .catch(() => undefined)
+    }
   }
 
   const dispatchPrompt = async (text: string, propagateError: boolean): Promise<void> => {

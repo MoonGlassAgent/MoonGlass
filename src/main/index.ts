@@ -76,8 +76,8 @@ function createMainWindow(): BrowserWindow {
     if (unresponsiveRecovery) clearTimeout(unresponsiveRecovery)
     unresponsiveRecovery = undefined
   })
-  services.agent.attachEmitter((projectId, event) => {
-    if (!wc.isDestroyed()) wc.send(IPC.Agent.Event, { projectId, event })
+  services.agent.attachEmitter((projectId, event, sessionName) => {
+    if (!wc.isDestroyed()) wc.send(IPC.Agent.Event, { projectId, event, sessionName })
   })
 
   win.on('ready-to-show', () => { rendererRecoveryCount = 0; win.show() })
