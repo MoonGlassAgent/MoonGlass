@@ -25,7 +25,7 @@ import { buildSystemPrompt } from '@moonglass/prompts'
 import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound } from '@moonglass/verification-intelligence-engine'
 import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
 import { PHASE_LABELS } from '@shared/types'
-import { resolveModelContext } from '@shared/model-context'
+import { FALLBACK_MODEL_CONTEXT, resolveModelContext } from '@shared/model-context'
 import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import type { ProjectService } from './ProjectService.ts'
@@ -1800,7 +1800,12 @@ argument-hint: "<模块名>"
     if (!session) return null
     try {
       const stats = await session.client.command<AgentSessionStats>({ type: 'get_session_stats' }, 5_000)
-      const metadata = session.selectedModel ? resolveModelContext(session.selectedModel.modelId) : null
+      // 模型不在上下文登记表时，回退到兼容值（与 pi-bridge 注入给子进程的
+      // FALLBACK_MODEL_CONTEXT 一致）。否则 contextUsage 被删除后，UI 会退化为
+      // 显示“会话累计 Token”，把 prompt 缓存命中的累计量（可高达数百万）误当作上下文大小。
+      const metadata = session.selectedModel
+        ? resolveModelContext(session.selectedModel.modelId) ?? FALLBACK_MODEL_CONTEXT
+        : null
       if (!metadata) {
         delete stats.contextUsage
         stats.contextWindowStatus = 'unknown'

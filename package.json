@@ -25,7 +25,7 @@
     "smoke:sram-generator": "node scripts/sram-generator-smoke.mjs",
     "smoke:project-import": "node scripts/project-import-analyzer-smoke.mjs",
     "smoke:axi-lite-timer": "node scripts/axi-lite-timer-smoke.mjs",
-    "test": "node scripts/check-skills.mjs && node scripts/run-tests.mjs core",
+    "test": "node scripts/version-consistency-check.mjs && node scripts/check-skills.mjs && node scripts/run-tests.mjs core",
     "test:integration": "node scripts/run-tests.mjs integration",
     "stage:aigv-runtime": "node scripts/stage-aigv-runtime.mjs"
   },

@@ -2,6 +2,11 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-06：界面版本号同步为 v0.8.6
+
+- 将共享 UI 版本常量由 `0.8.0` 更新为 `0.8.6`，左下角和关于页面现在显示完整版本号。
+- 新增版本一致性检查，测试时自动核对 `package.json` 与 `APP_INFO.version`，防止后续版本升级遗漏界面版本。
+
 ## 2026-09-01：验证态势数据流收敛与下一步引导修复
 
 - 新增 `record_scenario_adjudication` 工具（引擎函数 + pi 工具）：场景裁决（规格澄清/豁免/验证）只写 `scenario-registry.json`（单一事实源）并自动重建态势快照（RTL 未变时 0.3 秒），页面刷新即见；提示词同步约束“Agent 禁止用 write/edit 手改 `verification/intelligence/` 下的机器 JSON，裁决必须走工具”。
