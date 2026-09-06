@@ -33,6 +33,49 @@ function regexEscape(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
+/**
+ * 修复 Yosys 在中文路径下输出的 src 乱码。
+ * Yosys write_json 把非 ASCII 路径字节按系统代码页（GBK）读取后，以有符号
+ * char 生成 "\uFFFFFFxx" 形式的非法 JSON 转义；JSON 解析后残留
+ * U+FFFF + "FFxx" 文本序列。将其还原为字节序列后按 GBK 重新解码。
+ * 合法的中文路径（U+4E00 等 CJK 字符）不含该序列，不会误伤。
+ */
+function repairMojibakePath(value: string): string {
+  if (!value.includes('\uFFFF')) return value
+  const isHex = (char: string | undefined): boolean =>
+    char !== undefined && /[0-9A-Fa-f]/.test(char)
+  let result = ''
+  let bytes: number[] = []
+  const flush = (): void => {
+    if (bytes.length === 0) return
+    try {
+      result += new TextDecoder('gbk').decode(new Uint8Array(bytes))
+    } catch {
+      result += String.fromCharCode(...bytes.map((byte) => 0xFF00 | byte))
+    }
+    bytes = []
+  }
+  let index = 0
+  while (index < value.length) {
+    const isEscape =
+      value[index] === '\uFFFF' &&
+      value[index + 1] === 'F' &&
+      value[index + 2] === 'F' &&
+      isHex(value[index + 3]) &&
+      isHex(value[index + 4])
+    if (isEscape) {
+      bytes.push(parseInt(value.slice(index + 3, index + 5), 16))
+      index += 5
+    } else {
+      flush()
+      result += value[index]
+      index += 1
+    }
+  }
+  flush()
+  return result
+}
+
 function readManifest(rtlDir: string): DesignManifest {
   const path = join(rtlDir, 'design.json')
   if (!existsSync(path)) return {}
@@ -203,7 +246,7 @@ export class DesignBrowserService implements MoonGlassService {
 
   readSource(workspaceDir: string, source: string): DesignSourceContent {
     const workspace = resolve(workspaceDir)
-    const candidates = source.split('|').map((item) => item.trim()).filter(Boolean)
+    const candidates = source.split('|').map((item) => repairMojibakePath(item.trim())).filter(Boolean)
     const missing: string[] = []
     for (const candidate of candidates) {
       const match = /^(.*?):(\d+)(?:\.\d+)?(?:-\d+(?:\.\d+)?)?$/.exec(candidate)

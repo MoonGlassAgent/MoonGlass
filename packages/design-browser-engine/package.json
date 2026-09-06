@@ -6,7 +6,9 @@
   "main": "src/index.ts",
   "types": "src/index.ts",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./types": "./src/types.ts",
+    "./trace": "./src/trace.ts"
   },
   "scripts": {
     "typecheck": "tsc --noEmit -p tsconfig.json"
