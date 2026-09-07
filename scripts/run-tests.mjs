@@ -18,7 +18,8 @@ const suites = {
     'scripts/verif-batch-verdict-smoke.mjs',
     'scripts/session-transcript-smoke.mjs',
     'scripts/batch-prompt-smoke.mjs',
-    'scripts/formal-smoke.mjs'
+    'scripts/formal-smoke.mjs',
+    'scripts/llm-error-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

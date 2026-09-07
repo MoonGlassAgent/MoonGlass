@@ -26,6 +26,7 @@ import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound
 import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
 import { PHASE_LABELS } from '@shared/types'
 import { FALLBACK_MODEL_CONTEXT, resolveModelContext } from '@shared/model-context'
+import { humanizeLlmError, isStalled, LLM_STALL_THRESHOLD_MS, switchModelWithProbe } from '@shared/llm-resilience'
 import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import type { ProjectService } from './ProjectService.ts'
@@ -191,6 +192,14 @@ interface PiSession {
   watchdogActionPending: boolean
   /** VERIF 会话上下文占用 ≥60% 提醒的一次性标志（回落后重置） */
   verifContextWarned: boolean
+  /** 最近一次 pi 事件时间戳（停滞检测数据源，事件入口统一刷新，含后台会话） */
+  lastEventAt: number
+  /** 在飞工具计数（tool_execution_start/end 维护；长耗时工具期间不误判停滞） */
+  toolsInFlight: number
+  /** 模型停滞检测计时器（agent_start 起，agent_settled/进程退出止） */
+  stallTimer: NodeJS.Timeout | null
+  /** 本回合是否已发出过停滞警告（agent_start 时重置，同一回合只警告一次） */
+  stallWarned: boolean
   /** 阶段切换时被挂入后台继续运行的会话；settle 后自动 dispose 并通知 UI */
   parkedByPhaseSwitch?: boolean
   /** 后台运行期间是否出现过 LLM 错误（用于完成/失败通知文案） */
@@ -199,6 +208,8 @@ interface PiSession {
 
 const TOOL_OUTPUT_MAX = 2000
 const UI_HISTORY_MAX = 320
+/** 停滞检测轮询粒度（30s 足够；阈值见 LLM_STALL_THRESHOLD_MS） */
+const STALL_CHECK_INTERVAL_MS = 30_000
 /** 会话目录中保留的最近已完成 VERIF 批次会话数；超出的更老批次才归档进 archive/ */
 const RETAINED_BATCH_SESSIONS = 5
 
@@ -306,9 +317,15 @@ export class AgentService implements MoonGlassService {
   stop(): void {
     for (const pending of this.pendingStreamEvents.values()) clearTimeout(pending.timer)
     this.pendingStreamEvents.clear()
-    for (const session of this.sessions.values()) session.client.dispose()
+    for (const session of this.sessions.values()) {
+      this.stopStallTimer(session)
+      session.client.dispose()
+    }
     for (const projectSessions of this.backgroundSessions.values()) {
-      for (const session of projectSessions.values()) session.client.dispose()
+      for (const session of projectSessions.values()) {
+        this.stopStallTimer(session)
+        session.client.dispose()
+      }
     }
     this.sessions.clear()
     this.backgroundSessions.clear()
@@ -673,14 +690,21 @@ argument-hint: "<模块名>"
         ELECTRON_RUN_AS_NODE: '1'
       },
       onEvent: (event) => {
+        // 停滞检测数据源：所有事件（前台/后台/批次）都经此入口，统一刷新
+        session.lastEventAt = Date.now()
+        if (event.type === 'tool_execution_start') session.toolsInFlight += 1
+        else if (event.type === 'tool_execution_end') session.toolsInFlight = Math.max(0, session.toolsInFlight - 1)
+
         if (event.type === 'agent_start') {
           session.isStreaming = true
           session.watchdog = new AgentRunWatchdog(session.phase)
           session.watchdogActionPending = false
           session.parkedRunFailed = false
+          this.startStallTimer(session)
         }
         if (event.type === 'agent_settled') {
           session.isStreaming = false
+          this.stopStallTimer(session)
           // 阶段切换挂后台的会话：settle 后释放进程并通知 UI
           if (session.parkedByPhaseSwitch) this.settleParkedSession(session)
         }
@@ -693,6 +717,7 @@ argument-hint: "<模块名>"
         if (this.sessions.get(projectId) === session) this.handlePiEvent(session, event)
       },
       onExit: (code, stderrTail) => {
+        this.stopStallTimer(session)
         // 防止旧进程异步退出时误删已重建的新会话
         const current = this.sessions.get(projectId)
         if (current === session) {
@@ -737,7 +762,11 @@ argument-hint: "<模块名>"
       isStreaming: false,
       watchdog: new AgentRunWatchdog(phase),
       watchdogActionPending: false,
-      verifContextWarned: false
+      verifContextWarned: false,
+      lastEventAt: Date.now(),
+      toolsInFlight: 0,
+      stallTimer: null,
+      stallWarned: false
     }
     this.sessions.set(projectId, session)
     return session
@@ -863,7 +892,7 @@ argument-hint: "<模块名>"
       ])
       if (terminalEvent.type === 'message_update') {
         const delta = (terminalEvent.assistantMessageEvent ?? {}) as Record<string, unknown>
-        throw new Error(String(delta.errorMessage ?? delta.error ?? 'Agent 执行失败'))
+        throw new Error(humanizeLlmError(String(delta.errorMessage ?? delta.error ?? 'Agent 执行失败')))
       }
       if (!this.lastAssistantTruncatedWithoutTool(session.currentSessionFile)) return
       if (attempt === 3) {
@@ -1622,10 +1651,10 @@ argument-hint: "<模块名>"
       ])
       if (terminalEvent.type === 'message_update') {
         const delta = (terminalEvent.assistantMessageEvent ?? {}) as Record<string, unknown>
-        errorMessage = String(delta.errorMessage ?? delta.error ?? 'Agent 执行失败')
+        errorMessage = humanizeLlmError(String(delta.errorMessage ?? delta.error ?? 'Agent 执行失败'))
       }
     } catch (error) {
-      errorMessage = error instanceof Error ? error.message : String(error)
+      errorMessage = humanizeLlmError(error instanceof Error ? error.message : String(error))
     } finally {
       finished = true
       await watcher
@@ -1731,7 +1760,22 @@ argument-hint: "<模块名>"
   async setModel(projectId: string, providerId: string, modelId: string): Promise<AgentSessionInfo> {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
-    await this.setModelInternal(session, providerId, modelId)
+    // 执行中切模型有死锁嫌疑（pi set_model 在流式期间行为未定义），直接拒绝
+    if (session.isStreaming) throw new Error('Agent 正在执行中，请等待完成或先停止再切换模型')
+    const previous = session.selectedModel
+    try {
+      // 切换后立即探活（真实 LLM 调用，消耗 1-2 token）：欠费 402 等只有真实调用才暴露。
+      // 探活失败自动回滚到原模型；错误经 humanizeLlmError 语义化后抛给 UI，下拉回弹。
+      await switchModelWithProbe({
+        client: session.client,
+        applySwitch: (p, m) => this.setModelInternal(session, p, m),
+        providerId,
+        modelId,
+        previous
+      })
+    } catch (error) {
+      throw new Error(humanizeLlmError(error instanceof Error ? error.message : String(error)))
+    }
     this.modelStore.set(projectId, session.activeSessionName, providerId, modelId)
     return {
       projectId,
@@ -1839,6 +1883,40 @@ argument-hint: "<模块名>"
     }
   }
 
+  /**
+   * 模型停滞检测：agent_start 起以 30s 粒度轮询。命中「流式中 && 无在飞工具 &&
+   * 超过阈值无任何事件」时向 UI 发 status 警告——只警告不自动中止（长推理模型可能合法地慢）。
+   * 计时器挂在会话对象上（非项目），前台/后台/批次会话统一覆盖；agent_settled、
+   * 进程退出、服务 stop 时清理，防止泄漏。
+   */
+  private startStallTimer(session: PiSession): void {
+    this.stopStallTimer(session)
+    session.stallWarned = false
+    session.stallTimer = setInterval(() => {
+      if (!session.isStreaming) {
+        this.stopStallTimer(session)
+        return
+      }
+      if (
+        !session.stallWarned &&
+        isStalled(session.isStreaming, session.toolsInFlight, session.lastEventAt, Date.now())
+      ) {
+        session.stallWarned = true
+        this.emit(session.projectId, {
+          type: 'status',
+          message: `模型服务超过 ${LLM_STALL_THRESHOLD_MS / 1000} 秒无任何响应，可能已挂起；可点击停止按钮中止`
+        }, session.activeSessionName)
+      }
+    }, STALL_CHECK_INTERVAL_MS)
+  }
+
+  private stopStallTimer(session: PiSession): void {
+    if (session.stallTimer) {
+      clearInterval(session.stallTimer)
+      session.stallTimer = null
+    }
+  }
+
   private observeWatchdogEvent(
     projectId: string,
     session: PiSession,
@@ -1913,7 +1991,7 @@ argument-hint: "<模块名>"
           const partial = (delta.partial ?? event.message ?? {}) as Record<string, unknown>
           this.emit(projectId, {
             type: 'error',
-            message: String(delta.errorMessage ?? delta.error ?? partial.errorMessage ?? 'LLM 请求失败')
+            message: humanizeLlmError(String(delta.errorMessage ?? delta.error ?? partial.errorMessage ?? 'LLM 请求失败'))
           }, sessionName)
         }
         break
@@ -1955,7 +2033,7 @@ argument-hint: "<模块名>"
       }
       case 'auto_retry_end':
         if (event.success === false) {
-          this.emit(projectId, { type: 'error', message: String(event.finalError ?? '自动重试失败') }, sessionName)
+          this.emit(projectId, { type: 'error', message: humanizeLlmError(String(event.finalError ?? '自动重试失败')) }, sessionName)
         }
         break
       default:
