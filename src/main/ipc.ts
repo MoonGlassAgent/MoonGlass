@@ -263,6 +263,10 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Agent.ResetSession, (_e, projectId: string, sessionName?: string) =>
     agent.resetSession(projectId, sessionName)
   )
+  // 任务粒度会话（M1）：新任务会话成为前台，血缘经 parentSession 记录
+  ipcMain.handle(IPC.Agent.StartTask, (_e, projectId: string, input?: { title?: string; firstPrompt?: string }) =>
+    agent.startTask(projectId, input)
+  )
   ipcMain.handle(IPC.Agent.CompactSession, (_e, projectId: string) => agent.compactSession(projectId))
   ipcMain.handle(IPC.Agent.RestartSessionFresh, (_e, projectId: string) => agent.restartSessionFresh(projectId))
 

@@ -85,6 +85,8 @@ export const IPC = {
     GetSessionMessages: 'agent:get-session-messages',
     GetSessionStats: 'agent:get-session-stats',
     ResetSession: 'agent:reset-session',
+    /** 开启任务粒度会话（M1）：新会话零历史继承，会话头带 parentSession 血缘 */
+    StartTask: 'agent:start-task',
     CompactSession: 'agent:compact-session',
     RestartSessionFresh: 'agent:restart-session-fresh',
     /** 主进程 → 渲染进程的事件推送通道（send，非 invoke） */
@@ -199,6 +201,9 @@ export interface MoonGlassApi {
     getSessionStats(projectId: string): Promise<AgentSessionStats | null>
     /** 创建平行会话（不关闭当前会话）。name 可选，默认自动生成 review-<时间戳> */
     resetSession(projectId: string, sessionName?: string): Promise<AgentSessionInfo>
+    /** 开启任务粒度会话（M1）：成为前台会话，零历史继承，血缘指向前会话；
+     *  title 为任务标题（生成 slug 与展示标签），firstPrompt 用于无标题时的 slug 兜底 */
+    startTask(projectId: string, input?: { title?: string; firstPrompt?: string }): Promise<AgentSessionInfo>
     /** 使用 Pi 原生 compact 压缩当前上下文，保留关键摘要和会话文件。 */
     compactSession(projectId: string): Promise<AgentSessionInfo>
     /** 归档当前历史并以空白 session 重启；保留标签和模型，不携带旧上下文。 */

@@ -84,6 +84,8 @@ const api: MoonGlassApi = {
       ipcRenderer.invoke(IPC.Agent.GetSessionMessages, projectId, sessionName),
     getSessionStats: (projectId: string) => ipcRenderer.invoke(IPC.Agent.GetSessionStats, projectId),
     resetSession: (projectId: string, sessionName?: string) => ipcRenderer.invoke(IPC.Agent.ResetSession, projectId, sessionName),
+    startTask: (projectId: string, input?: { title?: string; firstPrompt?: string }) =>
+      ipcRenderer.invoke(IPC.Agent.StartTask, projectId, input),
     compactSession: (projectId: string) => ipcRenderer.invoke(IPC.Agent.CompactSession, projectId),
     restartSessionFresh: (projectId: string) => ipcRenderer.invoke(IPC.Agent.RestartSessionFresh, projectId),
     listSessions: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ListSessions, projectId),

@@ -36,6 +36,7 @@ import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
 import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
 import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
+import { buildArtifactIndexSection } from './artifact-index.ts'
 
 /** pi 模型切换命令返回的 Model 对象最小字段 */
 interface PiModelInfo {
@@ -495,7 +496,8 @@ export class AgentService implements MoonGlassService {
   }
 
   private writeSystemPrompt(projectId: string, phase: Phase): void {
-    const dotPi = join(this.workspaceDir(projectId), '.pi')
+    const workspace = this.workspaceDir(projectId)
+    const dotPi = join(workspace, '.pi')
     mkdirSync(dotPi, { recursive: true })
     // TODO(Phase 3 后续): 传入项目级约束与用户自定义提示词
     const basePrompt = buildSystemPrompt(phase)
@@ -562,7 +564,10 @@ scripts/
 - 不得在根目录或旧式平铺目录创建阶段产出；不得虚构工具结果。
 `
 
-    writeFileSync(join(dotPi, 'APPEND_SYSTEM.md'), basePrompt + dirGuide + fastTrackNotice, 'utf-8')
+    // 任务粒度会话（M1，§3.2）：每次 spawn 重扫工作区产物索引并追加为独立小节，
+    // 让零历史继承的新会话直接定位既有产物。
+    const artifactIndex = buildArtifactIndexSection(workspace, phase)
+    writeFileSync(join(dotPi, 'APPEND_SYSTEM.md'), basePrompt + dirGuide + fastTrackNotice + artifactIndex, 'utf-8')
 
     // Phase 4: 创建 prompt templates 目录和常用模板
     const promptsDir = join(dotPi, 'prompts')
@@ -615,7 +620,9 @@ argument-hint: "<模块名>"
       return
     }
     if (existing && !managedByUs) return // 尊重用户自定义 compaction 配置
-    const contextWindow = modelId ? resolveModelContext(modelId)?.contextWindow : undefined
+    const contextWindow = modelId
+      ? resolveModelContext(modelId)?.contextWindow
+      : undefined
     if (!contextWindow) {
       console.warn(`[agent-service] VERIF 会话模型 ${modelId ?? '(未知)'} 上下文窗口未知，compaction 阈值保持 pi 默认`)
       return
@@ -956,6 +963,78 @@ argument-hint: "<模块名>"
           parentId: null,
           timestamp: now,
           name: `${name} (${session.phase})`
+        })
+      ].join('\n') + '\n',
+      'utf-8'
+    )
+
+    try {
+      return await this.switchSession(projectId, sessionNameFromFile(newFile))
+    } catch (error) {
+      rmSync(newFile, { force: true })
+      throw error
+    }
+  }
+
+  /**
+   * 开启任务粒度会话（M1，设计文档 §3.1）：泛化 resetSession 的平行会话机制——
+   * 新建 `phase-<phase>--task-<yyyymmdd-hhmmss>-<slug>` 会话文件（命名兼容
+   * sessionBelongsToPhase，阶段过滤/purge/归档无需改动），会话头带 parentSession
+   * 血缘指向切换前的活动会话（pi SessionHeader 原生字段，格式见 pi session-format.md），
+   * 随后经 switchSession 成为前台会话：当前前台空闲则 dispose，正在流式则按既有
+   * 方式 park 到后台续跑；模型选择走 switchSession 的既有回退链。
+   * slug 从任务标题（缺省时取首条 prompt 前 20 字）净化生成，为空则只用时间戳。
+   */
+  async startTask(projectId: string, input?: { title?: string; firstPrompt?: string }): Promise<AgentSessionInfo> {
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
+
+    // 先对齐阶段并确保有活动会话（ensureSession 幂等：阶段未变是廉价校验）
+    await this.ensureSession(projectId)
+    const session = this.sessions.get(projectId)
+    if (!session) throw new Error('没有已启用且配置完成的模型服务，无法开启任务会话')
+
+    const title = input?.title?.trim() ?? ''
+    const slugSource = title || (input?.firstPrompt?.trim().slice(0, 20) ?? '')
+    const slug = slugSource.replace(/[^a-zA-Z0-9_-]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 40)
+    const now = new Date()
+    const stamp = [
+      now.getFullYear(),
+      String(now.getMonth() + 1).padStart(2, '0'),
+      String(now.getDate()).padStart(2, '0')
+    ].join('') + '-' + [
+      String(now.getHours()).padStart(2, '0'),
+      String(now.getMinutes()).padStart(2, '0'),
+      String(now.getSeconds()).padStart(2, '0')
+    ].join('')
+    const baseName = `${phaseMainSessionName(session.phase)}--task-${stamp}${slug ? `-${slug}` : ''}`
+    let sessionName = baseName
+    let newFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    if (existsSync(newFile)) {
+      // 重名处理沿用 resetSession 的追加时间戳做法
+      sessionName = `${baseName}-${Date.now().toString(36)}`
+      newFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    }
+    const nowIso = now.toISOString()
+    const header: Record<string, unknown> = {
+      type: 'session',
+      version: 3,
+      id: randomUUID(),
+      timestamp: nowIso,
+      cwd: this.workspaceDir(projectId),
+      // 会话血缘：指向切换前的活动会话文件（pi 官方格式为会话文件路径）
+      parentSession: resolve(session.currentSessionFile)
+    }
+    writeFileSync(
+      newFile,
+      [
+        JSON.stringify(header),
+        JSON.stringify({
+          type: 'session_info',
+          id: randomUUID().slice(0, 8),
+          parentId: null,
+          timestamp: nowIso,
+          name: `${title || `任务 ${stamp}`} (${session.phase})`
         })
       ].join('\n') + '\n',
       'utf-8'
@@ -1708,7 +1787,32 @@ argument-hint: "<模块名>"
     return { archivedTo, keptForReview }
   }
 
+  /**
+   * 用户停止动作（M1 §3.6 停止覆盖扩展）：覆盖该项目全部存活会话——
+   * VERIF 批次编排（置停止标记 + 中止在跑批次）、backgroundSessions 中全部
+   * 挂后台会话（含切阶段 park 的会话与任务会话）、前台会话，逐一 abort；
+   * abort 无响应的后台会话直接 dispose 摘除，保证不存在"停不掉的会话"。
+   */
   async abort(projectId: string): Promise<void> {
+    // VERIF 批次：置停止标记（不再派发新批次）并中止当前批次会话
+    await this.stopVerifBatches(projectId)
+
+    // 后台会话：逐一 abort；批次会话的 abort 由 stopVerifBatches 已发，重复 abort 无副作用。
+    // abort 成功的前台 park 会话会在 agent_settled 时走 settleParkedSession 自动处置。
+    const background = this.backgroundSessions.get(projectId)
+    if (background) {
+      for (const [key, session] of [...background]) {
+        try {
+          await session.client.command({ type: 'abort' }, 5_000)
+        } catch (error) {
+          console.warn('[agent-service] 后台会话中止命令未响应，直接销毁进程', error)
+          background.delete(key)
+          session.client.dispose()
+        }
+      }
+      if (background.size === 0) this.backgroundSessions.delete(projectId)
+    }
+
     const session = this.sessions.get(projectId)
     if (!session) return
     try {
@@ -1789,6 +1893,10 @@ argument-hint: "<模块名>"
     }
   }
 
+  /**
+   * 用户自定义上下文上限：按模型持久化（自有模型的窗口只有用户知道）。
+   * 传入 null 恢复自动判定（登记表 → 兼容回退值）。只写存储，不触碰 pi 进程。
+   */
   async getMessages(projectId: string): Promise<AgentUiMessage[]> {
     const session = this.sessions.get(projectId)
     if (!session) return []

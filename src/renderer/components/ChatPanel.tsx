@@ -8,7 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
-import { Minimize2, MoreVertical, RotateCcw } from 'lucide-react'
+import { Minimize2, MoreVertical, RotateCcw, Ruler } from 'lucide-react'
 import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
 import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
@@ -52,6 +52,7 @@ function statsTitle(stats: AgentSessionStats): string {
   lines.push(`会话累计：${stats.tokens.total.toLocaleString()}`)
   if (stats.contextWindowStatus === 'verified') lines.push(`上下文上限：已核实（${stats.contextWindowSource ?? '官方资料'}）`)
   if (stats.contextWindowStatus === 'estimated') lines.push(`上下文上限：服务商估计（${stats.contextWindowSource ?? '待复核'}）`)
+  if (stats.contextWindowStatus === 'custom') lines.push(`上下文上限：用户自定义（${formatTokens(stats.contextWindowOverride ?? 0)} Token）`)
   if (stats.contextWindowStatus === 'unknown') lines.push('上下文上限：未核实，不计算占用率')
   if (typeof stats.cost === 'number' && stats.cost > 0) lines.push(`估算费用：$${stats.cost.toFixed(4)}`)
   lines.push(`消息：${stats.userMessages} 用户 / ${stats.assistantMessages} Agent / ${stats.toolCalls} 工具调用`)
@@ -59,10 +60,10 @@ function statsTitle(stats: AgentSessionStats): string {
 }
 
 export function SessionTabs({ projectId, onActivate }: { projectId: string; onActivate?: () => void }): React.JSX.Element {
-  const { sessionInfo, createParallel, switchSession, closeSession } = useChatStore()
+  const { sessionInfo, startTask, switchSession, closeSession } = useChatStore()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [showDialog, setShowDialog] = useState(false)
-  const [name, setName] = useState('review')
+  const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   /** 正在只读查看的批次会话（不切换活动会话） */
@@ -100,11 +101,11 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
     setBusy(true)
     setError('')
     try {
-      await createParallel(name.trim() || undefined)
+      await startTask(name.trim() || undefined)
       await refresh()
       onActivate?.()
       setShowDialog(false)
-      setName('review')
+      setName('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -180,7 +181,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
           setError('')
           setShowDialog(true)
         }}
-        title="新建独立的平行会话"
+        title="开启新任务会话（零历史继承，基于工作区产物继续）"
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-base text-zinc-500 hover:bg-zinc-100 hover:text-blue-700"
       >
         +
@@ -200,8 +201,8 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
             aria-labelledby="parallel-session-title"
             className="w-full max-w-sm rounded-md border border-zinc-300 bg-white p-4 shadow-xl"
           >
-            <h2 id="parallel-session-title" className="text-sm font-semibold text-zinc-900">新建平行会话</h2>
-            <p className="mt-1 text-xs text-zinc-500">新会话属于当前项目，拥有独立的消息历史。</p>
+            <h2 id="parallel-session-title" className="text-sm font-semibold text-zinc-900">新任务</h2>
+            <p className="mt-1 text-xs text-zinc-500">为当前阶段开启独立的任务会话：不继承对话历史，自动基于工作区已落盘产物继续；原会话保留可随时切回。</p>
             <input
               autoFocus
               value={name}
@@ -210,7 +211,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
                 if (event.key === 'Enter') void create()
                 if (event.key === 'Escape' && !busy) setShowDialog(false)
               }}
-              placeholder="会话名称（可留空）"
+              placeholder="任务标题（可留空，如：修复 axi_timer 握手）"
               className="mt-3 w-full rounded border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
             />
             {error && <p className="mt-2 whitespace-pre-wrap text-xs text-red-600">{error}</p>}
@@ -351,6 +352,10 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [sessionStats, setSessionStats] = useState<AgentSessionStats | null>(null)
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
+  /** 自定义上下文上限表单（三点菜单内联展开） */
+  const [contextLimitEditing, setContextLimitEditing] = useState(false)
+  const [contextLimitDraft, setContextLimitDraft] = useState('')
+  const [contextLimitError, setContextLimitError] = useState('')
   const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -403,7 +408,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     const requestedSession = sessionInfo.sessionName
     const stats = await window.moonglass.agent.getSessionStats(projectId).catch(() => null)
     if (useChatStore.getState().sessionInfo?.sessionName === requestedSession) setSessionStats(stats)
-  }, [projectId, sessionInfo?.providersReady, sessionInfo?.sessionName])
+    // 依赖 selectedModel：切换模型后立即重取统计，上下文上限同步到新模型
+  }, [projectId, sessionInfo?.providersReady, sessionInfo?.sessionName, sessionInfo?.selectedModel?.providerId, sessionInfo?.selectedModel?.modelId])
 
   useEffect(() => {
     setSessionStats(null)

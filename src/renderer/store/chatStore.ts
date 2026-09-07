@@ -26,6 +26,8 @@ interface ChatState {
   abort: () => Promise<void>
   setModel: (providerId: string, modelId: string) => Promise<void>
   createParallel: (name?: string) => Promise<void>
+  /** 开启任务粒度会话（M1）：新任务会话成为前台，零历史继承。title 为任务标题。 */
+  startTask: (title?: string) => Promise<void>
   compactSession: () => Promise<void>
   restartSessionFresh: () => Promise<void>
   /** 阶段 purge 后仅清空前端状态；下一次输入时再懒启动空白会话。 */
@@ -196,6 +198,19 @@ export const useChatStore = create<ChatState>((set, get) => {
         const info = await window.moonglass.agent.resetSession(projectId, name)
         const messages = await window.moonglass.agent.getMessages(projectId)
         set({ sessionInfo: info, messages, streaming: false, streamTargetId: null })
+      } catch (err) {
+        pushError(set, err)
+        throw err
+      }
+    },
+
+    startTask: async (title) => {
+      const { projectId } = get()
+      if (!projectId) return
+      try {
+        const info = await window.moonglass.agent.startTask(projectId, title ? { title } : undefined)
+        // 任务会话零历史继承；旧会话若正在流式已 park 到后台，前台不再是流式状态
+        set({ sessionInfo: info, messages: [], streaming: false, aborting: false, streamTargetId: null })
       } catch (err) {
         pushError(set, err)
         throw err

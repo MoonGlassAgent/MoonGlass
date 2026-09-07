@@ -300,6 +300,7 @@ export function WorkspacePage(): React.JSX.Element {
   const sendAgentPrompt = useChatStore((s) => s.sendAndWait)
   const ensureAgent = useChatStore((s) => s.ensure)
   const abortAgent = useChatStore((s) => s.abort)
+  const startAgentTask = useChatStore((s) => s.startTask)
   const clearAgentAfterPhasePurge = useChatStore((s) => s.clearAfterPhasePurge)
 
   const reload = useCallback(async () => {
@@ -808,6 +809,14 @@ export function WorkspacePage(): React.JSX.Element {
           await ensureAgent(projectId)
         }
         await ensureAgent(projectId)
+        // M1 托管自动切换（设计文档 §3.1 托管模式）：每个阶段的托管运行在独立
+        // 任务会话中执行（零历史继承，血缘指向上一会话），不污染阶段主会话；
+        // 触发点复用现有按阶段触发点，不新造交付物检测逻辑。失败时沿用当前会话继续。
+        try {
+          await startAgentTask(`一键托管 ${phase} 阶段`)
+        } catch (error) {
+          appendLog(`一键托管：开启任务会话失败，沿用当前会话：${error instanceof Error ? error.message : String(error)}`)
+        }
         if (active.phases[phase].changeNotice?.status === 'pending') {
           try {
             await runManagedAgent(buildChangeResponsePrompt(active, phase))
@@ -908,10 +917,9 @@ export function WorkspacePage(): React.JSX.Element {
 
   const stopManagedRun = async (): Promise<void> => {
     managedStopRef.current = true
-    // 同时停止 VERIF 批次编排：中止进行中的批次会话并不再派发新批次；
-    // 停止时主会话通常是空闲的（在等批次），仅 abort 活动会话覆盖不到批次循环
-    await window.moonglass.agent.stopVerifBatches(projectId).catch(() => undefined)
-    if (useChatStore.getState().streaming) await abortAgent()
+    // M1 §3.6：主进程 abort 已覆盖该项目全部存活会话（前台 + 后台任务会话 + VERIF 批次编排）
+    // 无条件 abort：停止时前台通常空闲（在等批次/后台任务），按 streaming 判断会漏掉后台任务会话
+    await abortAgent()
   }
 
   const createChangeRequest = async (): Promise<void> => {
