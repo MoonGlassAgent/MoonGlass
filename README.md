@@ -8,7 +8,9 @@ MoonGlass 是一个面向 ASIC/SoC 设计工程师的 AI 工作台：以 **6 阶
 
 MoonGlass 在**架构思想**上参考了 Electron 桌面应用的通用工程模式，包括主/渲染进程分层、侧边栏导航、服务生命周期管理与 IPC 契约中心。MoonGlass 第一方代码独立编写，不包含 Cherry Studio 源码，也不是其 Fork。第三方组件适用各自许可证。
 
-## 当前状态：v0.5.2
+## 当前状态：v0.8.6
+
+> Windows 完整绿色版：[下载 MoonGlass v0.8.6（内置 MIC_NPU Demo）](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.8.6)
 
 | 模块 | 状态 |
 |------|------|
@@ -21,6 +23,11 @@ MoonGlass 在**架构思想**上参考了 Electron 桌面应用的通用工程�
 | 工作区分栏 UI / 文件树 / Monaco 代码查看 / Markdown 预览 | ✅ 可用 |
 | 一键托管（自动决策、门禁修复、阶段推进与报告） | ✅ v0.5.0 新增 |
 | 已有项目导入与实际阶段恢复 | ✅ v0.5.0 新增 |
+| AIGV 2.0（风险、Intent、Scenario、Coverage Hole、Residual Risk） | ✅ v0.8 系列完整接入 |
+| 验证态势全屏视图与 W0-W3 验证波段 | ✅ v0.8.6 |
+| 验证批次隔离、上下文治理与证据化签核 | ✅ v0.8.5-v0.8.6 |
+| 开源 Formal / Verilator 覆盖率 / Cocotb 回归 | ✅ 内置工具链 |
+| RTL Design Browser 层次、信号、源码与追踪视图 | ✅ v0.8.6 重构 |
 | Python 脚本引擎（spawn + 超时） | ✅ 最小可用 |
 | Agent 芯片专用工具集（lint / 综合 / 仿真 / CDC / 测试台生成） | ✅ 7 个工具已注册 |
 | RTL 解析与模板生成（`@moonglass/rtl-engine`） | ✅ Phase 4 已实现 |
@@ -48,7 +55,7 @@ pnpm dist             # 打包安装包（dist/）
 
 要求：Node ≥ 22，pnpm ≥ 10。可选：Python 3.10+（脚本引擎）、Verible / Yosys / Verilator（EDA 功能）。
 
-最新开发进展见 [`docs/dev-summary-v0.8.0.md`](./docs/dev-summary-v0.8.0.md)；上一份历史报告见
+最新开发进展见 [`RELEASE-NOTES-v0.8.6-ZH-CN.md`](./RELEASE-NOTES-v0.8.6-ZH-CN.md) 和 [`docs/dev-summary-v0.8.0.md`](./docs/dev-summary-v0.8.0.md)；上一份历史报告见
 [`docs/dev-summary-v0.3.md`](./docs/dev-summary-v0.3.md)。更详细的总体说明与交接文档见
 [`reports/overall-report.md`](./reports/overall-report.md) 和 [`reports/progress-report.md`](./reports/progress-report.md)。
 
