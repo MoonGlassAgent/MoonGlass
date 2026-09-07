@@ -73,7 +73,7 @@ interface ManagedStep {
 const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 const isManagedPause = (message: string): boolean => /用户停止托管|托管已暂停|L3\/L4 高影响/.test(message)
 
-function VerifStatusBar({ projectId, agentStreaming, onAction, onPlan, onSetup, onBaseline, onFullClosure }: { projectId: string; agentStreaming: boolean; onAction: (prompt: string) => void; onPlan: () => void; onSetup: () => void; onBaseline: () => void; onFullClosure: () => void }): React.JSX.Element {
+function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasic, onCorner, onSignoff }: { projectId: string; agentStreaming: boolean; onAction: (prompt: string) => void; onPlanEnv: () => void; onBasic: () => void; onCorner: () => void; onSignoff: () => void }): React.JSX.Element {
   const [state, setState] = useState<GuidanceState | null>(null)
   const [loading, setLoading] = useState(true)
   const load = useCallback(async () => {
@@ -105,10 +105,10 @@ function VerifStatusBar({ projectId, agentStreaming, onAction, onPlan, onSetup, 
       <div className="min-w-0 flex-1"><span className={`text-xs font-medium ${current.status === 'blocked' ? 'text-red-700' : 'text-zinc-700'}`}>当前：{current.label}</span><span className="ml-2 text-xs text-zinc-500">{current.detail}</span><span className="ml-3 text-xs text-zinc-400">下一步：{primary?.title ?? '生成 AIGV 验证规划'}</span></div>
       {primary && <button disabled={agentStreaming} onClick={() => onAction(primary.prompt)} className="shrink-0 rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50"><Play size={12} className="mr-1 inline" />{primary.title}</button>}
       <div className="flex shrink-0 overflow-hidden rounded border border-zinc-200 bg-white">
-        <button onClick={onPlan} disabled={agentStreaming} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">验证规划</button>
-        <button onClick={onSetup} disabled={agentStreaming} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">环境搭建</button>
-        <button onClick={onBaseline} disabled={agentStreaming} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50">基础回归</button>
-        <button onClick={onFullClosure} disabled={agentStreaming} className="px-2.5 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">风险闭环</button>
+        <button onClick={onPlanEnv} disabled={agentStreaming} title="验证点登记 + 环境搭建 + 冒烟验收（W0）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">① 规划与环境</button>
+        <button onClick={onBasic} disabled={agentStreaming} title="规格映射矩阵条款逐条闭环（W1）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50">② 基础功能</button>
+        <button onClick={onCorner} disabled={agentStreaming} title="按主题波执行 corner 场景（W2）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-violet-700 hover:bg-violet-50 disabled:opacity-50">③ 增补验证</button>
+        <button onClick={onSignoff} disabled={agentStreaming} title="覆盖率/Formal/Mutation/残余风险审批（W3）" className="px-2.5 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">④ 签核</button>
       </div>
     </div>
   </div>
@@ -558,22 +558,21 @@ export function WorkspacePage(): React.JSX.Element {
     }
   }
 
-  // ---- 验证操作 ----
-  const handlePlanVerification = async (): Promise<void> => {
-    appendLog('开始 AIGV 验证规划...')
+  // ---- 验证操作（波段化 W0-W3，与态势页波段进度一一对应） ----
+  const handlePlanEnv = async (): Promise<void> => {
+    appendLog('开始验证规划与环境搭建（W0）...')
     try {
       await sendAgentPrompt(
-        '请仅完成 AIGV 验证规划。本次任务的停止边界是“规划和机器可读模型就绪”，不要搭建 Testbench、编写测试、运行仿真或进入验证闭环：\n' +
-        '1. 使用 verification-planning 技能检查需求、规格、架构，并建立 docs/04_verification/ 的三份基线计划与六份 AIGV 方法/闭环文档\n' +
-        '2. 使用 collect_rtl_files 读取 rtl/design.json 与 rtl/filelist.f，确认 DUT、topModule 和真实 RTL 范围\n' +
-        '3. 调用 build_verification_intelligence，生成并审查 requirement-model、structural-model、spec-gap-register、risk-register 与候选场景池；穷举候选只是参考，不是任务清单\n' +
-        '4. 审查 module-verification-strategy.json：顶层采用 IP_SIGNOFF，高风险子模块采用 UNIT_FOCUSED，普通子模块采用 UNIT_SMOKE 或 STATIC_ONLY；不得把每个 .v 文件都当成独立 DUT 执行完整 AIGV\n' +
-        '5. 分别确定验证深度与 Oracle 策略；Golden Model 是否建立取决于模块语义、独立判定、故障定位和收敛收益，不得按模块大小机械决定\n' +
-        '6. 阅读 risk-register.json 与 structural-model.json 并结合规格语义，圈定 5~10 个真实验证点：每个必须点名具体信号、具体失效反例、具体判定标准，并锚定真实存在的 riskIds/requirementIds/rtlSignals，调用 register_verification_intents 登记；被 REJECTED 的锚点必须修正后重登，不得绕过。Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
-        '7. 运行验证计划文档校验并修复结构问题\n' +
-        '8. 完成后列出模块分层、Oracle/Golden Model 建议、已登记验证点（含被引擎拒绝及修正的记录）、第一批待执行 Scenario、未覆盖的高分风险候选、Spec Gap 和环境搭建建议，然后停止，不得自行继续下一步骤'
+        '请完成验证规划与环境搭建。停止边界是“验证点已登记、环境可编译、冒烟通过”，不要执行基础功能批次、增补验证或签核：\n' +
+        '1. 使用 verification-planning 技能校验 docs/04_verification/ 三份基线计划与六份 AIGV 文档\n' +
+        '2. 用 collect_rtl_files 读取 rtl/design.json 与 filelist.f，确认 DUT、topModule 和真实 RTL 范围\n' +
+        '3. 调用 build_verification_intelligence 生成风险候选、结构事实与规格映射矩阵；穷举候选只是参考，不是任务清单\n' +
+        '4. 阅读 risk-register.json 与 structural-model.json 并结合规格语义，圈定 5~10 个真实验证点（点名具体信号、失效反例、判定标准，声明 wave/topic 标签），调用 register_verification_intents 登记；被 REJECTED 的锚点必须修正后重登，不得绕过；Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
+        '5. 审查 module-verification-strategy.json 并按分层搭建验证环境；优先复用 IP 库 VIP/BFM；定向测试与 SCN-ID 绑定（testcase 命名含 scn_<8位hex>），scenario_hits.json 由 run_simulation 自动登记，禁止手写\n' +
+        '6. 冒烟验收（W0）：reset、接口连通、一个正常事务经 run_simulation 真实执行通过（环境自检不绑 scenarioIds）；冒烟不过则环境不算就绪\n' +
+        '7. 完成后列出登记的验证点、模块分层、环境入口和冒烟结果，然后停止'
       )
-      appendLog('AIGV 验证规划任务已完成')
+      appendLog('验证规划与环境搭建任务已完成')
     } catch (err) {
       appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -606,61 +605,52 @@ export function WorkspacePage(): React.JSX.Element {
     }
   }
 
-  const handleSetupEnv = async (): Promise<void> => {
-    appendLog('开始验证环境搭建...')
+  const handleBasicValidation = async (): Promise<void> => {
+    appendLog('开始 W1 基础功能验证...')
     try {
       await sendAgentPrompt(
-        '请仅完成验证环境搭建。本次任务的停止边界是“环境可编译、Checker 可工作”，不要执行完整回归、Coverage Closure、Formal 或签核：\n' +
-        '1. 读取现有 verification-intent-registry.json、scenario-execution-plan.json、验证计划和 RTL design.json/filelist.f；缺少规划时停止并明确提示先执行“验证规划”\n' +
-        '2. 读取 module-verification-strategy.json；仅为 IP_SIGNOFF 和 UNIT_FOCUSED 建立独立完整 Testbench，UNIT_SMOKE 只建立可复用的最小 smoke，STATIC_ONLY 不创建 Testbench\n' +
-        '3. 优先复用 IP 库中的 VIP/BFM；按每个模块的 oracleStrategies 实现必要 driver、monitor、scoreboard、协议/状态 assertion 和功能覆盖采样骨架；定向测试与 SCN-ID 绑定（testcase 命名含 scn_<8位hex>），scenario_hits.json 由 run_simulation(scenarioIds=...) 自动登记，不得在 Testbench 中自写任何机器裁决产物\n' +
-        '4. 对标记 REFERENCE_MODEL 的模块实现独立 Golden Model；未标记时仍应根据架构角色和定位收益复核，不得为了形式完整复制 RTL，也不得因模块是子模块就禁止 Golden Model\n' +
-        '5. UNIT_SMOKE 只实现 reset、接口连通、一个正常事务和一个关键边界点，不扩展完整风险场景批次\n' +
-        '6. 执行 Python 语法、导入、Testbench 结构以及 RTL 编译/elaboration 检查；允许为确认环境可启动而运行单个最小 smoke（环境自检不绑定 scenarioIds、不登记场景证据），但不得循环修复设计功能问题\n' +
-        '7. 保存环境检查证据，列出可运行入口、已实现 Checker/Golden Model、复用组件和阻断项，然后停止'
+        '请完成 W1 基础功能验证：目标是规格映射矩阵中每条可验证条款（simulation/static 通道）都有 happy path 证据。停止边界是“条款全部有执行证据或明确缺口记录”，不要做增补验证（W2）或签核（W3）：\n' +
+        '1. 读取 execution-summary.json 的 specMapping；引擎已为未覆盖条款派生 CLAUSE_DERIVED 候选，逐条确认，或用 register_verification_intents 补充更准确的验证点\n' +
+        '2. 用 select_next_verification_batch 按聚类选批；同组场景一次 authoring 多条 testcase，run_simulation(scenarioIds=[...]) 一次绑定登记，scenario_hits 与态势由工具自动更新\n' +
+        '3. 失败时按 diagnostic-control 提升诊断等级，确认根因后调用 record_root_cause；L3/L4 影响必须发起用户决策\n' +
+        '4. 完成后报告条款覆盖（coveredClause/clauseTotal）与仍未闭合条款清单，然后停止'
       )
-      appendLog('验证环境搭建任务已完成')
+      appendLog('基础功能验证任务已完成')
     } catch (err) {
       appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
-  const handleRunBaselineRegression = async (): Promise<void> => {
-    appendLog('开始基础回归...')
+  const handleCornerWaves = async (): Promise<void> => {
+    appendLog('开始 W2 增补验证（按主题波）...')
     try {
       await sendAgentPrompt(
-        '请仅执行并建立基础回归基线。本次任务的停止边界是“最小可信回归产生结构化结果”，不要继续高风险 Scenario、Coverage Closure、Formal 或最终签核：\n' +
-        '1. 检查验证环境和 RTL 编译基线；环境未就绪时只修复环境基础设施问题\n' +
-        '2. 按 module-verification-strategy.json 执行：全部模块做静态基线，UNIT_SMOKE 运行最小基础集，UNIT_FOCUSED 只运行其定向 smoke，IP_SIGNOFF 运行顶层 reset/idle/一个合法正常事务；不得给每个 .v 文件复制完整回归\n' +
-        '3. 使用 run_simulation 真实执行，compile.log、simulation.log、JUnit/results.xml、result.json 和必要波形由工具统一落盘；基础回归不绑定 scenarioIds 时不登记场景证据\n' +
-        '4. 不设置无工程依据的固定仿真周期或 wall-clock 上限；失败时按 diagnostic-control.json 提升诊断证据，禁止反复盲改 RTL\n' +
-        '5. 仿真工具执行后验证态势由工具自动重建，无需手工回灌；确认态势页出现结构化 regression 记录\n' +
-        '6. 汇总通过/失败 DUT、首个失败证据和环境阻断项，然后停止，不得自动进入风险闭环'
+        '请完成 W2 增补验证：按主题波执行 corner 场景。停止边界是“各主题波闭环或探索饱和”，不要进入签核（W3）：\n' +
+        '1. 读取 execution-summary.json 的 waveProgress W2 主题列表（错误注入/边界/并发碰撞/性能等），逐主题推进\n' +
+        '2. 每个主题用 select_next_verification_batch 选聚类组（同模块同 Oracle 域），组内一次 authoring 多条 testcase，run_simulation(scenarioIds=[...]) 一次绑定登记\n' +
+        '3. 执行后参考再聚类建议（reclusterSuggestions）调整分组；formal-candidate 用 run_formal_verification 补强（BMC PASS 不算证明）\n' +
+        '4. 未覆盖项按 C1-C6 分类处置；探索连续无语义新增即饱和收手并说明\n' +
+        '5. 执行派生状态由工具证据派生，record_scenario_adjudication 仅用于规格澄清/豁免（WAIVED 需已有具名审批）；失败根因确认后调用 record_root_cause\n' +
+        '6. 完成后报告各主题波闭环情况与残余风险，然后停止'
       )
-      appendLog('基础回归任务已完成')
+      appendLog('增补验证任务已完成')
     } catch (err) {
       appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
-  const handleRunRegression = async (): Promise<void> => {
-    appendLog('开始 AIGV 风险驱动验证闭环...')
+  const handleSignoff = async (): Promise<void> => {
+    appendLog('开始 W3 签核...')
     try {
       await sendAgentPrompt(
-        '请完成项目顶层 IP 与选定高风险子模块的 AIGV 风险驱动、场景驱动和证据驱动验证闭环：\n' +
-        '1. 使用 verification-planning 技能校验三份基线计划与六份 AIGV 方法/闭环文档，并运行 collect_rtl_files、run_verible_lint、check_synthesizability 建立当前 RTL 基线\n' +
-        '2. 调用 build_verification_intelligence，读取 Verification Intent、Spec Gap、风险热区、时间交互、边界条件、Coverage Hole 和 scenario-execution-plan\n' +
-        '3. 调用 select_next_verification_batch(limit=3)，每轮最多执行 3 个最高优先级 VI-* / SCN-*；执行时用 run_simulation(scenarioIds=...) 绑定批次场景，不得绕过队列只跑已有冒烟用例，也不得生成无结构依据的任意笛卡尔积\n' +
-        '4. 严格按 module-verification-strategy.json 分层执行：顶层完成端到端 AIGV，高风险子模块只做专项 Scenario，普通子模块依靠静态检查、轻量 smoke 与顶层覆盖；只有观察不足或缺陷难定位时才升级等级\n' +
-        '5. 对 Simulation 场景使用 Cocotb + Icarus 完成功能回归、Checker、功能覆盖率和波形；Windows 再用 Verilator C++ 回归采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率\n' +
-        '6. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification，依次考虑 BMC、cover 和适合的不变量 prove；BMC PASS 不得宣称完成证明\n' +
-        '7. 场景 reach/pass 与证据由 run_simulation(scenarioIds=...) 自动登记到 scenario_hits.json 并自动重建态势，禁止手写；执行派生状态由证据派生，record_scenario_adjudication 仅用于规格澄清/豁免，WAIVED 需已有具名审批；日志、JUnit、result.json、Coverage 和 VCD/FST 由工具统一落盘\n' +
-        '8. 再次构建 Verification Intelligence，把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，并按分类采取措施\n' +
-        '9. 每批完成后核对工具自动重建的验证态势并汇报证据增量；局部修复先跑定向与受影响回归，Verilator 全量覆盖、广泛 Formal 和全量回归仅在基础稳定、批次稳定及签核前的里程碑执行\n' +
-        '10. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立读取原始测试、日志、Coverage、Formal 和 RTL 证据；存在阻断项时继续修复与回归\n' +
-        '11. 用实际机器可读产物和原始证据更新 docs/04_verification/ 全套 AIGV 文档、需求追踪、docs/06_validation/ 验证报告和验证态势，明确已闭环 Intent、遗留 Spec Gap、Coverage Hole、工具限制与是否具备签核条件'
+        '请完成 W3 签核。停止边界是“签核包生成且独立证据审查有结论”：\n' +
+        '1. 运行覆盖率签核回归（Windows 用 run_simulation mode="cpp" 采集行/条件/翻转/FSM 覆盖率），确认达标或把缺口按 C1-C6 分类记录\n' +
+        '2. 完成 required Formal 义务；工具限制记入残余风险，不得伪称失败也不得把有限深度 BMC 说成证明\n' +
+        '3. 核对 Multi-Oracle 冲突与关键场景的独立判定域覆盖；Mutation survivor 未经批准默认阻断\n' +
+        '4. 残余风险逐项处理：优先用证据关闭，确需豁免的等待用户在 signoff-approvals.json 中具名审批，Agent 不得代替用户写审批\n' +
+        '5. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始证据；输出签核结论（READY_FOR_HUMAN_SIGNOFF / CONDITIONALLY_READY / NOT_READY）、证据包路径与遗留项，然后停止'
       )
-      appendLog('AIGV 验证闭环任务已完成')
+      appendLog('签核任务已完成')
     } catch (err) {
       appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -1124,7 +1114,7 @@ export function WorkspacePage(): React.JSX.Element {
           </div>
         )}
 
-        {project.currentPhase === 'VERIF' && <VerifStatusBar projectId={project.id} agentStreaming={agentStreaming} onAction={(prompt) => void handleVerificationGuidanceAction(prompt)} onPlan={() => void handlePlanVerification()} onSetup={() => void handleSetupEnv()} onBaseline={() => void handleRunBaselineRegression()} onFullClosure={() => void handleRunRegression()} />}
+        {project.currentPhase === 'VERIF' && <VerifStatusBar projectId={project.id} agentStreaming={agentStreaming} onAction={(prompt) => void handleVerificationGuidanceAction(prompt)} onPlanEnv={() => void handlePlanEnv()} onBasic={() => void handleBasicValidation()} onCorner={() => void handleCornerWaves()} onSignoff={() => void handleSignoff()} />}
 
         {project.currentPhase === 'SYNTH' && (
           <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">

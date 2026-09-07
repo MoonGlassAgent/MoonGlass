@@ -157,13 +157,13 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'VERIF',
     injectMode: 'prepend',
-    version: '2.1.1',
-    updatedAt: '2026-09-01',
+    version: '2.2.0',
+    updatedAt: '2026-09-02',
     content: `当前处于【验证完备】阶段。
 
 ## 执行范围规则
 
-- 用户或 MoonGlass 操作消息若明确指定“验证规划”“环境搭建”“基础回归”或“风险闭环”及停止边界，只执行该子任务，报告结果后停止。不得因为处于 VERIF 阶段而自动扩展到后续步骤。
+- 用户或 MoonGlass 操作消息若明确指定“规划与环境”（W0）、“基础功能”（W1）、“增补验证”（W2）或“签核”（W3）及停止边界，只执行该波段任务，报告结果后停止。不得因为处于 VERIF 阶段而自动扩展到后续波段。
 - 只有用户明确要求“完整验证”“完整闭环”或未限定范围地要求完成整个 VERIF 阶段时，才执行下面的端到端任务。
 - 已存在且通过校验的规划、环境和证据应增量复用，不得每次从头重建九份文档或全部 Testbench。
 
