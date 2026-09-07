@@ -127,7 +127,7 @@
       <div class="card"><span class="ico">🔁</span><h4>变更影响传播</h4><p>后期改需求/修 Bug 时，从最早受影响阶段重走流程，已完成阶段自动加黄色提醒，保留全部前后证据。</p></div>
       <div class="card"><span class="ico">🤖</span><h4>一键托管</h4><p>自动调用 Agent、处理推荐选择、执行门禁与有限次数修复重试；门禁持续失败即停止，绝不强行标绿。</p></div>
     </div>
-    <figure><img src="images/workspace-overview.png" alt="MoonGlass 六阶段工作区总览"><figcaption>项目工作区：阶段流水线、项目文件树、Agent 会话与工程控制台集中在一个界面</figcaption></figure>
+    <figure><img src="images/v086/02-workspace-verif.png" alt="MoonGlass v0.8.6 VERIF 阶段工作区"><figcaption>v0.8.6 项目工作区：阶段流水线、W0-W3 波段进度、文件树、平行会话与工程控制台同屏</figcaption></figure>
   </section>
 
   <section id="aigv">
@@ -155,6 +155,7 @@
     <div class="wave w1"><div class="wl">W1</div><div class="wr"><b>基础闭环</b><p>每条可验证规格条款至少一条 happy path，规格映射矩阵逐条关闭。</p></div></div>
     <div class="wave w2"><div class="wl">W2</div><div class="wr"><b>风险驱动</b><p>按风险优先级执行并发碰撞、错误注入、恢复路径等 corner 场景。</p></div></div>
     <div class="wave w3"><div class="wl">W3</div><div class="wr"><b>收敛签核</b><p>覆盖率收敛、残余风险评估、证据包整理与签核建议。</p></div></div>
+    <figure><img src="images/v086/03-verification-posture.png" alt="验证态势全屏视图"><figcaption>验证态势（真实项目）：用例执行、诊断控制、场景闭环、机器签核阻断与 AIGV 2.0 下一步建议</figcaption></figure>
   </section>
 
   <section id="exec">
@@ -223,13 +224,15 @@
       <div class="card"><span class="ico">🧭</span><h4>交叉定位</h4><p>层次树、信号列表、源码标识符三方互通；单击选中、双击跳定义、双击实例名下钻。</p></div>
       <div class="card"><span class="ico">🧩</span><h4>复杂工程解析</h4><p>基于 Yosys elaboration，支持 design.json 语义结构、filelist、宏 blackbox 视图与中文路径。</p></div>
     </div>
-    <figure><img src="images/rtl-design-browser.png" alt="RTL Design Browser 设计层次"><figcaption>真实工程层次：earbuds_npu_top 的 generate-for 二维 PE 阵列逐实例展开</figcaption></figure>
+    <figure><img src="images/v086/04-design-browser.png" alt="RTL Design Browser 三栏界面"><figcaption>真实工程：npu_top 层次树 ｜ npu_top.v 语法高亮源码 ｜ 118 条信号列表——中文注释与中文路径正常显示</figcaption></figure>
+    <figure><img src="images/v086/05-design-browser-trace.png" alt="跨层次信号追踪"><figcaption>选中 i_hs_haddr 后 Inspector 逐层展开 Driver/Load，并跨层次边界下钻到 npu_top.u_regif 内部继续追踪</figcaption></figure>
   </section>
 
   <section id="agent">
     <h2>七、Agent 工程体验</h2>
     <p>内嵌 Pi Coding Agent（RPC 模式），主会话与平行会话可独立选择并恢复模型；工具调用、思考过程与结果流式呈现，失败项默认展开。</p>
-    <figure><img src="images/agent-rtl-workspace.png" alt="Agent RTL 阶段工作区"><figcaption>RTL 阶段工作区：工具调用逐项留痕、门禁结论可审计；阶段条上的红色角标即变更影响提醒</figcaption></figure>
+    <figure><img src="images/v086/06-settings.png" alt="设置页模型服务配置"><figcaption>设置页：外观主题与多 Provider/模型集中管理、连接测试（截图中的密钥已遮罩）</figcaption></figure>
+    <figure><img src="images/v086/07-toolchain.png" alt="开发环境与 EDA 工具链检测"><figcaption>开发环境与 EDA 工具链：集中显示运行时、构建、仿真、验证、综合、时序与形式验证工具状态</figcaption></figure>
     <div class="grid c3">
       <div class="card"><span class="ico">🧠</span><h4>上下文生命周期</h4><p>上下文压缩、无上下文重启、Token/缓存/上下文占用统计，长会话不再失控。</p></div>
       <div class="card"><span class="ico">🛡️</span><h4>模型服务韧性 <span class="tag new">v0.8.6</span></h4><p>停滞 120 秒提示、裸错误语义化（402→余额不足、429→限流…）、切换模型先探活失败自动回滚、执行中禁止切模型。</p></div>
@@ -246,6 +249,12 @@
       <div class="card"><span class="ico">📚</span><h4>IP 智能库</h4><p>递归发现 RTL IP / VIP / BFM，Pi 语义增强补充协议与接口角色，设计阶段可被 Agent 检索复用。</p></div>
       <div class="card"><span class="ico">🔐</span><h4>本地优先</h4><p>项目数据存本机 SQLite + JSON；绿色版用户数据在 <code>userdata/</code> 内，API Key 不随包分发。</p></div>
     </div>
+    <figure><img src="images/v086/01-projects.png" alt="芯片项目总览"><figcaption>项目总览（真实数据）：六个阶段徽章、进度条与最近更新时间一目了然</figcaption></figure>
+  </section>
+
+  <section id="about">
+    <h2>九、授权与支持</h2>
+    <figure><img src="images/v086/08-about.png" alt="MoonGlass 关于与授权页面"><figcaption>软件内置授权边界、快速使用手册、作者联系方式与商务授权入口</figcaption></figure>
   </section>
 
   <section id="run">
@@ -259,7 +268,6 @@
       <div class="stat"><b>271 MB</b><span>绿色版 ZIP 体积</span></div>
     </div>
     <div class="note do"><b>验证结论：</b>Workspace TypeScript 类型检查通过 · 核心冒烟测试通过 · Electron 生产构建通过 · 打包 EXE 主进程真实启动自检通过。</div>
-    <figure><img src="images/workspace-flow.png" alt="SYNTH 阶段工作区"><figcaption>SYNTH 阶段：平行会话并存、模型按会话选择、工程控制台集中显示问题/运行/验证/综合/产物</figcaption></figure>
     <h3>相关链接</h3>
     <ul>
       <li>下载：<a href="https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.8.6">GitHub Release v0.8.6（含绿色版与 SHA-256）</a></li>

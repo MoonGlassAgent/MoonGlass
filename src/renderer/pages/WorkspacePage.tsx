@@ -14,6 +14,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
+import { APP_INFO } from '@shared/app-info'
 import {
   AlertTriangle,
   ArrowRight,
@@ -1336,7 +1337,7 @@ export function WorkspacePage(): React.JSX.Element {
         <span>
           阶段处理: {PHASE_ORDER.filter((p) => ['completed', 'skipped'].includes(project.phases[p].status)).length}/{PHASE_ORDER.length}
         </span>
-        <span className="ml-auto">MoonGlass v0.5 · 六阶段 ASIC 开发链</span>
+        <span className="ml-auto">MoonGlass v{APP_INFO.version} · 六阶段 ASIC 开发链</span>
       </footer>
     </div>
   )
