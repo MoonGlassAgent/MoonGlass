@@ -119,14 +119,38 @@ MoonGlass 同时作为一个工程实验平台，持续整理 ASIC Agent、证�
 
 欢迎通过 GitHub Issues 讨论复现问题、验证策略、工具链适配、AIGV 语义和工程改进建议。
 
-## 授权与联系
+## 开源声明与授权
 
-MoonGlass 当前采用 Source Available 授权模式，不是 OSI 定义的 Open Source 软件。
+MoonGlass 当前是 **Source Available** 软件，源码公开可阅读和讨论，但**不是 OSI 定义的 Open Source 软件**。公开仓库不等于无条件授权，使用、修改、分发和商业化都应遵守仓库中的许可证和授权条款。
 
-- 非商业用途：遵循 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
-- 商业用途：企业内部研发、客户交付、收费服务、流片、量产等场景须事先取得书面授权。
-- 商用方案：[`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md)。
-- 第三方组件和工具链：[`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md)。
+- 非商业用途：个人学习、学术研究、实验和非商业教育用途，遵循 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
+- 商业用途：企业内部商业研发、客户交付、收费服务、流片、量产以及其他预期商业应用，必须在使用前取得单独的书面商业授权。
+- 商业授权条款与参考方案：[`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md)。
+- 历史授权边界和变更记录：[`LICENSE-CHANGE.md`](./LICENSE-CHANGE.md)。
+- 第三方组件、EDA 工具和运行时许可证：[`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md)。
 
-用户输入的需求、规格、RTL、验证资产和设计输出归用户或其权利人所有。授权咨询、定制开发、安全问题和产品建议：`moonglassagent@126.com`。
+用户输入的需求、规格、RTL、验证资产和设计输出归用户或其权利人所有。MoonGlass 自身代码、模板、内置工具链和第三方组件仍分别受对应许可证约束。
 
+## 作者与维护者
+
+MoonGlass ASIC Design Agent 由 **MoonGlassAgent** 发起和维护，面向 ASIC/SoC 设计、验证自动化和 AI 辅助工程流程持续开发。
+
+- GitHub：[@MoonGlassAgent](https://github.com/MoonGlassAgent)
+- 项目仓库：[MoonGlass](https://github.com/MoonGlassAgent/MoonGlass)
+- 联系邮箱：`moonglassagent@126.com`
+
+## 商业合作与技术支持
+
+欢迎围绕以下方向开展合作：
+
+- 企业内部 ASIC/SoC 开发流程落地
+- MoonGlass 私有化部署和团队协同
+- EDA 工具链、仿真器、综合工具和工艺库适配
+- AIGV 验证方法学定制与验证流程建设
+- IP/RTL 项目导入、迁移和自动化改造
+- 定制 Agent、模型服务和企业规则接入
+- 芯片项目技术培训、PoC 和工程咨询
+
+商业授权、定制开发、技术支持和合作咨询请联系：`moonglassagent@126.com`。
+
+安全问题请通过邮件单独联系，邮件中不要发送 API Key、客户机密、受限制的芯片设计数据或未公开的工艺资料。
