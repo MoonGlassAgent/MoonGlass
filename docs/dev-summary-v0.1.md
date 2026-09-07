@@ -17,10 +17,10 @@ EDA 桥接桩代码。要求 `pnpm install → typecheck → build → dev` 全�
 
 | 决策项 | 结论 | 理由 |
 |--------|------|------|
-| 与 Cherry Studio 的关系 | **独立编码，仅借鉴通用架构模式**（非 Fork） | 用户明确要求“借鉴而非抄袭”；当前授权以仓库根目录 `LICENSE` 和 `LICENSE-CHANGE.md` 为准 |
+| 第一方实现 | 独立编码，遵循仓库工程规范 | 当前授权以仓库根目录授权文件为准 |
 | 应用形态 | Electron 桌面应用（主/渲染/preload 三端） | 与规格书一致，贴合桌面 EDA 工具链调用场景 |
 | 产品命名 | MoonGlass，直接初始化于 `D:\tools\MoonGlass\` | 用户确认 |
-| 技术栈 | Electron 41 + React 19 + electron-vite + pnpm workspace + TanStack Router + Tailwind v4 + zustand | 与 Cherry Studio 同代际的业界标准选型，工程自行搭建 |
+| 技术栈 | Electron 41 + React 19 + electron-vite + pnpm workspace + TanStack Router + Tailwind v4 + zustand | 面向桌面 EDA 工具链调用场景的标准工程选型 |
 | 数据持久化 | 骨架期 JSON 文件存储；drizzle schema（§4 五张表）先定义、暂缓接线 | 避免 better-sqlite3 原生编译阻塞骨架进度 |
 | workspace 包分发 | `@moonglass/*` 以 TS 源码直接导出，主进程打包时内联（不外置） | 避免 Node ESM 对无扩展名/TS 源的解析问题 |
 

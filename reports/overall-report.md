@@ -19,7 +19,7 @@ REQ_SPEC → ARCH → RTL → VERIF → QA → SYNTH
 
 设计依据：`ChipForge_Studio_Specification.md`。
 
-与 Cherry Studio 的关系：架构思想借鉴（Electron 主/渲染分层、侧边栏导航、服务生命周期、IPC 契约等通用模式），但**全部代码独立编写，不含 Cherry Studio 源码，不受其 AGPL-3.0 约束**。
+第一方代码全部独立编写；Electron 主/渲染分层、侧边栏导航、服务生命周期和 IPC 契约均按本项目工程规范实现。第三方依赖继续遵循各自许可证。
 
 ---
 

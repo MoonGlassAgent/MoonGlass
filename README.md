@@ -2,11 +2,7 @@
 
 MoonGlass 是一个面向 ASIC/SoC 设计工程师的 AI 工作台：以 **6 阶段开发流程引擎**（REQ_SPEC → ARCH → RTL → VERIF → QA → SYNTH）为骨架，将 LLM Agent、提示词分层约束、Python 脚本引擎与 EDA 工具链（Verible / Yosys / Verilator …）整合进同一个桌面应用。
 
-> 设计依据：[`ChipForge_Studio_Specification.md`](./ChipForge_Studio_Specification.md)
-
-## 与 Cherry Studio 的关系
-
-MoonGlass 在**架构思想**上参考了 Electron 桌面应用的通用工程模式，包括主/渲染进程分层、侧边栏导航、服务生命周期管理与 IPC 契约中心。MoonGlass 第一方代码独立编写，不包含 Cherry Studio 源码，也不是其 Fork。第三方组件适用各自许可证。
+> 设计依据：项目内置的工程规范、阶段门禁与 AIGV 方法学文档。
 
 ## 当前状态：v0.8.6
 
