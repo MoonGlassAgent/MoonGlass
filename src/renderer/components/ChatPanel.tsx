@@ -26,9 +26,9 @@ interface SessionInfo {
   isRunning: boolean
 }
 
-/** VERIF 批次会话名标记（phase-verif--batch-N） */
+/** 编排托管的只读会话名标记：VERIF 批次（phase-verif--batch-N）与 RTL 修复会话（phase-verif--fix-RC-*，M3 §4） */
 function isBatchSession(name: string): boolean {
-  return name.includes('--batch-')
+  return name.includes('--batch-') || name.includes('--fix-')
 }
 
 interface ChatPanelProps {
@@ -350,6 +350,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     abort,
     setModel,
     compactSession,
+    finishAndStartTask,
     restartSessionFresh
   } = useChatStore()
   const [input, setInput] = useState('')
@@ -517,6 +518,21 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     }
   }
 
+  /** M2 §3.3 占用引导动作：压缩当前会话（保留摘要）→ 以同主题开新任务会话 */
+  const handleFinishAndStartTask = async (): Promise<void> => {
+    if (streaming || sessionActionBusy) return
+    if (!window.confirm('收尾当前任务并开新任务会话？\n\nPi 会先压缩当前会话保留关键摘要，然后以同主题开启零历史继承的新任务会话。摘要过程会调用当前模型并产生 Token。')) return
+    setSessionActionBusy(true)
+    try {
+      await finishAndStartTask()
+      setSessionStats(null)
+    } catch {
+      // Store 已将错误写入当前会话消息区。
+    } finally {
+      setSessionActionBusy(false)
+    }
+  }
+
   /** 保存/清除自定义上下文上限：按当前会话模型持久化，随后重取统计刷新显示 */
   const handleSetContextLimit = async (value: number | null): Promise<void> => {
     if (sessionActionBusy) return
@@ -601,6 +617,18 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
                 : `会话 ${formatTokens(sessionStats.tokens.total)} Token · 上下文上限待核实`}
               {typeof sessionStats.cost === 'number' && sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(3)}` : ''}
             </span>
+          )}
+          {/* M2 §3.3：上下文占用 ≥60% 时的引导动作（与主进程 60% 提醒阈值一致） */}
+          {sessionStats && (sessionStats.contextUsage?.percent ?? 0) >= 60 && (
+            <button
+              type="button"
+              onClick={() => void handleFinishAndStartTask()}
+              disabled={!sessionInfo || streaming || sessionActionBusy}
+              className="whitespace-nowrap rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700 hover:bg-amber-100 disabled:opacity-40"
+              title="压缩当前会话保留关键摘要，然后以同主题开启新任务会话"
+            >
+              收尾并开新任务
+            </button>
           )}
           <div className="relative">
             <button

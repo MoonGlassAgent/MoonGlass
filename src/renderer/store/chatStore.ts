@@ -28,6 +28,8 @@ interface ChatState {
   createParallel: (name?: string) => Promise<void>
   /** 开启任务粒度会话（M1）：新任务会话成为前台，零历史继承。title 为任务标题。 */
   startTask: (title?: string) => Promise<void>
+  /** 上下文占用引导动作（M2 §3.3）：压缩当前会话保留摘要后，以同主题开新任务会话。 */
+  finishAndStartTask: () => Promise<void>
   compactSession: () => Promise<void>
   restartSessionFresh: () => Promise<void>
   /** 阶段 purge 后仅清空前端状态；下一次输入时再懒启动空白会话。 */
@@ -210,6 +212,27 @@ export const useChatStore = create<ChatState>((set, get) => {
       try {
         const info = await window.moonglass.agent.startTask(projectId, title ? { title } : undefined)
         // 任务会话零历史继承；旧会话若正在流式已 park 到后台，前台不再是流式状态
+        set({ sessionInfo: info, messages: [], streaming: false, aborting: false, streamTargetId: null })
+      } catch (err) {
+        pushError(set, err)
+        throw err
+      }
+    },
+
+    finishAndStartTask: async () => {
+      const { projectId, streaming } = get()
+      if (!projectId || streaming) return
+      try {
+        // 标题沿用当前会话标签，去掉尾部 " (PHASE)" 后缀；阶段主会话不带任务主题，不传标题
+        const sessions = await window.moonglass.agent.listSessions(projectId).catch(() => [])
+        const active = sessions.find((session) => session.isActive)
+        const title = active && active.name !== 'main'
+          ? active.label.replace(/\s*\([A-Z_]+\)\s*$/, '').trim() || undefined
+          : undefined
+        // 任一步失败即中止后续步骤：压缩失败不开新会话，错误经 pushError 上报
+        await window.moonglass.agent.compactSession(projectId)
+        const info = await window.moonglass.agent.startTask(projectId, title ? { title } : undefined)
+        // 任务会话零历史继承；新会话成为前台
         set({ sessionInfo: info, messages: [], streaming: false, aborting: false, streamTargetId: null })
       } catch (err) {
         pushError(set, err)

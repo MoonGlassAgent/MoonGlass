@@ -35,6 +35,7 @@ import type { AgentModelStore } from './AgentModelStore.ts'
 import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
 import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
+import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
 import { buildArtifactIndexSection } from './artifact-index.ts'
 
@@ -191,8 +192,8 @@ interface PiSession {
   /** 每轮重建的工具活动守护器，避免 Agent 陷入重复读写循环。 */
   watchdog: AgentRunWatchdog
   watchdogActionPending: boolean
-  /** VERIF 会话上下文占用 ≥60% 提醒的一次性标志（回落后重置） */
-  verifContextWarned: boolean
+  /** 会话上下文占用 ≥60% 提醒的一次性标志（<50% 回落后重置；M2 起由 VERIF 推广到全部阶段） */
+  contextWarned: boolean
   /** 最近一次 pi 事件时间戳（停滞检测数据源，事件入口统一刷新，含后台会话） */
   lastEventAt: number
   /** 在飞工具计数（tool_execution_start/end 维护；长耗时工具期间不误判停滞） */
@@ -205,6 +206,8 @@ interface PiSession {
   parkedByPhaseSwitch?: boolean
   /** 后台运行期间是否出现过 LLM 错误（用于完成/失败通知文案） */
   parkedRunFailed?: boolean
+  /** 本会话已确认的 RTL 根因（record_root_cause verdict=confirmed；M3 §4 方案 B）；settle 时派发修复会话，同会话重复登记取最新一条 */
+  pendingRtlFix?: PendingRtlFix
 }
 
 const TOOL_OUTPUT_MAX = 2000
@@ -213,6 +216,8 @@ const UI_HISTORY_MAX = 320
 const STALL_CHECK_INTERVAL_MS = 30_000
 /** 会话目录中保留的最近已完成 VERIF 批次会话数；超出的更老批次才归档进 archive/ */
 const RETAINED_BATCH_SESSIONS = 5
+/** 会话目录中每阶段保留的最近任务会话数（M2 §3.4）；超出的更老任务会话归档进 archive/ */
+const RETAINED_TASK_SESSIONS = 10
 
 export class AgentService implements MoonGlassService {
   readonly name = 'agent-service'
@@ -703,6 +708,13 @@ argument-hint: "<模块名>"
         if (event.type === 'tool_execution_start') session.toolsInFlight += 1
         else if (event.type === 'tool_execution_end') session.toolsInFlight = Math.max(0, session.toolsInFlight - 1)
 
+        // M3 §4 方案 B：record_root_cause verdict=confirmed 是修复会话的唯一触发源。
+        // 修复会话自身（--fix-）不登记，避免修复链失控（修复会话只做"执行+回归"一锤子）。
+        if (!session.activeSessionName.includes('--fix-')) {
+          const confirmedFix = extractConfirmedRtlFix(event)
+          if (confirmedFix) session.pendingRtlFix = confirmedFix
+        }
+
         if (event.type === 'agent_start') {
           session.isStreaming = true
           session.watchdog = new AgentRunWatchdog(session.phase)
@@ -715,6 +727,14 @@ argument-hint: "<模块名>"
           this.stopStallTimer(session)
           // 阶段切换挂后台的会话：settle 后释放进程并通知 UI
           if (session.parkedByPhaseSwitch) this.settleParkedSession(session)
+          // M3 §4：根因已确认的会话 settle 后派发 RTL 修复会话
+          // （前台 settle 与 settleParkedSession 两条路径统一在此覆盖；
+          // 批次会话的 settle 也经此入口，来源进程随后由批次收尾 dispose）。
+          const pendingFix = session.pendingRtlFix
+          if (pendingFix) {
+            session.pendingRtlFix = undefined
+            this.spawnRtlFixSession(session.projectId, session, pendingFix)
+          }
         }
         // 后台运行期间记录 LLM 错误，供 settle 通知区分完成/失败
         if (session.parkedByPhaseSwitch && event.type === 'message_update') {
@@ -770,7 +790,7 @@ argument-hint: "<模块名>"
       isStreaming: false,
       watchdog: new AgentRunWatchdog(phase),
       watchdogActionPending: false,
-      verifContextWarned: false,
+      contextWarned: false,
       lastEventAt: Date.now(),
       toolsInFlight: 0,
       stallTimer: null,
@@ -863,6 +883,8 @@ argument-hint: "<模块名>"
         this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
         this.modelStore.setActiveSession(projectId, session.activeSessionName)
       }
+      // M2 §3.4 兜底触发：项目打开/阶段切换等新建前台会话时顺带做任务会话留存扫描
+      this.archiveTaskSessions(projectId)
     }
 
     return {
@@ -1042,7 +1064,10 @@ argument-hint: "<模块名>"
     )
 
     try {
-      return await this.switchSession(projectId, sessionNameFromFile(newFile))
+      const info = await this.switchSession(projectId, sessionNameFromFile(newFile))
+      // M2 §3.4：新任务会话落盘后做一次留存扫描（开销小、时机确定性）
+      this.archiveTaskSessions(projectId)
+      return info
     } catch (error) {
       rmSync(newFile, { force: true })
       throw error
@@ -1788,6 +1813,220 @@ argument-hint: "<模块名>"
     return { archivedTo, keptForReview }
   }
 
+  // ==================== RTL 修复会话编排（M3，设计文档 §4 方案 B） ====================
+
+  /** 在跑的 RTL 修复会话（参照 activeVerifBatches 独立跟踪）；settle 判定并 dispose 后移除 */
+  private activeRtlFixes = new Map<string, PiSession>()
+
+  /**
+   * 根因确认后的修复会话派发（M3 §4 方案 B）：验证会话 settle 时若登记过
+   * record_root_cause verdict=confirmed（pendingRtlFix），spawn 独立修复会话执行
+   * "已确认修复 + 回归验证"一锤子任务；假设状态机留在验证会话，回归 FAIL 经
+   * follow-up 回验证会话继续诊断。编排复用批次模式：spawn 后摘除前台恢复
+   * previousActive、挂 backgroundSessions（abort/停止覆盖经 M1 扩展自动生效）。
+   * 异步派发：失败仅通知 UI，不影响来源会话的 settle 流程。
+   */
+  private spawnRtlFixSession(projectId: string, source: PiSession, fix: PendingRtlFix): void {
+    void this.runRtlFixSession(projectId, source, fix).catch((error) => {
+      console.warn('[agent-service] RTL 修复会话派发失败', error)
+      this.emit(projectId, {
+        type: 'status',
+        message: `根因 ${fix.rootCauseId} 已确认，但 RTL 修复会话派发失败：${error instanceof Error ? error.message : String(error)}；请在验证会话中继续诊断或手动修复。`
+      }, source.activeSessionName)
+    })
+  }
+
+  /**
+   * 修复会话生命周期：手写会话头（parentSession 血缘指向来源会话文件，复用 startTask
+   * 的头写入模式）→ 后台运行确定性构造的修复 prompt → settle 后 judgeRtlFixOutcome
+   * 判定回归结果 → 结果送达来源会话 → dispose（JSONL 保留，可经会话列表只读回看）。
+   */
+  private async runRtlFixSession(projectId: string, source: PiSession, fix: PendingRtlFix): Promise<void> {
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
+    if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法派发 RTL 修复会话')
+    const workspace = this.workspaceDir(projectId)
+    // 判定基线：派发时刻之前的 scenario_hits 登记属于修复前证据
+    const fixStartedAt = new Date().toISOString()
+
+    // 会话文件：phase-verif--fix-<rootCauseId>；重名追加时间戳（沿用既有做法）
+    let sessionName = `${phaseMainSessionName('VERIF')}--fix-${fix.rootCauseId}`
+    let sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    if (existsSync(sessionFile)) {
+      sessionName = `${sessionName}-${Date.now().toString(36)}`
+      sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    }
+    const now = new Date().toISOString()
+    writeFileSync(sessionFile, [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: randomUUID(),
+        timestamp: now,
+        cwd: workspace,
+        // 会话血缘：指向来源（验证）会话文件（pi 官方格式为会话文件路径）
+        parentSession: resolve(source.currentSessionFile)
+      }),
+      JSON.stringify({ type: 'session_info', id: randomUUID().slice(0, 8), parentId: null, timestamp: now, name: `RTL 修复 ${fix.rootCauseId} (VERIF)` })
+    ].join('\n') + '\n', 'utf-8')
+
+    // 与 runVerifBatch 相同：修复会话作为后台平行会话运行，主会话保持前台
+    const previousActive = this.sessions.get(projectId)
+    let session: PiSession
+    try {
+      session = this.spawnSession(projectId, 'VERIF', project.name, sessionFile)
+    } catch (error) {
+      rmSync(sessionFile, { force: true })
+      throw error
+    }
+    this.sessions.delete(projectId)
+    if (previousActive) this.sessions.set(projectId, previousActive)
+    this.backgroundFor(projectId).set(resolve(sessionFile), session)
+    this.activeRtlFixes.set(projectId, session)
+
+    let judgment: RtlFixJudgment
+    try {
+      await session.client.waitReady()
+      // 修复会话显式继承 VERIF 阶段主会话的模型选择（与批次一致）
+      const providers = this.readyProviders()
+      const inherited = this.modelStore.get(projectId, phaseMainSessionName('VERIF'))
+        ?? (previousActive?.phase === 'VERIF' ? previousActive.selectedModel : null)
+      const selection = inherited && providers.some((p) => p.id === inherited.providerId && p.models.includes(inherited.modelId))
+        ? inherited
+        : { providerId: providers[0]!.id, modelId: providers[0]!.models[0]! }
+      await this.setModelInternal(session, selection.providerId, selection.modelId)
+      this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
+
+      this.emit(projectId, { type: 'status', message: `根因 ${fix.rootCauseId}（${fix.scenarioId}）已确认，RTL 修复会话 ${sessionName} 已派发：执行已确认修复并回归验证。` }, source.activeSessionName)
+      const run = await this.runBatchToSettled(session, buildRtlFixPrompt(workspace, fix), 60 * 60_000)
+      if (run.errorMessage) {
+        judgment = { outcome: 'UNKNOWN', scenarioId: fix.scenarioId, rtlHash: null, evidence: [], reason: `修复会话异常：${run.errorMessage}` }
+      } else if (run.watchdogAbort) {
+        judgment = { outcome: 'UNKNOWN', scenarioId: fix.scenarioId, rtlHash: null, evidence: [], reason: `修复会话被 watchdog 熔断：${run.watchdogAbort}` }
+      } else {
+        judgment = judgeRtlFixOutcome(workspace, fix.scenarioId, fixStartedAt)
+      }
+    } catch (error) {
+      judgment = { outcome: 'UNKNOWN', scenarioId: fix.scenarioId, rtlHash: null, evidence: [], reason: `修复会话执行失败：${error instanceof Error ? error.message : String(error)}` }
+    }
+
+    // 修复会话 settle 后 dispose（释放进程资源；JSONL 保留在会话目录，可只读回看）
+    const background = this.backgroundSessions.get(projectId)
+    const key = resolve(session.currentSessionFile)
+    if (background?.get(key) === session) {
+      background.delete(key)
+      if (background.size === 0) this.backgroundSessions.delete(projectId)
+    }
+    session.client.dispose()
+    this.activeRtlFixes.delete(projectId)
+
+    this.deliverRtlFixOutcome(projectId, source, fix, sessionName, judgment)
+  }
+
+  /**
+   * 修复判定送达（M3 §4.4 回归往返）：优先 follow-up prompt 给来源会话（进程存活且空闲）；
+   * 来源已 dispose 且当前前台属 VERIF 阶段则发给前台；都不可行时仅 UI status 通知
+   * （复用 settleParkedSession 的 status 通知模式，文案按判定区分）。
+   * 内容含判定、证据路径、新 rtlHash 与下一步指引（FIXED→继续选批/回归；
+   * STILL_FAIL/UNKNOWN→回诊断循环开新假设链）。
+   */
+  private deliverRtlFixOutcome(projectId: string, source: PiSession, fix: PendingRtlFix, sessionName: string, judgment: RtlFixJudgment): void {
+    const outcomeLabels: Record<RtlFixJudgment['outcome'], string> = {
+      FIXED: 'FIXED（回归通过）',
+      STILL_FAIL: 'STILL_FAIL（回归仍失败）',
+      UNKNOWN: 'UNKNOWN（无新证据）'
+    }
+    const outcomeLabel = outcomeLabels[judgment.outcome]
+    const guidance = judgment.outcome === 'FIXED'
+      ? '下一步：修复已生效，继续用 select_next_verification_batch 选批执行，或对受影响场景安排回归。'
+      : '下一步：回到诊断循环——在 root-causes.json 开新假设链（refutedHypotheses 链式引用本次记录），确认新根因后会再派发修复会话。'
+    const message = [
+      `[MoonGlass 编排] RTL 修复会话 ${sessionName} 已完成`,
+      `- 根因记录：${fix.rootCauseId}（场景 ${fix.scenarioId}）`,
+      `- 判定：${outcomeLabel}；${judgment.reason}`,
+      `- 新 rtlHash：${judgment.rtlHash ?? '无（未产生新回归证据）'}`,
+      `- 证据路径：${judgment.evidence.length ? judgment.evidence.join('、') : '无'}`,
+      guidance
+    ].join('\n')
+
+    const sourceAlive = this.sessions.get(projectId) === source
+      || this.backgroundSessions.get(projectId)?.get(resolve(source.currentSessionFile)) === source
+    const foreground = this.sessions.get(projectId)
+    const target = sourceAlive ? source : (foreground?.phase === 'VERIF' ? foreground : null)
+    if (target && !target.isStreaming) {
+      void target.client.command({ type: 'prompt', message }, 15 * 60_000)
+        .catch((error) => console.warn('[agent-service] 修复判定 follow-up 发送失败', error))
+      this.emit(projectId, {
+        type: 'status',
+        message: `RTL 修复会话 ${sessionName} 判定 ${outcomeLabel}，结果已送达会话 ${target.activeSessionName}。`
+      }, target.activeSessionName)
+      return
+    }
+    // 来源与前台均不可投递（已 dispose / 正在流式 / 非 VERIF 阶段）：仅 UI 通知
+    this.emit(projectId, {
+      type: 'status',
+      message: `RTL 修复会话 ${sessionName} 判定 ${outcomeLabel}（${fix.scenarioId}）：${judgment.reason}。${judgment.outcome === 'FIXED' ? '可继续选批或安排回归。' : '请回验证会话继续诊断（在 root-causes.json 开新假设链）。'}`
+    }, source.activeSessionName)
+  }
+
+  /**
+   * 任务会话留存扫描（M2，设计文档 §3.4）：泛化 archiveBatchSession 的留存模式——
+   * 每阶段活动目录中 phase-<phase>--task-* 会话文件保留最近 RETAINED_TASK_SESSIONS 个，
+   * 更老的按 mtime 排序复制进 archive/ 后删除原文件，并清理对应模型记录。
+   * 阶段主会话（session-phase-<phase>.jsonl）与批次会话（--batch-，走 archiveBatchSession）
+   * 不归本逻辑管；前台会话、backgroundSessions 挂后台会话与在派 VERIF 批次会话绝不归档。
+   * 归档后的文件不参与会话列表，但仍可由 getSessionMessages 按文件名直达只读回看。
+   */
+  private archiveTaskSessions(projectId: string): void {
+    const dir = this.sessionDir(projectId)
+    // 受保护的存活会话文件：正在运行/挂后台的绝不归档
+    const protectedFiles = new Set<string>()
+    const foreground = this.sessions.get(projectId)
+    if (foreground) protectedFiles.add(resolve(foreground.currentSessionFile))
+    const background = this.backgroundSessions.get(projectId)
+    if (background) {
+      for (const key of background.keys()) protectedFiles.add(resolve(key))
+    }
+    const activeBatch = this.activeVerifBatches.get(projectId)
+    if (activeBatch) protectedFiles.add(resolve(activeBatch.currentSessionFile))
+
+    let entries: string[]
+    try {
+      entries = readdirSync(dir)
+    } catch {
+      return
+    }
+    // 按阶段分组留存：session-phase-<phase>--task-*.jsonl
+    const taskPattern = /^session-(phase-[a-z_]+)--task-.+\.jsonl$/
+    const byPhase = new Map<string, Array<{ name: string; mtimeMs: number }>>()
+    for (const name of entries) {
+      const match = taskPattern.exec(name)
+      if (!match) continue
+      const filePath = join(dir, name)
+      if (protectedFiles.has(resolve(filePath))) continue
+      const group = byPhase.get(match[1]) ?? []
+      group.push({ name, mtimeMs: statSync(filePath).mtimeMs })
+      byPhase.set(match[1], group)
+    }
+    const archiveDir = join(dir, 'archive')
+    const stamp = new Date().toISOString().replace(/[:.]/g, '-')
+    let archiveDirReady = false
+    for (const files of byPhase.values()) {
+      // 与批次归档一致：按修改时间排序（最老在前），仅超出留存数的最老文件进 archive/
+      files.sort((a, b) => a.mtimeMs - b.mtimeMs)
+      const excess = files.slice(0, Math.max(0, files.length - RETAINED_TASK_SESSIONS))
+      for (const item of excess) {
+        if (!archiveDirReady) {
+          mkdirSync(archiveDir, { recursive: true })
+          archiveDirReady = true
+        }
+        copyFileSync(join(dir, item.name), join(archiveDir, `${basename(item.name, '.jsonl')}-${stamp}.jsonl`))
+        rmSync(join(dir, item.name), { force: true })
+        this.modelStore.delete(projectId, sessionNameFromFile(item.name))
+      }
+    }
+  }
+
   /**
    * 用户停止动作（M1 §3.6 停止覆盖扩展）：覆盖该项目全部存活会话——
    * VERIF 批次编排（置停止标记 + 中止在跑批次）、backgroundSessions 中全部
@@ -1921,14 +2160,16 @@ argument-hint: "<模块名>"
   /**
    * 只读窥视指定会话的消息（VERIF 批次可观测性）：直接解析会话 JSONL，
    * 不 attach、不切换会话、不 spawn 进程。会话文件不存在返回空数组而非抛错。
+   * 活动目录没有时回退 archive/（M2 §3.4：归档会话按文件名直达回看，不进会话列表）。
    */
   async getSessionMessages(projectId: string, sessionName: string): Promise<AgentUiMessage[]> {
     if (!sessionName || /[\\/]/.test(sessionName)) throw new Error('无效的会话名称')
     const dir = resolve(this.sessionDir(projectId))
     const targetFile = resolve(dir, `session-${sessionName}.jsonl`)
     if (dirname(targetFile) !== dir) throw new Error('会话路径越界')
-    if (!existsSync(targetFile)) return []
-    return this.mapMessagesForUi(readPiSessionMessages(targetFile))
+    const resolvedFile = existsSync(targetFile) ? targetFile : resolve(dir, 'archive', `session-${sessionName}.jsonl`)
+    if (!existsSync(resolvedFile)) return []
+    return this.mapMessagesForUi(readPiSessionMessages(resolvedFile))
   }
 
   /** pi 消息数组 → 渲染端 UI 消息（超长时只保留最近 UI_HISTORY_MAX 条） */
@@ -1990,17 +2231,18 @@ argument-hint: "<模块名>"
         stats.contextUsage.percent = stats.contextUsage.tokens == null
           ? null
           : Math.min(100, (stats.contextUsage.tokens / metadata.contextWindow) * 100)
-        // VERIF 上下文治理（第 2 批）：60% 提醒（80% 自动压缩由 .pi/settings.json 的 compaction 段负责）
+        // 上下文占用治理（M2 §3.3，由 VERIF 推广到全部阶段）：60% 提醒、<50% 复位滞回
+        // （80% 自动压缩由 .pi/settings.json 的 compaction 段负责）
         const percent = stats.contextUsage.percent
-        if (session.phase === 'VERIF' && percent != null) {
-          if (percent >= 60 && !session.verifContextWarned) {
-            session.verifContextWarned = true
+        if (percent != null) {
+          if (percent >= 60 && !session.contextWarned) {
+            session.contextWarned = true
             this.emit(projectId, {
               type: 'status',
-              message: `VERIF 会话上下文占用已达 ${Math.round(percent)}%；超过 80% 将自动压缩。建议优先读 execution-summary.json，避免整读大 JSON。`
+              message: `当前会话上下文占用已达 ${Math.round(percent)}%；超过 80% 将自动压缩。建议收尾当前任务并开新任务会话（可先压缩保留摘要）。`
             }, session.activeSessionName)
           } else if (percent < 50) {
-            session.verifContextWarned = false
+            session.contextWarned = false
           }
         }
       }
