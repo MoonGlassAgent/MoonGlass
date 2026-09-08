@@ -17,6 +17,8 @@ interface ModelSelection {
 interface AgentModelStoreFile {
   selections: Record<string, ModelSelection>
   activeSessions?: Record<string, string>
+  /** 按模型 ID 持久化的用户自定义上下文上限（自有模型的窗口只有用户知道） */
+  contextWindowOverrides?: Record<string, number>
 }
 
 export class AgentModelStore {
@@ -25,6 +27,7 @@ export class AgentModelStore {
   private storePath = ''
   private selections = new Map<string, ModelSelection>()
   private activeSessions = new Map<string, string>()
+  private contextWindowOverrides = new Map<string, number>()
   private dirty = false
 
   start(): void {
@@ -53,6 +56,11 @@ export class AgentModelStore {
           this.activeSessions.set(projectId, sessionName)
         }
       }
+      for (const [modelId, contextWindow] of Object.entries(data.contextWindowOverrides ?? {})) {
+        if (modelId && Number.isFinite(contextWindow) && contextWindow > 0) {
+          this.contextWindowOverrides.set(modelId, contextWindow)
+        }
+      }
     } catch (err) {
       console.error('[agent-model-store] 读取模型选择存储失败', err)
     }
@@ -62,7 +70,8 @@ export class AgentModelStore {
     if (!this.dirty) return
     const data: AgentModelStoreFile = {
       selections: Object.fromEntries(this.selections),
-      activeSessions: Object.fromEntries(this.activeSessions)
+      activeSessions: Object.fromEntries(this.activeSessions),
+      contextWindowOverrides: Object.fromEntries(this.contextWindowOverrides)
     }
     writeFileSync(this.storePath, JSON.stringify(data, null, 2), 'utf-8')
     this.dirty = false
@@ -91,6 +100,21 @@ export class AgentModelStore {
 
   getActiveSession(projectId: string): string | undefined {
     return this.activeSessions.get(projectId)
+  }
+
+  /** 读取某模型的用户自定义上下文上限（Token） */
+  getContextWindowOverride(modelId: string): number | undefined {
+    return this.contextWindowOverrides.get(modelId.trim())
+  }
+
+  /** 设置/清除某模型的用户自定义上下文上限；null 表示恢复自动判定 */
+  setContextWindowOverride(modelId: string, contextWindow: number | null): void {
+    const key = modelId.trim()
+    if (!key) return
+    if (contextWindow == null) this.contextWindowOverrides.delete(key)
+    else this.contextWindowOverrides.set(key, Math.round(contextWindow))
+    this.dirty = true
+    this.persist()
   }
 
   setActiveSession(projectId: string, sessionName: string): void {

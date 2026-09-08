@@ -42,6 +42,15 @@ function formatTokens(value: number): string {
   return String(value)
 }
 
+/** 解析用户输入的上下文上限：支持 131072 / 128k / 1M 写法；无效返回 null */
+function parseTokenCountInput(raw: string): number | null {
+  const match = raw.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([km])?$/)
+  if (!match) return null
+  const value = Number(match[1]) * (match[2] === 'm' ? 1_000_000 : match[2] === 'k' ? 1_000 : 1)
+  if (!Number.isFinite(value) || value < 1024 || value > 10_000_000) return null
+  return Math.round(value)
+}
+
 function statsTitle(stats: AgentSessionStats): string {
   const lines = [
     `输入 Token：${stats.tokens.input.toLocaleString()}`,
@@ -508,6 +517,31 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     }
   }
 
+  /** 保存/清除自定义上下文上限：按当前会话模型持久化，随后重取统计刷新显示 */
+  const handleSetContextLimit = async (value: number | null): Promise<void> => {
+    if (sessionActionBusy) return
+    setSessionActionBusy(true)
+    setContextLimitError('')
+    try {
+      await window.moonglass.agent.setContextWindowOverride(projectId, value)
+      await refreshSessionStats()
+      setContextLimitEditing(false)
+    } catch (reason) {
+      setContextLimitError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setSessionActionBusy(false)
+    }
+  }
+
+  const submitContextLimit = (): void => {
+    const parsed = parseTokenCountInput(contextLimitDraft)
+    if (parsed == null) {
+      setContextLimitError('请输入有效数字，如 200000、200k 或 1M（1024 ~ 10M）')
+      return
+    }
+    void handleSetContextLimit(parsed)
+  }
+
   // 未配置 Provider 的引导
   if (sessionInfo && !sessionInfo.providersReady) {
     return (
@@ -530,8 +564,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
 
   return (
     <div className="chat-surface flex h-full flex-col">
-      {/* 头部：阶段 Agent + 会话选择 + 模型选择 */}
-      <div className="chat-toolbar flex items-center justify-between border-b border-zinc-200 px-4 py-2">
+      {/* 头部：阶段 Agent + 会话选择 + 模型选择；relative z-40 确保三点菜单不被消息区遮挡（backdrop-filter 会使 toolbar 形成独立层叠上下文） */}
+      <div className="chat-toolbar relative z-40 flex items-center justify-between border-b border-zinc-200 px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-zinc-700">
             🤖 {PHASE_LABELS[phase]}阶段 Agent
@@ -571,7 +605,10 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           <div className="relative">
             <button
               type="button"
-              onClick={() => setSessionMenuOpen((open) => !open)}
+              onClick={() => {
+                if (sessionMenuOpen) setContextLimitEditing(false)
+                setSessionMenuOpen((open) => !open)
+              }}
               disabled={!sessionInfo || streaming || sessionActionBusy}
               className="flex h-7 w-7 items-center justify-center rounded border border-zinc-300 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 disabled:opacity-40"
               title="会话上下文操作"
@@ -582,6 +619,67 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
             {sessionMenuOpen && <div className="absolute right-0 top-8 z-[80] w-64 border border-zinc-200 bg-white py-1 shadow-lg">
               <button type="button" onClick={() => void handleCompactSession()} className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-zinc-50"><Minimize2 size={15} className="mt-0.5 shrink-0 text-blue-600" /><span><b className="block text-xs text-zinc-800">压缩上下文</b><span className="mt-0.5 block text-[10px] text-zinc-500">保留关键摘要，降低上下文占用</span></span></button>
               <button type="button" onClick={() => void handleRestartSessionFresh()} className="flex w-full items-start gap-2 border-t border-zinc-100 px-3 py-2 text-left hover:bg-zinc-50"><RotateCcw size={15} className="mt-0.5 shrink-0 text-amber-600" /><span><b className="block text-xs text-zinc-800">无上下文重启</b><span className="mt-0.5 block text-[10px] text-zinc-500">归档历史，以空白 session 重新开始</span></span></button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextLimitError('')
+                  setContextLimitDraft(String(sessionStats?.contextUsage?.contextWindow ?? ''))
+                  setContextLimitEditing((editing) => !editing)
+                }}
+                className="flex w-full items-start gap-2 border-t border-zinc-100 px-3 py-2 text-left hover:bg-zinc-50"
+              >
+                <Ruler size={15} className="mt-0.5 shrink-0 text-emerald-600" />
+                <span>
+                  <b className="block text-xs text-zinc-800">自定义上下文上限</b>
+                  <span className="mt-0.5 block text-[10px] text-zinc-500">
+                    登记表查不到自有模型时手动指定，按模型记忆
+                    {sessionStats?.contextWindowStatus === 'custom' && sessionStats.contextWindowOverride != null && (
+                      <b className="ml-1 text-emerald-600">当前：{formatTokens(sessionStats.contextWindowOverride)}</b>
+                    )}
+                  </span>
+                </span>
+              </button>
+              {contextLimitEditing && (
+                <div className="border-t border-zinc-100 px-3 py-2">
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      autoFocus
+                      value={contextLimitDraft}
+                      onChange={(event) => {
+                        setContextLimitDraft(event.target.value)
+                        setContextLimitError('')
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') submitContextLimit()
+                      }}
+                      placeholder="如 200000、200k、1M"
+                      disabled={sessionActionBusy}
+                      className="min-w-0 flex-1 rounded border border-zinc-300 px-2 py-1 text-xs outline-none focus:border-blue-500 disabled:opacity-60"
+                    />
+                    <button
+                      type="button"
+                      disabled={sessionActionBusy || !sessionInfo?.selectedModel}
+                      onClick={submitContextLimit}
+                      className="shrink-0 rounded bg-blue-600 px-2 py-1 text-[11px] text-white hover:bg-blue-500 disabled:opacity-40"
+                    >
+                      保存
+                    </button>
+                    {sessionStats?.contextWindowStatus === 'custom' && (
+                      <button
+                        type="button"
+                        disabled={sessionActionBusy}
+                        onClick={() => void handleSetContextLimit(null)}
+                        className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-40"
+                      >
+                        恢复自动
+                      </button>
+                    )}
+                  </div>
+                  {contextLimitError
+                    ? <p className="mt-1 text-[10px] text-red-600">{contextLimitError}</p>
+                    : !sessionInfo?.selectedModel && <p className="mt-1 text-[10px] text-zinc-400">当前会话尚未选择模型</p>}
+                </div>
+              )}
             </div>}
           </div>
           <span className="text-[11px] text-zinc-400">当前会话模型</span>

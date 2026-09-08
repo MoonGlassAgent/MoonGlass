@@ -84,6 +84,7 @@ export const IPC = {
     /** 只读窥视指定会话的消息（解析会话 JSONL，不 attach / 不切换 / 不 spawn） */
     GetSessionMessages: 'agent:get-session-messages',
     GetSessionStats: 'agent:get-session-stats',
+    SetContextWindowOverride: 'agent:set-context-window-override',
     ResetSession: 'agent:reset-session',
     /** 开启任务粒度会话（M1）：新会话零历史继承，会话头带 parentSession 血缘 */
     StartTask: 'agent:start-task',
@@ -199,6 +200,8 @@ export interface MoonGlassApi {
     getSessionMessages(projectId: string, sessionName: string): Promise<AgentUiMessage[]>
     /** 当前活动会话的 Token、费用和上下文窗口统计。 */
     getSessionStats(projectId: string): Promise<AgentSessionStats | null>
+    /** 为当前会话所选模型自定义上下文窗口上限（Token，null 恢复自动判定）；按模型持久化，跨项目生效 */
+    setContextWindowOverride(projectId: string, contextWindow: number | null): Promise<void>
     /** 创建平行会话（不关闭当前会话）。name 可选，默认自动生成 review-<时间戳> */
     resetSession(projectId: string, sessionName?: string): Promise<AgentSessionInfo>
     /** 开启任务粒度会话（M1）：成为前台会话，零历史继承，血缘指向前会话；

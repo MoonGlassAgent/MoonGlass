@@ -582,8 +582,10 @@ export interface AgentSessionStats {  sessionId?: string
     total: number
   }
   cost?: number
-  contextWindowStatus?: 'verified' | 'estimated' | 'unknown'
+  contextWindowStatus?: 'verified' | 'estimated' | 'custom' | 'unknown'
   contextWindowSource?: string
+  /** 用户为当前模型自定义的上下文上限（Token）；存在时优先于登记表与回退值 */
+  contextWindowOverride?: number
   contextUsage?: {
     tokens: number | null
     contextWindow: number

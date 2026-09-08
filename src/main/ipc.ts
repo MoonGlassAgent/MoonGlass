@@ -259,6 +259,10 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     agent.getSessionMessages(projectId, sessionName)
   )
   ipcMain.handle(IPC.Agent.GetSessionStats, (_e, projectId: string) => agent.getSessionStats(projectId))
+  // 用户自定义模型上下文上限（自有模型登记表查不到，由用户指定）
+  ipcMain.handle(IPC.Agent.SetContextWindowOverride, (_e, projectId: string, contextWindow: number | null) =>
+    agent.setContextWindowOverride(projectId, contextWindow)
+  )
 
   ipcMain.handle(IPC.Agent.ResetSession, (_e, projectId: string, sessionName?: string) =>
     agent.resetSession(projectId, sessionName)

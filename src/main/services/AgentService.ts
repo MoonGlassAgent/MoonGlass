@@ -620,8 +620,9 @@ argument-hint: "<模块名>"
       return
     }
     if (existing && !managedByUs) return // 尊重用户自定义 compaction 配置
+    // 用户自定义上限优先（自有模型的窗口登记表里查不到）
     const contextWindow = modelId
-      ? resolveModelContext(modelId)?.contextWindow
+      ? this.modelStore.getContextWindowOverride(modelId) ?? resolveModelContext(modelId)?.contextWindow
       : undefined
     if (!contextWindow) {
       console.warn(`[agent-service] VERIF 会话模型 ${modelId ?? '(未知)'} 上下文窗口未知，compaction 阈值保持 pi 默认`)
@@ -1897,6 +1898,18 @@ argument-hint: "<模块名>"
    * 用户自定义上下文上限：按模型持久化（自有模型的窗口只有用户知道）。
    * 传入 null 恢复自动判定（登记表 → 兼容回退值）。只写存储，不触碰 pi 进程。
    */
+  async setContextWindowOverride(projectId: string, contextWindow: number | null): Promise<void> {
+    const session = this.sessions.get(projectId)
+    if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
+    const modelId = session.selectedModel?.modelId
+    if (!modelId) throw new Error('当前会话尚未选择模型，无法自定义上下文上限')
+    if (contextWindow != null && (!Number.isFinite(contextWindow) || contextWindow < 1024)) {
+      throw new Error('上下文上限必须是不小于 1024 的整数（Token）')
+    }
+    this.modelStore.setContextWindowOverride(modelId, contextWindow)
+    console.log(`[agent-service] 模型 ${modelId} 上下文上限${contextWindow == null ? '恢复自动判定' : `自定义为 ${contextWindow}`}`)
+  }
+
   async getMessages(projectId: string): Promise<AgentUiMessage[]> {
     const session = this.sessions.get(projectId)
     if (!session) return []
@@ -1955,15 +1968,22 @@ argument-hint: "<模块名>"
       // 模型不在上下文登记表时，回退到兼容值（与 pi-bridge 注入给子进程的
       // FALLBACK_MODEL_CONTEXT 一致）。否则 contextUsage 被删除后，UI 会退化为
       // 显示“会话累计 Token”，把 prompt 缓存命中的累计量（可高达数百万）误当作上下文大小。
+      // 用户自定义上限优先于登记表与回退值（自有模型的窗口只有用户知道）。
+      const override = session.selectedModel
+        ? this.modelStore.getContextWindowOverride(session.selectedModel.modelId)
+        : undefined
       const metadata = session.selectedModel
-        ? resolveModelContext(session.selectedModel.modelId) ?? FALLBACK_MODEL_CONTEXT
+        ? override
+          ? { ...(resolveModelContext(session.selectedModel.modelId) ?? FALLBACK_MODEL_CONTEXT), contextWindow: override, source: '用户自定义', verified: false }
+          : resolveModelContext(session.selectedModel.modelId) ?? FALLBACK_MODEL_CONTEXT
         : null
+      stats.contextWindowOverride = override
       if (!metadata) {
         delete stats.contextUsage
         stats.contextWindowStatus = 'unknown'
         return stats
       }
-      stats.contextWindowStatus = metadata.verified ? 'verified' : 'estimated'
+      stats.contextWindowStatus = override ? 'custom' : metadata.verified ? 'verified' : 'estimated'
       stats.contextWindowSource = metadata.source
       if (stats.contextUsage) {
         stats.contextUsage.contextWindow = metadata.contextWindow
