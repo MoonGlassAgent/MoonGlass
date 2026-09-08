@@ -361,7 +361,9 @@ function LlmProviderSection(): React.JSX.Element {
                     </span>
                     <span className="text-xs text-zinc-500">
                       {testResult.ok
-                        ? `HTTP ${testResult.status ?? 200}，发现 ${testResult.availableModelCount ?? 0} 个模型`
+                        ? testResult.availableModelCount !== undefined
+                          ? `HTTP ${testResult.status ?? 200}，发现 ${testResult.availableModelCount} 个模型`
+                          : `HTTP ${testResult.status ?? 200}，已逐一探测 ${testResult.models.length} 个配置模型`
                         : testResult.error ?? '未知连接错误'}
                     </span>
                   </div>
@@ -587,19 +589,22 @@ function EdaDetectSection(): React.JSX.Element {
                       <strong className="text-sm text-zinc-700">{tool.tool}</strong>
                       <span className={`environment-importance importance-${tool.importance}`}>{tool.importance === 'required' ? '必要' : tool.importance === 'recommended' ? '推荐' : '可选'}</span>
                       <span className={tool.found ? 'text-xs text-emerald-700' : 'text-xs text-zinc-400'}>{tool.found ? '已就绪' : '未找到'}</span>
+                      {tool.found && <span className="rounded border border-zinc-200 px-1.5 py-0.5 text-[10px] text-zinc-500">{tool.source === 'bundled' ? 'MoonGlass 内置' : tool.source === 'managed' ? 'MoonGlass 管理安装' : '系统环境'}</span>}
+                      {!tool.found && tool.builtin && <span className="rounded border border-red-200 px-1.5 py-0.5 text-[10px] text-red-600">内置组件异常</span>}
                     </div>
                     <p className="mt-0.5 text-xs text-zinc-500">{tool.description}</p>
                     {tool.found && (
                       <p className="mt-0.5 truncate font-mono text-[10px] text-zinc-400" title={tool.path}>{tool.version ?? tool.path}</p>
                     )}
+                    {!tool.found && tool.builtin && <p className="mt-0.5 text-xs text-red-600">该工具应随 MoonGlass 提供，请重新安装或更换完整软件包。</p>}
                   </div>
-                  {!tool.found && tool.installId && (
+                  {!tool.found && !tool.builtin && tool.installId && (
                     <button onClick={() => void installBundle(tool.installId!)} disabled={installing !== null} className="environment-install-button">
                       <Download size={13} />
                       {installing === tool.installId ? '安装中…' : tool.installId === 'python-cocotb' ? '安装 Cocotb' : '安装工具包'}
                     </button>
                   )}
-                  {!tool.found && !tool.installId && tool.installUrl && (
+                  {!tool.found && !tool.builtin && !tool.installId && tool.installUrl && (
                     <button onClick={() => void window.moonglass.eda.openInstallPage(tool.installUrl!)} className="environment-install-button" title="打开官方安装指南">
                       <ExternalLink size={14} />
                       安装指南

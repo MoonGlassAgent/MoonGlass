@@ -12,10 +12,12 @@
  * - 底部面板功能化
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
+import { APP_INFO } from '@shared/app-info'
 import {
   AlertTriangle,
+  ArrowRight,
   Bot,
   Box,
   ChevronDown,
@@ -48,6 +50,7 @@ import { FileTree } from '../components/FileTree'
 import { CodeViewer, fileLanguage } from '../components/CodeViewer'
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import { useChatStore } from '../store/chatStore'
+import { deriveVerificationActions, deriveVerificationSteps, type GuidanceState } from '../verification-guidance'
 
 const BOTTOM_TABS = [
   { id: 'problems', label: '问题', icon: AlertTriangle },
@@ -64,18 +67,74 @@ const MAX_BOTTOM = 400
 
 interface ManagedStep {
   phase: Phase
-  status: 'running' | 'completed' | 'failed'
+  status: 'running' | 'completed' | 'completed_with_risk' | 'failed'
   detail: string
 }
 
-const MANAGED_PHASE_PROMPTS: Record<Phase, string> = {
+const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+const isManagedPause = (message: string): boolean => /用户停止托管|托管已暂停|L3\/L4 高影响/.test(message)
+
+function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasic, onCorner, onSignoff }: { projectId: string; agentStreaming: boolean; onAction: (prompt: string) => void; onPlanEnv: () => void; onBasic: () => void; onCorner: () => void; onSignoff: () => void }): React.JSX.Element {
+  const [state, setState] = useState<GuidanceState | null>(null)
+  const [loading, setLoading] = useState(true)
+  const load = useCallback(async () => {
+    setLoading(true)
+    let data: GuidanceState | null = null
+    try {
+      data = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-posture.json') as GuidanceState | null
+      // posture 是机器可读快照；被 Agent 覆盖成摘要时会缺失 verificationIntents，回退到完整 state.json
+      if (data && !Array.isArray(data.verificationIntents)) data = null
+    } catch { data = null }
+    if (!data) {
+      try { data = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-state.json') as GuidanceState | null } catch { data = null }
+    }
+    setState(data)
+    setLoading(false)
+  }, [projectId])
+  useEffect(() => { void load() }, [load])
+  const steps = useMemo(() => deriveVerificationSteps(state), [state])
+  const actions = useMemo(() => state ? deriveVerificationActions(state) : [], [state])
+  const primary = actions[0]
+  const current = steps.find((step) => step.status === 'blocked') ?? steps.find((step) => step.status === 'running') ?? steps.at(-1)!
+  return <div className="mt-3 border-t border-zinc-100 pt-3">
+    <div className="flex items-center gap-3">
+      <span className="shrink-0 text-xs font-medium text-zinc-500">VERIF 状态：</span>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">{steps.map((step, index) => <div key={step.id} className="flex min-w-0 items-center gap-1.5"><span title={`${step.label}：${step.detail}`} className={`flex min-w-0 items-center gap-1 rounded px-2 py-1 text-[10px] ${step.status === 'completed' ? 'bg-emerald-50 text-emerald-700' : step.status === 'blocked' ? 'bg-red-50 text-red-700' : step.status === 'running' ? 'bg-amber-50 text-amber-700' : 'bg-zinc-50 text-zinc-400'}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${step.status === 'completed' ? 'bg-emerald-500' : step.status === 'blocked' ? 'bg-red-500' : step.status === 'running' ? 'bg-amber-500' : 'bg-zinc-300'}`} /><span className="truncate">{step.label}</span></span>{index < steps.length - 1 && <ArrowRight size={10} className="shrink-0 text-zinc-300" />}</div>)}</div>
+      <button onClick={() => void load()} disabled={loading} className="rounded border border-zinc-200 p-1.5 text-zinc-400 hover:text-zinc-700" title="刷新 VERIF 状态"><RefreshCw size={12} className={loading ? 'animate-spin' : ''} /></button>
+    </div>
+    <div className="mt-2 flex items-center gap-3 bg-zinc-50 px-3 py-2">
+      <div className="min-w-0 flex-1"><span className={`text-xs font-medium ${current.status === 'blocked' ? 'text-red-700' : 'text-zinc-700'}`}>当前：{current.label}</span><span className="ml-2 text-xs text-zinc-500">{current.detail}</span><span className="ml-3 text-xs text-zinc-400">下一步：{primary?.title ?? '生成 AIGV 验证规划'}</span></div>
+      {primary && <button disabled={agentStreaming} onClick={() => onAction(primary.prompt)} className="shrink-0 rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50"><Play size={12} className="mr-1 inline" />{primary.title}</button>}
+      <div className="flex shrink-0 overflow-hidden rounded border border-zinc-200 bg-white">
+        <button onClick={onPlanEnv} disabled={agentStreaming} title="验证点登记 + 环境搭建 + 冒烟验收（W0）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">① 规划与环境</button>
+        <button onClick={onBasic} disabled={agentStreaming} title="规格映射矩阵条款逐条闭环（W1）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50">② 基础功能</button>
+        <button onClick={onCorner} disabled={agentStreaming} title="按主题波执行 corner 场景（W2）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-violet-700 hover:bg-violet-50 disabled:opacity-50">③ 增补验证</button>
+        <button onClick={onSignoff} disabled={agentStreaming} title="覆盖率/Formal/Mutation/残余风险审批（W3）" className="px-2.5 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">④ 签核</button>
+      </div>
+    </div>
+  </div>
+}
+
+// 注意：VERIF 不在此表——VERIF 托管走"主会话规划 → 主进程批级派发 → 主会话终审"
+// 三段式（MANAGED_VERIF_PLANNING_PROMPT / runVerifBatches / MANAGED_VERIF_REVIEW_PROMPT）
+const MANAGED_PHASE_PROMPTS: Record<Exclude<Phase, 'VERIF'>, string> = {
   REQ_SPEC: '完成需求-规格定义：审查项目目标，补齐产品需求、模块规格、接口规格和需求-规格追溯矩阵，消除占位内容并执行文档检查。',
   ARCH: '完成架构设计：根据已批准需求规格更新总体架构、模块划分、接口、时钟复位和寄存器设计，并检查需求追溯。简单单模块/单时钟复位设计可将说明合并在 architecture.md；仅在复杂微架构、多时钟、多复位或 CDC/RDC 场景单独创建 microarchitecture.md、clock_reset.md。',
   RTL: '完成 RTL 开发：依据架构实现或修复 RTL，维护 design.json/filelist，运行 Lint、可综合性和必要的 CDC 检查，修复全部 Error。',
-  VERIF: '完成验证闭环：更新验证计划和覆盖率计划，搭建或修复验证环境，执行相关回归，保存真实日志、JUnit、结果和波形，并更新追溯。',
   QA: '完成质量检查：执行变更审查、代码 Review、检查清单、Lint/CDC/回归证据核对，修复阻断问题并形成 QA 报告。',
   SYNTH: '完成综合评估：检查约束，生成 SDC，执行逻辑综合，汇总网表、单元、面积和时序估算及警告；明确区分估算与正式签核。'
 }
+
+// VERIF 托管（上下文治理第 3 批）：主会话只做规划与最终审查；
+// 批次场景由主进程经 runVerifBatches 逐批 spawn 平行会话执行，完成判定绑定工具登记证据。
+const MANAGED_VERIF_PLANNING_PROMPT =
+  '完成验证规划与环境准备：更新验证计划和覆盖率计划，搭建或修复验证环境并跑通一次基础回归确认环境可用；' +
+  '调用 build_verification_intelligence 生成风险候选与结构事实，圈定真实验证点并用 register_verification_intents 登记（锚定真实 riskIds/requirementIds/rtlSignals）。' +
+  '场景批次执行由 MoonGlass 主进程编排派发到独立批次会话，本会话只做规划，不要逐批执行场景回归。'
+const MANAGED_VERIF_REVIEW_PROMPT =
+  'VERIF 批次执行已结束。读取 verification/intelligence/execution-summary.json 核对批次结果与证据增量；' +
+  '调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始测试、日志、result.json 和覆盖率证据，存在阻断项时继续修复并回归；' +
+  '最后用实际机器可读产物和原始证据更新 docs/04_verification/ 文档、需求追溯和 docs/06_validation/ 验证报告。'
 
 function pendingDecisionRequests(): AgentDecisionRequest[] {
   const messages = useChatStore.getState().messages
@@ -226,6 +285,7 @@ export function WorkspacePage(): React.JSX.Element {
   const [managedSteps, setManagedSteps] = useState<ManagedStep[]>([])
   const [managedReportPath, setManagedReportPath] = useState('')
   const managedStopRef = useRef(false)
+  const openingFilesRef = useRef(new Set<string>())
   const [changeDialogOpen, setChangeDialogOpen] = useState(false)
   const [changeType, setChangeType] = useState<'requirement' | 'specification' | 'bug'>('bug')
   const [changeSourcePhase, setChangeSourcePhase] = useState<Phase>('RTL')
@@ -235,9 +295,13 @@ export function WorkspacePage(): React.JSX.Element {
   const [viewerFontSize, setViewerFontSize] = useState(() => Number(localStorage.getItem('moonglass:viewer-font-size')) || 13)
   const [markdownPreview, setMarkdownPreview] = useState(true)
   const agentStreaming = useChatStore((s) => s.streaming)
-  const sendAgentPrompt = useChatStore((s) => s.send)
+  // 切走后仍在后台执行的阶段（阶段栏据此显示运行标记）
+  const backgroundRunningPhases = useChatStore((s) => s.sessionInfo?.backgroundRunningPhases)
+  const sendAgentPrompt = useChatStore((s) => s.sendAndWait)
   const ensureAgent = useChatStore((s) => s.ensure)
   const abortAgent = useChatStore((s) => s.abort)
+  const startAgentTask = useChatStore((s) => s.startTask)
+  const clearAgentAfterPhasePurge = useChatStore((s) => s.clearAfterPhasePurge)
 
   const reload = useCallback(async () => {
     setProject(await window.moonglass.project.get(projectId))
@@ -268,7 +332,10 @@ export function WorkspacePage(): React.JSX.Element {
 
   const openFile = async (reference: string): Promise<void> => {
     const location = parseFileLocation(reference)
-    const relPath = location.path
+    const workspace = project?.workspacePath?.replace(/\\/g, '/').replace(/\/$/, '')
+    const relPath = workspace && location.path.toLowerCase().startsWith(`${workspace.toLowerCase()}/`)
+      ? location.path.slice(workspace.length + 1)
+      : location.path
     if (location.line && /\.md$/i.test(relPath)) setMarkdownPreview(false)
     if (/\.(vcd|fst)$/i.test(relPath)) {
       try {
@@ -293,13 +360,25 @@ export function WorkspacePage(): React.JSX.Element {
       else { appendLog(`🌐 已打开: ${relPath}`); return }
     }
     if (!openFiles.some((f) => f.path === relPath)) {
-      const result = await window.moonglass.fs.readFile(projectId, relPath)
-      setOpenFiles((files) => [
-        ...files,
-        result
-          ? { path: relPath, content: result.content, truncated: result.truncated, ...location, revealKey: Date.now() }
-          : { path: relPath, content: '（无法读取该文件）', truncated: false, ...location, revealKey: Date.now() }
-      ])
+      if (openingFilesRef.current.has(relPath)) return
+      openingFilesRef.current.add(relPath)
+      try {
+        const result = await window.moonglass.fs.readFile(projectId, relPath)
+        setOpenFiles((files) => files.some((file) => file.path === relPath) ? files : [
+          ...files,
+          result
+            ? { path: relPath, content: result.content, truncated: result.truncated, line: location.line, column: location.column, revealKey: Date.now() }
+            : { path: relPath, content: '（无法读取该文件）', truncated: false, line: location.line, column: location.column, revealKey: Date.now() }
+        ])
+      } catch (error) {
+        const text = `文件打开失败：${relPath}：${error instanceof Error ? error.message : String(error)}`
+        appendLog(text)
+        setFileNotice({ ok: false, text })
+        window.setTimeout(() => setFileNotice(null), 5000)
+        return
+      } finally {
+        openingFilesRef.current.delete(relPath)
+      }
     } else if (location.line) {
       setOpenFiles((files) => files.map((file) => file.path === relPath
         ? { ...file, line: location.line, column: location.column, revealKey: Date.now() }
@@ -409,6 +488,11 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handleEnterPhase = async (to: Phase): Promise<void> => {
     if (!project || project.currentPhase === to) return
+    // 切换阶段不再中断正在运行的 Agent（转后台续跑）；托管中仍需确认，
+    // 因为托管流程依赖阶段推进顺序，手动切换会打乱编排
+    if (managedRunning) {
+      if (!window.confirm('一键托管进行中，托管流程依赖阶段推进顺序，手动切换阶段可能打乱编排。确认切换？')) return
+    }
     try {
       const entered = await window.moonglass.phase.enter(projectId, to)
       if (entered) {
@@ -476,31 +560,101 @@ export function WorkspacePage(): React.JSX.Element {
     }
   }
 
-  // ---- 验证操作 ----
-  const handleSetupEnv = async (): Promise<void> => {
-    appendLog('🔧 开始搭建验证环境...')
+  // ---- 验证操作（波段化 W0-W3，与态势页波段进度一一对应） ----
+  const handlePlanEnv = async (): Promise<void> => {
+    appendLog('开始验证规划与环境搭建（W0）...')
     try {
       await sendAgentPrompt(
-        '请按 MoonGlass 验证目录规范搭建环境：\n' +
-        '1. 先使用 verification-planning 技能检查并补齐 docs/04_verification/ 三份计划\n' +
-        '2. 使用 collect_rtl_files 读取 rtl/design.json 与 rtl/filelist.f，确认 DUT 和 topModule\n' +
-        '3. 使用 cocotb-verification 技能为各 DUT 创建 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/\n' +
-        '4. 使用技能校验脚本验证环境结构；不要把测试代码或构建产物写入 rtl/\n' +
-        '5. 完成后汇总创建的环境、待实现测试和发现的规格缺口'
+        '请完成验证规划与环境搭建。停止边界是“验证点已登记、环境可编译、冒烟通过”，不要执行基础功能批次、增补验证或签核：\n' +
+        '1. 使用 verification-planning 技能校验 docs/04_verification/ 三份基线计划与六份 AIGV 文档\n' +
+        '2. 用 collect_rtl_files 读取 rtl/design.json 与 filelist.f，确认 DUT、topModule 和真实 RTL 范围\n' +
+        '3. 调用 build_verification_intelligence 生成风险候选、结构事实与规格映射矩阵；穷举候选只是参考，不是任务清单\n' +
+        '4. 阅读 risk-register.json 与 structural-model.json 并结合规格语义，圈定 5~10 个真实验证点（点名具体信号、失效反例、判定标准，声明 wave/topic 标签），调用 register_verification_intents 登记；被 REJECTED 的锚点必须修正后重登，不得绕过；Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
+        '5. 审查 module-verification-strategy.json 并按分层搭建验证环境；优先复用 IP 库 VIP/BFM；定向测试与 SCN-ID 绑定（testcase 命名含 scn_<8位hex>），scenario_hits.json 由 run_simulation 自动登记，禁止手写\n' +
+        '6. 冒烟验收（W0）：reset、接口连通、一个正常事务经 run_simulation 真实执行通过（环境自检不绑 scenarioIds）；冒烟不过则环境不算就绪\n' +
+        '7. 完成后列出登记的验证点、模块分层、环境入口和冒烟结果，然后停止'
       )
-      appendLog('✅ 验证环境搭建指令已发送')
+      appendLog('验证规划与环境搭建任务已完成')
     } catch (err) {
-      appendLog(`❌ 指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
-  const handleRunRegression = async (): Promise<void> => {
-    appendLog('🚀 开始完整验证回归...')
+  const handleResetPhase = async (phase: Phase, mode: 'archive' | 'purge'): Promise<void> => {
     try {
-      await sendAgentPrompt('请对工作区所有 RTL 模块完成规范验证闭环：\n1. 使用 verification-planning 技能校验 docs/04_verification/ 三份计划\n2. collect_rtl_files 扫描，并运行 run_verible_lint、check_synthesizability\n3. 使用 cocotb-verification 技能创建 verification/<module>_tb/ 标准环境\n4. 对每个 DUT 调用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus", trace=true)，不要自行编写临时 runner 绕过工具\n5. 确认 verification/results/<module>/ 中有 compile.log、simulation.log、results.xml、result.json 和波形\n6. 更新需求追踪与 docs/06_validation/ 验证报告')
-      appendLog('✅ 验证回归指令已发送')
+      const preview = await window.moonglass.phase.previewReset(projectId, phase, mode)
+      const pathList = preview.paths.length > 0 ? preview.paths.map((path) => `  - ${path}`).join('\n') : '  - 当前没有阶段产物'
+      const sizeMb = (preview.totalBytes / 1024 / 1024).toFixed(2)
+      const action = mode === 'archive' ? '归档并重新开始' : '永久清除'
+      const confirmed = window.confirm(
+        `${action}“${PHASE_LABELS[phase]}”？\n\n将处理 ${preview.fileCount} 个文件（${sizeMb} MB）：\n${pathList}\n\n${mode === 'purge' ? '该阶段会话历史也将清除；不会自动重新开始，需由你在会话中输入或使用一键托管。\n' : ''}上游阶段成果会保留；已完成的后续阶段将标记黄色变更提醒。`
+      )
+      if (!confirmed) return
+      if (mode === 'purge' && !window.confirm('这是不可恢复的彻底清除。确认永久删除上述阶段产物？')) return
+      const result = await window.moonglass.phase.reset(projectId, phase, mode)
+      setProject(result.project)
+      setGate(null)
+      setTreeTick((tick) => tick + 1)
+      setMainTab('chat')
+      if (mode === 'purge') clearAgentAfterPhasePurge()
+      appendLog(
+        mode === 'archive'
+          ? `已归档 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件到 ${result.archivePath}，并以空白会话重新开始`
+          : `已彻底清除 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件及阶段会话；未自动重新开始`
+      )
+    } catch (error) {
+      appendLog(`阶段处理失败: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const handleBasicValidation = async (): Promise<void> => {
+    appendLog('开始 W1 基础功能验证...')
+    try {
+      await sendAgentPrompt(
+        '请完成 W1 基础功能验证：目标是规格映射矩阵中每条可验证条款（simulation/static 通道）都有 happy path 证据。停止边界是“条款全部有执行证据或明确缺口记录”，不要做增补验证（W2）或签核（W3）：\n' +
+        '1. 读取 execution-summary.json 的 specMapping；引擎已为未覆盖条款派生 CLAUSE_DERIVED 候选，逐条确认，或用 register_verification_intents 补充更准确的验证点\n' +
+        '2. 用 select_next_verification_batch 按聚类选批；同组场景一次 authoring 多条 testcase，run_simulation(scenarioIds=[...]) 一次绑定登记，scenario_hits 与态势由工具自动更新\n' +
+        '3. 失败时按 diagnostic-control 提升诊断等级，确认根因后调用 record_root_cause；L3/L4 影响必须发起用户决策\n' +
+        '4. 完成后报告条款覆盖（coveredClause/clauseTotal）与仍未闭合条款清单，然后停止'
+      )
+      appendLog('基础功能验证任务已完成')
     } catch (err) {
-      appendLog(`❌ 指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleCornerWaves = async (): Promise<void> => {
+    appendLog('开始 W2 增补验证（按主题波）...')
+    try {
+      await sendAgentPrompt(
+        '请完成 W2 增补验证：按主题波执行 corner 场景。停止边界是“各主题波闭环或探索饱和”，不要进入签核（W3）：\n' +
+        '1. 读取 execution-summary.json 的 waveProgress W2 主题列表（错误注入/边界/并发碰撞/性能等），逐主题推进\n' +
+        '2. 每个主题用 select_next_verification_batch 选聚类组（同模块同 Oracle 域），组内一次 authoring 多条 testcase，run_simulation(scenarioIds=[...]) 一次绑定登记\n' +
+        '3. 执行后参考再聚类建议（reclusterSuggestions）调整分组；formal-candidate 用 run_formal_verification 补强（BMC PASS 不算证明）\n' +
+        '4. 未覆盖项按 C1-C6 分类处置；探索连续无语义新增即饱和收手并说明\n' +
+        '5. 执行派生状态由工具证据派生，record_scenario_adjudication 仅用于规格澄清/豁免（WAIVED 需已有具名审批）；失败根因确认后调用 record_root_cause\n' +
+        '6. 完成后报告各主题波闭环情况与残余风险，然后停止'
+      )
+      appendLog('增补验证任务已完成')
+    } catch (err) {
+      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+    }
+  }
+
+  const handleSignoff = async (): Promise<void> => {
+    appendLog('开始 W3 签核...')
+    try {
+      await sendAgentPrompt(
+        '请完成 W3 签核。停止边界是“签核包生成且独立证据审查有结论”：\n' +
+        '1. 运行覆盖率签核回归（Windows 用 run_simulation mode="cpp" 采集行/条件/翻转/FSM 覆盖率），确认达标或把缺口按 C1-C6 分类记录\n' +
+        '2. 完成 required Formal 义务；工具限制记入残余风险，不得伪称失败也不得把有限深度 BMC 说成证明\n' +
+        '3. 核对 Multi-Oracle 冲突与关键场景的独立判定域覆盖；Mutation survivor 未经批准默认阻断\n' +
+        '4. 残余风险逐项处理：优先用证据关闭，确需豁免的等待用户在 signoff-approvals.json 中具名审批，Agent 不得代替用户写审批\n' +
+        '5. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始证据；输出签核结论（READY_FOR_HUMAN_SIGNOFF / CONDITIONALLY_READY / NOT_READY）、证据包路径与遗留项，然后停止'
+      )
+      appendLog('签核任务已完成')
+    } catch (err) {
+      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
   }
 
@@ -536,16 +690,38 @@ export function WorkspacePage(): React.JSX.Element {
     }
   }
 
+  const handleVerificationGuidanceAction = async (prompt: string): Promise<void> => {
+    setMainTab('chat')
+    appendLog('已按验证态势推荐动作交给主 Agent…')
+    try {
+      await sendAgentPrompt(prompt)
+      appendLog('验证推荐动作已完成，请刷新 VERIF 状态或验证态势')
+    } catch (error) {
+      appendLog(`验证推荐动作失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
   const runManagedAgent = async (instruction: string): Promise<void> => {
-    await sendAgentPrompt(
-      `【MoonGlass 一键托管】\n${instruction}\n\n` +
+    const prompt = `【MoonGlass 一键托管】\n${instruction}\n\n` +
       '托管规则：直接检查并修改实际项目文件，调用本阶段适用工具完成验证，所有结论必须引用真实证据。' +
       '不要等待人工确认；存在多个方案时优先采用明确标记的推荐方案，其次采用风险最低且可回退的方案，并在总结中记录选择。' +
-      '不得伪造 EDA 结果，不得把估算称为签核。完成后列出修改文件、执行命令、结果和遗留风险。'
-    )
+      'RTL 修复按 L1-L4 分级：L1/L2 可直接修改并自动完成定向复现、受影响回归、全量回归和独立证据 Review；只有 L3 架构影响或 L4 规格影响才暂停确认，并将决策标题以 [L3] 或 [L4] 开头。' +
+      '不得删除失败用例、削弱 Checker/Assertion/覆盖率目标、扩大无关项范围，或无规格依据修改测试预期。不得伪造 EDA 结果，不得把估算称为签核。完成后列出修改文件、影响等级、执行命令、结果和遗留风险。'
+    let lastError = ''
+    for (let attempt = 1; attempt <= 3; attempt += 1) {
+      try { await sendAgentPrompt(prompt); lastError = ''; break } catch (error) {
+        lastError = error instanceof Error ? error.message : String(error)
+        if (isManagedPause(lastError) || managedStopRef.current) throw error
+        appendLog(`一键托管：Agent 执行异常，第 ${attempt}/3 次重试：${lastError}`)
+        if (attempt < 3) await wait(attempt * 1500)
+      }
+    }
+    if (lastError) throw new Error(`Agent 重试后仍失败：${lastError}`)
     for (let round = 0; round < 6; round += 1) {
       const pending = pendingDecisionRequests()
       if (pending.length === 0) return
+      const highImpact = pending.filter((request) => /\[L[34]\]|架构影响|规格影响/.test(`${request.title} ${request.prompt ?? ''}`))
+      if (highImpact.length > 0) throw new Error(`托管已暂停：存在 ${highImpact.length} 个 L3/L4 高影响决策等待用户裁决`)
       const response = serializeDecisionResponses(pending.map((request) => {
         const recommended = request.options.filter((option) => option.recommended)
         const selected = recommended.length > 0 ? recommended : request.options.slice(0, 1)
@@ -555,13 +731,21 @@ export function WorkspacePage(): React.JSX.Element {
           customText: '一键托管自动决策：采用推荐方案；无明确推荐时采用第一项，并要求保留可回退性。'
         }
       }))
-      await sendAgentPrompt(response)
+      let sent = false
+      for (let attempt = 1; attempt <= 3 && !sent; attempt += 1) {
+        try { await sendAgentPrompt(response); sent = true } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          appendLog(`一键托管：自动决策回传失败，第 ${attempt}/3 次重试：${message}`)
+          if (attempt < 3) await wait(attempt * 1000)
+          else throw error
+        }
+      }
     }
     throw new Error('Agent 连续产生过多待确认项，已停止托管以防止决策循环')
   }
 
   const writeManagedReport = async (
-    outcome: 'completed' | 'stopped' | 'failed',
+    outcome: 'completed' | 'completed_with_risk' | 'paused' | 'stopped' | 'failed',
     startedAt: string,
     steps: ManagedStep[],
     error?: string
@@ -576,15 +760,15 @@ export function WorkspacePage(): React.JSX.Element {
     const content = `# MoonGlass 一键托管报告\n\n` +
       `- 项目：${latest?.name ?? project?.name ?? projectId}\n` +
       `- 开始时间：${startedAt}\n- 结束时间：${finishedAt}\n` +
-      `- 结果：${outcome === 'completed' ? '已完成' : outcome === 'stopped' ? '用户停止' : '执行失败'}\n` +
+      `- 结果：${outcome === 'completed' ? '完整通过' : outcome === 'completed_with_risk' ? '带遗留风险完成（未签核）' : outcome === 'paused' ? '等待高影响决策' : outcome === 'stopped' ? '用户停止' : '执行失败'}\n` +
       `- 托管终点：${PHASE_LABELS[managedEndPhase]}\n` +
       `- 最终阶段：${latest ? PHASE_LABELS[latest.currentPhase] : '未知'}\n` +
       (error ? `- 停止原因：${error}\n` : '') +
       `\n## 阶段执行记录\n\n${steps.map((step) => `- [${step.status === 'completed' ? 'x' : ' '}] ${PHASE_LABELS[step.phase]}：${step.detail}`).join('\n')}\n` +
       `\n## 门禁与质量证据\n\n| 阶段 | 检查项 | 结果 | 级别 | 说明 |\n|---|---|---|---|---|\n${gates.join('\n') || '| - | 尚无门禁记录 | - | - | - |'}\n` +
-      `\n## 自动决策策略\n\n托管期间优先采用 Agent 明确标记的推荐项；无推荐项时采用第一项并要求保持可回退。所有自动选择保留在 Agent 会话历史中。\n` +
-      `需求-规格定义和架构设计阶段的门禁在三次自动修复后仍失败时，不中断托管；失败项作为遗留风险保留并自动推进。RTL、验证、质量检查和综合实现阶段继续执行严格阻断。\n` +
-      `\n## 遗留风险\n\n${outcome === 'completed' ? '请人工复核关键架构决策、第三方 IP 许可证，以及正式 PPA/CDC/STA 签核条件。' : `托管未完整结束，必须处理停止原因后再继续：${error ?? '用户主动停止'}。`}\n`
+      `\n## 自动决策与 RTL 修复策略\n\n托管期间优先采用 Agent 明确标记的推荐项；无推荐项时采用第一项并要求保持可回退。L1/L2 RTL 修复允许自动闭环；L3 架构影响和 L4 规格影响必须暂停等待用户裁决。所有自动选择、RTL 修改、影响等级和证据保留在 Agent 会话历史中。\n` +
+      `普通 Agent/工具异常会自动重试；所有阶段的门禁在多轮自动修复后仍失败时，作为未签核风险保留并继续推进。只有用户停止、模型不可用或 L3/L4 高影响决策会暂停流程。\n` +
+      `\n## 遗留风险\n\n${outcome === 'completed' ? '请人工复核关键架构决策、第三方 IP 许可证，以及正式 PPA/CDC/STA 签核条件。' : outcome === 'completed_with_risk' ? '流程已运行到目标阶段，但存在上表所列失败门禁或工具异常；本结果不得作为签核。' : `托管未完整结束，必须处理停止原因后再继续：${error ?? '用户主动停止'}。`}\n`
     await window.moonglass.fs.writeText(projectId, path, content)
     setTreeTick((tick) => tick + 1)
     setManagedReportPath(path)
@@ -604,8 +788,9 @@ export function WorkspacePage(): React.JSX.Element {
     const startedAt = new Date().toISOString()
     const steps: ManagedStep[] = []
     setManagedSteps([])
-    let outcome: 'completed' | 'stopped' | 'failed' = 'completed'
+    let outcome: 'completed' | 'completed_with_risk' | 'paused' | 'stopped' | 'failed' = 'completed'
     let failure = ''
+    let totalRisks = 0
     try {
       await ensureAgent(projectId)
       if (!useChatStore.getState().sessionInfo?.providersReady) throw new Error('模型会话未就绪，请先配置并测试模型服务')
@@ -624,22 +809,58 @@ export function WorkspacePage(): React.JSX.Element {
           await ensureAgent(projectId)
         }
         await ensureAgent(projectId)
-        if (active.phases[phase].changeNotice?.status === 'pending') {
-          await runManagedAgent(buildChangeResponsePrompt(active, phase))
-          await window.moonglass.phase.acknowledgeChange(projectId, phase, '一键托管已完成该阶段变更响应')
+        // M1 托管自动切换（设计文档 §3.1 托管模式）：每个阶段的托管运行在独立
+        // 任务会话中执行（零历史继承，血缘指向上一会话），不污染阶段主会话；
+        // 触发点复用现有按阶段触发点，不新造交付物检测逻辑。失败时沿用当前会话继续。
+        try {
+          await startAgentTask(`一键托管 ${phase} 阶段`)
+        } catch (error) {
+          appendLog(`一键托管：开启任务会话失败，沿用当前会话：${error instanceof Error ? error.message : String(error)}`)
         }
-        await runManagedAgent(MANAGED_PHASE_PROMPTS[phase])
+        if (active.phases[phase].changeNotice?.status === 'pending') {
+          try {
+            await runManagedAgent(buildChangeResponsePrompt(active, phase))
+            await window.moonglass.phase.acknowledgeChange(projectId, phase, '一键托管已完成该阶段变更响应')
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error)
+            if (isManagedPause(message)) throw error
+            totalRisks += 1; step.detail = `变更响应异常已记录：${message}`
+            appendLog(`一键托管：${PHASE_LABELS[phase]} 变更响应异常，记录风险并继续：${message}`)
+          }
+        }
+        try {
+          if (phase === 'VERIF') {
+            // 第 3 批：VERIF 风险闭环改为“主会话规划 → 主进程逐批 spawn 批次会话执行 → 主会话最终审查”
+            await runManagedAgent(MANAGED_VERIF_PLANNING_PROMPT)
+            if (managedStopRef.current) throw new Error('用户停止托管')
+            const loop = await window.moonglass.agent.runVerifBatches(projectId)
+            appendLog(`一键托管：VERIF 批次编排完成 ${loop.batches.length} 批（${loop.stoppedBy}）：${loop.message}`)
+            if (loop.stoppedBy !== 'exhausted') {
+              totalRisks += 1
+              step.detail = `VERIF 批次编排中止（${loop.stoppedBy}）：${loop.message}`
+            }
+            if (managedStopRef.current) throw new Error('用户停止托管')
+            await runManagedAgent(MANAGED_VERIF_REVIEW_PROMPT)
+          } else {
+            await runManagedAgent(MANAGED_PHASE_PROMPTS[phase])
+          }
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error)
+          if (isManagedPause(message)) throw error
+          totalRisks += 1; step.detail = `阶段 Agent 异常已记录：${message}`
+          appendLog(`一键托管：${PHASE_LABELS[phase]} Agent 异常，记录风险并继续检查门禁：${message}`)
+        }
         if (managedStopRef.current) throw new Error('用户停止托管')
 
         if (phase === 'SYNTH') {
           const completed = await window.moonglass.phase.completeProject(projectId)
-          if (!completed) throw new Error('综合阶段无法完成项目收口')
-          setProject(completed)
+          if (completed) setProject(completed)
+          else { totalRisks += 1; step.detail = '综合阶段未能完成项目收口，已作为遗留风险记录' }
         } else {
           const next = PHASE_ORDER[index + 1]
           let advanced = false
           let carriedGateIssues = 0
-          for (let attempt = 0; attempt < 3 && !advanced; attempt += 1) {
+          for (let attempt = 0; attempt < 4 && !advanced; attempt += 1) {
             const result = await window.moonglass.phase.advance(projectId, next)
             if (!result) throw new Error(`推进到 ${PHASE_LABELS[next]} 失败`)
             setProject(result.project)
@@ -649,34 +870,36 @@ export function WorkspacePage(): React.JSX.Element {
               break
             }
             const failed = result.gate.results.filter((item) => item.severity === 'error' && !item.passed)
-            if (attempt === 2) {
-              if (phase === 'REQ_SPEC' || phase === 'ARCH') {
-                const forced = await window.moonglass.phase.advance(projectId, next, { force: true })
-                if (!forced) throw new Error(`无法带遗留项推进到 ${PHASE_LABELS[next]}`)
-                carriedGateIssues = failed.length
-                setProject(forced.project)
-                setGate(forced.gate)
-                appendLog(
-                  `⚠️ 一键托管：${PHASE_LABELS[phase]} 门禁仍有 ${failed.length} 个阻断项，已记录遗留风险并继续推进`
-                )
-                advanced = true
-                break
-              }
-              throw new Error(`${PHASE_LABELS[phase]} 门禁重试后仍有 ${failed.length} 个阻断项`)
+            if (attempt === 3) {
+              const forced = await window.moonglass.phase.advance(projectId, next, { force: true })
+              if (!forced) throw new Error(`无法带遗留项推进到 ${PHASE_LABELS[next]}`)
+              carriedGateIssues = failed.length
+              totalRisks += failed.length
+              setProject(forced.project)
+              setGate(forced.gate)
+              appendLog(`一键托管：${PHASE_LABELS[phase]} 门禁仍有 ${failed.length} 个阻断项，已标记未签核并继续推进`)
+              advanced = true
+              break
             }
-            await runManagedAgent(`修复以下门禁阻断项并重新执行相关检查：\n${failed.map((item) => `- ${item.checkName}：${item.message}`).join('\n')}`)
+            try {
+              await runManagedAgent(`这是第 ${attempt + 1}/3 轮门禁恢复。分析根因，采用与上一轮不同的修复策略，修复后重新执行相关检查：\n${failed.map((item) => `- ${item.checkName}：${item.message}`).join('\n')}`)
+            } catch (error) {
+              const message = error instanceof Error ? error.message : String(error)
+              if (isManagedPause(message)) throw error
+              appendLog(`一键托管：门禁恢复 Agent 异常，继续下一轮：${message}`)
+            }
           }
           if (carriedGateIssues > 0) {
             step.detail = `阶段任务已完成；${carriedGateIssues} 个门禁阻断项作为遗留风险带入后续阶段`
           }
         }
-        step.status = 'completed'
-        if (!step.detail.includes('遗留风险')) step.detail = '阶段任务及门禁已完成'
+        step.status = step.detail.includes('风险') || step.detail.includes('异常') ? 'completed_with_risk' : 'completed'
+        if (step.status === 'completed') step.detail = '阶段任务及门禁已完成'
         setManagedSteps([...steps])
       }
     } catch (error) {
       failure = error instanceof Error ? error.message : String(error)
-      outcome = failure === '用户停止托管' ? 'stopped' : 'failed'
+      outcome = failure === '用户停止托管' ? 'stopped' : /托管已暂停|L3\/L4/.test(failure) ? 'paused' : 'failed'
       const running = steps.findLast((step) => step.status === 'running')
       if (running) {
         running.status = 'failed'
@@ -684,8 +907,9 @@ export function WorkspacePage(): React.JSX.Element {
       }
       setManagedSteps([...steps])
     } finally {
+      if (outcome === 'completed' && totalRisks > 0) outcome = 'completed_with_risk'
       const path = await writeManagedReport(outcome, startedAt, steps, failure)
-      appendLog(`${outcome === 'completed' ? '✅' : '⚠️'} 一键托管${outcome === 'completed' ? '完成' : '停止'}，报告：${path}`)
+      appendLog(`${outcome === 'completed' ? '一键托管完整通过' : outcome === 'completed_with_risk' ? `一键托管带 ${totalRisks} 项风险完成（未签核）` : '一键托管已暂停'}，报告：${path}`)
       setManagedRunning(false)
       await reload()
     }
@@ -693,7 +917,9 @@ export function WorkspacePage(): React.JSX.Element {
 
   const stopManagedRun = async (): Promise<void> => {
     managedStopRef.current = true
-    if (useChatStore.getState().streaming) await abortAgent()
+    // M1 §3.6：主进程 abort 已覆盖该项目全部存活会话（前台 + 后台任务会话 + VERIF 批次编排）
+    // 无条件 abort：停止时前台通常空闲（在等批次/后台任务），按 streaming 判断会漏掉后台任务会话
+    await abortAgent()
   }
 
   const createChangeRequest = async (): Promise<void> => {
@@ -730,7 +956,7 @@ export function WorkspacePage(): React.JSX.Element {
         '6. 汇总网表、单元数量、面积、时序估算、警告和报告路径\n' +
         '注意区分通用单元统计、Liberty 映射估算与正式 STA 签核结果'
       )
-      appendLog('✅ 综合指令已发送')
+      appendLog('综合评估任务已完成')
     } catch (err) {
       appendLog(`❌ 综合指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
     }
@@ -837,6 +1063,13 @@ export function WorkspacePage(): React.JSX.Element {
             {generatingDashboard ? '正在生成…' : '生成总体报告'}
           </button>
           <Link
+            to="/verification-posture/$projectId"
+            params={{ projectId }}
+            className="rounded border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
+          >
+            验证态势
+          </Link>
+          <Link
             to="/design-browser/$projectId"
             params={{ projectId }}
             className="rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100"
@@ -849,8 +1082,8 @@ export function WorkspacePage(): React.JSX.Element {
             <Bot size={14} className="shrink-0 text-blue-600" />
             <span className="shrink-0 font-medium text-blue-800">{managedRunning ? '托管进行中' : '最近托管'}</span>
             {managedSteps.map((step) => (
-              <span key={step.phase} className={`shrink-0 rounded px-2 py-1 ${step.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : step.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-white text-blue-700'}`} title={step.detail}>
-                {PHASE_LABELS[step.phase]} {step.status === 'completed' ? '✓' : step.status === 'failed' ? '!' : '…'}
+              <span key={step.phase} className={`shrink-0 rounded px-2 py-1 ${step.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : step.status === 'completed_with_risk' ? 'bg-amber-100 text-amber-700' : step.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-white text-blue-700'}`} title={step.detail}>
+                {PHASE_LABELS[step.phase]} {step.status === 'completed' ? '✓' : step.status === 'completed_with_risk' ? '!' : step.status === 'failed' ? '×' : '…'}
               </span>
             ))}
             {managedReportPath && <button onClick={() => void openFile(managedReportPath)} className="ml-auto shrink-0 text-blue-700 underline">查看托管报告</button>}
@@ -865,6 +1098,8 @@ export function WorkspacePage(): React.JSX.Element {
           onCompleteProject={() => void handleCompleteProject()}
           onFixGateIssues={(phase, results) => void handleFixGateIssues(phase, results)}
           onRespondChange={(phase) => void handleRespondChange(phase)}
+          onResetPhase={(phase, mode) => void handleResetPhase(phase, mode)}
+          backgroundRunningPhases={backgroundRunningPhases}
           gate={gate}
         />
 
@@ -888,26 +1123,7 @@ export function WorkspacePage(): React.JSX.Element {
           </div>
         )}
 
-        {project.currentPhase === 'VERIF' && (
-          <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">
-            <span className="text-xs font-medium text-zinc-500">验证操作：</span>
-            <button
-              onClick={() => void handleSetupEnv()}
-              disabled={agentStreaming}
-              className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
-            >
-              🔧 搭建验证环境
-            </button>
-            <button
-              onClick={() => void handleRunRegression()}
-              disabled={agentStreaming}
-              className="rounded border border-emerald-200 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100 disabled:opacity-50"
-            >
-              🚀 完成验证回归
-            </button>
-            {agentStreaming && <span className="text-xs text-amber-600">Agent 运行中…</span>}
-          </div>
-        )}
+        {project.currentPhase === 'VERIF' && <VerifStatusBar projectId={project.id} agentStreaming={agentStreaming} onAction={(prompt) => void handleVerificationGuidanceAction(prompt)} onPlanEnv={() => void handlePlanEnv()} onBasic={() => void handleBasicValidation()} onCorner={() => void handleCornerWaves()} onSignoff={() => void handleSignoff()} />}
 
         {project.currentPhase === 'SYNTH' && (
           <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">
@@ -1129,7 +1345,7 @@ export function WorkspacePage(): React.JSX.Element {
         <span>
           阶段处理: {PHASE_ORDER.filter((p) => ['completed', 'skipped'].includes(project.phases[p].status)).length}/{PHASE_ORDER.length}
         </span>
-        <span className="ml-auto">MoonGlass v0.5 · 六阶段 ASIC 开发链</span>
+        <span className="ml-auto">MoonGlass v{APP_INFO.version} · 六阶段 ASIC 开发链</span>
       </footer>
     </div>
   )
@@ -1174,6 +1390,31 @@ interface ProjectInventory {
   artifacts: string[]
 }
 
+interface VerificationIntelligenceSummary {
+  scenarioCount: number
+  criticalOpen: string[]
+  regressions: Array<{ passed: boolean }>
+  scenarios: Array<{
+    id: string
+    title: string
+    priority: number
+    method: string
+    status: string
+    evidence: string[]
+  }>
+  analyzer?: { engine: string; version?: string; limitations: string[] }
+  interactionGraph?: {
+    nodes: Array<{ id: string; kind: string; label: string; source?: { file: string; line?: number } }>
+    edges: Array<{ id: string; from: string; to: string; type: string; confidence: string }>
+  }
+  executionPlan?: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; priority: number; reason: string }>
+  formalResults?: Array<{ resultFile: string; status: string; mode: string; scenarioId?: string; traces: string[] }>
+  specGaps?: Array<{ id: string; category: string; title: string; confidence: string }>
+  verificationIntents?: Array<{ id: string; scenarioId: string; objective: string; status: string; priority: number; recommendedMethods: string[]; boundaries: Array<{ object: string; values: string[] }> }>
+  coverageHoles?: Array<{ id: string; scenarioId: string; classification: string; confidence: string; reason: string; recommendedAction: string; blocking: boolean }>
+  structuralSummary?: { fsm: number; cfgNodes: number; dependencies: number; cones: number; protocols: Array<{ protocol: string; module: string }> }
+}
+
 const EMPTY_INVENTORY: ProjectInventory = {
   rtl: [], logs: [], waveforms: [], verification: [], synthesis: [], artifacts: []
 }
@@ -1191,6 +1432,8 @@ function BottomPanel({
   const [inventory, setInventory] = useState<ProjectInventory>(EMPTY_INVENTORY)
   const [loading, setLoading] = useState(false)
   const [waveformStatus, setWaveformStatus] = useState('')
+  const [intelligence, setIntelligence] = useState<VerificationIntelligenceSummary | null>(null)
+  const [intelligenceView, setIntelligenceView] = useState<'scenario' | 'intent' | 'holes' | 'interaction' | 'schedule' | 'formal'>('scenario')
 
   const refreshInventory = useCallback(async () => {
     setLoading(true)
@@ -1198,6 +1441,13 @@ function BottomPanel({
       const files = flattenFiles(await window.moonglass.fs.tree(projectId))
       const verification = files.filter((file) => /(^|\/)verification\//i.test(file))
       const synthesis = files.filter((file) => /(^|\/)imp\/(constraints|synthesis)\//i.test(file))
+      const intelligencePath = 'verification/intelligence/verification-state.json'
+      if (files.includes(intelligencePath)) {
+        try {
+          const result = await window.moonglass.fs.readFile(projectId, intelligencePath)
+          setIntelligence(result ? JSON.parse(result.content) as VerificationIntelligenceSummary : null)
+        } catch { setIntelligence(null) }
+      } else setIntelligence(null)
       setInventory({
         rtl: files.filter((file) => /(^|\/)rtl\/.*\.(v|sv)$/i.test(file)),
         logs: files.filter((file) => /\.(log|out)$/i.test(file)),
@@ -1313,11 +1563,109 @@ function BottomPanel({
     return (
       <div className="flex h-full flex-col">
         {toolbar}
-        <div className="mb-2 grid grid-cols-3 gap-2">
+        <div className="mb-2 grid grid-cols-6 gap-2">
           <ConsoleMetric label="验证产物" value={inventory.verification.length} />
-          <ConsoleMetric label="波形" value={inventory.waveforms.length} />
-          <ConsoleMetric label="RTL 文件" value={inventory.rtl.length} />
+          <ConsoleMetric label="Scenario" value={intelligence?.scenarioCount ?? 0} />
+          <ConsoleMetric label="关键未闭环" value={intelligence?.criticalOpen.length ?? 0} />
+          <ConsoleMetric label="Formal 证据" value={intelligence?.formalResults?.length ?? 0} />
+          <ConsoleMetric label="验证意图" value={intelligence?.verificationIntents?.length ?? 0} />
+          <ConsoleMetric label="规格缺口" value={intelligence?.specGaps?.length ?? 0} />
         </div>
+        {intelligence && (
+          <div className="mb-2 flex items-center gap-1" aria-label="验证智能视图">
+            {([['scenario', '风险场景'], ['intent', '验证意图'], ['holes', '覆盖缺口'], ['interaction', '交互图'], ['schedule', '执行队列'], ['formal', 'Formal']] as const).map(([value, label]) => (
+              <button key={value} onClick={() => setIntelligenceView(value)} className={`console-action ${intelligenceView === value ? 'border-emerald-500 text-emerald-600' : ''}`}>{label}</button>
+            ))}
+            <span className="ml-auto truncate text-[10px] text-zinc-400" title={intelligence.analyzer?.limitations.join('；')}>分析器：{intelligence.analyzer?.engine ?? '旧版模型'}{intelligence.analyzer?.version ? ` · ${intelligence.analyzer.version}` : ''}</span>
+          </div>
+        )}
+        {intelligence?.structuralSummary && <div className="mb-2 truncate text-[10px] text-zinc-400" title={intelligence.structuralSummary.protocols.map((item) => `${item.module}:${item.protocol}`).join('；')}>FSM {intelligence.structuralSummary.fsm} · CFG {intelligence.structuralSummary.cfgNodes} · 依赖 {intelligence.structuralSummary.dependencies} · COI {intelligence.structuralSummary.cones} · 协议 {intelligence.structuralSummary.protocols.length}</div>}
+        {!intelligence && (
+          <div className="console-empty mb-2 flex items-center justify-between gap-3">
+            <span>尚未生成 Verification Intelligence 模型。</span>
+            <button
+              onClick={() => onAskAgent('请调用 build_verification_intelligence，基于当前规格、RTL 结构事实和覆盖率反馈生成风险与 Scenario 看板，并说明最高优先级场景的选择依据。')}
+              disabled={agentStreaming}
+              className="console-action shrink-0"
+            >
+              生成智能验证模型
+            </button>
+          </div>
+        )}
+        {intelligence && intelligenceView === 'scenario' && intelligence.scenarios.length > 0 && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Verification Intelligence Scenario 看板">
+            {intelligence.scenarios.slice(0, 12).map((scenario) => (
+              <button
+                key={scenario.id}
+                onDoubleClick={() => onOpenFile(scenario.evidence?.[0] ?? 'verification/intelligence/scenario-registry.json')}
+                className="console-row w-full text-left"
+                title="双击打开完整 Scenario Registry"
+              >
+                <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{scenario.id}</strong>
+                <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{scenario.title}</span>
+                <span className="shrink-0 font-mono text-[10px] text-zinc-500">P={scenario.priority.toFixed(3)}</span>
+                <span className={`shrink-0 text-[10px] ${['VERIFIED', 'FORMAL_PROVED', 'WAIVED'].includes(scenario.status) ? 'text-emerald-600' : scenario.status === 'FAILED' ? 'text-red-600' : 'text-amber-600'}`}>{scenario.status}</span>
+              </button>
+            ))}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'interaction' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Feature Interaction Graph">
+            {(intelligence.interactionGraph?.edges ?? []).slice(0, 40).map((edge) => {
+              const source = intelligence.interactionGraph?.nodes.find((node) => node.id === edge.from)?.source
+              return <button key={edge.id} onDoubleClick={() => source?.file && onOpenFile(source.file)} className="console-row w-full text-left" title={source?.file ? '双击跳转到结构证据' : edge.id}>
+                <strong className="shrink-0 font-mono text-[10px] text-sky-600">{edge.type}</strong>
+                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{edge.from} → {edge.to}</span>
+                <span className="shrink-0 text-[10px] text-zinc-400">{edge.confidence}</span>
+              </button>
+            })}
+            {(intelligence.interactionGraph?.edges.length ?? 0) === 0 && <div className="console-empty">当前没有可展示的交互边。</div>}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'intent' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Verification Intent">
+            {(intelligence.verificationIntents ?? []).slice(0, 30).map((intent) => <button key={intent.id} onDoubleClick={() => onOpenFile('verification/intelligence/verification-intent-registry.json')} className="console-row w-full text-left" title="双击打开完整 Verification Intent Registry">
+              <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{intent.id}</strong>
+              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{intent.objective}</span>
+              <span className="shrink-0 text-[10px] text-sky-600">{intent.recommendedMethods.join(' + ')}</span>
+              <span className="shrink-0 text-[10px] text-zinc-500">边界 {intent.boundaries.length}</span>
+              <span className="shrink-0 text-[10px] text-amber-600">{intent.status}</span>
+            </button>)}
+            {(intelligence.verificationIntents?.length ?? 0) === 0 && <div className="console-empty">尚未生成 Verification Intent。</div>}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'holes' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Coverage Hole 分类">
+            {(intelligence.coverageHoles ?? []).slice(0, 30).map((hole) => <button key={hole.id} onDoubleClick={() => onOpenFile('verification/intelligence/coverage-hole-register.json')} className="console-row w-full text-left" title={`${hole.reason} ${hole.recommendedAction}`}>
+              <strong className={`shrink-0 font-mono text-[11px] ${hole.blocking ? 'text-red-600' : 'text-amber-600'}`}>{hole.classification}</strong>
+              <span className="shrink-0 font-mono text-[10px] text-zinc-500">{hole.scenarioId}</span>
+              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{hole.reason}</span>
+              <span className="shrink-0 text-[10px] text-zinc-400">{hole.confidence}</span>
+            </button>)}
+            {(intelligence.coverageHoles?.length ?? 0) === 0 && <div className="console-empty">当前没有待处理的 Coverage Hole。</div>}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'schedule' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="验证执行队列">
+            {(intelligence.executionPlan ?? []).map((plan) => <div key={plan.scenarioId} className="console-row" title={plan.reason}>
+              <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{plan.scenarioId}</strong>
+              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{plan.sequence}</span>
+              <span className="shrink-0 text-[10px] text-zinc-500">{plan.iterations} 次 · {plan.budgetSeconds}s</span>
+            </div>)}
+            {(intelligence.executionPlan?.length ?? 0) === 0 && <div className="console-empty">关键 Scenario 已闭环，当前没有待调度任务。</div>}
+          </div>
+        )}
+        {intelligence && intelligenceView === 'formal' && (
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Formal 验证证据">
+            {(intelligence.formalResults ?? []).map((result) => <button key={result.resultFile} onDoubleClick={() => onOpenFile(result.resultFile)} className="console-row w-full text-left" title="双击打开 formal-result.json">
+              <strong className={`shrink-0 font-mono text-[11px] ${result.status === 'PASS' ? 'text-emerald-600' : result.status === 'FAIL' ? 'text-red-600' : 'text-amber-600'}`}>{result.status}</strong>
+              <span className="shrink-0 text-[10px] text-zinc-500">{result.mode}</span>
+              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{result.scenarioId ?? result.resultFile}</span>
+              <span className="shrink-0 text-[10px] text-zinc-400">trace {result.traces.length}</span>
+            </button>)}
+            {(intelligence.formalResults ?? []).length === 0 && <div className="console-empty">尚无 Formal 证据。Formal Candidate 可由主 Agent 使用 SymbiYosys 执行。</div>}
+          </div>
+        )}
         {inventory.waveforms.length > 0 && (
           <div className="console-list mb-2 max-h-24 overflow-y-auto">
             {inventory.waveforms.map((file) => (

@@ -1,0 +1,1079 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>MoonGlass AIGV 2.0 — 自主验证系统架构白皮书</title>
+  <meta name="description" content="MoonGlass AIGV 2.0 技术白皮书：面向 ASIC IP 的自主验证系统架构、Verification Space Model、Scenario Schema 与工程实现规格。">
+  <meta name="author" content="MoonGlass Contributors">
+  <style>
+    :root {
+      --ink: #1a1d23;
+      --muted: #5f6b7a;
+      --line: #d0d7e0;
+      --paper: #ffffff;
+      --soft: #f4f6f9;
+      --blue: #155fa0;
+      --green: #14765a;
+      --orange: #a65314;
+      --red: #b93838;
+      --violet: #5e3fa0;
+      --code: #17202b;
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: #e9edf2;
+      color: var(--ink);
+      font: 16px/1.75 Georgia, "Noto Serif SC", "Source Han Serif SC", "Microsoft YaHei", serif;
+      letter-spacing: 0;
+    }
+    .paper {
+      width: min(1180px, calc(100% - 28px));
+      margin: 28px auto;
+      background: var(--paper);
+      box-shadow: 0 4px 24px rgba(31,41,55,0.12);
+    }
+    .masthead {
+      padding: 54px 72px 38px;
+      border-top: 8px solid var(--code);
+      border-bottom: 1px solid var(--line);
+      background: linear-gradient(180deg, #fff 0%, #f8fafc 100%);
+    }
+    .kicker {
+      color: var(--blue);
+      font: 700 13px/1.4 system-ui, -apple-system, sans-serif;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+    .masthead h1 {
+      max-width: 980px;
+      margin: 14px 0 18px;
+      font-size: 38px;
+      line-height: 1.25;
+      font-weight: 700;
+    }
+    .subtitle {
+      max-width: 930px;
+      color: #3d4a5a;
+      font-size: 20px;
+      line-height: 1.5;
+    }
+    .meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px 24px;
+      margin-top: 28px;
+      color: var(--muted);
+      font: 14px/1.6 system-ui, sans-serif;
+    }
+    .notice {
+      margin-top: 24px;
+      padding: 13px 16px;
+      border-left: 4px solid var(--orange);
+      background: #fff8ec;
+      color: #65411f;
+      font-size: 14px;
+      border-radius: 0 6px 6px 0;
+    }
+    .layout {
+      display: grid;
+      grid-template-columns: 260px minmax(0, 1fr);
+    }
+    .toc {
+      position: sticky;
+      top: 0;
+      align-self: start;
+      max-height: 100vh;
+      overflow: auto;
+      padding: 30px 22px;
+      border-right: 1px solid var(--line);
+      font: 13px/1.5 system-ui, sans-serif;
+      background: #fafbfd;
+    }
+    .toc b {
+      display: block;
+      margin-bottom: 10px;
+      color: var(--ink);
+      font-size: 14px;
+    }
+    .toc a {
+      display: block;
+      padding: 5px 7px;
+      border-left: 2px solid transparent;
+      color: #4a5565;
+      text-decoration: none;
+      transition: all 0.15s;
+    }
+    .toc a:hover {
+      border-color: var(--blue);
+      background: #eef5fb;
+      color: var(--blue);
+    }
+    article {
+      min-width: 0;
+      padding: 38px 64px 72px;
+    }
+    h2 {
+      margin: 48px 0 18px;
+      padding-bottom: 8px;
+      border-bottom: 2px solid #27313d;
+      font-size: 27px;
+      line-height: 1.35;
+      font-weight: 700;
+    }
+    h2:first-child { margin-top: 0; }
+    h3 {
+      margin: 32px 0 12px;
+      font-size: 20px;
+      font-weight: 600;
+    }
+    h4 {
+      margin: 24px 0 8px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+    p { margin: 9px 0 15px; }
+    .abstract {
+      padding: 22px 24px;
+      border: 1px solid var(--line);
+      background: var(--soft);
+      border-radius: 8px;
+    }
+    .keywords {
+      margin-top: 15px;
+      font-size: 14px;
+    }
+    .lead {
+      font-size: 18px;
+      color: #303b48;
+      line-height: 1.6;
+    }
+    .callout {
+      margin: 20px 0;
+      padding: 16px 18px;
+      border-left: 4px solid var(--blue);
+      background: #eef6fc;
+      border-radius: 0 6px 6px 0;
+    }
+    .callout.green {
+      border-color: var(--green);
+      background: #edf8f4;
+    }
+    .callout.orange {
+      border-color: var(--orange);
+      background: #fff7eb;
+    }
+    .callout.red {
+      border-color: var(--red);
+      background: #fff1f1;
+    }
+    .callout.violet {
+      border-color: var(--violet);
+      background: #f5f0ff;
+    }
+    table {
+      width: 100%;
+      margin: 18px 0 26px;
+      border-collapse: collapse;
+      font-size: 14px;
+      line-height: 1.65;
+    }
+    th, td {
+      padding: 10px 12px;
+      border: 1px solid var(--line);
+      text-align: left;
+      vertical-align: top;
+    }
+    th {
+      background: #edf1f5;
+      font-family: system-ui, sans-serif;
+      font-weight: 600;
+    }
+    tr:nth-child(even) td { background: #fafbfc; }
+    .flow {
+      margin: 22px 0;
+      padding: 20px;
+      overflow: auto;
+      border: 1px solid #303b47;
+      background: var(--code);
+      color: #e9eef5;
+      font: 14px/1.8 Consolas, monospace;
+      white-space: pre;
+      border-radius: 8px;
+    }
+    .figure {
+      margin: 24px 0;
+      padding: 20px;
+      border: 1px solid var(--line);
+      background: #fbfcfd;
+      border-radius: 8px;
+    }
+    .figure-title {
+      margin-top: 12px;
+      color: var(--muted);
+      font-size: 13px;
+      text-align: center;
+      font-family: system-ui, sans-serif;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+    }
+    .grid div, .grid-3 div {
+      min-height: 92px;
+      padding: 14px;
+      border: 1px solid #cfd8e3;
+      background: #fff;
+      font: 14px/1.55 system-ui, sans-serif;
+      border-radius: 6px;
+    }
+    .grid b, .grid-3 b {
+      display: block;
+      margin-bottom: 6px;
+      color: var(--blue);
+      font-size: 15px;
+    }
+    .chain {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: stretch;
+      gap: 6px;
+      margin: 20px 0;
+      font: 13px/1.45 system-ui, sans-serif;
+    }
+    .chain span {
+      display: flex;
+      align-items: center;
+      min-height: 54px;
+      padding: 8px 14px;
+      border: 1px solid #b9c7d7;
+      background: #f5f8fb;
+      border-radius: 6px;
+    }
+    .chain i {
+      align-self: center;
+      color: #8793a1;
+      font-style: normal;
+    }
+    .equation {
+      margin: 16px 0;
+      padding: 14px 18px;
+      background: #f5f7fa;
+      text-align: center;
+      font: 16px Consolas, monospace;
+      border-radius: 6px;
+    }
+    .schema {
+      margin: 18px 0;
+      padding: 18px;
+      overflow: auto;
+      background: var(--code);
+      color: #e5edf5;
+      font: 13px/1.65 Consolas, monospace;
+      white-space: pre;
+      border-radius: 8px;
+    }
+    .caption {
+      color: var(--muted);
+      font-size: 13px;
+      font-family: system-ui, sans-serif;
+    }
+    .small {
+      font-size: 14px;
+      color: #4b5563;
+    }
+    ol, ul { padding-left: 25px; }
+    li { margin: 6px 0; }
+    .refs { font-size: 14px; }
+    .refs li { margin-bottom: 10px; }
+    .badge {
+      display: inline-block;
+      padding: 2px 8px;
+      border-radius: 4px;
+      font: 12px/1.4 system-ui, sans-serif;
+      margin-right: 4px;
+    }
+    .badge-blue { background: #dbeafe; color: #1e40af; }
+    .badge-green { background: #d1fae5; color: #065f46; }
+    .badge-orange { background: #ffedd5; color: #9a3412; }
+    .badge-red { background: #fee2e2; color: #991b1b; }
+    .badge-violet { background: #ede9fe; color: #5b21b6; }
+    code {
+      padding: 2px 5px;
+      border: 1px solid #d7dde5;
+      border-radius: 3px;
+      background: #f2f4f7;
+      font: 13px Consolas, monospace;
+    }
+    pre code {
+      border: 0;
+      background: none;
+      padding: 0;
+    }
+    .footer {
+      padding: 24px 64px 38px;
+      border-top: 1px solid var(--line);
+      color: var(--muted);
+      font: 13px/1.65 system-ui, sans-serif;
+      background: #fafbfd;
+    }
+    @media (max-width: 880px) {
+      .paper { width: 100%; margin: 0; box-shadow: none; }
+      .masthead { padding: 34px 24px; }
+      .masthead h1 { font-size: 30px; }
+      .layout { display: block; }
+      .toc { position: relative; max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+      .toc a { display: inline-block; margin-right: 8px; }
+      article { padding: 30px 24px; }
+      .grid, .grid-3 { grid-template-columns: 1fr; }
+      .footer { padding: 22px 24px; }
+    }
+    @media print {
+      body { background: #fff; }
+      .paper { width: 100%; margin: 0; box-shadow: none; }
+      .toc { display: none; }
+      .layout { display: block; }
+      .masthead, article { padding-left: 18mm; padding-right: 18mm; }
+      .figure, .callout, table { break-inside: avoid; }
+      h2, h3 { break-after: avoid; }
+      a { color: inherit; text-decoration: none; }
+      .paper { font-size: 10.5pt; }
+    }
+  </style>
+</head>
+<body>
+<main class="paper">
+  <header class="masthead">
+    <div class="kicker">MoonGlass Engineering · Architecture White Paper v2.0</div>
+    <h1>MoonGlass AIGV 2.0：自主验证系统架构</h1>
+    <div class="subtitle">从 Verification Space Builder 到机器 Sign-off 的完整工程框架：Scenario Schema、四层架构、Explorer/Planner 与 Closure Engine 技术规格</div>
+    <div class="meta">
+      <span>作者：MoonGlass Contributors</span>
+      <span>版本：2.0</span>
+      <span>日期：2026-08-29</span>
+      <span>状态：开发团队内部技术规格</span>
+      <span>联系：moonglassagent@126.com</span>
+    </div>
+    <div class="notice">
+      <b>文档性质：</b>本文是 MoonGlass AIGV 2.0 面向开发团队的技术白皮书与工程规格，定义核心数据模型、模块接口、状态机和 PoC 验收标准。它不是商业 EDA 签核认证，也不是学术论文。所有接口契约、Schema 和状态转换规则均为 v0.1 实现目标。
+    </div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="目录">
+      <b>目录</b>
+      <a href="#abstract">摘要</a>
+      <a href="#definition">1. 核心定义</a>
+      <a href="#philosophy">2. 设计哲学</a>
+      <a href="#architecture">3. 四层架构</a>
+      <a href="#space">4. Verification Space Model</a>
+      <a href="#scenario">5. Scenario Schema</a>
+      <a href="#modules">6. 核心模块设计</a>
+      <a href="#state">7. 状态机与转换</a>
+      <a href="#explorer">8. Explorer & Planner</a>
+      <a href="#oracle">9. Multi-Oracle 体系</a>
+      <a href="#closure">10. Closure Engine</a>
+      <a href="#interface">11. 层间接口契约</a>
+      <a href="#poc">12. v0.1 PoC 计划</a>
+      <a href="#governance">13. 与 AIGV 1.0 的关系</a>
+      <a href="#glossary">术语表</a>
+    </nav>
+
+    <article>
+      <section id="abstract">
+        <h2>摘要</h2>
+        <div class="abstract">
+          <p>AIGV 2.0 的目标不是"让 AI 辅助 DV 工程师写更多 testcase"，而是建立一套<strong>机器可自主执行的验证空间探索、判定与收敛体系</strong>。系统以 Verification Space Builder 为核心，将 Spec 与 RTL 转化为结构化、可查询、可更新的五维验证空间；通过 Explorer/Planner 自主决定"测什么"；通过 Multi-Oracle 独立判定"对不对"；通过 Novelty Saturation 与 Risk-weighted Mutation 决定"够不够"；最终由 Closure Engine 输出机器 Sign-off 建议。</p>
+          <p>本白皮书给出 AIGV 2.0 的核心数据模型（Scenario Schema）、四层架构、模块设计、状态转换规则、层间接口契约和 v0.1 PoC 验收标准。所有设计均以"第一版可在一个 Sprint 内跑通闭环"为约束。</p>
+          <div class="keywords"><b>关键词：</b>AIGV；自主验证；Verification Space；Scenario Schema；Explorer；Closure Engine；Risk-weighted Mutation；Novelty Saturation；ASIC IP</div>
+        </div>
+      </section>
+
+      <section id="definition">
+        <h2>1. 核心定义</h2>
+        <p class="lead">AIGV 2.0 的 Sign-off 依据不是"AI 认为设计没问题"，而是以下工程条件的联合满足：</p>
+        <ol>
+          <li><b>验证空间已被系统探索：</b>机器显式构造了 Feature × Boundary × Interaction × Temporal × State 五维验证空间，所有关键区域均获得覆盖证据或不可达证明。</li>
+          <li><b>所有关键 Scenario 获得独立 Oracle 证据：</b>每个关键 Intent 至少由两个独立来源的 Oracle（Reference Model、Invariant、Protocol Checker、Metamorphic Relation、End-to-End Semantic Checker 等）共同判定为 PASS。</li>
+          <li><b>主动攻击无法产生有意义的新空间：</b>Explorer Agent 在预算内连续 N 轮未能发现新的高风险 Scenario（Novelty Saturation），证明验证边际信息收益趋近于零。</li>
+          <li><b>验证体系具有足够的缺陷敏感性：</b>Risk-weighted Mutation Score 达到项目定义阈值，且所有未被检测到的 mutant 均经过审查确认为等价变异或低影响区域。</li>
+          <li><b>无未解释的 Oracle 冲突、Protocol 违规、Invariant 破坏或 Regression 失败。</b></li>
+          <li><b>所有证据可追溯、可复现、可审计：</b>从 Requirement 到 Verification Intent 到 Scenario 到 Test 到 Evidence 保持完整追踪链。</li>
+        </ol>
+        <div class="callout green">
+          <b>机器 Sign-off 条件：</b>当且仅当以上六项条件同时满足时，Closure Engine 可输出机器 Sign-off 建议，供工程师最终审批。工程师的审批不是"再检查一遍 AI 的结论"，而是"确认 Sign-off 条件已按定义满足，且剩余风险有明确记录"。
+        </div>
+      </section>
+
+      <section id="philosophy">
+        <h2>2. 设计哲学</h2>
+        <h3>2.1 替代而非辅助</h3>
+        <p>AIGV 1.0 解决的是"AI 参与验证时如何保证不胡说"。AIGV 2.0 解决的是"AI 如何自己完成验证，并知道何时可以 Sign-off"。两者的关系是<strong>框架层 + 引擎层</strong>：Governance 保证机器不胡来；Intelligence 代替 DV 决定测什么；Execution 代替 DV 执行测试；Judgment 代替 DV 判定对错和决定何时结束。</p>
+
+        <h3>2.2 程序产生事实，AI 做语义剪枝</h3>
+        <p>Feature 提取、结构分析、Interaction 发现、Boundary 枚举由确定性程序完成；AI 只负责"哪些组合在架构语义上值得形成 Scenario"。这避免了 LLM 幻觉污染验证空间的基础事实层。</p>
+
+        <h3>2.3 Negative Space 是 first-class citizen</h3>
+        <p>验证空间不仅记录"测了什么"，还系统记录"为什么不测某些空间"。未验证 ≠ 漏验证。每个 EXCLUDED、UNREACHABLE、SPEC_UNDEFINED 都必须携带明确原因和证据。</p>
+
+        <h3>2.4 五维坐标是描述体系，不是计算空间</h3>
+        <p>Feature × Boundary × Interaction × Temporal × State 是 Scenario 的坐标系，不要求暴力计算 Cartesian Product。Scenario 必须同时满足<strong>结构上可交互、协议上合法、状态上可达、语义上有意义</strong>，才能进入候选池。</p>
+
+        <h3>2.5 不依赖 Bug History</h3>
+        <p>AIGV 2.0 主路径的输入只有：SPEC、RTL、Protocol、Architecture Constraints、Verification State、Simulation Results、Coverage。Bug history 可作为可选增强（fine-tuning / RAG），但不能进入核心方法学，以保证新 IP 从第一天就能冷启动。</p>
+      </section>
+
+      <section id="architecture">
+        <h2>3. 四层架构</h2>
+        <div class="figure">
+          <div class="grid">
+            <div>
+              <b>Layer 1 — Verification Governance</b>
+              REQ → VI → SCN → TEST → EVIDENCE<br>
+              可追溯性 / 审计 / 状态机 / 文档治理<br>
+              <span class="badge badge-blue">AIGV 1.0 已定义</span>
+            </div>
+            <div>
+              <b>Layer 2 — Verification Intelligence</b>
+              Verification Space Builder<br>
+              Risk Analysis / Interaction Analysis<br>
+              Temporal / Boundary Analysis<br>
+              Explorer Agent / Verification Planner<br>
+              <span class="badge badge-violet">AIGV 2.0 核心</span>
+            </div>
+            <div>
+              <b>Layer 3 — Verification Execution</b>
+              Cocotb / UVM / Simulation<br>
+              Directed / Constrained Random<br>
+              Protocol VIP<br>
+              <span class="badge badge-green">现有工具链</span>
+            </div>
+            <div>
+              <b>Layer 4 — Verification Judgment</b>
+              Reference Model / Invariant<br>
+              Protocol Oracle / Metamorphic<br>
+              End-to-End Semantic Checker<br>
+              Mutation / Novelty Saturation<br>
+              Closure Engine<br>
+              <span class="badge badge-orange">多证据收敛</span>
+            </div>
+          </div>
+          <div class="figure-title">图 1　AIGV 2.0 四层架构</div>
+        </div>
+
+        <h3>3.1 层间职责边界</h3>
+        <table>
+          <thead><tr><th>层级</th><th>核心问题</th><th>不做什么</th></tr></thead>
+          <tbody>
+            <tr><td>Governance</td><td>验证结论是否可追溯、可审计、符合签核流程</td><td>不决定测什么，不判定对不对</td></tr>
+            <tr><td>Intelligence</td><td>验证空间是什么、哪些 Scenario 值得执行、按什么顺序</td><td>不直接操作仿真器，不输出自然语言签核结论</td></tr>
+            <tr><td>Execution</td><td>按结构化指令运行仿真、收集原始结果、落盘证据</td><td>不解释结果语义，不决定下一轮测什么</td></tr>
+            <tr><td>Judgment</td><td>结果对不对、验证够不够、何时可以停止</td><td>不生成 testcase，不修改验证计划</td></tr>
+          </tbody>
+        </table>
+
+        <h3>3.2 数据流向</h3>
+        <div class="chain">
+          <span>SPEC + RTL</span>
+          <i>→</i>
+          <span>Layer 2<br>Space Builder</span>
+          <i>→</i>
+          <span>Scenario Pool</span>
+          <i>→</i>
+          <span>Layer 2<br>Explorer / Planner</span>
+          <i>→</i>
+          <span>Batch Plan</span>
+          <i>→</i>
+          <span>Layer 3<br>Execution</span>
+          <i>→</i>
+          <span>Raw Results</span>
+          <i>→</i>
+          <span>Layer 4<br>Oracle / Judgment</span>
+          <i>→</i>
+          <span>Evidence</span>
+          <i>→</i>
+          <span>Layer 2<br>Space Update</span>
+          <i>→</i>
+          <span>Next Batch</span>
+        </div>
+      </section>
+
+      <section id="space">
+        <h2>4. Verification Space Model</h2>
+        <h3>4.1 五维坐标体系</h3>
+        <table>
+          <thead><tr><th>维度</th><th>语义</th><th>离散化规则</th></tr></thead>
+          <tbody>
+            <tr><td>Feature</td><td>Spec 功能点或 RTL 结构特征</td><td>按 Spec 章节 + 结构类型（CONTROL_EVENT / DATA_PATH / CONFIG / STATUS / ERROR）分类</td></tr>
+            <tr><td>Boundary</td><td>数学边界或协议边界</td><td>0, 1, MAX-1, MAX, overflow/wrap 等</td></tr>
+            <tr><td>Interaction</td><td>Feature 之间的结构关系</td><td>DIRECT（共享 state/register）、INDIRECT（COI overlap）、PRIORITY（同一 priority chain）、DEPENDENCY（enable/condition 控制）</td></tr>
+            <tr><td>Temporal</td><td>事件之间的时序关系</td><td>BEFORE, SAME_CYCLE, AFTER, WITHIN_N_CYCLES</td></tr>
+            <tr><td>State</td><td>系统生命周期状态</td><td>主要 FSM states，按可达性分层</td></tr>
+          </tbody>
+        </table>
+
+        <h3>4.2 空间不是 Cartesian Product</h3>
+        <div class="equation">VerificationSpace = { s | Valid(s) ∧ Relevant(s) }</div>
+        <p>Scenario 必须同时满足：</p>
+        <ul>
+          <li><b>结构上可交互：</b>Feature 之间在 RTL 中有物理交互路径（Interaction Builder 规则判定）</li>
+          <li><b>协议上合法：</b>输入序列符合 AXI/APB 等协议约束（Protocol Legalizer 过滤）</li>
+          <li><b>状态上可达：</b>起始状态在当前模型下可达（Formal cover 或仿真预热确认）</li>
+          <li><b>语义上有意义：</b>组合在架构层面有验证价值（AI 语义剪枝）</li>
+        </ul>
+
+        <h3>4.3 Negative Space</h3>
+        <p>Negative Space 记录"明确不验证"的区域，与 Positive Space 同等重要：</p>
+        <table>
+          <thead><tr><th>分类</th><th>含义</th><th>关闭证据</th></tr></thead>
+          <tbody>
+            <tr><td>ARCHITECTURALLY_INVALID</td><td>架构上不可能发生</td><td>Spec 章节引用 / 协议约束说明</td></tr>
+            <tr><td>UNREACHABLE_BY_CONSTRAINT</td><td>当前约束下不可达</td><td>Formal 不可达证明 / 约束文档</td></tr>
+            <tr><td>PROTOCOL_ILLEGAL</td><td>违反协议合法性</td><td>Protocol checker 规则引用</td></tr>
+            <tr><td>OVER_BUDGET</td><td>超出验证预算且风险极低</td><td>Risk 评分 + 预算审批记录</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="scenario">
+        <h2>5. Scenario Schema（v0.1）</h2>
+        <p>Scenario 是 AIGV 2.0 的<strong>最小验证单元</strong>和<strong>核心数据单位</strong>。所有 Test、Coverage、Oracle、Mutation、Closure 均围绕 <code>scenario_id</code> 工作。</p>
+
+        <div class="schema">{
+  "scenario_id": "SCN_DMA_000123",
+  "feature": ["abort", "write_response"],
+  "boundary": {
+    "outstanding": "ONE"
+  },
+  "interaction": {
+    "type": "SHARED_FSM",
+    "object": "wr_ctrl_fsm"
+  },
+  "temporal": {
+    "abort_vs_bvalid": "SAME_CYCLE"
+  },
+  "state": "ACTIVE_WRITE_PENDING",
+  "risk": {
+    "score": 0.87,
+    "markers": ["EVENT_COLLISION", "PRIORITY_DEPENDENCY"]
+  },
+  "status": "UNCOVERED",
+  "execution": {
+    "test_id": null,
+    "reach_status": "UNKNOWN"
+  },
+  "evidence": [],
+  "novelty": {
+    "score": 18,
+    "new_interaction": true,
+    "new_temporal_relation": true,
+    "new_boundary": false
+  },
+  "expected_cost": 45.2,
+  "rtl_hash": "abc123def456",
+  "version": 1
+}</div>
+
+        <h3>5.1 字段规范</h3>
+        <table>
+          <thead><tr><th>字段</th><th>类型</th><th>必填</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>scenario_id</td><td>string</td><td>是</td><td>格式：SCN_{MODULE}_{6位数字}</td></tr>
+            <tr><td>feature</td><td>string[]</td><td>是</td><td>至少一个 Feature，来自 Feature Extractor 输出</td></tr>
+            <tr><td>boundary</td><td>object</td><td>否</td><td>边界条件键值对，如 {"outstanding": "ONE"}</td></tr>
+            <tr><td>interaction</td><td>object</td><td>否</td><td>type ∈ {SHARED_FSM, SHARED_REG, PRIORITY_CHAIN, COI_OVERLAP, TEMPORAL}</td></tr>
+            <tr><td>temporal</td><td>object</td><td>否</td><td>事件时序关系键值对</td></tr>
+            <tr><td>state</td><td>string</td><td>否</td><td>系统起始状态</td></tr>
+            <tr><td>risk.score</td><td>number</td><td>是</td><td>0-1，由 Structural Analyzer 和 Risk Analysis 计算</td></tr>
+            <tr><td>risk.markers</td><td>string[]</td><td>否</td><td>Risk taxonomy 标签，如 EVENT_COLLISION</td></tr>
+            <tr><td>status</td><td>string</td><td>是</td><td>见状态机定义</td></tr>
+            <tr><td>execution</td><td>object</td><td>否</td><td>执行元数据</td></tr>
+            <tr><td>evidence</td><td>string[]</td><td>否</td><td>证据文件路径列表</td></tr>
+            <tr><td>novelty</td><td>object</td><td>是</td><td>新颖度评分与维度标记</td></tr>
+            <tr><td>expected_cost</td><td>number</td><td>是</td><td>预估仿真成本（CPU-seconds）</td></tr>
+            <tr><td>rtl_hash</td><td>string</td><td>是</td><td>绑定 RTL 版本</td></tr>
+            <tr><td>version</td><td>integer</td><td>是</td><td>变更计数，默认 1</td></tr>
+          </tbody>
+        </table>
+
+        <h3>5.2 状态枚举</h3>
+        <div class="grid-3">
+          <div><b>DISCOVERED</b>刚被 Space Builder 发现，尚未进入执行计划</div>
+          <div><b>PLANNED</b>已被 Planner 选中，准备执行</div>
+          <div><b>EXECUTED</b>已完成仿真执行</div>
+          <div><b>VERIFIED</b>所有 Oracle PASS，证据完整</div>
+          <div><b>FAILED</b>至少一个 Oracle FAIL</div>
+          <div><b>NOT_REACHED</b>仿真未触发该场景</div>
+          <div><b>EXCLUDED</b>明确排除，有原因和证据</div>
+          <div><b>UNREACHABLE</b>Formal 或约束证明不可达</div>
+          <div><b>SPEC_UNDEFINED</b>规格不足以定义唯一预期</div>
+          <div><b>CONFLICT</b>Oracle 结论矛盾，需人工仲裁</div>
+        </div>
+      </section>
+
+      <section id="modules">
+        <h2>6. 核心模块设计（v0.1）</h2>
+
+        <h3>6.1 Feature Extractor</h3>
+        <table>
+          <thead><tr><th>项</th><th>规格</th></tr></thead>
+          <tbody>
+            <tr><td>输入</td><td>Spec（自然语言/结构化）、RTL、寄存器定义、接口定义</td></tr>
+            <tr><td>输出</td><td>有限 Feature 集合，每个 Feature 携带 Semantic Type Tag</td></tr>
+            <tr><td>实现</td><td>LLM 从 Spec 提取初稿 + 工程师一次性确认</td></tr>
+            <tr><td>约束</td><td>Feature taxonomy 是低频变化数据，v0.1 不要求全自动化</td></tr>
+          </tbody>
+        </table>
+        <div class="callout">
+          <b>Feature Semantic Type Tag 必须包含：</b>type（CONTROL_EVENT / DATA_PATH / CONFIG / STATUS / ERROR）、triggers、affects、boundaries、temporal_scope。Type 决定 Dimension Expander 的适用规则。
+        </div>
+
+        <h3>6.2 Structural Analyzer</h3>
+        <table>
+          <thead><tr><th>项</th><th>规格</th></tr></thead>
+          <tbody>
+            <tr><td>输入</td><td>RTL（SystemVerilog）</td></tr>
+            <tr><td>输出</td><td>FSM、signal dependency、register writer、condition tree、counter、FIFO、resource、clock/reset domain、request/response path</td></tr>
+            <tr><td>工具</td><td>Slang AST（优先）或 Verilator fallback</td></tr>
+            <tr><td>约束</td><td>必须尽量 deterministic，输出结构化 JSON</td></tr>
+          </tbody>
+        </table>
+
+        <h3>6.3 Interaction Builder</h3>
+        <p><b>核心原则：规则驱动，AI 只做语义剪枝。</b></p>
+        <table>
+          <thead><tr><th>规则 ID</th><th>条件</th><th>Interaction 类型</th><th>优先级</th></tr></thead>
+          <tbody>
+            <tr><td>RULE-I01</td><td>两个 Feature 修改同一个 state/register</td><td>DIRECT_INTERACTION</td><td>P0</td></tr>
+            <tr><td>RULE-I04</td><td>多个 Feature 出现在同一个 priority chain</td><td>PRIORITY_INTERACTION</td><td>P1</td></tr>
+            <tr><td>RULE-I02</td><td>两个 Feature 的 COI overlap</td><td>INDIRECT_INTERACTION</td><td>P2</td></tr>
+            <tr><td>RULE-I03</td><td>Feature A 改变 Feature B 的 enable/condition</td><td>DEPENDENCY_INTERACTION</td><td>P3（v0.1 可暂不处理）</td></tr>
+            <tr><td>RULE-I05</td><td>request 与 response 跨周期关联</td><td>TEMPORAL_INTERACTION</td><td>自动附加</td></tr>
+          </tbody>
+        </table>
+        <div class="callout orange">
+          <b>剪枝规则：</b>每个 Feature 最多保留 5 个 Interaction（按 risk_score 排序）；丢弃的进入 PRUNED 状态并记录原因。
+        </div>
+
+        <h3>6.4 Dimension Expander</h3>
+        <p>对每组 Interaction，自动展开 Boundary、Temporal、State 维度，生成为 candidate Scenario Pool。</p>
+        <div class="flow">Interaction: abort × bvalid
+  ↓
+Boundary: outstanding = {0, 1, MAX-1, MAX}
+Temporal: {BEFORE, SAME, AFTER}
+State: {FETCH, ISSUE, WAIT_RESP}
+  ↓
+Candidate Pool: 理论 4×3×3 = 36
+  ↓
+Validity Engine 过滤
+  ↓
+Valid Candidates: 通常 5-12 个</div>
+
+        <h3>6.5 Validity Engine（v0.1 硬规则）</h3>
+        <table>
+          <thead><tr><th>规则</th><th>判定</th><th>理由</th></tr></thead>
+          <tbody>
+            <tr><td>(abort, outstanding=0)</td><td>INVALID</td><td>abort 时 outstanding 必须 >0 才有意义</td></tr>
+            <tr><td>(reset, ANY)</td><td>VALID_BUT_DOMINATES</td><td>reset 覆盖其他所有状态，需特殊处理</td></tr>
+            <tr><td>(timeout, outstanding=0)</td><td>INVALID</td><td>无 outstanding 事务时不会 timeout</td></tr>
+            <tr><td>(bvalid, state=IDLE)</td><td>INVALID</td><td>IDLE 状态下不会有 response 到达</td></tr>
+            <tr><td>(outstanding=MAX, backpressure=sustained)</td><td>VALID_HIGH_RISK</td><td>合法但极端，标记为高风险</td></tr>
+          </tbody>
+        </table>
+
+        <h3>6.6 Space Database</h3>
+        <p>v0.1 使用 <b>SQLite + JSON fields</b>，不引入图数据库。</p>
+        <div class="schema">-- 核心表
+CREATE TABLE scenarios (
+    scenario_id TEXT PRIMARY KEY,
+    feature_set JSON NOT NULL,
+    boundary JSON,
+    interaction_type TEXT,
+    interaction_object TEXT,
+    temporal JSON,
+    state TEXT,
+    risk_score REAL,
+    risk_markers JSON,
+    status TEXT CHECK(status IN (
+        'DISCOVERED','PLANNED','EXECUTED','VERIFIED',
+        'FAILED','NOT_REACHED','EXCLUDED','UNREACHABLE',
+        'SPEC_UNDEFINED','CONFLICT'
+    )),
+    exclusion_reason TEXT,
+    exclusion_class TEXT,
+    novelty_score REAL,
+    novelty_details JSON,
+    expected_cost REAL,
+    rtl_hash TEXT,
+    version INTEGER DEFAULT 1,
+    created_at TIMESTAMP,
+    updated_at TIMESTAMP
+);
+
+CREATE TABLE executions (
+    execution_id TEXT PRIMARY KEY,
+    scenario_id TEXT REFERENCES scenarios(scenario_id),
+    test_id TEXT,
+    reach_status TEXT,
+    simulation_time REAL,
+    wall_clock_time REAL,
+    raw_results_path TEXT,
+    log_path TEXT,
+    waveform_path TEXT,
+    coverage_delta JSON,
+    executed_at TIMESTAMP
+);
+
+CREATE TABLE oracle_results (
+    result_id TEXT PRIMARY KEY,
+    execution_id TEXT REFERENCES executions(execution_id),
+    oracle_type TEXT,
+    oracle_source TEXT,
+    independence_level INTEGER,
+    verdict TEXT,
+    evidence_path TEXT,
+    confidence REAL
+);</div>
+      </section>
+
+      <section id="state">
+        <h2>7. 状态机与转换规则</h2>
+        <div class="flow">DISCOVERED
+    ├──→ PLANNED (Planner 选中)
+    ├──→ EXCLUDED (Validity Engine 判定非法)
+    └──→ SPEC_UNDEFINED (需要规格澄清)
+
+PLANNED
+    ├──→ EXECUTED (Cocotb 运行完成)
+    └──→ EXCLUDED (执行前发现新的排除理由)
+
+EXECUTED
+    ├──→ VERIFIED (所有 Oracle PASS + 证据完整)
+    ├──→ FAILED (至少一个 Oracle FAIL)
+    ├──→ NOT_REACHED (仿真未触发场景)
+    └──→ CONFLICT (Oracle 结论矛盾)
+
+VERIFIED
+    ├──→ DISCOVERED (RTL 变更，且 scenario 在 affected 集中)
+    └──→ STALE (RTL 变更，但不在 affected 集中，快速验证即可)
+
+FAILED
+    ├──→ PLANNED (修复后重跑)
+    └──→ EXCLUDED (确认为工具/环境错误，非设计问题)
+
+NOT_REACHED
+    ├──→ PLANNED (调整激励后重跑)
+    ├──→ UNREACHABLE (Formal 证明不可达)
+    └──→ EXCLUDED (确认为架构上不可触发)
+
+CONFLICT
+    ├──→ PLANNED (人工仲裁后重跑)
+    └──→ EXCLUDED (确认为 Oracle 错误)
+
+EXCLUDED / UNREACHABLE / SPEC_UNDEFINED
+    └──→ DISCOVERED (RTL/规格变更后重新评估)</div>
+
+        <div class="callout red">
+          <b>关键规则：</b>VERIFIED → DISCOVERED 的触发条件必须精确计算（基于 COI 影响分析），不能 RTL 有任何变动就全部重开。COI 深度限制在 3 层以内，超出视为未受影响。
+        </div>
+      </section>
+
+      <section id="explorer">
+        <h2>8. Explorer & Planner</h2>
+        <h3>8.1 Explorer v0.1：Ranking Engine（非 RL）</h3>
+        <p>v0.1 不使用强化学习。Explorer 是一个纯排序引擎，每轮从候选池中选择 Top-K Scenario。</p>
+        <div class="equation">Priority = (Risk × Novelty × CoverageGap × ReachabilityConfidence) / ExpectedCost</div>
+        <table>
+          <thead><tr><th>因子</th><th>计算方式</th><th>范围</th></tr></thead>
+          <tbody>
+            <tr><td>Risk</td><td>risk_score from Structural Analyzer</td><td>0-1</td></tr>
+            <tr><td>Novelty</td><td>novelty_score from Space DB，归一化</td><td>0-1</td></tr>
+            <tr><td>CoverageGap</td><td>1 - (verified_scenarios / total_scenarios_for_this_feature)</td><td>0-1</td></tr>
+            <tr><td>ReachabilityConfidence</td><td>Validity Engine 的可达概率估计</td><td>0-1</td></tr>
+            <tr><td>ExpectedCost</td><td>基于历史同类型 scenario 的平均仿真时间</td><td>>0，单位 CPU-seconds</td></tr>
+          </tbody>
+        </table>
+
+        <h3>8.2 Novelty 评分（v0.1）</h3>
+        <div class="equation">Novelty = α·NewDimension + β·CombinationNovelty + γ·StateDistance + δ·PathNovelty</div>
+        <p>v0.1 简化实现：</p>
+        <ul>
+          <li>新 Feature 组合发现：+10</li>
+          <li>新 Temporal 关系发现：+5</li>
+          <li>新 Boundary 组合发现：+3</li>
+          <li>已覆盖但新路径到达：+1</li>
+          <li>重复已有 Scenario：-5</li>
+        </ul>
+
+        <h3>8.3 Planner 批次选择</h3>
+        <div class="schema">def select_next_batch(budget_cpu_seconds, max_scenarios=20):
+    candidates = db.query("""
+        SELECT * FROM scenarios 
+        WHERE status IN ('DISCOVERED', 'NOT_REACHED')
+        ORDER BY priority DESC
+    """)
+
+    selected = []
+    remaining_budget = budget_cpu_seconds
+
+    for scn in candidates:
+        if scn.expected_cost <= remaining_budget 
+           and len(selected) < max_scenarios:
+            selected.append(scn)
+            remaining_budget -= scn.expected_cost
+        else:
+            break
+
+    return selected</div>
+      </section>
+
+      <section id="oracle">
+        <h2>9. Multi-Oracle 体系</h2>
+        <h3>9.1 Oracle 类型与独立性</h3>
+        <table>
+          <thead><tr><th>Oracle</th><th>来源</th><th>独立性</th><th>判定什么</th></tr></thead>
+          <tbody>
+            <tr><td>Reference Model</td><td>Spec → 独立 Python Agent</td><td>Level 1</td><td>Architectural output 是否匹配</td></tr>
+            <tr><td>Invariant</td><td>Architecture rules</td><td>Level 2</td><td>全局状态一致性</td></tr>
+            <tr><td>Protocol</td><td>AXI VIP / 第三方 checker</td><td>Level 3</td><td>协议合规性</td></tr>
+            <tr><td>End-to-End</td><td>Spec → 独立 LLM Agent</td><td>Level 1</td><td>IO 语义正确性</td></tr>
+            <tr><td>Metamorphic</td><td>Transform logic</td><td>Level 2</td><td>变换前后 functional 等价性</td></tr>
+          </tbody>
+        </table>
+
+        <h3>9.2 独立性要求</h3>
+        <div class="callout red">
+          <b>关键规则：</b>关键 Scenario 必须至少有两个 Independence Level ≥ 2 的 Oracle 同时 PASS，才允许进入 VERIFIED 状态。如果所有 Oracle 都是 Level 1 且同源（如同一个 Spec 理解），不允许自动 sign-off，必须人工审查。
+        </div>
+
+        <h3>9.3 矛盾仲裁</h3>
+        <table>
+          <thead><tr><th>场景</th><th>判定</th></tr></thead>
+          <tbody>
+            <tr><td>Reference PASS，Invariant FAIL</td><td>以 Invariant 为准（Invariant 是架构级硬约束）</td></tr>
+            <tr><td>Protocol PASS，End-to-End FAIL</td><td>以 End-to-End 为准（用户关心数据正确，非协议合规）</td></tr>
+            <tr><td>Metamorphic PASS，Reference FAIL</td><td>以 Reference 为准（Metamorphic 只验证关系）</td></tr>
+            <tr><td>两个独立 Oracle 结论相反</td><td>标记 CONFLICT，进入人工审查队列</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="closure">
+        <h2>10. Closure Engine</h2>
+        <h3>10.1 停止条件</h3>
+        <div class="equation">当且仅当以下全部满足，Closure Engine 输出机器 Sign-off 建议</div>
+        <table>
+          <thead><tr><th>条件</th><th>阈值</th><th>说明</th></tr></thead>
+          <tbody>
+            <tr><td>Requirement Coverage</td><td>100%</td><td>所有 P0/P1 REQ 映射到 VERIFIED Intent</td></tr>
+            <tr><td>Critical Scenario Coverage</td><td>≥ target</td><td>项目定义，通常 95%+</td></tr>
+            <tr><td>Risk-weighted Mutation Score</td><td>≥ target</td><td>项目定义，通常 90%+</td></tr>
+            <tr><td>Critical Unknown</td><td>0</td><td>无未解释的高风险 UNKNOWN Scenario</td></tr>
+            <tr><td>Oracle Violation</td><td>0</td><td>无未修复的 FAIL/CONFLICT</td></tr>
+            <tr><td>Regression</td><td>PASS</td><td>全部回归无失败</td></tr>
+            <tr><td>Novelty Saturation</td><td>连续 N 轮 &lt; ε</td><td>验证边际信息收益趋近于零</td></tr>
+          </tbody>
+        </table>
+
+        <h3>10.2 Novelty Saturation</h3>
+        <div class="equation">Δ Novelty / Δ SimulationBudget → 0</div>
+        <p>具体指标：</p>
+        <ul>
+          <li>每轮 1000 个 scenario 执行后，统计新发现的高风险 scenario 数量</li>
+          <li>连续 N 轮（新 IP 建议 N=3-5，成熟 IP 建议 N=5-10）新发现数量 &lt; ε（建议 ε=1-2）</li>
+          <li>同时 Mutation Score 已达到阈值</li>
+        </ul>
+
+        <h3>10.3 Risk-weighted Mutation Score</h3>
+        <div class="equation">M_risk = Σ Detect(m_i) × Weight(m_i) / Σ Weight(m_i)</div>
+        <p>Weight 来自 Risk Analysis 输出：</p>
+        <table>
+          <thead><tr><th>Mutation 类型</th><th>Weight</th><th>来源 Risk</th></tr></thead>
+          <tbody>
+            <tr><td>控制状态机优先级 mutation</td><td>10</td><td>R02 PRIORITY_DEPENDENCY</td></tr>
+            <tr><td>Transaction accounting mutation</td><td>10</td><td>R04 OUTSTANDING_DEPENDENCY</td></tr>
+            <tr><td>边界条件 mutation</td><td>8</td><td>R05 COUNTER_BOUNDARY</td></tr>
+            <tr><td>错误处理 mutation</td><td>8</td><td>R07/R11 ERROR_TIMEOUT</td></tr>
+            <tr><td>数据通路 mutation</td><td>5</td><td>低结构风险区域</td></tr>
+            <tr><td>状态/debug mutation</td><td>2</td><td>非 architectural 区域</td></tr>
+          </tbody>
+        </table>
+      </section>
+
+      <section id="interface">
+        <h2>11. 层间接口契约</h2>
+        <h3>11.1 Layer 2 → Layer 3（Batch Plan）</h3>
+        <div class="schema">{
+  "batch_id": "BATCH_20260829_001",
+  "scenarios": [
+    {
+      "scenario_id": "SCN_DMA_000123",
+      "stimulus": {
+        "sequence": [
+          {"cycle": 0, "action": "issue_write", "params": {"addr": "0x1000", "len": 4}},
+          {"cycle": 1, "action": "assert_abort", "params": {}},
+          {"cycle": 1, "action": "assert_bvalid", "params": {"resp": "OKAY"}}
+        ]
+      },
+      "constraints": {
+        "outstanding": 1,
+        "backpressure": "none"
+      },
+      "expected_observations": [
+        {"signal": "wr_state", "expected_values": ["ABORTED"], "window": [2, 10]},
+        {"signal": "outstanding_cnt", "expected_values": [0], "window": [2, 10]}
+      ],
+      "oracles": ["REFERENCE_MODEL", "INVARIANT", "PROTOCOL"],
+      "timeout_cycles": 1000
+    }
+  ]
+}</div>
+
+        <h3>11.2 Layer 3 → Layer 4（Raw Results）</h3>
+        <div class="schema">{
+  "batch_id": "BATCH_20260829_001",
+  "results": [
+    {
+      "scenario_id": "SCN_DMA_000123",
+      "reach_status": "REACHED",
+      "reached_at_cycle": 5,
+      "oracle_results": {
+        "REFERENCE_MODEL": {"verdict": "PASS", "details": "data_match"},
+        "INVARIANT": {"verdict": "PASS", "details": "outstanding>=0"},
+        "PROTOCOL": {"verdict": "PASS", "details": "no_violation"}
+      },
+      "coverage_delta": {"line": 0.05, "functional": 0.12},
+      "simulation_time_seconds": 45.2,
+      "raw_log": "logs/batch_001_scn_000123.log",
+      "waveform": "waveforms/batch_001_scn_000123.fst"
+    }
+  ]
+}</div>
+
+        <h3>11.3 Layer 4 → Layer 2（Judgment Report）</h3>
+        <div class="schema">{
+  "scenario_id": "SCN_DMA_000123",
+  "oracle_results": [
+    {"oracle": "REFERENCE_MODEL", "verdict": "PASS", "independence": 1},
+    {"oracle": "INVARIANT", "verdict": "PASS", "independence": 2},
+    {"oracle": "PROTOCOL", "verdict": "PASS", "independence": 3}
+  ],
+  "novelty_score": 18,
+  "coverage_delta": {"line": 0.05, "functional": 0.12},
+  "risk_weighted_mutation_delta": 0.0,
+  "recommended_action": "VERIFY",
+  "confidence": 0.95
+}</div>
+      </section>
+
+      <section id="poc">
+        <h2>12. v0.1 PoC 计划</h2>
+        <h3>12.1 目标 IP 范围</h3>
+        <div class="callout">
+          <b>目标：</b>AXI DMA Controller（简化版）<br>
+          <b>支持 Feature：</b>abort, timeout, outstanding, response, reset<br>
+          <b>支持 Boundary：</b>outstanding = {0, 1, MAX-1, MAX}<br>
+          <b>支持 Temporal：</b>{BEFORE, SAME, AFTER}<br>
+          <b>支持 State：</b>{IDLE, ACTIVE, WAIT_RESP, ABORTED, ERROR}<br>
+          <b>明确排除（降低复杂度）：</b>backpressure, interrupt, burst, alignment, clock gating
+        </div>
+
+        <h3>12.2 验收标准（必须全部满足）</h3>
+        <table>
+          <thead><tr><th>#</th><th>验收项</th><th>判定标准</th></tr></thead>
+          <tbody>
+            <tr><td>1</td><td>Feature 提取</td><td>从 Spec 提取 5 个 Feature，人工确认后入库</td></tr>
+            <tr><td>2</td><td>Structural 分析</td><td>自动提取 FSM、writer 图、COI，与人工审计一致率 >80%</td></tr>
+            <tr><td>3</td><td>Interaction 生成</td><td>自动产生 ≥10 个有意义 Interaction，无人工干预</td></tr>
+            <tr><td>4</td><td>Scenario 生成</td><td>自动产生 ≥30 个 candidate scenario，Validity Engine 排除 &lt;50%</td></tr>
+            <tr><td>5</td><td>Ranking 工作</td><td>Explorer 每轮选出 Top-5，按 Priority 排序</td></tr>
+            <tr><td>6</td><td>Cocotb 执行</td><td>每轮 batch 自动运行，产出结构化 result.json</td></tr>
+            <tr><td>7</td><td>Oracle 判定</td><td>至少 2 个 Oracle（Reference Model + Invariant）运行并产出 verdict</td></tr>
+            <tr><td>8</td><td>状态更新</td><td>执行结果自动更新 Scenario status（VERIFIED/FAILED/NOT_REACHED）</td></tr>
+            <tr><td>9</td><td>闭环迭代</td><td>运行 5 轮后，VERIFIED scenario 数量单调递增，UNKNOWN 数量单调递减</td></tr>
+            <tr><td>10</td><td>Negative Space</td><td>至少 3 个 scenario 被标记为 EXCLUDED 或 UNREACHABLE，有明确原因</td></tr>
+          </tbody>
+        </table>
+
+        <h3>12.3 交付物清单</h3>
+        <div class="schema">aigv_v0.1/
+├── spec/
+│   └── verification_space_model_spec.md
+├── src/
+│   ├── feature_extractor.py
+│   ├── structural_analyzer.py
+│   ├── interaction_builder.py
+│   ├── dimension_expander.py
+│   ├── validity_engine.py
+│   ├── space_database.py
+│   ├── explorer.py
+│   └── planner.py
+├── cocotb_integration/
+│   ├── scenario_receiver.py
+│   └── result_publisher.py
+├── tests/
+│   └── test_dma_poc.py
+└── docs/
+    └── aigv_v0.1_runbook.md</div>
+
+        <h3>12.4 成功标准</h3>
+        <p class="lead">v0.1 的成功标准不是"发现了多少 bug"，而是<strong>"机器能否在没有人工指定 testcase 的情况下，自主生成 Scenario、自主排序、自主执行、自主判定、自主更新状态，并在 5 轮迭代后让 Unknown Critical Space 单调下降"</strong>。</p>
+      </section>
+
+      <section id="governance">
+        <h2>13. 与 AIGV 1.0 的关系</h2>
+        <p>AIGV 2.0 不是替代 AIGV 1.0，而是<strong>在其 Governance 框架上叠加 Intelligence、Execution、Judgment 三层引擎</strong>。</p>
+        <table>
+          <thead><tr><th>AIGV 1.0（框架层）</th><th>AIGV 2.0（引擎层）</th></tr></thead>
+          <tbody>
+            <tr><td>数据模型（REQ → VI → SCN → TEST → EVIDENCE）</td><td>Verification Space Builder 自动产生 SCN</td></tr>
+            <tr><td>状态机（DISCOVERED → ... → VERIFIED）</td><td>状态转换由工具执行结果自动驱动</td></tr>
+            <tr><td>Coverage Hole 分类（C1-C6）</td><td>C1/C2 由 Formal/Validity Engine 自动关闭；C3 由 Explorer 自动发现</td></tr>
+            <tr><td>文档体系（10 份文档）</td><td>自动快照 + 机器生成报告，人工只审 final sign-off</td></tr>
+            <tr><td>证据闭环（到达 + 裁决 + 证据）</td><td>Multi-Oracle 自动裁决，Evidence 自动落盘</td></tr>
+            <tr><td>人工审查每个 VERIFIED</td><td>分层审查：L0 自动 / L1 抽样 / L2 强制 / L3 升级</td></tr>
+          </tbody>
+        </table>
+        <div class="callout green">
+          <b>兼容性保证：</b>AIGV 2.0 的所有输出（Scenario、Evidence、Judgment）均符合 AIGV 1.0 的追踪主链格式，可无缝接入现有文档体系和签核流程。
+        </div>
+      </section>
+
+      <section id="glossary">
+        <h2>术语表</h2>
+        <table>
+          <thead><tr><th>术语</th><th>定义</th></tr></thead>
+          <tbody>
+            <tr><td>AIGV</td><td>AI-Guided Verification；MoonGlass 自主验证方法学</td></tr>
+            <tr><td>Scenario</td><td>AIGV 2.0 的最小验证单元，携带五维坐标、Risk、Novelty 和状态</td></tr>
+            <tr><td>Verification Space</td><td>Feature × Boundary × Interaction × Temporal × State 的合法、可达、有意义子集</td></tr>
+            <tr><td>Negative Space</td><td>明确记录"为什么不测"的区域，包含 EXCLUDED、UNREACHABLE、SPEC_UNDEFINED</td></tr>
+            <tr><td>Explorer Agent</td><td>负责发现 Verification Novelty 的主动探索代理</td></tr>
+            <tr><td>Verification Planner</td><td>负责选择下一批执行 Scenario 的排序与预算引擎</td></tr>
+            <tr><td>Closure Engine</td><td>负责判定验证是否足够、输出机器 Sign-off 建议的收敛引擎</td></tr>
+            <tr><td>Novelty Saturation</td><td>连续多轮未发现新的高风险 Scenario，边际信息收益趋近于零</td></tr>
+            <tr><td>Risk-weighted Mutation Score</td><td>按 Risk 重要性加权的变异测试检测率</td></tr>
+            <tr><td>Oracle Independence</td><td>多个判定来源之间的证据独立性等级，防止同源偏差</td></tr>
+            <tr><td>Validity Engine</td><td>基于协议和架构硬规则过滤非法 Scenario 的确定性引擎</td></tr>
+            <tr><td>COI</td><td>Cone of Influence；影响目标状态/输出的直接与传递来源集合</td></tr>
+          </tbody>
+        </table>
+      </section>
+    </article>
+  </div>
+
+  <footer class="footer">
+    MoonGlass ASIC Design Agent · AIGV 2.0 Architecture White Paper · 2026-08-29<br>
+    开发团队内部技术规格 · 社区讨论与授权联系：moonglassagent@126.com
+  </footer>
+</main>
+</body>
+</html>

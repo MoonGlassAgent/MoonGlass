@@ -11,6 +11,8 @@ const rules: Array<{ pattern: RegExp; value: ModelContextMetadata }> = [
   { pattern: /grok-4\.5$/i, value: { contextWindow: 500_000, maxTokens: 65_536, source: 'xAI 官方', verified: true } },
   { pattern: /(?:mistral-large-latest|mistral-medium-latest|devstral-latest)$/i, value: { contextWindow: 262_144, maxTokens: 32_768, source: 'Mistral 官方', verified: true } },
   { pattern: /glm-5\.2$/i, value: { contextWindow: 1_000_000, maxTokens: 131_072, source: '智谱官方', verified: true } },
+  // glm-5.3 家族：兼容 glm-5.3-flash / glm-5-3-flash / GLM-5.3 等命名变体
+  { pattern: /glm-?5[._-]?3(?:[._-]flash)?$/i, value: { contextWindow: 1_000_000, maxTokens: 131_072, source: '智谱官方', verified: true } },
   { pattern: /minimax-m2\.7(?:-highspeed)?$/i, value: { contextWindow: 204_800, maxTokens: 131_072, source: 'MiniMax 官方', verified: true } },
   { pattern: /qwen3\.7-(?:plus|max)$/i, value: { contextWindow: 1_000_000, maxTokens: 131_072, source: '阿里云百炼官方', verified: true } },
   { pattern: /(?:kimi-k2\.6|kimi-k2\.7-code|k3-256k)$/i, value: { contextWindow: 262_144, maxTokens: 32_768, source: '服务商模型说明', verified: false } },

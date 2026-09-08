@@ -14,6 +14,7 @@ import {
   type Phase,
   type PhaseStatus
 } from '@shared/types'
+import { RotateCcw, Trash2 } from 'lucide-react'
 
 const STATUS_STYLES: Record<PhaseStatus, string> = {
   locked: 'border-zinc-300 bg-zinc-100 text-zinc-400',
@@ -47,6 +48,9 @@ interface PhaseBoardProps {
   onCompleteProject?: () => void
   onFixGateIssues?: (phase: Phase, results: GateCheckResult[]) => void
   onRespondChange?: (phase: Phase) => void
+  onResetPhase?: (phase: Phase, mode: 'archive' | 'purge') => void
+  /** 切走后仍有 Agent 在后台执行的阶段（显示运行标记） */
+  backgroundRunningPhases?: Phase[]
   /** 最近一次推进尝试的门禁结果（含被阻断的情况） */
   gate?: GatePanelData | null
 }
@@ -60,6 +64,8 @@ export function PhaseBoard({
   onCompleteProject,
   onFixGateIssues,
   onRespondChange,
+  onResetPhase,
+  backgroundRunningPhases,
   gate
 }: PhaseBoardProps): React.JSX.Element {
   const currentIdx = PHASE_ORDER.indexOf(project.currentPhase)
@@ -82,7 +88,7 @@ export function PhaseBoard({
               <div
                 title={`${PHASE_LABELS[phase]} — ${status}\n交付物: ${phaseState.deliverables.length} 项\n双击进入阶段`}
                 onDoubleClick={() => onEnterPhase?.(phase)}
-                className={`flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${
+                className={`group flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${
                   changePending ? 'border-yellow-400 bg-yellow-50 text-yellow-800' : STATUS_STYLES[status]
                 } ${
                   isCurrent ? `ring-1 ${status === 'completed' ? 'ring-emerald-400' : 'ring-blue-400'}` : ''
@@ -91,6 +97,13 @@ export function PhaseBoard({
                 <span className={`h-2 w-2 rounded-full ${changePending ? 'bg-yellow-500' : STATUS_DOTS[status]}`} />
                 <span className="font-medium">{phase}</span>
                 <span className="text-xs opacity-70">{PHASE_LABELS[phase]}</span>
+                {backgroundRunningPhases?.includes(phase) && (
+                  <span
+                    title={`${PHASE_LABELS[phase]}阶段的 Agent 仍在后台运行，双击进入该阶段可查看进度`}
+                    aria-label={`${PHASE_LABELS[phase]}后台运行中`}
+                    className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500"
+                  />
+                )}
                 {changePending && changeNotice && (
                   <button
                     type="button"
@@ -146,6 +159,12 @@ export function PhaseBoard({
                         )}
                       </span>
                     </span>
+                  </span>
+                )}
+                {onResetPhase && (
+                  <span className="ml-1 hidden items-center gap-0.5 group-hover:flex">
+                    <button type="button" title="归档本阶段产物并重新开始" aria-label="归档重做" onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'archive') }} className="rounded p-0.5 hover:bg-black/10"><RotateCcw size={13} /></button>
+                    <button type="button" title="彻底清除本阶段产物（不自动重新开始）" aria-label="彻底清除" onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'purge') }} className="rounded p-0.5 text-red-600 hover:bg-red-100"><Trash2 size={13} /></button>
                   </span>
                 )}
               </div>

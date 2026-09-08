@@ -214,6 +214,8 @@ export interface ToolDetection {
   description?: string
   installId?: string
   installUrl?: string
+  builtin?: boolean
+  source?: 'bundled' | 'managed' | 'system'
 }
 
 export interface ToolInstallResult {
@@ -401,6 +403,22 @@ export interface LlmProviderTestResult {
   models: LlmModelTestResult[]
 }
 
+export type PhaseResetMode = 'archive' | 'purge'
+
+export interface PhaseResetPreview {
+  phase: Phase
+  mode: PhaseResetMode
+  paths: string[]
+  fileCount: number
+  totalBytes: number
+  downstreamAffected: Phase[]
+  archivePath?: string
+}
+
+export interface PhaseResetResult extends PhaseResetPreview {
+  project: ChipProject
+}
+
 // ==================== Agent 对话（Phase 2：Pi Coding Agent RPC 嵌入） ====================
 
 export interface AgentDecisionOption {
@@ -451,14 +469,18 @@ export type AgentStreamEvent =
   | { type: 'text-delta'; delta: string }
   | { type: 'thinking-delta'; delta: string }
   | { type: 'tool-start'; toolName: string; toolCallId: string; input?: string }
+  | { type: 'tool-update'; toolName: string; toolCallId: string; text: string }
   | { type: 'tool-end'; toolName: string; toolCallId: string; isError: boolean; output: string; decisionRequest?: AgentDecisionRequest }
   | { type: 'agent-start' }
   | { type: 'agent-settled' }
+  | { type: 'status'; message: string }
   | { type: 'error'; message: string }
 
 /** agent:event 推送负载 */
 export interface AgentEventPayload {
   projectId: string
+  /** 事件来源会话的逻辑名（如 phase-rtl）；渲染层据此把流式事件路由到对应会话的聊天面板 */
+  sessionName?: string
   event: AgentStreamEvent
 }
 
@@ -475,11 +497,79 @@ export interface AgentSessionInfo {
   selectedModel: { providerId: string; modelId: string } | null
   /** 是否存在已启用且配置了 API Key 的 Provider */
   providersReady: boolean
+  /** 切走后仍在后台执行的阶段列表（阶段栏据此显示运行标记） */
+  backgroundRunningPhases?: Phase[]
+}
+
+/** VERIF 批次完成判定（上下文治理第 3 批，决策 4：绑定工具登记证据，不读会话文本） */
+export interface VerifBatchVerdict {
+  /** 全齐：所有场景已登记 scenario_hits 且 posture 晚于批次开始 */
+  complete: boolean
+  /** 未在任何 verification/results/&#42;&#42;/scenario_hits.json 中登记的场景 ID */
+  missingScenarioIds: string[]
+  /** verification-posture.json 的 generatedAt；不存在或不可解析为 null */
+  postureGeneratedAt: string | null
+  /** posture 是否晚于批次开始时间 */
+  postureFresh: boolean
+  /** 结构化缺失说明（供熔断报告） */
+  reasons: string[]
+}
+
+/** VERIF 批次编排的单次批次结果（主进程 AgentService.runVerifBatch 返回） */
+export interface VerifBatchRunResult {
+  batchIndex: number
+  /** 批次平行会话逻辑名（phase-verif--batch-N） */
+  sessionName: string
+  scenarioIds: string[]
+  startedAt: string
+  finishedAt: string
+  status: 'completed' | 'circuit-broken' | 'error'
+  verdict: VerifBatchVerdict
+  /** 熔断原因（watchdog / diagnostic-control 无进展 / 证据缺失 / 会话异常） */
+  circuitBreaker: string | null
+  errorMessage: string | null
+  /** 批次会话 JSONL 的归档文件路径；延迟归档下仅当该批次超出保留窗口被真正归档时才有值 */
+  archivedTo: string | null
+  /** 批次会话 JSONL 保留在会话目录中供只读回看（archivedTo 为 null 且会话文件存在时为 true） */
+  keptForReview: boolean
+}
+
+/** VERIF 批次编排循环结果（AgentService.runVerifBatches 返回） */
+export interface VerifBatchLoopResult {
+  batches: VerifBatchRunResult[]
+  /** exhausted=队列耗尽正常结束；circuit-break=批次熔断停止后续批次；max-batches=达到批次上限；error=编排异常；user-stop=用户停止托管 */
+  stoppedBy: 'exhausted' | 'circuit-break' | 'max-batches' | 'error' | 'user-stop'
+  message: string
+}
+
+/** 波段进度条目（W0-W3，展示层契约，引擎侧生产） */
+export interface WaveProgressEntry {
+  id: 'W0' | 'W1' | 'W2' | 'W3'
+  label: string
+  status: 'done' | 'in-progress' | 'pending'
+  scenarioCount: number
+  passedCount: number
+  /** W1 专用：可验证规格条款总数 / 已覆盖数 */
+  specClauseTotal?: number
+  specClauseCovered?: number
+  /** W2 专用：增补波主题列表 */
+  topics?: Array<{ name: string; scenarioCount: number; passedCount: number }>
+}
+
+/** 规格映射完备性矩阵（展示层契约，引擎侧生产） */
+export interface SpecMapping {
+  clauseTotal: number
+  coveredClause: number
+  /** 文档性条款数（不参与完备性分母） */
+  documentaryCount?: number
+  /** 无映射条款（execution-summary 精简形状） */
+  unmappedClause?: Array<{ specId: string; clause: string }>
+  /** 全量条款映射（posture/state 完整形状，状态机 UNMAPPED/MAPPED_UNTESTED/PASSED/FAILED/WAIVED） */
+  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[] }>
 }
 
 /** Pi 当前会话累计用量；不同 Provider 可能省略费用或上下文估算。 */
-export interface AgentSessionStats {
-  sessionId?: string
+export interface AgentSessionStats {  sessionId?: string
   userMessages: number
   assistantMessages: number
   toolCalls: number
@@ -492,11 +582,59 @@ export interface AgentSessionStats {
     total: number
   }
   cost?: number
-  contextWindowStatus?: 'verified' | 'estimated' | 'unknown'
+  contextWindowStatus?: 'verified' | 'estimated' | 'custom' | 'unknown'
   contextWindowSource?: string
+  /** 用户为当前模型自定义的上下文上限（Token）；存在时优先于登记表与回退值 */
+  contextWindowOverride?: number
   contextUsage?: {
     tokens: number | null
     contextWindow: number
     percent: number | null
+  }
+}
+
+/** 验证用例执行结果（操作级，来自 JUnit XML） */
+export interface VerificationExecutedCase {
+  /** 关联的 TEST ID（如 TEST-RESET-001）；未能映射到规划清单时为空串 */
+  testId: string
+  /** Cocotb 测试函数名（如 test_reset_sync_smoke） */
+  testName: string
+  /** 所属模块/测试环境目录名（如 vbc_enc_tb） */
+  module: string
+  status: 'PASS' | 'FAIL' | 'SKIPPED' | 'ERROR'
+  /** FAIL/ERROR 视为发现疑似 Bug */
+  bugFound: boolean
+  errorMessage?: string
+  /** 场景级阻断标签（来自 scenario_hits.json 的 blocker，如 RTL_L2_*） */
+  blocker?: string
+  timeSec?: number
+}
+
+/** 规划中的验证用例（来自 test_plan.md 或测试文件函数清单） */
+export interface VerificationPlannedCase {
+  testId: string
+  tcId: string
+  priority: string
+  name: string
+  environment: string
+}
+
+/** 验证环境与用例执行状态（操作级视图，区别于 AIGV 场景级态势） */
+export interface VerificationRunStatus {
+  environment: {
+    ready: boolean
+    testbenches: string[]
+    missing: string[]
+  }
+  planned: VerificationPlannedCase[]
+  executed: VerificationExecutedCase[]
+  summary: {
+    planned: number
+    executed: number
+    passed: number
+    failed: number
+    skipped: number
+    notRun: number
+    bugsFound: number
   }
 }

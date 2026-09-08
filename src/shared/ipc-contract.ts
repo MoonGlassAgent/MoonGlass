@@ -18,11 +18,16 @@ import type {
   Phase,
   PhaseAdvanceResult,
   ProjectMigrationResult,
+  PhaseResetMode,
+  PhaseResetPreview,
+  PhaseResetResult,
   PythonRunRequest,
   PythonRunResult,
   ToolDetection,
   ToolInstallJob,
   ToolInstallResult,
+  VerifBatchLoopResult,
+  VerifBatchRunResult,
   WaveformOpenResult
 } from './types/moonglass'
 import type { OpenProcessLibrary, ProcessLibraryRecord } from './types/moonglass'
@@ -50,7 +55,9 @@ export const IPC = {
     GateCheck: 'phase:gate-check',
     AcknowledgeChange: 'phase:acknowledge-change',
     FastTrackSynthesis: 'phase:fast-track-synthesis',
-    CompleteProject: 'phase:complete-project'
+    CompleteProject: 'phase:complete-project',
+    PreviewReset: 'phase:preview-reset',
+    Reset: 'phase:reset'
   },
   Eda: {
     DetectTools: 'eda:detect-tools',
@@ -74,19 +81,32 @@ export const IPC = {
     Abort: 'agent:abort',
     SetModel: 'agent:set-model',
     GetMessages: 'agent:get-messages',
+    /** 只读窥视指定会话的消息（解析会话 JSONL，不 attach / 不切换 / 不 spawn） */
+    GetSessionMessages: 'agent:get-session-messages',
     GetSessionStats: 'agent:get-session-stats',
+    SetContextWindowOverride: 'agent:set-context-window-override',
     ResetSession: 'agent:reset-session',
+    /** 开启任务粒度会话（M1）：新会话零历史继承，会话头带 parentSession 血缘 */
+    StartTask: 'agent:start-task',
+    CompactSession: 'agent:compact-session',
+    RestartSessionFresh: 'agent:restart-session-fresh',
     /** 主进程 → 渲染进程的事件推送通道（send，非 invoke） */
     Event: 'agent:event',
     ListSessions: 'agent:list-sessions',
     SwitchSession: 'agent:switch-session',
-    CloseSession: 'agent:close-session'
+    CloseSession: 'agent:close-session',
+    /** VERIF 批次编排（第 3 批）：单个批次 / 循环派发 */
+    RunVerifBatch: 'agent:run-verif-batch',
+    RunVerifBatches: 'agent:run-verif-batches',
+    StopVerifBatches: 'agent:stop-verif-batches'
   },
   Fs: {
     Tree: 'fs:tree',
     ReadFile: 'fs:read-file',
+    ReadJson: 'fs:read-json',
     WriteText: 'fs:write-text',
-    OpenExternal: 'fs:open-external'
+    OpenExternal: 'fs:open-external',
+    VerificationStatus: 'fs:verification-status'
   },
   ProcessLibrary: {
     List: 'process-library:list',
@@ -145,6 +165,8 @@ export interface MoonGlassApi {
     fastTrackSynthesis(projectId: string): Promise<ChipProject | null>
     /** 完成最终综合阶段并将项目标记为完成 */
     completeProject(projectId: string): Promise<ChipProject | null>
+    previewReset(projectId: string, phase: Phase, mode: PhaseResetMode): Promise<PhaseResetPreview>
+    reset(projectId: string, phase: Phase, mode: PhaseResetMode): Promise<PhaseResetResult>
   }
   eda: {
     /** 默认返回持久缓存；force=true 时重新扫描开发环境和 EDA 工具。 */
@@ -174,10 +196,21 @@ export interface MoonGlassApi {
     abort(projectId: string): Promise<void>
     setModel(projectId: string, providerId: string, modelId: string): Promise<AgentSessionInfo>
     getMessages(projectId: string): Promise<AgentUiMessage[]>
+    /** 只读窥视指定会话的消息（后台批次会话实时活动 / 历史批次回看）；会话不存在返回空数组 */
+    getSessionMessages(projectId: string, sessionName: string): Promise<AgentUiMessage[]>
     /** 当前活动会话的 Token、费用和上下文窗口统计。 */
     getSessionStats(projectId: string): Promise<AgentSessionStats | null>
+    /** 为当前会话所选模型自定义上下文窗口上限（Token，null 恢复自动判定）；按模型持久化，跨项目生效 */
+    setContextWindowOverride(projectId: string, contextWindow: number | null): Promise<void>
     /** 创建平行会话（不关闭当前会话）。name 可选，默认自动生成 review-<时间戳> */
     resetSession(projectId: string, sessionName?: string): Promise<AgentSessionInfo>
+    /** 开启任务粒度会话（M1）：成为前台会话，零历史继承，血缘指向前会话；
+     *  title 为任务标题（生成 slug 与展示标签），firstPrompt 用于无标题时的 slug 兜底 */
+    startTask(projectId: string, input?: { title?: string; firstPrompt?: string }): Promise<AgentSessionInfo>
+    /** 使用 Pi 原生 compact 压缩当前上下文，保留关键摘要和会话文件。 */
+    compactSession(projectId: string): Promise<AgentSessionInfo>
+    /** 归档当前历史并以空白 session 重启；保留标签和模型，不携带旧上下文。 */
+    restartSessionFresh(projectId: string): Promise<AgentSessionInfo>
     /** 列出项目所有可用会话 */
     listSessions(projectId: string): Promise<Array<{
       name: string
@@ -187,11 +220,19 @@ export interface MoonGlassApi {
       modelLabel: string
       selectedModel: { providerId: string; modelId: string } | null
       isActive: boolean
+      /** 会话进程仍在后台运行（如 VERIF 批次会话）；UI 据此区分"运行中可刷新"与"历史可回看" */
+      isRunning: boolean
     }>>
     /** 切换到指定会话 */
     switchSession(projectId: string, sessionName: string): Promise<AgentSessionInfo>
     /** 关闭并删除平行会话；主会话不可关闭 */
     closeSession(projectId: string, sessionName: string): Promise<AgentSessionInfo>
+    /** VERIF 批次编排（第 3 批）：派发单个批次会话执行指定场景，返回证据绑定的完成判定 */
+    runVerifBatch(projectId: string, scenarioIds: string[], options?: { batchIndex?: number }): Promise<VerifBatchRunResult>
+    /** VERIF 批次编排（第 3 批）：循环“选择下一批 → 派发批次会话”直至队列耗尽或熔断 */
+    runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number }): Promise<VerifBatchLoopResult>
+    /** 停止 VERIF 批次编排：中止进行中的批次会话并不再派发新批次 */
+    stopVerifBatches(projectId: string): Promise<void>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
   }
@@ -200,8 +241,12 @@ export interface MoonGlassApi {
     tree(projectId: string): Promise<FileTreeNode[]>
     /** 读取文件内容（相对路径，超限截断；二进制/越界返回 null 或提示） */
     readFile(projectId: string, relPath: string): Promise<FileContentResult | null>
+    /** 完整读取并在主进程解析项目内 JSON；供结构化数据视图使用，不走文件预览截断。 */
+    readJson(projectId: string, relPath: string): Promise<unknown | null>
     /** 在项目工作区内写入 UTF-8 文本，用于托管报告和变更单。 */
     writeText(projectId: string, relPath: string, content: string): Promise<boolean>
+    /** 读取验证环境与用例执行状态（环境是否搭建、已执行/未完成用例及 pass/fail）。 */
+    verificationStatus(projectId: string): Promise<import('./types/moonglass').VerificationRunStatus>
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
     /** 在系统浏览器/默认程序中打开项目文件；路径必须相对项目工作区。 */
     openExternal(projectId: string, relPath: string): Promise<boolean>

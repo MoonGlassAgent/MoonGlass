@@ -125,7 +125,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     apiKey: '',
-    models: ['glm-5.2', 'glm-5'],
+    models: ['glm-5.3-flash', 'glm-5.2', 'glm-5'],
     enabled: false,
     builtin: true
   },

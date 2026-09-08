@@ -1,111 +1,157 @@
 # MoonGlass ASIC Design Agent
 
-MoonGlass 是面向 ASIC/SoC 设计工程师的 AI 工作台，以六阶段流程串联需求-规格定义、架构设计、RTL 开发、验证完备、质量检查和综合实现。
+MoonGlass 是面向 ASIC/SoC 工程师的芯片开发全流程 AI 工作台。它把需求、规格、架构、RTL、验证、质量和综合组织成一条可追踪、可审查、可恢复的工程链，让 Agent 的工作结果不仅是“生成了一段代码”，而是能够逐步形成设计文件、验证证据、问题记录和交付报告。
 
-本仓库是 MoonGlass 的**首期公开源码仓库**，公开 Renderer UI、六阶段流程框架、公共领域类型和 IPC 契约，供产品体验、流程研究和社区协作。完整 Agent 编排、EDA 自动化和工程执行能力暂未全部公开。
+当前版本：**v0.9.0** ｜ Windows x64
 
-> 可直接运行的 Windows 完整绿色版请从 GitHub Releases 下载。绿色版包含 MIC_NPU Demo，但不包含模型 API Key。
+[下载绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.0) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
 
-## 新手入口
+## MoonGlass 能做什么
 
-- [在线网页版说明书](https://moonglassagent.github.io/MoonGlass/)：适合直接打开和分享，支持标题、摘要和封面卡片。
-- [ASIC Agent 学术讨论稿](https://moonglassagent.github.io/MoonGlass/paper.html)：从代码生成到工程签核，系统讨论流程控制、验证证据和开放研究议程。
-- [傻瓜式 HTML 使用说明书](https://moonglassagent.github.io/MoonGlass/QUICK-START-ZH-CN.html)：从解压启动、配置模型到完成六阶段开发，适合第一次使用 MoonGlass 的用户。
-- [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)：简明功能说明与工程注意事项。
-- [下载 MoonGlass v0.6.0 完整绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.6.0)
+芯片码农可以用它从需求和架构快速推进到 RTL、Lint、CDC、仿真和回归；架构师可以在规格约束下生成设计 Demo，并调用综合工具评估面积、时序与实现风险；验证工程师可以围绕 Verification Intent、Scenario、Checker、Golden Model、Coverage 和多重 Oracle 建立可追踪的验证闭环。
 
-## 学术讨论与开发报告
+MoonGlass 的核心目标是把 Agent 放进真实工程流程中：每个阶段都有上下文、文件、操作、门禁和证据，用户可以查看过程、干预决策、切换模型、恢复会话，也可以让主会话执行端到端推进，让平行会话独立完成 Review 或补充分析。
 
-以下文章来自 MoonGlass 在真实 ASIC Agent 开发与验证中的工程实践，用于开放讨论、工程评审与后续实验设计；它们不代表已经完成同行评审，也不构成商业 EDA 签核认证。
-
-- [从代码生成到工程签核：面向 ASIC IP 开发的证据驱动型人机协同 Agent 工作流](https://moonglassagent.github.io/MoonGlass/paper.html) — 讨论需求、架构、RTL、验证、质量门禁、变更控制和工程证据。
-- [MoonGlass AIGV：面向 ASIC IP 的语义化、风险驱动与证据闭环验证方法学](https://moonglassagent.github.io/MoonGlass/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html) — 介绍 Verification Space、Multi-Oracle、风险加权 Mutation、Residual Risk 与机器签核建议。
-- [MoonGlass：长时 Agent 芯片开发的上下文与执行工程学](https://moonglassagent.github.io/MoonGlass/MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html) — 总结阶段会话隔离、上下文生命周期、模型适配、完成屏障、证据门禁与故障恢复。
-- [MoonGlass v0.8.0 最新开发报告](https://moonglassagent.github.io/MoonGlass/dev-summary-v0.8.0.html) — 区分已经实现、局部验证通过、当前工作区增量和正式发布边界。
-
-## 能做什么
-
-- 芯片设计工程师可快速完成 RTL 开发、代码检查、验证执行与回归闭环。
-- 架构师可根据需求和规格快速形成设计 Demo，并进入综合评估面积与时序。
-- 验证工程师可基于规格、架构和需求-规格矩阵搭建验证环境、生成用例并整理质量证据。
-- 主会话可完成 Cocotb + Icarus 功能回归、Verilator RTL 覆盖率签核，并通过独立证据 Review 核验测试、JUnit、日志和覆盖率。
-- 主会话与平行会话可独立选择模型，用不同模型交叉 Review。
-- 前序阶段发生变更时，对已完成的后续阶段产生变更响应提醒。
-- 可选择后续若干阶段一键托管，自动处理推荐项、质量门禁和修复重试，结束后形成托管报告。
-- 导入已有工程时自动分析目录、文档、RTL、验证与综合证据，恢复到实际开发阶段，而非一律按新项目处理。
-
-## 六阶段流程
+## 六阶段工程流程
 
 ```text
 REQ_SPEC 需求-规格定义
-    -> ARCH 架构设计
-    -> RTL RTL 开发
-    -> VERIF 验证完备
-    -> QA 质量检查
-    -> SYNTH 综合实现
+    ↓
+ARCH     架构设计
+    ↓
+RTL      RTL 开发
+    ↓
+VERIF    验证完备
+    ↓
+QA       质量检查
+    ↓
+SYNTH    综合实现
 ```
 
-需求和规格在同一阶段协同形成，但仍通过需求-规格矩阵保持需求、设计项、验证点和质量证据的双向追踪。
+阶段不是简单的页面切换。用户可以回到任意阶段修改内容，MoonGlass 会保留后续结果，同时对已经完成但受到影响的阶段标记变更提醒；后续阶段可以重新执行，或由用户逐项响应变更。
 
-## 软件界面
+## 验证方法学：AIGV 2.0
 
-### 六阶段项目工作区
+MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语义 → 验证意图 → 场景 → 激励 → Checker/Oracle → 证据 → 风险结论”的闭环。
 
-项目工作区集中展示阶段推进、项目文件、主会话与平行会话、Agent 执行过程以及质量问题。阶段变更会沿已完成的后续阶段传播提醒。
+- **Verification Intent**：把规格中的行为目标转成可检查的语义目标。
+- **Scenario Registry**：记录正常、异常、边界、时序、并发和复位场景。
+- **Checker / Golden Model / Oracle**：根据模块角色和验证层级选择，不强制所有模块使用同一种验证方式。
+- **Coverage Hole**：说明具体缺失场景、缺失激励和下一步建议，而不是只显示一个抽象分类。
+- **Residual Risk**：记录尚未闭环的风险、工具限制、证据不足和签核阻断原因。
+- **W0-W3 验证波段**：从环境与基础功能，到增补验证、签核和残余风险审查。
+- **验证态势**：集中展示 Spec Gap、Intent 闭环率、风险热区、覆盖缺口、失败诊断和下一步行动。
 
-![MoonGlass 六阶段项目工作区](./docs/images/workspace-flow.png)
+详细说明：[MoonGlass AIGV 2.0 白皮书](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html) ｜ [AIGV 方法学论文](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)
 
-### RTL Design Browser
+## 主要能力
 
-RTL Design Browser 用于解析 Top、展开设计层次并查看模块实例关系，辅助架构 Review、RTL 定位和综合前检查。
+| 能力 | 说明 |
+|---|---|
+| 项目与阶段管理 | 新建、导入、迁移项目；识别既有项目阶段；阶段回退、变更传播和阶段输出清理 |
+| 主会话与平行会话 | 独立选择模型；会话恢复、无上下文重启、上下文统计和批次隔离 |
+| 一键托管 | 选择后续流程，Agent 按完成屏障等待任务、处理门禁并生成托管报告 |
+| RTL 工程 | 文件树、行号、语法高亮、搜索、只读查看、RTL 模板和项目文件管理 |
+| EDA 工具链 | Verible、Yosys、Verilator、Icarus Verilog、Cocotb、Slang、SymbiYosys、Boolector、Bitwuzla 等 |
+| 验证闭环 | 回归、覆盖率、Formal 尝试、Checker、Golden Model、诊断增强和证据化签核 |
+| RTL Design Browser | 层次树、源码、信号列表、Driver/Load 追踪和跨层次定位 |
+| IP 模板库 | 用户导入 IP 路径，自动识别、索引并在架构、RTL 和验证阶段提供复用建议 |
+| 多模型服务 | OpenAI 兼容接口及多个 Provider；连接测试、模型切换、失败恢复和状态保持 |
+| 主题与交付 | 浅色、深色、跟随系统；Windows 安装包和包含 MIC_NPU Demo 的绿色版 |
 
-![MoonGlass RTL Design Browser](./docs/images/rtl-design-browser.png)
+## 界面预览
 
-### 授权与快速使用说明
+![MoonGlass 项目总览](./docs/images/v086/01-projects.png)
 
-软件内置中文授权摘要、六阶段快速手册、隐私提示以及商务授权联系方式。
+![MoonGlass VERIF 工作区](./docs/images/v086/02-workspace-verif.png)
 
-![MoonGlass 授权与快速使用说明](./docs/images/about-license.png)
+![验证态势全屏视图](./docs/images/v086/03-verification-posture.png)
 
-## 本次公开范围
+![RTL Design Browser](./docs/images/v086/04-design-browser.png)
 
-公开内容：
+## 快速开始
 
-- `src/renderer/`：React UI、项目面板、阶段看板、会话界面、文件树、设置和关于页面
-- `src/shared/`：公共领域类型、阶段数据结构、IPC 契约和 Provider 预设
-- `docs/USER-MANUAL-ZH-CN.md`：中文实用手册
-- `docs/QUICK-START-ZH-CN.html`：可离线打开和打印的中文新手说明书
-- 授权、隐私、安全与贡献说明
+普通用户建议直接下载 [Windows x64 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.0)，解压后运行 `MoonGlass.exe`。首次使用：
 
-暂未公开：
+1. 在“设置”中配置模型 Provider、API Key、Base URL 和模型列表。
+2. 在“设置”中检查开发环境与 EDA 工具链状态。
+3. 新建项目或导入已有项目，并指定项目目录。
+4. 从需求-规格定义阶段开始推进，或进入识别出的既有阶段。
+5. 在每个阶段检查 Agent 输出、文件变化、工具结果和门禁，再决定是否推进。
 
-- Electron 主进程和持久化服务实现
-- Agent 调度、会话恢复、系统 Prompt 与 Skills
-- EDA Bridge、自动验证与 Bugfix 循环
-- RTL Engine 与 RTL Design Browser 核心引擎
-- MIC_NPU Demo 源工程及内部测试资产
+完整说明：[MoonGlass 用户手册](./docs/USER-MANUAL-ZH-CN.md) ｜ [HTML 快速手册](./docs/QUICK-START-ZH-CN.html)
 
-因此，本仓库当前用于查看和协作公开框架，**不能单独构建出 GitHub Release 中的完整绿色版**。详见 [PUBLIC-SOURCE-SCOPE.md](./PUBLIC-SOURCE-SCOPE.md)。
+## 从源码运行
 
-## 版本
+要求：Node.js ≥ 22，pnpm ≥ 10。Python 3.10+ 和 EDA 工具可由设置页检测，也可以使用系统中已有安装。
 
-当前版本：`v0.6.0`
+```bash
+pnpm install
+pnpm dev
+pnpm typecheck
+pnpm test
+pnpm build
+pnpm dist
+```
 
-v0.6.0 重点增强主会话端到端验证能力，加入功能覆盖率、RTL 覆盖率、双通道结果合并、独立证据 Review 和验证签核门禁；同时增强总体报告、项目信息编辑、模型恢复显示和文件查找。完整功能请使用 Release 中的 Windows 绿色版。
+绿色版构建入口：[`Build-Green.ps1`](./Build-Green.ps1)。它会执行检查、构建、打包、敏感信息扫描并输出 SHA-256 校验文件。
 
-第一次使用建议先看 [傻瓜式 HTML 使用说明书](https://moonglassagent.github.io/MoonGlass/QUICK-START-ZH-CN.html)，工程说明见 [中文实用手册](./docs/USER-MANUAL-ZH-CN.md)。
+## 工程思想
 
-## 授权
+MoonGlass 遵循几个基本原则：
 
-MoonGlass 是 **Source Available** 软件，不是 OSI 定义的 Open Source 软件。
+1. **证据优先**：Agent 的结论必须尽可能回到文件、日志、波形、覆盖率和工具原始输出。
+2. **阶段可追踪**：需求、规格、架构、RTL、测试和签核材料保持双向追溯。
+3. **增量可验证**：复杂项目按顶层和子模块角色分层验证，避免无意义地对所有模块执行同样重量的流程。
+4. **失败要可解释**：区分 RTL 缺陷、测试环境问题、工具限制、模型服务失败和证据缺失。
+5. **长任务要可治理**：会话、批次、上下文、看门狗、完成屏障和变更响应共同约束 Agent 的长时间运行。
+6. **人机边界清晰**：Agent 可以执行工程动作，但用户始终能够查看、干预、复核和决定签核。
 
-- 非商业用途遵循 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
-- 企业研发、客户交付、收费服务、流片、量产及其他商业用途须事先取得单独书面授权。
-- 商用方案和参考价格见 [COMMERCIAL-LICENSE.md](./COMMERCIAL-LICENSE.md)。
-- 历史授权边界见 [LICENSE-CHANGE.md](./LICENSE-CHANGE.md)。
+## 学术与社区交流
 
-用户合法输入的需求、规格、RTL、验证资产和设计输出归用户或其权利人所有。嵌入输出的 MoonGlass 代码、模板及第三方组件仍受各自许可证约束。
+MoonGlass 同时作为一个工程实验平台，持续整理 ASIC Agent、证据驱动开发、AIGV、长时 Agent 上下文治理和人机协同签核方面的实践材料。相关文档用于工程讨论、方法学比较和后续实验设计，不代表同行评审结论，也不替代商业 EDA 签核认证。
 
-## 联系
+- [从证据驱动流程到任务级验证协同：MoonGlass v0.6.0-v0.9.0 工程演进](./docs/MOONGLASS-v0.6.0-TO-v0.9.0-EVOLUTION-ZH-CN.html)
+- [证据驱动型 ASIC Agent 工作流](./docs/EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html)
+- [MoonGlass AIGV 方法学](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)
+- [MoonGlass AIGV 2.0 白皮书](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html)
+- [长时 Agent 芯片开发工程学](./docs/MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html)
+- [总体工程报告](./reports/overall-report.md)
 
-商务授权、定制开发、安全问题和产品建议：`moonglassagent@126.com`
+欢迎通过 GitHub Issues 讨论复现问题、验证策略、工具链适配、AIGV 语义和工程改进建议。
+
+## 开源声明与授权
+
+MoonGlass 当前是 **Source Available** 软件，源码公开可阅读和讨论，但**不是 OSI 定义的 Open Source 软件**。公开仓库不等于无条件授权，使用、修改、分发和商业化都应遵守仓库中的许可证和授权条款。
+
+- 非商业用途：个人学习、学术研究、实验和非商业教育用途，遵循 [PolyForm Noncommercial License 1.0.0](./LICENSE)。
+- 商业用途：企业内部商业研发、客户交付、收费服务、流片、量产以及其他预期商业应用，必须在使用前取得单独的书面商业授权。
+- 商业授权条款与参考方案：[`COMMERCIAL-LICENSE.md`](./COMMERCIAL-LICENSE.md)。
+- 历史授权边界和变更记录：[`LICENSE-CHANGE.md`](./LICENSE-CHANGE.md)。
+- 第三方组件、EDA 工具和运行时许可证：[`THIRD-PARTY-NOTICES.md`](./THIRD-PARTY-NOTICES.md)。
+
+用户输入的需求、规格、RTL、验证资产和设计输出归用户或其权利人所有。MoonGlass 自身代码、模板、内置工具链和第三方组件仍分别受对应许可证约束。
+
+## 作者与维护者
+
+MoonGlass ASIC Design Agent 由 **MoonGlassAgent** 发起和维护，面向 ASIC/SoC 设计、验证自动化和 AI 辅助工程流程持续开发。
+
+- GitHub：[@MoonGlassAgent](https://github.com/MoonGlassAgent)
+- 项目仓库：[MoonGlass](https://github.com/MoonGlassAgent/MoonGlass)
+- 联系邮箱：`moonglassagent@126.com`
+
+## 商业合作与技术支持
+
+欢迎围绕以下方向开展合作：
+
+- 企业内部 ASIC/SoC 开发流程落地
+- MoonGlass 私有化部署和团队协同
+- EDA 工具链、仿真器、综合工具和工艺库适配
+- AIGV 验证方法学定制与验证流程建设
+- IP/RTL 项目导入、迁移和自动化改造
+- 定制 Agent、模型服务和企业规则接入
+- 芯片项目技术培训、PoC 和工程咨询
+
+商业授权、定制开发、技术支持和合作咨询请联系：`moonglassagent@126.com`。
+
+安全问题请通过邮件单独联系，邮件中不要发送 API Key、客户机密、受限制的芯片设计数据或未公开的工艺资料。

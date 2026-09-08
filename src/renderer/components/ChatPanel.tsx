@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
+import { Minimize2, MoreVertical, RotateCcw, Ruler } from 'lucide-react'
 import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
 import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
@@ -21,6 +22,13 @@ interface SessionInfo {
   modelLabel: string
   selectedModel: { providerId: string; modelId: string } | null
   isActive: boolean
+  /** 会话进程仍在后台运行（如 VERIF 批次会话） */
+  isRunning: boolean
+}
+
+/** 编排托管的只读会话名标记：VERIF 批次（phase-verif--batch-N）与 RTL 修复会话（phase-verif--fix-RC-*，M3 §4） */
+function isBatchSession(name: string): boolean {
+  return name.includes('--batch-') || name.includes('--fix-')
 }
 
 interface ChatPanelProps {
@@ -34,6 +42,15 @@ function formatTokens(value: number): string {
   return String(value)
 }
 
+/** 解析用户输入的上下文上限：支持 131072 / 128k / 1M 写法；无效返回 null */
+function parseTokenCountInput(raw: string): number | null {
+  const match = raw.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*([km])?$/)
+  if (!match) return null
+  const value = Number(match[1]) * (match[2] === 'm' ? 1_000_000 : match[2] === 'k' ? 1_000 : 1)
+  if (!Number.isFinite(value) || value < 1024 || value > 10_000_000) return null
+  return Math.round(value)
+}
+
 function statsTitle(stats: AgentSessionStats): string {
   const lines = [
     `输入 Token：${stats.tokens.input.toLocaleString()}`,
@@ -44,6 +61,7 @@ function statsTitle(stats: AgentSessionStats): string {
   lines.push(`会话累计：${stats.tokens.total.toLocaleString()}`)
   if (stats.contextWindowStatus === 'verified') lines.push(`上下文上限：已核实（${stats.contextWindowSource ?? '官方资料'}）`)
   if (stats.contextWindowStatus === 'estimated') lines.push(`上下文上限：服务商估计（${stats.contextWindowSource ?? '待复核'}）`)
+  if (stats.contextWindowStatus === 'custom') lines.push(`上下文上限：用户自定义（${formatTokens(stats.contextWindowOverride ?? 0)} Token）`)
   if (stats.contextWindowStatus === 'unknown') lines.push('上下文上限：未核实，不计算占用率')
   if (typeof stats.cost === 'number' && stats.cost > 0) lines.push(`估算费用：$${stats.cost.toFixed(4)}`)
   lines.push(`消息：${stats.userMessages} 用户 / ${stats.assistantMessages} Agent / ${stats.toolCalls} 工具调用`)
@@ -51,12 +69,14 @@ function statsTitle(stats: AgentSessionStats): string {
 }
 
 export function SessionTabs({ projectId, onActivate }: { projectId: string; onActivate?: () => void }): React.JSX.Element {
-  const { sessionInfo, createParallel, switchSession, closeSession } = useChatStore()
+  const { sessionInfo, startTask, switchSession, closeSession } = useChatStore()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [showDialog, setShowDialog] = useState(false)
-  const [name, setName] = useState('review')
+  const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
+  /** 正在只读查看的批次会话（不切换活动会话） */
+  const [peekSession, setPeekSession] = useState<SessionInfo | null>(null)
 
   const refresh = useCallback(async () => {
     try {
@@ -90,11 +110,11 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
     setBusy(true)
     setError('')
     try {
-      await createParallel(name.trim() || undefined)
+      await startTask(name.trim() || undefined)
       await refresh()
       onActivate?.()
       setShowDialog(false)
-      setName('review')
+      setName('')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -132,15 +152,25 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
           <button
             type="button"
             disabled={busy}
-            onClick={() => void select(session.name)}
+            onClick={() => {
+              // 批次会话（phase-verif--batch-N）由编排托管：不切换、不 attach，只读查看
+              if (isBatchSession(session.name)) setPeekSession(session)
+              else void select(session.name)
+            }}
+            title={isBatchSession(session.name) ? '查看批次会话（只读）' : undefined}
             className="min-w-0 truncate px-3 py-1.5 disabled:opacity-50"
           >
             {session.name === 'main' ? '主会话' : session.label.replace(/\s*\([^)]*\)$/, '')}
+            {isBatchSession(session.name) && (
+              <span className={`ml-1 text-[10px] font-normal ${session.isRunning ? 'text-amber-600' : 'opacity-60'}`}>
+                {session.isRunning ? '● 运行中' : '查看'}
+              </span>
+            )}
             <span className="ml-1 max-w-24 truncate text-[10px] font-normal opacity-60">
               {session.modelLabel || '未选模型'}
             </span>
           </button>
-          {session.name !== 'main' && (
+          {session.name !== 'main' && !isBatchSession(session.name) && (
             <button
               type="button"
               disabled={busy}
@@ -160,7 +190,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
           setError('')
           setShowDialog(true)
         }}
-        title="新建独立的平行会话"
+        title="开启新任务会话（零历史继承，基于工作区产物继续）"
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-base text-zinc-500 hover:bg-zinc-100 hover:text-blue-700"
       >
         +
@@ -180,8 +210,8 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
             aria-labelledby="parallel-session-title"
             className="w-full max-w-sm rounded-md border border-zinc-300 bg-white p-4 shadow-xl"
           >
-            <h2 id="parallel-session-title" className="text-sm font-semibold text-zinc-900">新建平行会话</h2>
-            <p className="mt-1 text-xs text-zinc-500">新会话属于当前项目，拥有独立的消息历史。</p>
+            <h2 id="parallel-session-title" className="text-sm font-semibold text-zinc-900">新任务</h2>
+            <p className="mt-1 text-xs text-zinc-500">为当前阶段开启独立的任务会话：不继承对话历史，自动基于工作区已落盘产物继续；原会话保留可随时切回。</p>
             <input
               autoFocus
               value={name}
@@ -190,7 +220,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
                 if (event.key === 'Enter') void create()
                 if (event.key === 'Escape' && !busy) setShowDialog(false)
               }}
-              placeholder="会话名称（可留空）"
+              placeholder="任务标题（可留空，如：修复 axi_timer 握手）"
               className="mt-3 w-full rounded border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
             />
             {error && <p className="mt-2 whitespace-pre-wrap text-xs text-red-600">{error}</p>}
@@ -215,7 +245,97 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
           </div>
         </div>
       ), document.body)}
+
+      {peekSession && (
+        <BatchSessionPeek
+          projectId={projectId}
+          session={peekSession}
+          onClose={() => {
+            setPeekSession(null)
+            void refresh()
+          }}
+        />
+      )}
     </>
+  )
+}
+
+/**
+ * 批次会话只读查看面板（VERIF 批次可观测性）：
+ * 打开时经 getSessionMessages 解析会话 JSONL；会话仍在后台运行时
+ * 每 5 秒轮询刷新并标注"运行中（只读）"。只读——不提供输入框。
+ */
+function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; session: SessionInfo; onClose: () => void }): React.JSX.Element {
+  const [messages, setMessages] = useState<AgentUiMessage[]>([])
+  const [loadError, setLoadError] = useState('')
+  const [running, setRunning] = useState(session.isRunning)
+
+  const load = useCallback(async (): Promise<void> => {
+    try {
+      setMessages(await window.moonglass.agent.getSessionMessages(projectId, session.name))
+      // 同步刷新运行标记：批次结束后停止轮询
+      const sessions = await window.moonglass.agent.listSessions(projectId)
+      setRunning(sessions.find((item) => item.name === session.name)?.isRunning ?? false)
+    } catch (reason) {
+      setLoadError(reason instanceof Error ? reason.message : String(reason))
+    }
+  }, [projectId, session.name])
+
+  useEffect(() => {
+    void load()
+    if (!running) return
+    const timer = window.setInterval(() => void load(), 5_000)
+    return () => window.clearInterval(timer)
+  }, [load, running])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] flex items-center justify-center bg-black/30 p-4"
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose()
+      }}
+    >
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`批次会话 ${session.label}`}
+        className="flex h-[80vh] w-full max-w-3xl flex-col rounded-md border border-zinc-300 bg-white shadow-xl"
+      >
+        <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2">
+          <h2 className="text-sm font-semibold text-zinc-900">
+            {session.label.replace(/\s*\([^)]*\)$/, '')}
+            <span className={`ml-2 text-xs font-normal ${running ? 'text-amber-600' : 'text-zinc-400'}`}>
+              {running ? '运行中（只读）' : '已完成（只读回看）'}
+            </span>
+          </h2>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="关闭批次会话查看"
+            className="flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
+          >
+            ×
+          </button>
+        </div>
+        <div className="flex-1 overflow-y-auto p-4">
+          {loadError && <p className="text-xs text-red-600">{loadError}</p>}
+          {!loadError && messages.length === 0 && (
+            <p className="mt-8 text-center text-sm text-zinc-400">该批次会话暂无可显示的消息</p>
+          )}
+          <div className="flex flex-col gap-3">
+            {messages.map((m) => (
+              <MessageBubble
+                key={m.id}
+                msg={m}
+                decisionDisabled
+                onDecision={() => { /* 只读面板不响应决策 */ }}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>,
+    document.body
   )
 }
 
@@ -228,7 +348,10 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     ensure,
     send,
     abort,
-    setModel
+    setModel,
+    compactSession,
+    finishAndStartTask,
+    restartSessionFresh
   } = useChatStore()
   const [input, setInput] = useState('')
   const [providers, setProviders] = useState<LlmProviderConfig[]>([])
@@ -237,6 +360,12 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [decisionDrafts, setDecisionDrafts] = useState<Record<string, { selectedIds: string[]; customText: string }>>({})
   const [historyIndex, setHistoryIndex] = useState<number | null>(null)
   const [sessionStats, setSessionStats] = useState<AgentSessionStats | null>(null)
+  const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
+  const [sessionActionBusy, setSessionActionBusy] = useState(false)
+  /** 自定义上下文上限表单（三点菜单内联展开） */
+  const [contextLimitEditing, setContextLimitEditing] = useState(false)
+  const [contextLimitDraft, setContextLimitDraft] = useState('')
+  const [contextLimitError, setContextLimitError] = useState('')
   const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
 
@@ -289,7 +418,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     const requestedSession = sessionInfo.sessionName
     const stats = await window.moonglass.agent.getSessionStats(projectId).catch(() => null)
     if (useChatStore.getState().sessionInfo?.sessionName === requestedSession) setSessionStats(stats)
-  }, [projectId, sessionInfo?.providersReady, sessionInfo?.sessionName])
+    // 依赖 selectedModel：切换模型后立即重取统计，上下文上限同步到新模型
+  }, [projectId, sessionInfo?.providersReady, sessionInfo?.sessionName, sessionInfo?.selectedModel?.providerId, sessionInfo?.selectedModel?.modelId])
 
   useEffect(() => {
     setSessionStats(null)
@@ -358,6 +488,76 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     void send(text)
   }
 
+  const handleCompactSession = async (): Promise<void> => {
+    if (streaming || sessionActionBusy) return
+    if (!window.confirm('压缩当前会话上下文？\n\nPi 会生成一份关键摘要并用它继续对话，历史文件仍然保留。摘要过程会调用当前模型并产生 Token。')) return
+    setSessionMenuOpen(false)
+    setSessionActionBusy(true)
+    try {
+      await compactSession()
+      await refreshSessionStats()
+    } catch {
+      // Store 已将错误写入当前会话消息区。
+    } finally {
+      setSessionActionBusy(false)
+    }
+  }
+
+  const handleRestartSessionFresh = async (): Promise<void> => {
+    if (streaming || sessionActionBusy) return
+    if (!window.confirm('确认无上下文重启当前会话？\n\n当前聊天历史会被归档，标签和模型保持不变，但新的 Agent 不会获得旧消息或摘要。该操作适合彻底切断旧上下文。')) return
+    setSessionMenuOpen(false)
+    setSessionActionBusy(true)
+    try {
+      await restartSessionFresh()
+      setSessionStats(null)
+    } catch {
+      // Store 已将错误写入当前会话消息区。
+    } finally {
+      setSessionActionBusy(false)
+    }
+  }
+
+  /** M2 §3.3 占用引导动作：压缩当前会话（保留摘要）→ 以同主题开新任务会话 */
+  const handleFinishAndStartTask = async (): Promise<void> => {
+    if (streaming || sessionActionBusy) return
+    if (!window.confirm('收尾当前任务并开新任务会话？\n\nPi 会先压缩当前会话保留关键摘要，然后以同主题开启零历史继承的新任务会话。摘要过程会调用当前模型并产生 Token。')) return
+    setSessionActionBusy(true)
+    try {
+      await finishAndStartTask()
+      setSessionStats(null)
+    } catch {
+      // Store 已将错误写入当前会话消息区。
+    } finally {
+      setSessionActionBusy(false)
+    }
+  }
+
+  /** 保存/清除自定义上下文上限：按当前会话模型持久化，随后重取统计刷新显示 */
+  const handleSetContextLimit = async (value: number | null): Promise<void> => {
+    if (sessionActionBusy) return
+    setSessionActionBusy(true)
+    setContextLimitError('')
+    try {
+      await window.moonglass.agent.setContextWindowOverride(projectId, value)
+      await refreshSessionStats()
+      setContextLimitEditing(false)
+    } catch (reason) {
+      setContextLimitError(reason instanceof Error ? reason.message : String(reason))
+    } finally {
+      setSessionActionBusy(false)
+    }
+  }
+
+  const submitContextLimit = (): void => {
+    const parsed = parseTokenCountInput(contextLimitDraft)
+    if (parsed == null) {
+      setContextLimitError('请输入有效数字，如 200000、200k 或 1M（1024 ~ 10M）')
+      return
+    }
+    void handleSetContextLimit(parsed)
+  }
+
   // 未配置 Provider 的引导
   if (sessionInfo && !sessionInfo.providersReady) {
     return (
@@ -380,8 +580,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
 
   return (
     <div className="chat-surface flex h-full flex-col">
-      {/* 头部：阶段 Agent + 会话选择 + 模型选择 */}
-      <div className="chat-toolbar flex items-center justify-between border-b border-zinc-200 px-4 py-2">
+      {/* 头部：阶段 Agent + 会话选择 + 模型选择；relative z-40 确保三点菜单不被消息区遮挡（backdrop-filter 会使 toolbar 形成独立层叠上下文） */}
+      <div className="chat-toolbar relative z-40 flex items-center justify-between border-b border-zinc-200 px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-zinc-700">
             🤖 {PHASE_LABELS[phase]}阶段 Agent
@@ -418,6 +618,98 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               {typeof sessionStats.cost === 'number' && sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(3)}` : ''}
             </span>
           )}
+          {/* M2 §3.3：上下文占用 ≥60% 时的引导动作（与主进程 60% 提醒阈值一致） */}
+          {sessionStats && (sessionStats.contextUsage?.percent ?? 0) >= 60 && (
+            <button
+              type="button"
+              onClick={() => void handleFinishAndStartTask()}
+              disabled={!sessionInfo || streaming || sessionActionBusy}
+              className="whitespace-nowrap rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700 hover:bg-amber-100 disabled:opacity-40"
+              title="压缩当前会话保留关键摘要，然后以同主题开启新任务会话"
+            >
+              收尾并开新任务
+            </button>
+          )}
+          <div className="relative">
+            <button
+              type="button"
+              onClick={() => {
+                if (sessionMenuOpen) setContextLimitEditing(false)
+                setSessionMenuOpen((open) => !open)
+              }}
+              disabled={!sessionInfo || streaming || sessionActionBusy}
+              className="flex h-7 w-7 items-center justify-center rounded border border-zinc-300 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 disabled:opacity-40"
+              title="会话上下文操作"
+              aria-label="打开会话上下文操作"
+            >
+              <MoreVertical size={15} />
+            </button>
+            {sessionMenuOpen && <div className="absolute right-0 top-8 z-[80] w-64 border border-zinc-200 bg-white py-1 shadow-lg">
+              <button type="button" onClick={() => void handleCompactSession()} className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-zinc-50"><Minimize2 size={15} className="mt-0.5 shrink-0 text-blue-600" /><span><b className="block text-xs text-zinc-800">压缩上下文</b><span className="mt-0.5 block text-[10px] text-zinc-500">保留关键摘要，降低上下文占用</span></span></button>
+              <button type="button" onClick={() => void handleRestartSessionFresh()} className="flex w-full items-start gap-2 border-t border-zinc-100 px-3 py-2 text-left hover:bg-zinc-50"><RotateCcw size={15} className="mt-0.5 shrink-0 text-amber-600" /><span><b className="block text-xs text-zinc-800">无上下文重启</b><span className="mt-0.5 block text-[10px] text-zinc-500">归档历史，以空白 session 重新开始</span></span></button>
+              <button
+                type="button"
+                onClick={() => {
+                  setContextLimitError('')
+                  setContextLimitDraft(String(sessionStats?.contextUsage?.contextWindow ?? ''))
+                  setContextLimitEditing((editing) => !editing)
+                }}
+                className="flex w-full items-start gap-2 border-t border-zinc-100 px-3 py-2 text-left hover:bg-zinc-50"
+              >
+                <Ruler size={15} className="mt-0.5 shrink-0 text-emerald-600" />
+                <span>
+                  <b className="block text-xs text-zinc-800">自定义上下文上限</b>
+                  <span className="mt-0.5 block text-[10px] text-zinc-500">
+                    登记表查不到自有模型时手动指定，按模型记忆
+                    {sessionStats?.contextWindowStatus === 'custom' && sessionStats.contextWindowOverride != null && (
+                      <b className="ml-1 text-emerald-600">当前：{formatTokens(sessionStats.contextWindowOverride)}</b>
+                    )}
+                  </span>
+                </span>
+              </button>
+              {contextLimitEditing && (
+                <div className="border-t border-zinc-100 px-3 py-2">
+                  <div className="flex items-center gap-1.5">
+                    <input
+                      autoFocus
+                      value={contextLimitDraft}
+                      onChange={(event) => {
+                        setContextLimitDraft(event.target.value)
+                        setContextLimitError('')
+                      }}
+                      onKeyDown={(event) => {
+                        if (event.key === 'Enter') submitContextLimit()
+                      }}
+                      placeholder="如 200000、200k、1M"
+                      disabled={sessionActionBusy}
+                      className="min-w-0 flex-1 rounded border border-zinc-300 px-2 py-1 text-xs outline-none focus:border-blue-500 disabled:opacity-60"
+                    />
+                    <button
+                      type="button"
+                      disabled={sessionActionBusy || !sessionInfo?.selectedModel}
+                      onClick={submitContextLimit}
+                      className="shrink-0 rounded bg-blue-600 px-2 py-1 text-[11px] text-white hover:bg-blue-500 disabled:opacity-40"
+                    >
+                      保存
+                    </button>
+                    {sessionStats?.contextWindowStatus === 'custom' && (
+                      <button
+                        type="button"
+                        disabled={sessionActionBusy}
+                        onClick={() => void handleSetContextLimit(null)}
+                        className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-40"
+                      >
+                        恢复自动
+                      </button>
+                    )}
+                  </div>
+                  {contextLimitError
+                    ? <p className="mt-1 text-[10px] text-red-600">{contextLimitError}</p>
+                    : !sessionInfo?.selectedModel && <p className="mt-1 text-[10px] text-zinc-400">当前会话尚未选择模型</p>}
+                </div>
+              )}
+            </div>}
+          </div>
           <span className="text-[11px] text-zinc-400">当前会话模型</span>
           <select
           value={selectedModelValue}

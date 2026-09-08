@@ -81,6 +81,8 @@ export function CodeViewer({ path, content, line, column, revealKey, findRequest
   const [findIndex, setFindIndex] = useState(-1)
   const [findCount, setFindCount] = useState(0)
   const language = useMemo(() => fileLanguage(path), [path])
+  // Monaco 的 path 是模型 URI，不应直接使用带盘符、冒号或行号的 Windows 路径。
+  const modelPath = useMemo(() => `inmemory://moonglass/${encodeURIComponent(path)}`, [path])
 
   const find = (direction: 1 | -1, query = findQuery): void => {
     const editor = editorRef.current
@@ -155,7 +157,7 @@ export function CodeViewer({ path, content, line, column, revealKey, findRequest
         </div>
       )}
       <Editor
-        path={path}
+        path={modelPath}
         value={content}
         language={language}
         theme={theme}

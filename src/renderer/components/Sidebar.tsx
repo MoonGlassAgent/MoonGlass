@@ -66,7 +66,7 @@ export function Sidebar(): React.JSX.Element {
         </div>
       </div>
       <div className="mt-2 px-1 text-center text-[10px] leading-tight text-zinc-400">
-        v{APP_INFO.version.replace(/\.0$/, '')}
+        v{APP_INFO.version}
       </div>
     </nav>
   )
