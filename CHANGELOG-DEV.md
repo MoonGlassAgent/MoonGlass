@@ -2,6 +2,12 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-08：商业授权方案调整
+
+- 将旧的低价团队档位替换为 Community、Professional、Team、Enterprise、EDA Enterprise Pack 和 AIGV Enterprise Pack 六档方案。
+- Professional 调整为 `¥1,299 / seat / year`，Team 调整为 `starting ¥19,800 / year`，企业级方案改为联系询价。
+- 同步更新中英文授权说明，移除旧的个人辅助、10 人、50 人和人日定价。
+
 ## 2026-09-08：v0.9.0 绿色版与界面版本同步
 
 - 侧栏版本号改为完整显示 `v0.9.0`，不再省略补丁版本。
