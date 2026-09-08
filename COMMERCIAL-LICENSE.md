@@ -12,11 +12,12 @@ MoonGlass 采用 **PolyForm Noncommercial License 1.0.0** 公开源代码。个�
 
 | 方案 | 适用范围 | 参考价格 |
 |---|---|---:|
-| 个人商用辅助 | 单一自然人、非团队协作、非批量生产用途 | ¥99 / 年 |
-| 初创团队 | 不超过 10 名使用者 | ¥3,800 / 年 |
-| 中型团队 | 11–50 名使用者 | ¥9,800 / 年 |
-| 大型组织及商业化研究机构 | 51 名及以上，或涉及客户交付、流片、量产 | ¥19,800 / 年起 |
-| 定制开发 | 定制功能、工具链集成、流程适配 | ¥5,000 / 人日 |
+| Community | 个人学习、实验、非商业教育及符合社区许可证的非商业用途 | Free |
+| Professional | 单用户专业研发与商业使用 | ¥1,299 / seat / year |
+| Team | 团队协作、组织级管理与商业研发 | Contact us；starting ¥19,800 / year |
+| Enterprise | 私有部署、企业集成、治理与专属支持 | Contact us；private deployment；custom quote |
+| EDA Enterprise Pack | 企业 EDA 工具链集成、流程适配与工程支持 | custom quote |
+| AIGV Enterprise Pack | 企业级 AIGV 方法学、验证智能与定制闭环 | custom quote |
 
 上述价格为人民币含税与否未定的参考价格，不包含第三方模型 API、EDA 工具、工艺库、云资源及差旅等费用。最终报价和服务等级以合同为准。
 
@@ -37,7 +38,7 @@ MoonGlass 采用 **PolyForm Noncommercial License 1.0.0** 公开源代码。个�
 
 MoonGlass source code is available under the **PolyForm Noncommercial License 1.0.0**. Commercial use requires a separate written commercial license before use.
 
-Reference annual pricing: individual commercial assistance CNY 99; startup teams up to 10 users CNY 3,800; teams of 11–50 users CNY 9,800; larger organizations or production-oriented research use from CNY 19,800. Custom development is referenced at CNY 5,000 per person-day. These figures are informational only; the signed contract controls scope, seats, term, support, taxes, and liability.
+Reference plans: Community is free for eligible noncommercial use; Professional is CNY 1,299 per seat per year; Team pricing is available on request and starts from CNY 19,800 per year; Enterprise private deployment is available by custom quote. EDA Enterprise Pack and AIGV Enterprise Pack are also available by custom quote. These figures are informational only; the signed contract controls scope, seats, term, support, taxes, and liability.
 
 Users retain ownership of their lawful inputs and design outputs. Embedded MoonGlass code or templates remain subject to the applicable MoonGlass license, and third-party components remain subject to their own terms.
 
