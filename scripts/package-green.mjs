@@ -30,9 +30,9 @@ const optValue = (name) => {
   return i !== -1 && args[i + 1] ? args[i + 1] : null
 }
 
-const RELEASE = optValue('--release') ?? 'r5'
 const SKIP_BUILD = hasFlag('--skip-build')
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf-8'))
+const RELEASE = optValue('--release') ?? `v${pkg.version}`
 const VERSION = pkg.version
 const today = new Date().toISOString().slice(0, 10).replaceAll('-', '')
 
@@ -177,15 +177,20 @@ writeFileSync(join(appDir, 'README-ZH-CN.txt'), `MoonGlass ASIC Design Agent 绿
 - 商务联系：moonglassagent@126.com
 
 v${VERSION} 主要更新：
-- 验证态势改用原子发布的紧凑快照，避免大型 AIGV 状态并发更新导致 JSON 读取失败。
-- 04_verification 扩展为三份基线计划与六份 AIGV 方法/闭环文档，覆盖 Intent、风险场景、Formal、Coverage Closure 和 Signoff。
-- 一键托管等待 Agent 本轮任务真正完成后才检查门禁和推进阶段，不再提前推进。
-- 主会话新增端到端验证闭环：Cocotb + Icarus 功能回归与功能覆盖率，Verilator C++ RTL 覆盖率签核。
-- 双通道结果统一合并，生成结构化覆盖率和中文报告，并由独立证据 Review 审查测试、JUnit、日志和覆盖率。
-- VERIF 到 QA 门禁增加行覆盖率、条件/表达式覆盖率、功能覆盖率和验证证据要求。
-- 项目信息支持后续编辑，总体报告扩展阶段门禁、交付物、验证、覆盖率、综合结果和遗留风险。
-- 修复重启后的会话模型显示；文件查看器支持稳定的 Ctrl+F 查找、匹配计数和前后跳转。
-- 保留一键托管、受控变更、已有项目阶段恢复、IP 库发现、SRAM 仿真视图与深色模式。
+- AIGV 波段化验证流程：W0 冒烟 → W1 基础功能 → W2 增补主题波 → W3 签核，
+  验证操作按钮与验证态势页波段进度一一对应；完备性看规格映射矩阵，不再看风险队列深度。
+- 规格映射完备性：断言级规格条款 → 验证意图 → 测试证据的闭集映射；
+  未映射条款显式告警；PPA（面积/功耗/时序）条款归综合阶段验收，不再混入验证分母。
+- 证据管线：仿真/综合/Formal 工具自动登记场景证据并自动重建验证态势，
+  场景裁决权限收敛（执行状态只能由证据派生，豁免需具名审批）。
+- LLM 主导验证规划：Agent 读规格圈定真实验证点并锚定风险/条款/信号登记，
+  引擎负责候选兜底、锚点校验与证据记账。
+- 任务粒度会话：新任务会话零历史继承、artifact 索引自举；VERIF 批次由主进程
+  编排到独立会话执行，完成判定绑定工具证据；批次会话只读窥视、停止全覆盖。
+- RTL 修复闭环：根因确认后派发独立修复会话，修复窗口内 RTL 写保护与派发门控，
+  事后审计快照供签核审查。
+- 阶段切换不再中断正在运行的 Agent（后台续跑 + 完成通知）；
+  VERIF 上下文治理（摘要入口、大文件禁读、按阶段自动压缩阈值）。
 
 安全说明：
 - 未包含 API Key、模型账号配置和 Agent 会话。
