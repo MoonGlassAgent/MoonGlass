@@ -1,0 +1,245 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>从证据驱动流程到任务级验证协同：MoonGlass v0.6.0-v0.9.0 工程演进</title>
+  <meta name="description" content="系统梳理 MoonGlass ASIC Design Agent 从 v0.6.0 到 v0.9.0 在证据驱动流程、AIGV 2.0、验证态势、上下文治理、任务粒度会话和并行验证门控方面的工程演进。">
+  <meta name="author" content="MoonGlassAgent">
+  <meta property="og:title" content="MoonGlass v0.6.0-v0.9.0 工程演进">
+  <meta property="og:description" content="从证据驱动 ASIC 工作流，到 AIGV 2.0 与任务级验证协同系统。">
+  <meta property="og:image" content="https://raw.githubusercontent.com/MoonGlassAgent/MoonGlass/main/docs/images/v086/03-verification-posture.png">
+  <style>
+    :root{--ink:#17202a;--muted:#5d6975;--line:#d8dee5;--paper:#fff;--wash:#f3f6f8;--accent:#087f6b;--accent2:#b64b3f;--blue:#245c9f;--warn:#8a5a00;--max:1120px}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--wash);color:var(--ink);font:16px/1.78 "Segoe UI","Microsoft YaHei",sans-serif;letter-spacing:0}
+    a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}.top{background:#101820;color:#fff;border-bottom:5px solid var(--accent);padding:56px 24px 50px}.top-inner{max-width:var(--max);margin:auto}.kicker{font-size:13px;letter-spacing:0;text-transform:uppercase;color:#92d6ca;font-weight:700}.top h1{font:700 clamp(30px,4vw,50px)/1.2 Georgia,"Microsoft YaHei",serif;margin:15px 0 18px;max-width:1000px}.subtitle{font-size:19px;color:#d6dee5;max-width:900px}.meta{display:flex;gap:22px;flex-wrap:wrap;margin-top:26px;color:#aebbc6;font-size:14px}
+    main{max-width:var(--max);margin:30px auto 70px;background:var(--paper);padding:46px 64px;box-shadow:0 6px 25px rgba(25,35,45,.08)}h2{font:700 28px/1.35 Georgia,"Microsoft YaHei",serif;margin:54px 0 18px;border-top:1px solid var(--line);padding-top:34px}h3{font-size:20px;margin:30px 0 10px}h4{font-size:16px;margin:22px 0 7px}.abstract{border-left:5px solid var(--accent);background:#edf8f5;padding:20px 24px;margin:0 0 30px}.keywords{color:var(--muted);font-size:14px}.toc{background:#f7f9fa;border:1px solid var(--line);padding:22px 26px}.toc ol{columns:2;margin:8px 0;padding-left:22px}.toc li{break-inside:avoid;margin:5px 0}
+    table{width:100%;border-collapse:collapse;margin:18px 0 28px;font-size:14px}th,td{border:1px solid var(--line);padding:11px 12px;text-align:left;vertical-align:top}th{background:#eef2f4;font-weight:700}.figure{margin:30px 0;border:1px solid var(--line);background:#fafbfc;padding:10px}.figure img{display:block;width:100%;height:auto}.figure figcaption{padding:10px 8px 4px;color:var(--muted);font-size:13px;text-align:center}.callout{border:1px solid #b9d9d3;background:#f1faf8;padding:16px 20px;margin:22px 0}.callout.warn{border-color:#e7cd95;background:#fff9ea}.equation{font-family:Consolas,monospace;background:#101820;color:#e4edf3;padding:16px 20px;overflow:auto;margin:18px 0}.flow{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin:20px 0}.flow div{border-top:4px solid var(--accent);background:#f3f7f7;padding:15px}.flow b{display:block;margin-bottom:5px}.small{font-size:13px;color:var(--muted)}code{font-family:Consolas,monospace;background:#eef1f3;padding:2px 5px;border-radius:3px}.refs li{margin:8px 0}.footer{margin-top:50px;padding-top:22px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+    @media(max-width:760px){main{margin:0;padding:28px 20px}.top{padding:38px 20px}.toc ol{columns:1}.flow{grid-template-columns:1fr 1fr}table{display:block;overflow-x:auto}}
+    @media print{body{background:#fff}.top{background:#fff;color:#000;border-bottom:2px solid #000}.subtitle,.meta,.kicker{color:#333}main{box-shadow:none;margin:0;max-width:none}.toc{break-after:page}.figure{break-inside:avoid}}
+  </style>
+</head>
+<body>
+  <header class="top">
+    <div class="top-inner">
+      <div class="kicker">Engineering Evolution Paper · MoonGlass ASIC Design Agent</div>
+      <h1>从证据驱动流程到任务级验证协同：MoonGlass v0.6.0-v0.9.0 工程演进</h1>
+      <div class="subtitle">面向长时 ASIC Agent 的状态、证据、上下文与并行验证治理实践</div>
+      <div class="meta"><span>作者与维护者：MoonGlassAgent</span><span>版本：1.0</span><span>日期：2026-09-08</span><span>联系：moonglassagent@126.com</span></div>
+    </div>
+  </header>
+
+  <main>
+    <section class="abstract">
+      <strong>摘要</strong>
+      <p>本文系统梳理 MoonGlass ASIC Design Agent 从 v0.6.0 到 v0.9.0 的工程演进。该阶段的关键变化并非简单增加模型提示词或 EDA 命令，而是逐步把 ASIC 开发中的流程状态、验证语义、原始证据、长上下文、任务边界、RTL 修改和并行验证纳入确定性软件控制。v0.6.0 建立证据驱动的验证闭环；v0.7.0 引入风险驱动 Verification Intelligence、开源 Formal 通道和验证态势；v0.8.x 形成 AIGV 2.0、W0-W3 验证波段、批次隔离和可解释签核；v0.9.0 将 Pi Coding Agent 的会话粒度从“阶段”下沉到“任务”，并通过 artifact 索引、修复专用会话、RTL 哈希新鲜度和三层写保护构成可审计的并行验证控制。本文给出问题动机、系统架构、版本映射、关键机制、可检验假设、局限与后续研究方向。</p>
+      <div class="keywords"><strong>关键词：</strong>ASIC；RTL；AI Agent；AIGV；Verification Intent；证据闭环；任务级会话；形式验证；覆盖率；人机协同</div>
+    </section>
+
+    <nav class="toc">
+      <strong>目录</strong>
+      <ol>
+        <li><a href="#intro">研究背景与问题定义</a></li><li><a href="#method">材料与研究方法</a></li><li><a href="#overview">总体演进图景</a></li><li><a href="#v06">v0.6.0：证据驱动基线</a></li><li><a href="#v07">v0.7.0：验证智能与态势</a></li><li><a href="#v08">v0.8.x：AIGV 2.0 与上下文治理</a></li><li><a href="#v09">v0.9.0：任务级会话与并行门控</a></li><li><a href="#architecture">系统架构变化</a></li><li><a href="#evaluation">工程评价与证据</a></li><li><a href="#discussion">讨论与可检验假设</a></li><li><a href="#limits">局限与威胁</a></li><li><a href="#future">后续研究</a></li><li><a href="#conclusion">结论</a></li>
+      </ol>
+    </nav>
+
+    <section id="intro">
+      <h2>1. 研究背景与问题定义</h2>
+      <p>生成式模型已经能够编写相当规模的 RTL、测试平台和脚本，但“能生成”与“能交付”之间仍存在明显鸿沟。真实芯片工程要求需求与规格可追踪、架构决策可解释、RTL 可综合、验证结论可复现、变更影响可传播、工具失败不可冒充设计通过，并且所有签核结论必须能回到原始证据。长时间运行的 Agent 还会面临上下文膨胀、重复调试、任务边界消失、模型服务波动和界面渲染压力。</p>
+      <p>MoonGlass 将问题定义为：如何把通用 Coding Agent 嵌入 ASIC IP 开发流程，使其成为受状态机、工具链、证据和权限边界约束的工程协作者。该问题可分解为四个研究问题：</p>
+      <ol>
+        <li><strong>RQ1：</strong>如何把自然语言规格转化为可追踪、可执行、可签核的验证对象？</li>
+        <li><strong>RQ2：</strong>如何防止长会话和多轮失败调试造成上下文污染与无效循环？</li>
+        <li><strong>RQ3：</strong>当验证 Agent 发现 RTL 缺陷并触发修改时，如何保持证据新鲜度和责任边界？</li>
+        <li><strong>RQ4：</strong>如何在不虚构“绝对隔离”的前提下，构建可审计的并行验证门控？</li>
+      </ol>
+    </section>
+
+    <section id="method">
+      <h2>2. 材料与研究方法</h2>
+      <p>本文采用设计科学与工程案例研究相结合的方法。事实基础来自 MoonGlass 仓库的版本标签、提交历史、源代码、自动化脚本、开发变更记录和方法学文档。分析区间从 v0.6.0 发布提交开始，到 package version 更新为 v0.9.0 为止。</p>
+      <table><thead><tr><th>材料</th><th>用途</th><th>证据边界</th></tr></thead><tbody>
+        <tr><td>Git 标签与提交历史</td><td>还原功能出现顺序和设计决策</td><td>提交存在不等于功能已在所有项目验证</td></tr>
+        <tr><td><code>CHANGELOG-DEV.md</code></td><td>还原问题、修复和验收语义</td><td>属于开发记录，不是第三方审计报告</td></tr>
+        <tr><td>AIGV、长时 Agent 与会话设计文档</td><td>提取方法学模型和系统假设</td><td>部分指标仍需更多真实 IP 样本验证</td></tr>
+        <tr><td>Smoke、typecheck、build 与运行时检查</td><td>确认局部实现可执行</td><td>不替代商业 EDA 和流片签核</td></tr>
+      </tbody></table>
+      <p>在该区间内，仓库相对 v0.6.0 共涉及约 275 个文件、47,140 行新增和 840 行删除。该数字仅表示系统扩展规模，本文不以代码行数作为质量结论。</p>
+    </section>
+
+    <section id="overview">
+      <h2>3. 总体演进图景</h2>
+      <div class="flow">
+        <div><b>v0.6.0</b>证据驱动流程<br>模型上下文可见<br>总体报告增强</div>
+        <div><b>v0.7.0</b>风险驱动验证<br>开源 Formal<br>验证态势与托管韧性</div>
+        <div><b>v0.8.x</b>AIGV 2.0<br>W0-W3 波段<br>批次隔离与可解释签核</div>
+        <div><b>v0.9.0</b>任务级会话<br>RTL 修复隔离<br>并行验证门控</div>
+      </div>
+      <table><thead><tr><th>维度</th><th>v0.6.0</th><th>v0.7.0</th><th>v0.8.x</th><th>v0.9.0</th></tr></thead><tbody>
+        <tr><td>验证对象</td><td>测试与证据</td><td>风险、Intent、Scenario</td><td>Verification Space、Oracle、Mutation、Residual Risk</td><td>任务、修复血缘与证据新鲜度</td></tr>
+        <tr><td>Agent 粒度</td><td>阶段会话</td><td>阶段会话</td><td>阶段 + VERIF 批次</td><td>阶段入口 + 独立任务会话</td></tr>
+        <tr><td>调度控制</td><td>人工推进为主</td><td>托管可恢复</td><td>波段与聚类批次</td><td>确定性任务切换和修复门控</td></tr>
+        <tr><td>签核表达</td><td>通过/失败及日志</td><td>验证态势与阻断</td><td>机器签核建议和残余风险</td><td>附带 RTL 版本、任务血缘和修改审计</td></tr>
+      </tbody></table>
+    </section>
+
+    <section id="v06">
+      <h2>4. v0.6.0：从“运行工具”到“证据驱动闭环”</h2>
+      <p>v0.6.0 的核心贡献是将验证完成的判断从 Agent 自述迁移到工程证据。系统开始显式记录模型相关的上下文容量与 Token 使用，恢复会话模型显示，允许既有项目编辑元数据，并扩展总体报告。更重要的是，验证结论需要关联测试、日志、覆盖率和 RTL 原始文件，而不是接受主 Agent 的“验证完成”声明。</p>
+      <h3>4.1 证据对象化</h3>
+      <p>MoonGlass 将测试结果、工具日志、覆盖率、RTL 哈希、需求映射和未决问题逐步对象化。这样做改变了门禁的语义：门禁不再只检查“文件是否存在”，而是检查证据是否与当前设计一致、是否覆盖对应规格、是否仍然新鲜。</p>
+      <h3>4.2 模型上下文可观测性</h3>
+      <p>不同模型具有不同上下文窗口和计费方式。v0.6.0 开始显示会话 Token 使用并采用模型特定上下文上限，避免把缓存命中量误当成上下文容量。该能力后来成为 v0.8-v0.9 上下文治理的基础。</p>
+      <div class="callout"><strong>阶段性结论：</strong>v0.6.0 解决的是“Agent 说完成是否可信”。系统回答是：只有能绑定到当前 RTL 和规格的原始证据，才具备进入签核讨论的资格。</div>
+    </section>
+
+    <section id="v07">
+      <h2>5. v0.7.0：风险驱动 Verification Intelligence 与验证态势</h2>
+      <p>v0.7.0 将验证从结果收集扩展为风险驱动的验证智能。系统加入 Verification Intent、风险场景、分级 RTL 修复、开源 Formal 回路和全屏验证态势，并开始处理真实工程中的 JSON 原子发布、长会话白屏、托管门禁中断和形式工具语法能力差异。</p>
+      <h3>5.1 Verification Intent 与 Scenario</h3>
+      <p>规格条款不能直接等同于测试名称。Verification Intent 描述需要证明或观察的行为语义；Scenario 则把该语义实例化为前置条件、刺激、观测点、预期结果和证据。此分离使“功能分类”不再冒充“验证目标”，也为后续 Coverage Hole 的语义解释提供基础。</p>
+      <h3>5.2 开源 Formal 的诚实状态模型</h3>
+      <p>开源工具对 SystemVerilog Assertions 的支持存在边界。MoonGlass 将 Formal 状态区分为证明、反例、未知、工具失败和解析限制。例如 Yosys 前端未进入求解时，结果必须记录为工具限制，而不能宣称 BMC 通过。v0.7.0 因此把“工具是否执行”与“性质是否成立”拆成不同事实。</p>
+      <h3>5.3 验证态势作为操作界面</h3>
+      <p>验证态势将环境状态、测试执行、风险热区、场景闭环、Spec Gap、Coverage Hole、诊断级别和机器签核阻断集中展示。其目标不是做一个漂亮仪表盘，而是回答用户三个问题：当前最重要的风险是什么，证据为什么不足，下一步应执行什么动作。</p>
+      <figure class="figure"><img src="images/v086/03-verification-posture.png" alt="MoonGlass 验证态势"><figcaption>图 1　验证态势将执行结果、诊断控制、签核阻断和下一步动作置于同一视图。</figcaption></figure>
+      <h3>5.4 长运行可靠性</h3>
+      <p>该版本同时修复文件链接导致白屏、验证态势 JSON 半写入、托管未等待 Agent 完成和门禁异常直接终止等问题。原子发布确保读取方只能看到完整状态快照；完成屏障要求托管等待任务 settle 后再推进；渲染层开始限制超长消息带来的内存和布局压力。</p>
+    </section>
+
+    <section id="v08">
+      <h2>6. v0.8.x：AIGV 2.0、分层验证与上下文治理</h2>
+      <p>v0.8.x 是验证方法学规模化的阶段。系统从“风险场景 + 证据”扩展为 Verification Space、Multi-Oracle、探索轮次、风险加权 Mutation、Residual Risk 和 Signoff Package，并将 VERIF 操作重组为 W0-W3 波段。与此同时，验证批次开始拥有独立会话、摘要入口和根因工具，避免一个阶段会话吞入所有任务。</p>
+      <h3>6.1 AIGV 2.0 状态内核</h3>
+      <div class="equation">Specification → Verification Intent → Scenario → Stimulus → Observation → Oracle Verdict → Evidence → Residual Risk</div>
+      <p><strong>Verification Space</strong> 描述接口、状态、时序、数据、并发、复位和异常维度；<strong>Multi-Oracle</strong> 将参考模型、断言、协议检查、Scoreboard、形式性质和人工审查作为相对独立的裁决域；<strong>Novelty Saturation</strong> 观察新增状态、覆盖点和失败是否趋于饱和；<strong>Mutation</strong> 用人为扰动评价验证环境是否真的能发现错误；<strong>Residual Risk</strong> 则保留尚未关闭的设计风险、证据缺口和工具限制。</p>
+      <h3>6.2 顶层与子模块分层验证</h3>
+      <p>复杂 IP 通常由多个 RTL 模块组成，但并非每个子模块都应运行完整 AIGV 流程。v0.8.0 引入角色驱动策略：简单粘合逻辑可以只做 lint、elaboration 和冒烟；状态复杂、算法密集或高风险子模块可独立拥有 Cocotb Testbench、Golden Model 和 Formal Property；端到端功能、接口协同和系统级异常主要在顶层闭环。Golden Model 是否需要由模块角色和风险决定，而不是“一律需要”或“一律不需要”。</p>
+      <h3>6.3 W0-W3 验证波段</h3>
+      <table><thead><tr><th>波段</th><th>工程目标</th><th>典型产物</th></tr></thead><tbody>
+        <tr><td>W0 冒烟</td><td>确认环境、编译、基本接口和最小路径可运行</td><td>环境清单、编译日志、冒烟结果</td></tr>
+        <tr><td>W1 基础功能</td><td>覆盖规格映射的正常路径和核心功能</td><td>基础 Scenario、Checker、回归证据</td></tr>
+        <tr><td>W2 增补验证</td><td>攻击边界、并发、异常、复位和高风险组合</td><td>Coverage Hole、Mutation、根因记录</td></tr>
+        <tr><td>W3 签核</td><td>审查证据新鲜度、残余风险和跨 Oracle 一致性</td><td>Signoff Package、豁免和机器建议</td></tr>
+      </tbody></table>
+      <h3>6.4 批次隔离与读取纪律</h3>
+      <p>VERIF 场景被聚类为批次，每批使用独立 Pi 会话和明确的 artifact 输入。Agent 不再反复读取全部大型 JSON，而是优先读取执行摘要、目标场景和根因索引；批次完成后延迟归档，并通过里程碑事件向主会话提供可观测状态。该机制减少了无关上下文、重复解析和“一个 case 卡住拖死整个阶段”的风险。</p>
+      <h3>6.5 可解释门禁与阶段通道分类</h3>
+      <p>v0.8.6 进一步建立断言级规格映射矩阵，并把 PPA 条款归入 SYNTH 通道，避免验证阶段因无法通过仿真闭环的面积或时序目标而永久阻塞。阶段门禁因此从统一分母转向“条款属于哪个验收通道”的分类模型。</p>
+      <figure class="figure"><img src="images/v086/02-workspace-verif.png" alt="MoonGlass VERIF 工作区"><figcaption>图 2　VERIF 工作区中的 W0-W3 状态、阶段动作、Agent 会话、项目文件和工程控制台。</figcaption></figure>
+      <h3>6.6 Agent 与 UI 工程</h3>
+      <p>该阶段还完成 RTL Design Browser 的层次、源码、信号和 Driver/Load 追踪重构；阶段切换改为后台续跑和按会话路由事件；模型服务增加停滞检测、错误语义化、切换前探活与失败回滚；自定义 Provider 支持无 <code>/models</code> 端点的套餐型网关。它们共同解决“任务仍在运行但用户以为卡死”“切页后无法进入会话”“模型配置成功但状态显示错误”等交互问题。</p>
+      <figure class="figure"><img src="images/v086/04-design-browser.png" alt="RTL Design Browser"><figcaption>图 3　RTL Design Browser 将层次结构、源代码、信号和追踪关系组织为可交叉定位的工程视图。</figcaption></figure>
+    </section>
+
+    <section id="v09">
+      <h2>7. v0.9.0：任务粒度会话与并行验证门控</h2>
+      <p>v0.9.0 的出发点来自一个实践观察：Coding Agent 不适合把阶段内所有任务无限追加到同一个会话。阶段是项目管理粒度，而任务才是推理与执行粒度。若把规格分析、RTL 编写、调试、回归和修复都塞进同一上下文，模型会不断携带过期假设、失败尝试和无关日志，最终表现为耗时增长、工具动作减少和重复推理。</p>
+      <h3>7.1 M1：任务粒度会话与 artifact 自举</h3>
+      <p>新增 <code>startTask</code> 入口，每个独立任务创建零历史继承的 Pi 会话文件，并通过 <code>parentSession</code> 保留血缘。新会话不依赖旧对话记忆，而由程序化 artifact 索引注入需求、规格、架构、RTL manifest、验证摘要和签核材料。托管模式可以在交付物边界自动切换任务会话；停止操作覆盖前台、后台、批次和修复会话。</p>
+      <h3>7.2 M2：归档与上下文占用引导</h3>
+      <p>任务会话采用活动集加归档的生命周期；历史 JSONL 保留审计能力，但不持续进入当前上下文。模型上下文窗口允许按自定义模型持久化配置，并优先于内置登记表和回退值。达到阈值时，UI 引导用户收尾当前任务并创建新任务，而不是仅显示一个难以行动的百分比。</p>
+      <h3>7.3 M3：RTL 修复专用会话</h3>
+      <p>验证会话负责保持“假设—诊断—证伪”的状态机；只有根因达到可执行条件后，系统才创建修复专用会话。修复会话获得根因记录、固定 testcase/seed、相关 RTL 和预期回归目标，其职责限定为最小修复与回归。如果回归失败，修复任务关闭，诊断返回原验证会话继续演化。这样既保留诊断连续性，又避免 RTL 修改过程污染验证上下文。</p>
+      <h3>7.4 M4：三层并行验证控制</h3>
+      <p>并行验证最危险的情况是某个任务修改 RTL，而其他任务仍基于旧版本产生证据。MoonGlass 采用三层“诚实版”防护，而不宣称无法绕过的绝对沙箱：</p>
+      <ol>
+        <li><strong>派发门控：</strong>存在 RTL 修复标志时，主进程不再派发新验证批次。</li>
+        <li><strong>尽力写保护：</strong>非修复会话的 write/edit 以及可识别的 shell 改写被阻止并记录。</li>
+        <li><strong>哈希失鲜与审计：</strong>任何绕过拦截的 RTL 修改都会改变统一 <code>rtlHash</code>，使旧证据失鲜；修复窗口前后文件差异形成审计记录。</li>
+      </ol>
+      <div class="equation">EvidenceValid(s) = PASS(s) ∧ rtlHash(evidence_s) = rtlHash(current) ∧ oracleSet(s) satisfied</div>
+      <p>该机制把“并行 Agent 是否互相信任”转化为确定性调度与证据一致性问题。正在运行的旧仿真可以完成并作为修复前基线，但其结果不会被当作新 RTL 的有效签核证据。</p>
+      <h3>7.5 RTL 哈希空间统一</h3>
+      <p>v0.9.0 修复了证据登记与新鲜度判断使用不同哈希口径的问题。统一哈希空间是并行验证门控成立的必要条件，否则系统可能错误地把有效证据标为过期，或更严重地把旧证据接受为新设计证据。</p>
+      <div class="callout"><strong>v0.9.0 的核心变化：</strong>协调责任从提示词转移到主进程和验证智能引擎。LLM 负责分析、生成和修复；任务边界、派发时机、证据失鲜、写保护和审计由确定性代码负责。</div>
+    </section>
+
+    <section id="architecture">
+      <h2>8. 系统架构变化</h2>
+      <table><thead><tr><th>层</th><th>职责</th><th>v0.6-v0.9 主要变化</th></tr></thead><tbody>
+        <tr><td>流程层</td><td>六阶段状态机、回退、门禁、变更传播</td><td>从线性推进扩展为保留后续结果的影响标记、阶段清理和托管恢复</td></tr>
+        <tr><td>Agent 编排层</td><td>Pi 进程、会话、模型、事件路由、任务生命周期</td><td>阶段会话 → 批次会话 → 任务会话、修复会话和统一停止</td></tr>
+        <tr><td>Artifact 层</td><td>需求、规格、设计、RTL、验证和签核文件</td><td>从提示词约定升级为程序化索引和跨任务上下文通道</td></tr>
+        <tr><td>验证智能层</td><td>Intent、Scenario、Oracle、Coverage Hole、Risk</td><td>形成 AIGV 2.0 状态内核、波段、Mutation、Residual Risk 和 Signoff Package</td></tr>
+        <tr><td>EDA 桥接层</td><td>Lint、仿真、覆盖率、综合、CDC、Formal</td><td>开源工具内置、结果分类、工具能力边界和原始证据绑定</td></tr>
+        <tr><td>交互层</td><td>工作区、文件、会话、验证态势、Design Browser</td><td>从对话中心转为状态、风险、证据和下一步行动共同呈现</td></tr>
+      </tbody></table>
+      <p>这一架构的关键设计选择是：跨任务信息优先通过工作区 artifact 传递，而不是依赖无限增长的聊天历史。artifact 是可检查、可版本化、可被不同模型独立读取的公共事实；会话则是短期推理工作区。</p>
+    </section>
+
+    <section id="evaluation">
+      <h2>9. 工程评价与证据</h2>
+      <p>当前评价采用“实现证据、自动检查、真实项目观察”三层结构。仓库具备版本一致性检查、核心测试、集成测试和多个 smoke 脚本，覆盖 IP 库、SRAM 生成、项目导入、AXI-Lite Timer、EDA 门禁、Pi 工具、场景证据和验证智能引擎。绿色版构建脚本进一步执行生产构建、敏感信息扫描、便携运行时组装和 SHA-256 生成。</p>
+      <table><thead><tr><th>目标</th><th>可观察量</th><th>当前证据</th><th>仍需增强</th></tr></thead><tbody>
+        <tr><td>减少长会话退化</td><td>任务耗时、上下文占用、重复工具序列</td><td>任务会话、归档、占用引导已实现</td><td>需要多模型、多项目对照实验</td></tr>
+        <tr><td>提高验证可解释性</td><td>Intent 闭环、风险热区、缺失激励、下一步动作</td><td>验证态势和 AIGV 状态文件</td><td>需要验证工程师可用性研究</td></tr>
+        <tr><td>防止旧证据误签核</td><td>rtlHash 一致性、失鲜数量、重跑范围</td><td>统一哈希、修复审计与派发门控</td><td>当前全局哈希较保守，应发展模块级影响分析</td></tr>
+        <tr><td>提高托管可靠性</td><td>等待 settle、门禁恢复、停止覆盖</td><td>完成屏障、批次停止、任务停止</td><td>需构造崩溃、断网和 Provider 限流注入测试</td></tr>
+      </tbody></table>
+      <p>必须强调：开源 EDA 工具和 MoonGlass 机器签核建议属于工程辅助证据，不等同于商业仿真、形式验证、STA、DFT、低功耗和物理实现流程的最终流片签核。</p>
+    </section>
+
+    <section id="discussion">
+      <h2>10. 讨论与可检验假设</h2>
+      <h3>10.1 提示词工程不是系统边界</h3>
+      <p>早期方法较多依赖提示词要求 Agent “先读规格”“不要修改预期迎合 RTL”“失败多轮后增强 Checker”。这些规则仍然重要，但仅靠语言约束无法可靠处理并发、停止、文件权限、证据版本和原子状态。v0.9.0 的方向是把可确定判定的规则迁移到主进程和引擎，把 LLM 留在需要语义判断的部分。</p>
+      <h3>10.2 任务粒度比阶段粒度更接近 Agent 的认知边界</h3>
+      <p>阶段适合项目管理，却可能持续数小时甚至数天。任务会话让每次推理面对更小、更稳定的目标，同时用 artifact 维持跨任务事实。可检验假设 H1 是：在相同项目和模型下，任务粒度会话可降低重复读取、无工具长推理和无效修改次数，并缩短达到首个有效证据的时间。</p>
+      <h3>10.3 Checker 增强可能比继续改 RTL 更有效</h3>
+      <p>当同一失败经过多轮修改仍无法收敛时，根因可能不是模型推理不足，而是观测信息不足。MoonGlass 将诊断增强作为独立状态：先改善断言、事务标识、Scoreboard 队列输出和必要波形，再继续修改 RTL。可检验假设 H2 是：在重复失败场景中，先增强 Checker 能减少后续 RTL 修改轮次，并提高根因定位的语义精度。</p>
+      <h3>10.4 “诚实的软隔离”优于虚假的强保证</h3>
+      <p>通用 Agent 拥有 shell 时，很难仅靠工具钩子保证绝对禁止写文件。MoonGlass 明确写保护是尽力拦截，并以哈希失鲜和事后审计兜底。该设计不隐藏能力边界，却能保证最坏情况下旧证据失效，而不是错误签核。</p>
+    </section>
+
+    <section id="limits">
+      <h2>11. 局限与有效性威胁</h2>
+      <ol>
+        <li><strong>样本数量：</strong>当前方法主要在若干内部 IP 项目上演进，尚不足以代表不同规模、协议和工艺环境。</li>
+        <li><strong>模型依赖：</strong>不同 Provider 对工具调用、developer role、上下文缓存和错误返回的支持不同，会影响系统表现。</li>
+        <li><strong>开源工具边界：</strong>部分 SystemVerilog、SVA、覆盖率和 Formal 能力弱于商业工具；工具失败必须作为独立状态保留。</li>
+        <li><strong>哈希粒度：</strong>当前全局 RTL 哈希安全但保守，局部注释或无关模块变化也可能使大量证据失鲜。</li>
+        <li><strong>指标成熟度：</strong>Novelty Saturation、风险权重和机器签核阈值仍需要跨项目校准。</li>
+        <li><strong>人因评价：</strong>验证态势是否真正降低工程师理解成本，仍需任务实验和访谈数据。</li>
+      </ol>
+    </section>
+
+    <section id="future">
+      <h2>12. 后续研究方向</h2>
+      <ol>
+        <li>基于结构模型和 cone of influence 建立模块级证据失鲜，减少无关回归。</li>
+        <li>把任务血缘、artifact 版本和根因链形成可查询的验证知识图谱。</li>
+        <li>引入故障注入实验，量化 Agent 在超时、限流、工具崩溃和不完整输出下的恢复能力。</li>
+        <li>建立跨模型基准，比较任务粒度会话对耗时、Token、工具调用和缺陷收敛的影响。</li>
+        <li>扩展商业 EDA 适配接口，同时保持工具能力声明和许可证边界。</li>
+        <li>开展工程师可用性研究，评价验证态势、风险解释和下一步引导是否改善决策效率。</li>
+        <li>探索 controller task、fork/clone 和审查模型分工，但避免无约束并行修改同一设计。</li>
+      </ol>
+    </section>
+
+    <section id="conclusion">
+      <h2>13. 结论</h2>
+      <p>从 v0.6.0 到 v0.9.0，MoonGlass 的主线是把不可控的长时 Agent 行为逐步变成可观察、可约束、可追踪的工程过程。v0.6.0 建立证据优先原则；v0.7.0 将风险、Intent 和验证态势引入流程；v0.8.x 形成 AIGV 2.0、验证波段和批次上下文治理；v0.9.0 进一步以任务作为会话单位，并为 RTL 修复和并行验证建立确定性门控。</p>
+      <p>这一路径表明，ASIC Agent 的核心竞争力不应只衡量一次生成了多少 RTL，而应衡量它能否在规格变化、工具限制、验证失败、上下文压力和并行任务中持续产生新鲜、可解释、可复现的工程证据。MoonGlass v0.9.0 仍不是终点，但已经从“带对话框的 EDA 启动器”走向一种更明确的系统形态：以 artifact 为事实载体、以任务为推理边界、以证据为签核基础、以确定性代码治理 Agent 的芯片开发工作台。</p>
+    </section>
+
+    <section>
+      <h2>参考资料与复现入口</h2>
+      <ol class="refs">
+        <li>MoonGlassAgent. <a href="../README.md">MoonGlass ASIC Design Agent README</a>.</li>
+        <li>MoonGlassAgent. <a href="MOONGLASS-AIGV-2.0-WHITEPAPER.html">MoonGlass AIGV 2.0 Whitepaper</a>.</li>
+        <li>MoonGlassAgent. <a href="MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html">MoonGlass AIGV 方法学</a>.</li>
+        <li>MoonGlassAgent. <a href="EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html">证据驱动型 ASIC Agent 工作流</a>.</li>
+        <li>MoonGlassAgent. <a href="MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html">长时 Agent 芯片开发工程学</a>.</li>
+        <li>MoonGlassAgent. <a href="PI-SESSION-LIFECYCLE-REDESIGN-ZH-CN.md">Agent 会话生命周期重构设计</a>.</li>
+        <li>MoonGlass repository: <a href="https://github.com/MoonGlassAgent/MoonGlass">https://github.com/MoonGlassAgent/MoonGlass</a>.</li>
+      </ol>
+    </section>
+
+    <div class="footer">
+      <p>本文是基于 MoonGlass v0.6.0-v0.9.0 实际仓库演进形成的工程论文，用于开源社区讨论、方法学评审和实验设计。文中机器签核、验证态势和开源 EDA 结果均不构成商业流片签核认证。</p>
+      <p>作者与维护者：MoonGlassAgent ｜ 联系：moonglassagent@126.com ｜ 项目：github.com/MoonGlassAgent/MoonGlass</p>
+    </div>
+  </main>
+</body>
+</html>

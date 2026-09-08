@@ -111,6 +111,7 @@ MoonGlass 遵循几个基本原则：
 
 MoonGlass 同时作为一个工程实验平台，持续整理 ASIC Agent、证据驱动开发、AIGV、长时 Agent 上下文治理和人机协同签核方面的实践材料。相关文档用于工程讨论、方法学比较和后续实验设计，不代表同行评审结论，也不替代商业 EDA 签核认证。
 
+- [从证据驱动流程到任务级验证协同：MoonGlass v0.6.0-v0.9.0 工程演进](./docs/MOONGLASS-v0.6.0-TO-v0.9.0-EVOLUTION-ZH-CN.html)
 - [证据驱动型 ASIC Agent 工作流](./docs/EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html)
 - [MoonGlass AIGV 方法学](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)
 - [MoonGlass AIGV 2.0 白皮书](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html)
