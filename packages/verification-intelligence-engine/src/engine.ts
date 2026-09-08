@@ -343,8 +343,12 @@ function readRtlInputs(workspace: string): RtlAnalysisInputs {
   }
 }
 
-function structuralModel(workspace: string): StructuralModel {
-  const inputs = readRtlInputs(workspace)
+/**
+ * 全局 RTL 哈希的唯一计算口径（单一哈希空间）：design.json 语义的设计文件
+ * （相对路径 + 内容）+ 库文件清单。scenario_hits 的证据登记（pi-bridge 侧经
+ * 引擎源码引入同一实现）与引擎的新鲜度判定必须使用同一口径，禁止另起哈希。
+ */
+function rtlHashFromInputs(workspace: string, inputs: ReturnType<typeof readRtlInputs>): string {
   const hash = createHash('sha256')
   for (const file of inputs.designFiles) {
     const text = readFileSync(file, 'utf-8')
@@ -352,7 +356,18 @@ function structuralModel(workspace: string): StructuralModel {
   }
   // 库文件不参与结构抽取，但其清单变化同样影响 elaboration 结果，计入 rtlHash
   for (const file of inputs.libraryFiles) hash.update('lib:').update(relative(workspace, file)).update('\0')
-  return analyzeStructure({ workspace, files: inputs.designFiles, libraryFiles: inputs.libraryFiles, includeDirs: inputs.includeDirs, defines: inputs.defines, topModule: inputs.topModule, inputSource: inputs.inputSource, rtlHash: hash.digest('hex'), featuresOf })
+  return hash.digest('hex')
+}
+
+/** 计算工作区当前 RTL 哈希（证据登记与新鲜度判定的统一口径）。 */
+export function computeRtlHash(workspaceDir: string): string {
+  const workspace = resolve(workspaceDir)
+  return rtlHashFromInputs(workspace, readRtlInputs(workspace))
+}
+
+function structuralModel(workspace: string): StructuralModel {
+  const inputs = readRtlInputs(workspace)
+  return analyzeStructure({ workspace, files: inputs.designFiles, libraryFiles: inputs.libraryFiles, includeDirs: inputs.includeDirs, defines: inputs.defines, topModule: inputs.topModule, inputSource: inputs.inputSource, rtlHash: rtlHashFromInputs(workspace, inputs), featuresOf })
 }
 
 function buildModuleVerificationStrategy(workspace: string, structure: StructuralModel, risks: RiskMarker[]): ModuleVerificationStrategy {

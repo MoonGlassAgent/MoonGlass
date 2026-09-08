@@ -37,6 +37,10 @@ writeFileSync(modulePath, `import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative, resolve } from 'node:path'
 
+// 引擎统一口径哈希桩（真实实现由引擎 computeRtlHash 提供；桩用于验证工具调用的是统一口径）
+const ENGINE_HASH_SENTINEL = 'e'.repeat(64)
+function computeRtlHash() { return ENGINE_HASH_SENTINEL }
+
 ${extracted}
 `, 'utf-8')
 
@@ -62,6 +66,7 @@ let hits = readHits()
 let entry = hits.scenarios.find((item) => item.id === 'SCN-AAAAAAAA')
 if (!entry || entry.reached !== true || entry.passed !== true || entry.reachCount !== 1) throw new Error('首次写入条目字段错误')
 if (!entry.rtlHash || entry.rtlHash.length !== 64) throw new Error('首次写入缺少 RTL Hash')
+if (entry.rtlHash !== 'e'.repeat(64)) throw new Error('rtlHash 未使用引擎统一口径（computeRtlHash）')
 if (!entry.evidence.includes('result.json') || !entry.evidence.includes('simulation.log') || !entry.evidence.includes('dma.vcd')) throw new Error('证据未落为相对路径')
 if (!entry.generatedAt) throw new Error('缺少 generatedAt')
 

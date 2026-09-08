@@ -1,7 +1,7 @@
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, reviewSynthesisClauses, registerVerificationIntents, recordScenarioAdjudication, recordRootCause } from '../packages/verification-intelligence-engine/src/index.ts'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, reviewSynthesisClauses, registerVerificationIntents, recordScenarioAdjudication, recordRootCause, computeRtlHash } from '../packages/verification-intelligence-engine/src/index.ts'
 
 const root = mkdtempSync(join(tmpdir(), 'moonglass-verification-intelligence-'))
 mkdirSync(join(root, 'docs', '02_requirements'), { recursive: true })
@@ -512,6 +512,27 @@ const doneSecond = buildVerificationIntelligence(doneRoot)
 if (doneSecond.verificationState.scenarios.find((scenario) => scenario.id === doneDerived[0].id)?.status !== 'VERIFIED') throw new Error('派生候选 scenario_hits 证据未闭环')
 if (doneSecond.verificationState.specMapping.statusCounts.PASSED !== 1 || doneSecond.verificationState.specMapping.coveredClause !== 1) throw new Error('派生候选闭环后条款应 PASSED')
 if (doneSecond.verificationState.waveProgress[1].status !== 'done') throw new Error(`coveredClause=clauseTotal 时 W1 应 done：${doneSecond.verificationState.waveProgress[1].status}`)
+
+// 单一哈希空间契约（2026-09-08 修复）：computeRtlHash 是证据登记与新鲜度判定的唯一口径
+if (computeRtlHash(doneRoot) !== doneSecond.structuralModel.rtlHash) throw new Error('computeRtlHash 与 structuralModel.rtlHash 口径不一致')
+// RTL 变更后：异空间哈希（如旧的绝对路径口径）的 hit 不得让场景重新闭环（修复前会永久卡 IMPACT_UNKNOWN）；
+// 统一口径的 hit 必须能重新闭环
+writeFileSync(join(doneRoot, 'rtl', 'mini_counter.v'), readFileSync(join(doneRoot, 'rtl', 'mini_counter.v'), 'utf-8') + '\n// rtl change\n', 'utf-8')
+const foreignHitsPath = join(doneRoot, 'verification', 'results', 'mini', 'scenario_hits.json')
+writeFileSync(foreignHitsPath, JSON.stringify({
+  rtlHash: 'f'.repeat(64),
+  scenarios: [{ id: doneDerived[0].id, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'mini.fst'] }]
+}, null, 2), 'utf-8')
+const foreignBuild = buildVerificationIntelligence(doneRoot)
+const foreignScenario = foreignBuild.verificationState.scenarios.find((scenario) => scenario.id === doneDerived[0].id)
+if (foreignScenario?.state.freshness === 'CURRENT' || foreignScenario?.status === 'VERIFIED') throw new Error('异空间哈希的 hit 不应被当作当前证据闭环')
+writeFileSync(foreignHitsPath, JSON.stringify({
+  rtlHash: computeRtlHash(doneRoot),
+  scenarios: [{ id: doneDerived[0].id, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'mini.fst'] }]
+}, null, 2), 'utf-8')
+const unifiedBuild = buildVerificationIntelligence(doneRoot)
+const unifiedScenario = unifiedBuild.verificationState.scenarios.find((scenario) => scenario.id === doneDerived[0].id)
+if (unifiedScenario?.status !== 'VERIFIED' || unifiedScenario?.state.freshness !== 'CURRENT') throw new Error('统一口径 hit 未能在 RTL 变更后重新闭环')
 rmSync(emptyRoot, { recursive: true, force: true })
 rmSync(doneRoot, { recursive: true, force: true })
 

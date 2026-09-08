@@ -28,7 +28,7 @@ import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { runFormalVerification } from './eda-bridge/formal'
 import { runDesignLint } from './eda-bridge/lint'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
-import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause } from './verification-intelligence/engine.ts'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause, computeRtlHash } from './verification-intelligence/engine.ts'
 
 type DiagnosticLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5'
 
@@ -174,6 +174,8 @@ export interface ScenarioHitWriteResult {
  * 把仿真执行结果自动登记到 verification/results/<topModule>/scenario_hits.json（合并写）。
  * 这是 scenario_hits.json 的唯一写入入口：PASS/FAIL 都登记（失败同样是证据），
  * Agent 禁止手写该文件。导出以便 smoke 直接测试合并逻辑。
+ * rtlHash 必须使用引擎统一口径（computeRtlHash，与新鲜度判定同一哈希空间）；
+ * 引擎不可用时回退 filesHash 并在 warnings 中说明（该回退的哈希不参与新鲜度判定）。
  */
 export function writeScenarioHits(workspace: string, topModule: string, input: ScenarioHitWriteInput): ScenarioHitWriteResult {
   const warnings: string[] = []
@@ -189,7 +191,13 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
   const path = join(resultsDir, 'scenario_hits.json')
   let existing: { scenarios?: Array<Record<string, unknown>> } = {}
   try { existing = JSON.parse(readFileSync(path, 'utf-8')) as typeof existing } catch { /* 首次写入 */ }
-  const rtlHash = filesHash(input.rtlFiles)
+  let rtlHash: string
+  try {
+    rtlHash = computeRtlHash(workspace)
+  } catch (error) {
+    rtlHash = filesHash(input.rtlFiles)
+    warnings.push(`引擎口径 RTL 哈希计算失败（${error instanceof Error ? error.message : String(error)}），已回退 filesHash；该证据的新鲜度判定可能不生效`)
+  }
   const evidence = input.evidence.filter(Boolean).map((item) => {
     const absolute = resolve(workspace, item)
     return absolute.startsWith(resultsDir) ? relative(resultsDir, absolute) : absolute
