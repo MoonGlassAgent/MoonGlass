@@ -1886,6 +1886,16 @@ export function registerVerificationIntents(workspaceDir: string, inputs: AgentI
     else if (input.anchors.riskIds.some((id) => !riskIds.has(id))) reasons.push(`riskIds 不存在于 risk-register：${input.anchors.riskIds.filter((id) => !riskIds.has(id)).join('、')}`)
     if (!input.anchors?.requirementIds?.length) reasons.push('必须锚定至少一个现有 Requirement ID')
     else if (input.anchors.requirementIds.some((id) => !requirementIds.has(id))) reasons.push(`requirementIds 不存在于 requirement-model：${input.anchors.requirementIds.filter((id) => !requirementIds.has(id)).join('、')}`)
+    // synthesis（PPA）通道条款的验收义务在 SYNTH 阶段（综合报告证据闭环），不属于 VERIF
+    // 验证范围：simulation/formal 方法锚定即拒绝；static 方法（综合报告静态审查）是 SYNTH
+    // 闭环的正路，放行。母子条款锚定时按全部匹配条款的通道判定（混合通道不误伤）
+    if (input.anchors?.requirementIds?.length && input.recommendedMethod !== 'static') {
+      const synthesisAnchors = input.anchors.requirementIds.filter((id) => {
+        const matched = artifacts.requirementModel.requirements.filter((item) => item.id === id || item.parentId === id)
+        return matched.length > 0 && matched.every((item) => item.channel === 'synthesis')
+      })
+      if (synthesisAnchors.length) reasons.push(`锚定条款为 synthesis（PPA）通道，验收义务在 SYNTH 阶段（综合报告证据闭环），不属于 VERIF 验证范围：${synthesisAnchors.join('、')}；如需以综合报告静态审查闭环，请用 recommendedMethod="static" 登记`)
+    }
     if (!input.anchors?.rtlSignals?.length) reasons.push('必须点名至少一个真实 RTL 信号（rtlSignals）')
     else if (input.anchors.rtlSignals.some((signal) => !signalNames.has(signal))) reasons.push(`rtlSignals 在结构模型中不存在（疑似幻觉信号，必须核对 structural-model.json 后修正）：${input.anchors.rtlSignals.filter((signal) => !signalNames.has(signal)).join('、')}`)
     // 波段声明 + 一致性校验（契约 Q1：防游离标签；规则表 WAVE_ANCHOR_RULES 可扩展）

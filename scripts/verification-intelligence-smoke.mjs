@@ -283,6 +283,11 @@ if (intentScenario.riskIds[0] !== anchorRisk.id || !intentScenario.requirementId
 const registeredIntent = afterRegister.verificationState.verificationIntents.find((intent) => intent.scenarioId === intentScenarioId)
 if (!registeredIntent || registeredIntent.objective !== '验证 outstanding_cnt 在 abort 与 bvalid 同周期时更新次数正确') throw new Error('AGENT_INTENT Intent 未保留 Agent 原文（不应套用模板）')
 if (afterRegister.verificationState.uncoveredRiskCandidates.some((risk) => risk.id === anchorRisk.id)) throw new Error('已被验证意图锚定的高分风险仍出现在未覆盖候选中')
+// synthesis（PPA）通道条款不得锚定 VERIF 验证意图（验收义务在 SYNTH 阶段，综合报告证据闭环）
+const ppaAnchored = registerVerificationIntents(root, [
+  { title: 'PPA 条款误锚定', objective: '验证频率目标达成', failureMode: '反例：频率不达标', passCriteria: ['频率不低于目标值'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['SPEC-PPA-001'], rtlSignals: [qualifiedSignal] }, recommendedMethod: 'simulation' }
+])
+if (ppaAnchored.accepted.length !== 0 || !ppaAnchored.rejected[0]?.reasons.some((reason) => reason.includes('synthesis'))) throw new Error(`synthesis 通道条款锚定的 VERIF 意图应被拒绝：${JSON.stringify(ppaAnchored)}`)
 // 重复登记按更新处理：场景 ID 稳定，不新增重复场景
 const reRegistration = registerVerificationIntents(root, [{ title: '在途计数边界验证', objective: '验证 outstanding_cnt 更新次数正确（修订）', failureMode: '反例：重复递减', passCriteria: ['计数单调'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['REQ-DMA-001'], rtlSignals: [qualifiedSignal] }, recommendedMethod: 'simulation' }])
 if (reRegistration.accepted[0] !== intentScenarioId) throw new Error('重复登记未命中同一稳定场景 ID')
