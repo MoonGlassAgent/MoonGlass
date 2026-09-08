@@ -36,6 +36,7 @@ import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
 import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
+import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
 import { buildArtifactIndexSection } from './artifact-index.ts'
 
@@ -266,6 +267,7 @@ export class AgentService implements MoonGlassService {
     copyExt('moonglass-providers.ts')
     copyExt('model-context.ts')
     copyExt('moonglass-tools.ts') // Phase 4：芯片专用工具集
+    copyExt('rtl-write-guard.ts') // M4 §5.4：RTL 写保护守卫（moonglass-tools.ts 相对导入）
 
     // Phase 4：将 eda-bridge 共享实现复制到 pi-bridge 目录，供 moonglass-tools.ts 相对导入
     const edaBridgeDir = join(this.bridgeDir, 'eda-bridge')
@@ -317,6 +319,21 @@ export class AgentService implements MoonGlassService {
       writeFileSync(settingsPath, JSON.stringify(settings, null, 2), 'utf-8')
     } else {
       console.error(`[agent-service] 未找到内置技能目录: ${skillsSource}`)
+    }
+
+    // M4 §5.1 stale 防护：应用重启意味着上一轮修复会话进程已死，
+    // 残留的修复中标志一律清除，避免 stale 标志永久阻断批次派发与写保护窗口。
+    for (const project of this.projects.list()) {
+      try {
+        const workspace = this.projects.workspaceDir(project.id)
+        const stale = readRtlFixFlag(workspace)
+        if (stale) {
+          clearRtlFixFlag(workspace)
+          console.warn(`[agent-service] 检测到残留的 RTL 修复中标志（${stale.rootCauseId} / ${stale.fixSessionName}，项目 ${project.id}），应用重启后旧修复会话已不存在，标志已清除`)
+        }
+      } catch (error) {
+        console.warn('[agent-service] 修复中标志 stale 检查失败（忽略，不影响启动）', error)
+      }
     }
   }
 
@@ -644,7 +661,9 @@ argument-hint: "<模块名>"
     projectId: string,
     phase: Phase,
     projectName: string,
-    targetSessionFile?: string
+    targetSessionFile?: string,
+    // 编排场景注入的额外环境变量（M4：修复会话注入 MOONGLASS_RTL_FIX_SESSION 标识自身）
+    extraEnv?: Record<string, string>
   ): PiSession {
     if (!this.piBinPath) throw new Error('[agent-service] pi-coding-agent 不可用（依赖未安装？）')
     const workspace = this.workspaceDir(projectId)
@@ -695,6 +714,7 @@ argument-hint: "<模块名>"
         ...(process.env.MOONGLASS_DEFAULT_LIBERTY
           ? { MOONGLASS_DEFAULT_LIBERTY: process.env.MOONGLASS_DEFAULT_LIBERTY }
           : {}),
+        ...(extraEnv ?? {}),
         PI_SKIP_VERSION_CHECK: '1',
         PI_TELEMETRY: '0',
         PI_CODING_AGENT_DIR: piAgentDir,
@@ -1486,6 +1506,7 @@ argument-hint: "<模块名>"
    * （显式继承 VERIF 阶段主会话的模型选择）→ 发送批次 prompt 并等待 settle →
    * 证据绑定完成判定（scenario_hits 登记 + posture 重建时间戳）→ 双重终止后 close + 延迟归档
    * （保留最近 5 个批次 JSONL 供只读回看）。
+   * M4 §5.2：RTL 修复会话进行中时入口直接拒绝（在跑批次/仿真不强杀，只拦新派发）。
    */
   async runVerifBatch(projectId: string, scenarioIds: string[], options?: { batchIndex?: number; timeoutMs?: number }): Promise<VerifBatchRunResult> {
     const project = this.projects.get(projectId)
@@ -1493,6 +1514,9 @@ argument-hint: "<模块名>"
     if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法派发 VERIF 批次会话')
     const ids = [...new Set(scenarioIds.map((id) => id.trim().toUpperCase()))].filter(Boolean)
     if (ids.length === 0) throw new Error('[agent-service] 批次场景列表为空')
+    // M4 §5.2 派发门控：RTL 修复进行中拒绝派发新批次（只拦新派发，不强杀在跑批次/仿真 §5.3）
+    const gateReject = rtlFixGateReason(this.activeRtlFixes.get(projectId)?.activeSessionName, 'reject')
+    if (gateReject) throw new Error(gateReject)
     const workspace = this.workspaceDir(projectId)
     const batchIndex = options?.batchIndex ?? this.nextVerifBatchIndex(projectId)
     const startedAt = new Date().toISOString()
@@ -1592,6 +1616,7 @@ argument-hint: "<模块名>"
    * VERIF 批次编排循环：select_next_verification_batch 等价的主进程选择
    * （复用 scenario-execution-plan.json，缺失时重建引擎产物）→ 逐批 runVerifBatch。
    * 批次熔断（证据缺失 / watchdog / DIAGNOSTIC_ENHANCEMENT 无进展）即停止后续批次。
+   * M4 §5.2：RTL 修复进行中暂停派发新批次（熔断类停止，修复结束后不自动续跑）。
    */
   async runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number }): Promise<VerifBatchLoopResult> {
     const batchSize = Math.max(1, Math.min(12, Math.trunc(options?.batchSize ?? 3)))
@@ -1602,6 +1627,14 @@ argument-hint: "<模块名>"
     for (let index = 0; index < maxBatches; index += 1) {
       if (this.verifBatchStopRequested.has(projectId)) {
         return { batches, stoppedBy: 'user-stop', message: '用户停止托管：已中止当前批次，不再派发新批次' }
+      }
+      // M4 §5.2 派发门控：每轮选批前检查修复中标志（内存态）；修复期间暂停派发，
+      // 视为熔断类停止条件（记日志 + UI status 通知），修复结束后不自动续跑（§5.5）
+      const gatePause = rtlFixGateReason(this.activeRtlFixes.get(projectId)?.activeSessionName, 'pause')
+      if (gatePause) {
+        console.warn(`[agent-service] ${gatePause}`)
+        this.emit(projectId, { type: 'status', message: gatePause })
+        return { batches, stoppedBy: 'circuit-break', message: gatePause }
       }
       let scenarioIds: string[]
       try {
@@ -1813,7 +1846,7 @@ argument-hint: "<模块名>"
     return { archivedTo, keptForReview }
   }
 
-  // ==================== RTL 修复会话编排（M3，设计文档 §4 方案 B） ====================
+  // ==================== RTL 修复会话编排（M3 §4 方案 B；M4 §5 标志/门控/审计挂在该生命周期上） ====================
 
   /** 在跑的 RTL 修复会话（参照 activeVerifBatches 独立跟踪）；settle 判定并 dispose 后移除 */
   private activeRtlFixes = new Map<string, PiSession>()
@@ -1874,7 +1907,9 @@ argument-hint: "<模块名>"
     const previousActive = this.sessions.get(projectId)
     let session: PiSession
     try {
-      session = this.spawnSession(projectId, 'VERIF', project.name, sessionFile)
+      // M4：经 extraEnv 注入 MOONGLASS_RTL_FIX_SESSION=rootCauseId 标识修复会话自身，
+      // pi-bridge 写保护守卫据此放行本会话对 rtl/ 的写操作
+      session = this.spawnSession(projectId, 'VERIF', project.name, sessionFile, { MOONGLASS_RTL_FIX_SESSION: fix.rootCauseId })
     } catch (error) {
       rmSync(sessionFile, { force: true })
       throw error
@@ -1885,6 +1920,8 @@ argument-hint: "<模块名>"
     this.activeRtlFixes.set(projectId, session)
 
     let judgment: RtlFixJudgment
+    // M4 §5.4 事后审计基线快照（null 表示修复窗口未真正开始，不产出审计文件）
+    let snapshotBefore: RtlTreeSnapshot | null = null
     try {
       await session.client.waitReady()
       // 修复会话显式继承 VERIF 阶段主会话的模型选择（与批次一致）
@@ -1896,6 +1933,10 @@ argument-hint: "<模块名>"
         : { providerId: providers[0]!.id, modelId: providers[0]!.models[0]! }
       await this.setModelInternal(session, selection.providerId, selection.modelId)
       this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
+
+      // M4 §5.1 修复中标志（prompt 发送前落盘，写保护守卫据此生效）+ §5.4 审计基线快照
+      writeRtlFixFlag(workspace, { rootCauseId: fix.rootCauseId, scenarioId: fix.scenarioId, fixSessionName: sessionName, startedAt: fixStartedAt })
+      snapshotBefore = snapshotRtlTree(workspace)
 
       this.emit(projectId, { type: 'status', message: `根因 ${fix.rootCauseId}（${fix.scenarioId}）已确认，RTL 修复会话 ${sessionName} 已派发：执行已确认修复并回归验证。` }, source.activeSessionName)
       const run = await this.runBatchToSettled(session, buildRtlFixPrompt(workspace, fix), 60 * 60_000)
@@ -1910,6 +1951,17 @@ argument-hint: "<模块名>"
       judgment = { outcome: 'UNKNOWN', scenarioId: fix.scenarioId, rtlHash: null, evidence: [], reason: `修复会话执行失败：${error instanceof Error ? error.message : String(error)}` }
     }
 
+    // M4：修复窗口收尾——二次快照 diff 落盘审计 + 清除修复中标志。
+    // 正常 settle、判定异常、abort/停止导致的强杀（dispose 使 settle 等待返回/拒绝）
+    // 都经此出口，保证标志不残留；仅当窗口真正开始过（snapshotBefore 非空）才产出审计。
+    this.concludeRtlFixWindow(workspace, {
+      rootCauseId: fix.rootCauseId,
+      scenarioId: fix.scenarioId,
+      fixSessionName: sessionName,
+      startedAt: fixStartedAt,
+      snapshotBefore
+    })
+
     // 修复会话 settle 后 dispose（释放进程资源；JSONL 保留在会话目录，可只读回看）
     const background = this.backgroundSessions.get(projectId)
     const key = resolve(session.currentSessionFile)
@@ -1921,6 +1973,36 @@ argument-hint: "<模块名>"
     this.activeRtlFixes.delete(projectId)
 
     this.deliverRtlFixOutcome(projectId, source, fix, sessionName, judgment)
+  }
+
+  /**
+   * 修复窗口收尾（M4 §5.1/§5.4）：rtl/ 二次快照与基线 diff 落盘审计文件
+   * （rtl-fix-audit-<RC-id>.json，含窗口内被写保护守卫拦截的尝试计数），
+   * 然后清除修复中标志（仅清除本会话自己的标志，防止误清后继修复会话的标志）。
+   * 审计失败仅告警，不影响判定送达；窗口未真正开始（无基线快照）时只清标志不产审计。
+   */
+  private concludeRtlFixWindow(workspace: string, window: { rootCauseId: string; scenarioId: string; fixSessionName: string; startedAt: string; snapshotBefore: RtlTreeSnapshot | null }): void {
+    const settledAt = new Date().toISOString()
+    if (window.snapshotBefore) {
+      try {
+        const diff = diffRtlSnapshots(window.snapshotBefore, snapshotRtlTree(workspace))
+        const auditPath = writeRtlFixAudit(workspace, {
+          rootCauseId: window.rootCauseId,
+          scenarioId: window.scenarioId,
+          fixSessionName: window.fixSessionName,
+          startedAt: window.startedAt,
+          settledAt,
+          changed: diff.changed,
+          created: diff.created,
+          deleted: diff.deleted,
+          blockedAttempts: countBlockedAttempts(workspace, window.startedAt, settledAt)
+        })
+        console.log(`[agent-service] RTL 修复窗口审计已落盘: ${auditPath}（changed=${diff.changed.length} created=${diff.created.length} deleted=${diff.deleted.length}）`)
+      } catch (error) {
+        console.warn('[agent-service] RTL 修复窗口审计落盘失败（不影响判定送达）', error)
+      }
+    }
+    clearRtlFixFlag(workspace, window.fixSessionName)
   }
 
   /**

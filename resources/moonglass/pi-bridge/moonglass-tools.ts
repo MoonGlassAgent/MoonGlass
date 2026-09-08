@@ -29,6 +29,7 @@ import { runFormalVerification } from './eda-bridge/formal'
 import { runDesignLint } from './eda-bridge/lint'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
 import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause, computeRtlHash } from './verification-intelligence/engine.ts'
+import { createRtlWriteGuard } from './rtl-write-guard.ts'
 
 type DiagnosticLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5'
 
@@ -520,6 +521,11 @@ function collectEvidenceFiles(dir: string, predicate: (name: string) => boolean)
 }
 
 export default function (pi: ExtensionAPI): void {
+  // M4 §5.4 RTL 写保护（尽力拦截层，非硬保证）：修复窗口内拦截非修复会话
+  // 对 rtl/ 的 write/edit 与可检出的 bash 改写；绕过拦截的变更由 rtlHash
+  // 失鲜兜底 + 主进程事后审计（前后快照 diff）覆盖。详见 rtl-write-guard.ts。
+  pi.on('tool_call', createRtlWriteGuard(() => process.cwd()))
+
   const loadIpLibraries = (): Array<{ name: string; type: string; ips: Array<Record<string, unknown>> }> => {
     const indexPath = process.env.MOONGLASS_IP_LIBRARY_INDEX
     if (!indexPath || !existsSync(indexPath)) return []
