@@ -20,7 +20,6 @@ import {
   rmSync, statSync, writeFileSync
 } from 'node:fs'
 import { basename, join, resolve } from 'node:path'
-import { tmpdir } from 'node:os'
 
 const ROOT = process.cwd()
 const args = process.argv.slice(2)
@@ -106,7 +105,9 @@ if (!existsSync(packagedAigv)) {
 console.log(`[green] 内置 AIGV 工具链归档就绪（${(statSync(packagedAigv).size / 1024 / 1024).toFixed(1)} MB）`)
 
 // 真实启动打包后的主进程，捕获 app.asar、native module 和服务初始化错误。
-const smokeUserData = mkdtempSync(join(tmpdir(), 'moonglass-packaged-smoke-'))
+const smokeRoot = join(ROOT, 'dist', '.smoke')
+mkdirSync(smokeRoot, { recursive: true })
+const smokeUserData = mkdtempSync(join(smokeRoot, 'moonglass-packaged-smoke-'))
 try {
   const smokeOutput = execFileSync(
     join(unpacked, 'MoonGlass.exe'), [`--user-data-dir=${smokeUserData}`],
