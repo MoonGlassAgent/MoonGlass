@@ -2,6 +2,12 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-10：IP 可靠性交付客户问答
+
+- 新增独立 HTML 客户问答手册，直接回答 MoonGlass 如何证明 IP 满足规格、验证证据是否可信及最终签核责任。
+- 覆盖追溯矩阵、覆盖率、Verification Intent、Golden Model、Multi-Oracle、Formal、工具链、Agent 偏差、变更回归和客户验收等 36 个问题。
+- 增加分类筛选、关键词搜索、展开/收起、打印样式和客户尽调清单，并明确“不承诺绝对零缺陷”的能力边界。
+
 ## 2026-09-08：商业授权方案调整
 
 - 将旧的低价团队档位替换为 Community、Professional、Team、Enterprise、EDA Enterprise Pack 和 AIGV Enterprise Pack 六档方案。
