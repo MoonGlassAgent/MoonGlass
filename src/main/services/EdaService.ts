@@ -17,6 +17,13 @@ import type { ToolDetection, ToolInstallJob, ToolInstallResult, WaveformOpenResu
 import type { MoonGlassService } from '../core/lifecycle'
 import type { ProjectService } from './ProjectService'
 
+// Windows 上优先用系统自带 bsdtar：GNU tar（Git Bash 环境 PATH 优先）会把
+// "D:" 盘符当作远程主机语法而失败（Cannot connect to D: resolve failed）。
+// 与 scripts/stage-aigv-runtime.mjs 同一规避口径。
+const TAR_EXE = process.platform === 'win32' && existsSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'))
+  ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
+  : 'tar'
+
 export class EdaService implements MoonGlassService {
   readonly name = 'eda-service'
   private readonly toolchainRoot: string
@@ -153,7 +160,7 @@ export class EdaService implements MoonGlassService {
       if (!download.ok || !download.body) throw new Error(`工具包下载失败: HTTP ${download.status}`)
       await pipeline(Readable.fromWeb(download.body as never), createWriteStream(archivePath))
       this.updateInstallMessage(id, '下载完成，正在后台解压工具包…')
-      await this.runProcess('tar', ['-xzf', archivePath, '-C', this.toolchainRoot])
+      await this.runProcess(TAR_EXE, ['-xzf', archivePath, '-C', this.toolchainRoot])
       await rm(archivePath, { force: true })
       if (!existsSync(join(suiteDir, 'bin'))) throw new Error('工具包解压完成，但未找到 bin 目录')
       this.activateToolchains()
@@ -277,7 +284,7 @@ export class EdaService implements MoonGlassService {
     if (existsSync(join(this.bundledAigvRoot, 'bin', 'slang.exe')) && existsSync(marker) && readFileSync(marker, 'utf-8') === fingerprint) return
     const target = join(this.toolchainRoot, 'bundled-aigv')
     await rm(target, { recursive: true, force: true }); await mkdir(target, { recursive: true })
-    await this.runProcess('tar', ['-xzf', archive, '-C', target])
+    await this.runProcess(TAR_EXE, ['-xzf', archive, '-C', target])
     if (!existsSync(join(this.bundledAigvRoot, 'bin', 'slang.exe')) || !existsSync(join(this.bundledAigvRoot, 'bin', 'sby.cmd'))) throw new Error('MoonGlass 内置 AIGV 工具链解压不完整')
     writeFileSync(marker, fingerprint, 'utf-8')
   }

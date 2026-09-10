@@ -210,7 +210,12 @@ if (fileCount > 1200) {
 }
 console.log(`[green] 文件数量检查通过：${fileCount}`)
 console.log('[green] 压缩 ZIP ...')
-execFileSync('tar.exe', ['-a', '-cf', zipPath, '-C', outRoot, basename(appDir)], { stdio: 'inherit' })
+// Windows 上用系统自带 bsdtar：GNU tar（Git Bash 环境 PATH 优先）会把 "D:" 盘符当作远程主机语法而失败
+// （与 scripts/stage-aigv-runtime.mjs 同一规避口径）
+const tarExe = process.platform === 'win32' && existsSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'))
+  ? join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe')
+  : 'tar'
+execFileSync(tarExe, ['-a', '-cf', zipPath, '-C', outRoot, basename(appDir)], { stdio: 'inherit' })
 
 const sizeMB = (statSync(zipPath).size / 1024 / 1024).toFixed(1)
 console.log(`[green] 完成：${zipPath}（${sizeMB} MB）`)
