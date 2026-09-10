@@ -13,12 +13,14 @@ const suites = {
     'scripts/pi-rpc-event-smoke.mjs',
     'scripts/pi-tools-smoke.mjs',
     'scripts/verification-intelligence-smoke.mjs',
+    'scripts/aigv-bug-001-regression-smoke.mjs',
     'scripts/verification-guidance-smoke.mjs',
     'scripts/scenario-hits-smoke.mjs',
     'scripts/verif-batch-verdict-smoke.mjs',
     'scripts/session-transcript-smoke.mjs',
     'scripts/batch-prompt-smoke.mjs',
     'scripts/formal-smoke.mjs',
+    'scripts/waveform-guard-smoke.mjs',
     'scripts/llm-error-smoke.mjs'
   ],
   integration: [

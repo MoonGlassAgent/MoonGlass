@@ -5,7 +5,7 @@
  * VCS / Xcelium 为预留类型，当前仅 Verilator 有真实现。
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { delimiter, dirname, join, resolve } from 'node:path'
 import {
   locateTool,
@@ -45,6 +45,79 @@ export interface SimulationResult {
   resultPath?: string
 }
 
+// ---- 波形体积熔断（资源保护，刻意区别于 wall-clock 超时） ----
+// 既有设计原则：不设无工程依据的仿真 wall-clock 上限。体积熔断不是时间限制，
+// 只保护磁盘资源——cpp 模式（我方 generate_tb 注入的 TB）超限时只关闭波形 dump、
+// 仿真继续跑到自然结束；cocotb 后端的波形开关由其内部生成的 wrapper 控制，
+// 外部无法只停 dump，超限只能终止整个仿真并在 result.json 诚实标记。
+
+/** generate_tb 注入 TB 的熔断标记（源码注释）与熔断触发时打印到日志的令牌 */
+export const WAVEFORM_GUARD_MARKER = 'MOONGLASS_WAVEFORM_GUARD'
+export const WAVEFORM_GUARD_STOP_TOKEN = 'MOONGLASS_WAVEFORM_GUARD: dump stopped'
+
+const DEFAULT_MAX_WAVEFORM_GB = 10
+
+/** 解析波形体积阈值（GB）：显式参数 > 环境变量 MOONGLASS_MAX_WAVEFORM_GB > 缺省 10 */
+export function resolveMaxWaveformGB(param?: number): number {
+  if (typeof param === 'number' && Number.isFinite(param) && param > 0) return param
+  const envValue = Number(process.env.MOONGLASS_MAX_WAVEFORM_GB ?? '')
+  return Number.isFinite(envValue) && envValue > 0 ? envValue : DEFAULT_MAX_WAVEFORM_GB
+}
+
+/** 递归统计目录下 .vcd/.fst 波形产物的总字节数 */
+function dirWaveformBytes(dir: string): number {
+  if (!existsSync(dir)) return 0
+  let total = 0
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) total += dirWaveformBytes(full)
+    else if (/\.(vcd|fst)$/i.test(entry.name)) {
+      try { total += statSync(full).size } catch { /* 仿真并发写入/清理时忽略单次采样失败 */ }
+    }
+  }
+  return total
+}
+
+interface WaveformSizeMonitor {
+  /**
+   * 停止轮询并做最后一次采样。
+   * notify=false（缺省）：收尾采样只更新观测值不再回调——用于“超限即终止仿真”的场景，
+   * 避免仿真已自然结束却被误标为被熔断；notify=true：收尾采样同样回调——用于
+   * “只监控不干预”的外部 TB 场景，捕捉最后一个轮询间隔内发生的超限。
+   */
+  stop(notify?: boolean): void
+  /** 是否已观察到超限 */
+  readonly exceeded: boolean
+  /** 观察到的最大波形体积（字节） */
+  readonly observedBytes: number
+}
+
+/**
+ * runner 侧波形体积监控：周期统计给定目录下的 .vcd/.fst 总大小，超阈值时回调一次。
+ * 轮询间隔缺省 2 秒，可经 MOONGLASS_WAVEFORM_MONITOR_INTERVAL_MS 覆盖（冒烟测试用）。
+ */
+function monitorWaveformSize(dirs: string[], thresholdBytes: number, onExceed: (bytes: number) => void): WaveformSizeMonitor {
+  const envInterval = Number(process.env.MOONGLASS_WAVEFORM_MONITOR_INTERVAL_MS ?? '')
+  const intervalMs = Number.isFinite(envInterval) && envInterval >= 50 ? envInterval : 2000
+  const state = { exceeded: false, observedBytes: 0 }
+  const sample = (notify: boolean): void => {
+    let total = 0
+    for (const dir of dirs) total += dirWaveformBytes(dir)
+    state.observedBytes = Math.max(state.observedBytes, total)
+    if (notify && !state.exceeded && total > thresholdBytes) {
+      state.exceeded = true
+      onExceed(total)
+    }
+  }
+  const timer = setInterval(() => sample(true), intervalMs)
+  timer.unref?.()
+  return {
+    stop: (notify = false) => { clearInterval(timer); sample(notify) },
+    get exceeded() { return state.exceeded },
+    get observedBytes() { return state.observedBytes }
+  }
+}
+
 export interface VerilatorSimOptions {
   topModule: string
   tbCpp: string
@@ -54,6 +127,8 @@ export interface VerilatorSimOptions {
   buildDir?: string
   resultDir?: string
   rtlCoverage?: boolean
+  /** 波形体积阈值（GB），缺省 10；也可经环境变量 MOONGLASS_MAX_WAVEFORM_GB 覆盖 */
+  maxWaveformGB?: number
 }
 
 export interface VerilatorSimResult {
@@ -68,6 +143,14 @@ export interface VerilatorSimResult {
   coverageReportPath?: string
   /** Cocotb 模式本次产出的 JUnit XML 路径（未产出时为 null）；供 scenario→测试绑定解析 */
   resultsXmlPath?: string | null
+  /** 本次生效的波形体积阈值（GB） */
+  maxWaveformGB?: number
+  /** 波形体积熔断已触发：cpp 模式=TB 内停止 dump、仿真继续；cocotb 模式=终止整个仿真 */
+  waveformAborted?: boolean
+  /** 熔断原因（当前仅 'size-limit'） */
+  waveformAbortedReason?: 'size-limit'
+  /** 外部自带 C++ TB（无 TB 内熔断标记）波形已超限但未能受控停止的诚实标记 */
+  waveformOverLimitUncontrolled?: boolean
 }
 
 export interface CocotbSimOptions {
@@ -85,6 +168,8 @@ export interface CocotbSimOptions {
   pythonExecutable?: string
   rtlCoverage?: boolean
   functionalCoverageFile?: string
+  /** 波形体积阈值（GB），缺省 10；也可经环境变量 MOONGLASS_MAX_WAVEFORM_GB 覆盖 */
+  maxWaveformGB?: number
 }
 
 interface CoveragePointCount { total: number; covered: number }
@@ -267,14 +352,39 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
   if (simulator === 'icarus') {
     await checkIcarusToolchain(simulatorPath, options.buildDir, env, options.signal)
   }
+
+  // 波形体积熔断（资源保护，非 wall-clock 超时）：cocotb 的波形开关由 runner 内部
+  // 生成的 HDL wrapper 控制（$dumpvars 在仿真 0 时刻生效），外部进程无法只停 dump，
+  // 因此 runner 侧监控产物体积，超限即终止整个仿真并诚实标记 waveformAborted。
+  // 这是可接受的取舍：cocotb 主要用于定向用例，超巨波形已无调试价值。
+  const maxWaveformGB = resolveMaxWaveformGB(options.maxWaveformGB)
+  const wavesEnabled = options.waves !== false
+  const guardAbort = new AbortController()
+  if (options.signal) {
+    if (options.signal.aborted) guardAbort.abort()
+    else options.signal.addEventListener('abort', () => guardAbort.abort(), { once: true })
+  }
+  let waveformAborted = false
+  const waveformMonitor = wavesEnabled
+    ? monitorWaveformSize([options.buildDir, options.resultDir], maxWaveformGB * 1073741824, () => {
+        waveformAborted = true
+        guardAbort.abort()
+      })
+    : undefined
+
   const execution = await run(
     python,
     [runnerPath],
     env,
-    options.signal,
+    guardAbort.signal,
     resolve(options.testDir),
     options.timeoutSec === undefined ? 0 : Math.max(1, options.timeoutSec) * 1000
   )
+  waveformMonitor?.stop()
+  // 熔断是否实际生效以“进程被终止”为准：若触发时仿真已自然结束（退出码 0，
+  // 例如 FST 缓冲区仅在收尾 flush 才超阈值），诚实降级为“超限未实际终止”，不假装熔断成功。
+  const waveformAbortedEffective = waveformAborted && execution.code !== 0
+  const waveformOverLimitUncontrolled = waveformAborted && !waveformAbortedEffective
   const output = [execution.stdout, execution.stderr].filter(Boolean).join('\n')
   const marker = output.indexOf('__MOONGLASS_BUILD_DONE__')
   writeFileSync(compileLogPath, marker >= 0 ? output.slice(0, marker) : output, 'utf-8')
@@ -321,6 +431,10 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
     functionalCompileLogPath: compileLogPath,
     functionalSimulationLogPath: simulationLogPath,
     resultsXml: existsSync(resultsXml) ? resultsXml : null,
+    maxWaveformGB: wavesEnabled ? maxWaveformGB : null,
+    waveformAborted: waveformAbortedEffective,
+    waveformAbortedReason: waveformAbortedEffective ? 'size-limit' : null,
+    waveformOverLimitUncontrolled,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     lineCoverage: mergedCoverage.lineCoverage,
     branchCoverage: mergedCoverage.branchCoverage,
@@ -336,6 +450,10 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
     compileLogPath,
     simulationLogPath,
     resultPath,
+    maxWaveformGB: wavesEnabled ? maxWaveformGB : undefined,
+    waveformAborted: waveformAbortedEffective || undefined,
+    waveformAbortedReason: waveformAbortedEffective ? 'size-limit' : undefined,
+    waveformOverLimitUncontrolled: waveformOverLimitUncontrolled || undefined,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     coverageDataPath: rtlCoverage && existsSync(coverageDataPath) ? coverageDataPath : undefined,
     coverageReportPath,
@@ -355,6 +473,13 @@ export async function runVerilatorSimulation(
 ): Promise<VerilatorSimResult> {
   const { topModule, tbCpp, rtlFiles, trace = true, signal } = options
   const rtlCoverage = options.rtlCoverage !== false
+  // 波形体积阈值（资源保护，非 wall-clock 超时）。
+  // TB 内熔断仅对含 generate_tb 注入标记（MOONGLASS_WAVEFORM_GUARD）的测试台生效：
+  // TB 主循环周期 stat 波形文件，超限即 tfp->close() 并停止 dump，仿真继续。
+  // 外部自带 TB 无法注入，退化为 runner 侧监控 + 超限后诚实标注“未受控”。
+  const maxWaveformGB = resolveMaxWaveformGB(options.maxWaveformGB)
+  let tbHasWaveformGuard = false
+  try { tbHasWaveformGuard = trace && readFileSync(tbCpp, 'utf-8').includes(WAVEFORM_GUARD_MARKER) } catch { /* tbCpp 不可读时按无熔断处理 */ }
 
   const verilatorPath = await locateTool(VERILATOR_CANDIDATES)
   if (!verilatorPath) throw new Error('工具未找到: verilator')
@@ -453,6 +578,13 @@ export async function runVerilatorSimulation(
   }
 
   // 测试台通常用相对路径创建 VCD；必须在结果目录运行，确保波形位置稳定。
+  // TB 内熔断经环境变量把阈值传给测试台（TB 内 getenv 读取，见 generate_tb 模板）。
+  if (tbHasWaveformGuard) verilatorEnv.MOONGLASS_MAX_WAVEFORM_GB = String(maxWaveformGB)
+  // 外部自带 TB：runner 侧只监控不干预，超限仅留痕（诚实声明“未受控”，不假装熔断）。
+  let waveformOverLimitUncontrolled = false
+  const waveformMonitor = trace && !tbHasWaveformGuard
+    ? monitorWaveformSize([resultDir], maxWaveformGB * 1073741824, () => { waveformOverLimitUncontrolled = true })
+    : undefined
   const { stdout: runOut, stderr: runErr, code: runCode } = await run(
     binExe,
     rtlCoverage ? [`+verilator+coverage+file+${coverageDataPath.replace(/\\/g, '/')}`] : [],
@@ -461,8 +593,12 @@ export async function runVerilatorSimulation(
     resultDir,
     0
   )
+  // 外部 TB 只监控不干预：收尾采样也回调，捕捉最后间隔内的超限
+  waveformMonitor?.stop(true)
 
   const log = [runOut, runErr].filter(Boolean).join('\n')
+  // TB 内熔断触发时会在日志打印停止令牌；据此在 result.json 留痕，PASS/FAIL 语义不变。
+  const waveformAborted = tbHasWaveformGuard && log.includes(WAVEFORM_GUARD_STOP_TOKEN)
   writeFileSync(
     simulationLogPath,
     [`[executable] ${binExe}`, `[exitCode] ${runCode}`, '', runOut, runErr].join('\n'),
@@ -487,6 +623,10 @@ export async function runVerilatorSimulation(
     compileExitCode: ccCode,
     runExitCode: runCode,
     waveformPath: resolvedVcd,
+    maxWaveformGB: trace ? maxWaveformGB : null,
+    waveformAborted,
+    waveformAbortedReason: waveformAborted ? 'size-limit' : null,
+    waveformOverLimitUncontrolled,
     compileLogPath,
     simulationLogPath,
     rtlCompileLogPath: compileLogPath,
@@ -507,6 +647,10 @@ export async function runVerilatorSimulation(
     compileLogPath,
     simulationLogPath,
     resultPath,
+    maxWaveformGB: trace ? maxWaveformGB : undefined,
+    waveformAborted: waveformAborted || undefined,
+    waveformAbortedReason: waveformAborted ? 'size-limit' : undefined,
+    waveformOverLimitUncontrolled: waveformOverLimitUncontrolled || undefined,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     coverageDataPath: existsSync(coverageDataPath) ? coverageDataPath : undefined,
     coverageReportPath

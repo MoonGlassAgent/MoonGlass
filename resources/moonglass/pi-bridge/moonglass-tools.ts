@@ -23,7 +23,7 @@ import {
   VERILATOR_CANDIDATES,
   YOSYS_CANDIDATES
 } from './eda-bridge/tool-runner'
-import { runCocotbSimulation, runVerilatorSimulation } from './eda-bridge/simulation'
+import { runCocotbSimulation, runVerilatorSimulation, resolveMaxWaveformGB } from './eda-bridge/simulation'
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { runFormalVerification } from './eda-bridge/formal'
 import { runDesignLint } from './eda-bridge/lint'
@@ -46,6 +46,16 @@ interface DiagnosticAttempt {
   diagnosticLevel: DiagnosticLevel
   observations: string[]
   evidence: string[]
+  /** 波形体积熔断留痕（C6 工具/插桩类）；仅在熔断触发或外部 TB 超限时写入 */
+  waveformGuard?: WaveformGuardRecord
+}
+
+/** 波形体积熔断事件：classification 固定 C6 工具/插桩（与 verification-intelligence 的 CoverageHole 分类口径一致） */
+interface WaveformGuardRecord {
+  classification: 'C6_TOOL_INSTRUMENTATION'
+  /** dump-stopped=cpp TB 内只停 dump；simulation-aborted=cocotb 超限终止仿真；uncontrolled-over-limit=外部 TB 超限未受控 */
+  behavior: 'dump-stopped' | 'simulation-aborted' | 'uncontrolled-over-limit'
+  detail: string
 }
 
 interface DiagnosticControlState {
@@ -127,17 +137,20 @@ async function validatePythonTests(testDir: string, signal?: AbortSignal): Promi
 function updateDiagnosticControl(input: {
   workspace: string; topModule: string; testcase?: string; passed: boolean; log: string
   rtlFiles: string[]; testDir?: string; evidence: string[]; hasWaveform: boolean; durationMs: number
+  waveformGuard?: WaveformGuardRecord
 }): DiagnosticControlState {
   const path = join(input.workspace, 'verification', 'results', 'diagnostic-control.json')
   let previous: DiagnosticControlState | undefined
   try { previous = JSON.parse(readFileSync(path, 'utf-8')) as DiagnosticControlState } catch { /* 首次执行 */ }
   const activeCase = `${input.topModule}::${input.testcase ?? 'all'}`
   const diagnosis = inferDiagnosticLevel(input.log, input.hasWaveform)
+  if (input.waveformGuard) diagnosis.observations.push(`波形体积熔断（${input.waveformGuard.classification}）：${input.waveformGuard.detail}`)
   const attempt: DiagnosticAttempt = {
     id: `ATT-${Date.now()}`, topModule: input.topModule, testcase: input.testcase ?? 'all', passed: input.passed,
     createdAt: new Date().toISOString(), durationMs: input.durationMs, failureSignature: input.passed ? 'PASS' : failureSignature(input.log),
     rtlHash: filesHash(input.rtlFiles), testbenchHash: input.testDir ? filesHash(walkFiles(input.testDir, (file) => /\.(?:py|sv|v|cpp|json)$/i.test(file))) : '',
-    diagnosticLevel: diagnosis.level, observations: diagnosis.observations, evidence: input.evidence.filter(Boolean)
+    diagnosticLevel: diagnosis.level, observations: diagnosis.observations, evidence: input.evidence.filter(Boolean),
+    ...(input.waveformGuard ? { waveformGuard: input.waveformGuard } : {})
   }
   const attempts = [...(previous?.attempts ?? []), attempt].slice(-40)
   const related = attempts.filter((item) => `${item.topModule}::${item.testcase}` === activeCase)
@@ -1033,7 +1046,7 @@ export default function (pi: ExtensionAPI): void {
 #include <verilated.h>
 #include "${vBase}.h"
 
-${trace ? '#include <verilated_vcd_c.h>' : ''}
+${trace ? '#include <verilated_vcd_c.h>\n#include <cstdio>\n#include <cstdlib>\n#include <fstream>' : ''}
 
 vluint64_t main_time = 0;
 double sc_time_stamp() { return main_time; }
@@ -1049,7 +1062,16 @@ ${trace ? `  // 波形追踪
   VerilatedVcdC* tfp = nullptr;
   tfp = new VerilatedVcdC;
   top->trace(tfp, 99);
-  tfp->open("${baseName}.vcd");` : ''}
+  tfp->open("${baseName}.vcd");
+
+  // [MOONGLASS_WAVEFORM_GUARD] 波形体积熔断（资源保护，刻意区别于 wall-clock 超时：
+  // 不设无工程依据的仿真时间上限；此处只防超巨波形写爆磁盘）。
+  // 每 mg_wave_check_cycles 个周期 stat 一次波形文件，超过阈值只关闭 dump，仿真继续跑完。
+  const char* mg_limit_env = getenv("MOONGLASS_MAX_WAVEFORM_GB");
+  const double mg_wave_limit_bytes = (mg_limit_env && atof(mg_limit_env) > 0 ? atof(mg_limit_env) : 10.0) * 1073741824.0;
+  const char* mg_check_env = getenv("MOONGLASS_WAVEFORM_CHECK_CYCLES");
+  const long mg_wave_check_cycles = (mg_check_env && atol(mg_check_env) > 0 ? atol(mg_check_env) : 1000000L);
+  const char* mg_wave_path = "${baseName}.vcd";` : ''}
 
   // 初始化信号
   top->${clockName} = 0;
@@ -1065,7 +1087,18 @@ ${trace ? `  // 波形追踪
 
   // 主仿真循环
   for (int cycle = 0; cycle < ${numCycles}; cycle++) {
-    // 时钟上升沿
+${trace ? `    // [MOONGLASS_WAVEFORM_GUARD] 周期性体积检查：超限只停 dump，仿真继续
+    if (tfp && cycle % mg_wave_check_cycles == 0) {
+      std::ifstream mg_wave(mg_wave_path, std::ios::binary | std::ios::ate);
+      if (mg_wave && static_cast<double>(mg_wave.tellg()) > mg_wave_limit_bytes) {
+        tfp->close();
+        delete tfp;
+        tfp = nullptr;
+        printf("MOONGLASS_WAVEFORM_GUARD: dump stopped — 波形已停止记录（超过 %.4f GB），仿真继续\\n", mg_wave_limit_bytes / 1073741824.0);
+        fflush(stdout);
+      }
+    }
+` : ''}    // 时钟上升沿
     top->${clockName} = 1;
     top->eval();
 ${trace ? `    if (tfp) tfp->dump(main_time);\n    main_time++;` : ''}
@@ -1112,6 +1145,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         `**复位信号**: ${resetName}（${resetActiveLow ? '低电平有效' : '高电平有效'}）`,
         `**仿真周期**: ${numCycles}`,
         `**波形输出**: ${trace ? '✅ VCD 已启用' : '❌ 关闭'}`,
+        ...(trace ? [`**波形熔断**: 体积超过 MOONGLASS_MAX_WAVEFORM_GB（缺省 10 GB）时只停止波形记录，仿真继续；检查周期 MOONGLASS_WAVEFORM_CHECK_CYCLES（缺省 100 万周期）`] : []),
         '',
         '### 端口映射',
         ...portTable,
@@ -1159,6 +1193,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       simulator: Type.Optional(Type.Union([Type.Literal('icarus'), Type.Literal('verilator')], { description: 'Cocotb 后端；Windows 缺省 icarus' })),
       tbCpp: Type.Optional(Type.String({ description: 'mode=cpp 时的 C++ 测试台路径' })),
       trace: Type.Optional(Type.Boolean({ description: '是否生成波形，缺省 true' })),
+      maxWaveformGB: Type.Optional(Type.Number({ exclusiveMinimum: 0, description: '波形体积熔断阈值（GB），缺省 10，可经环境变量 MOONGLASS_MAX_WAVEFORM_GB 覆盖。cpp 模式（generate_tb 生成的 TB）超限只停 dump、仿真继续；外部自带 TB 只监控并诚实标注；cocotb 模式超限终止仿真并标记 waveformAborted。资源保护，与 timeoutSec 的 wall-clock 语义无关' })),
       rtlCoverage: Type.Optional(Type.Boolean({ description: 'Verilator 后端是否采集 RTL 行、条件/表达式、翻转和 FSM 覆盖率；缺省 true' })),
       functionalCoverageFile: Type.Optional(Type.String({ description: '功能覆盖率 JSON 路径；测试也可读取 MOONGLASS_FUNCTIONAL_COVERAGE_FILE 环境变量写入默认路径' })),
       timeoutSec: Type.Optional(Type.Number({ minimum: 1, description: '仅在项目有明确依据时设置硬超时；缺省不按 wall-clock 强制终止' }))
@@ -1169,6 +1204,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       const mode = (params.mode as 'cocotb' | 'cpp' | undefined) ?? 'cocotb'
       const tbCpp = params.tbCpp ? resolve(ctx.cwd, params.tbCpp as string) : undefined
       const trace = params.trace as boolean | undefined ?? true
+      const maxWaveformGB = resolveMaxWaveformGB(params.maxWaveformGB as number | undefined)
       const testDir = mode === 'cocotb' ? resolve(ctx.cwd, (params.testDir as string | undefined) ?? `verification/${topModule}_tb`) : undefined
 
       if (mode === 'cocotb' && !(params.testModule as string | undefined)?.trim()) {
@@ -1222,6 +1258,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
               functionalCoverageFile: params.functionalCoverageFile ? resolve(ctx.cwd, params.functionalCoverageFile as string) : undefined,
               signal,
               timeoutSec: params.timeoutSec as number | undefined,
+              maxWaveformGB,
               buildDir: resolve(ctx.cwd, 'verification', `${topModule}_tb`, 'sim', 'sim_build'),
               resultDir
             })
@@ -1231,6 +1268,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
               rtlFiles,
               trace,
               rtlCoverage: params.rtlCoverage as boolean | undefined,
+              maxWaveformGB,
               signal,
               buildDir: resolve(ctx.cwd, 'verification', `${topModule}_tb`, 'sim', 'obj_dir'),
               resultDir
@@ -1248,6 +1286,28 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           `**RTL 覆盖率**: ${result.coverage?.lineCoverage === undefined ? '未采集' : `行 ${result.coverage.lineCoverage}% / 条件 ${result.coverage.branchCoverage ?? '暂无'}%`}`,
           `**功能覆盖率**: ${result.coverage?.functionalCoverage === undefined ? '未提供' : `${result.coverage.functionalCoverage}%`}`,
         ]
+
+        // 波形体积熔断留痕（C6 工具/插桩类）：诚实区分三种行为，不假装外部 TB 也能熔断
+        let waveformGuard: WaveformGuardRecord | undefined
+        if (result.waveformAborted) {
+          waveformGuard = {
+            classification: 'C6_TOOL_INSTRUMENTATION',
+            behavior: mode === 'cpp' ? 'dump-stopped' : 'simulation-aborted',
+            detail: mode === 'cpp'
+              ? `波形超过阈值 ${maxWaveformGB} GB，TB 内已停止 dump，仿真与覆盖率结果完整`
+              : `波形超过阈值 ${maxWaveformGB} GB；cocotb 后端外部无法只停 dump，已终止仿真（PASS/FAIL 随之反映终止）`
+          }
+          report.push('', `**波形熔断**: ⚠️ ${waveformGuard.detail}`)
+        } else if (result.waveformOverLimitUncontrolled) {
+          waveformGuard = {
+            classification: 'C6_TOOL_INSTRUMENTATION',
+            behavior: 'uncontrolled-over-limit',
+            detail: mode === 'cpp'
+              ? `外部自带 C++ TB 不含熔断标记，波形已超过阈值 ${maxWaveformGB} GB 但未受控停止；如需受控熔断请用 generate_tb 重新生成 TB`
+              : `波形超过阈值 ${maxWaveformGB} GB，但触发时仿真已自然结束，未能实际终止 dump（FST 缓冲可能只在收尾落盘）`
+          }
+          report.push('', `**波形超限未受控**: ⚠️ ${waveformGuard.detail}`)
+        }
 
         // 回显收紧：PASS 只给结论行与产物路径；FAIL 只给日志首尾摘录与失败指纹行，
         // 全文留在磁盘按需读取，避免大段日志挤占上下文。
@@ -1277,7 +1337,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           workspace: resolve(ctx.cwd), topModule, testcase: params.testcase as string | undefined, passed: result.passed,
           log: result.log, rtlFiles, testDir, hasWaveform: Boolean(result.vcdPath),
           durationMs: Date.now() - simulationStartedAt,
-          evidence: [result.compileLogPath, result.simulationLogPath, result.resultPath, result.vcdPath ?? '', result.coverageReportPath ?? '']
+          evidence: [result.compileLogPath, result.simulationLogPath, result.resultPath, result.vcdPath ?? '', result.coverageReportPath ?? ''],
+          waveformGuard
         })
         report.push('', '### 渐进式诊断控制', '', `**诊断等级**: ${diagnostic.attempts.at(-1)?.diagnosticLevel ?? 'L0'}`, `**本次耗时**: ${Math.round((diagnostic.attempts.at(-1)?.durationMs ?? 0) / 1000)} 秒（仅记录，不据此强制终止）`, `**当前模式**: ${diagnostic.mode}`, `**建议**: ${diagnostic.recommendation}`, '', '诊断账本：verification/results/diagnostic-control.json')
 
