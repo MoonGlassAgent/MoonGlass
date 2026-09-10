@@ -14,7 +14,8 @@ if (actions[0]?.id !== 'add-checkers' || actions[0].priority !== 'P0') throw new
 const steps = deriveVerificationSteps(state)
 if (steps.find((item) => item.id === 'coverage')?.status !== 'blocked') throw new Error('Coverage Hole 未反映为步骤阻断')
 const risks = deriveTopRisks(state, [{ id: 'RISK-1', title: 'Reset/Transaction Collision', object: 'dut', features: ['reset', 'response'], riskScore: 0.95, confidence: 'high', source: { file: 'rtl/dut.v', line: 20 } }])
-if (risks[0]?.level !== '验证基础设施缺口' || !risks[0].impact.includes('事务')) throw new Error('Top 风险解释不正确')
+// i18n 重构后 level 为枚举 RiskLevel：'confirmed' | 'highRisk' | 'infraGap' | 'specGap' | 'accepted'
+if (risks[0]?.level !== 'infraGap' || !risks[0].impact.includes('事务')) throw new Error('Top 风险解释不正确')
 
 const failed = { ...state, regressions: [{ passed: false, testsTotal: 12, coverage: {} }] }
 if (deriveVerificationActions(failed)[0]?.id !== 'fix-regressions') throw new Error('失败证据没有最高行动优先级')

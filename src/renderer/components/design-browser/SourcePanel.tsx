@@ -1,5 +1,6 @@
 import { useEffect, useRef } from 'react'
 import { X } from 'lucide-react'
+import { useTranslation } from '../../i18n'
 import Prism from '../../utils/prism-setup'
 
 const verilogGrammar = Prism.languages.verilog ?? {
@@ -58,6 +59,7 @@ export function SourcePanel({
   onClose: (file: string) => void
   onWord: (word: string, action: 'select' | 'jump') => void
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const preRef = useRef<HTMLPreElement>(null)
 
   useEffect(() => {
@@ -97,7 +99,7 @@ export function SourcePanel({
               <button
                 type="button"
                 onClick={() => onClose(file)}
-                aria-label={`关闭 ${baseName(file)}`}
+                aria-label={t('designBrowser.source.closeTab', { name: baseName(file) })}
                 className={`rounded p-0.5 hover:bg-zinc-400/40 ${
                   file === activeFile ? 'text-zinc-400' : 'invisible text-zinc-400 group-hover:visible'
                 }`}
@@ -143,7 +145,7 @@ export function SourcePanel({
         </pre>
       ) : (
         <div className="flex flex-1 items-center justify-center text-xs text-zinc-400">
-          在左侧层次树选择实例，或双击源码中的标识符进行跳转
+          {t('designBrowser.source.emptyHint')}
         </div>
       )}
     </div>

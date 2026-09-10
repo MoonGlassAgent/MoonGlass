@@ -17,6 +17,7 @@ writeFileSync(join(root, 'docs', '02_requirements', 'product_requirements.md'), 
 - SPEC-DOC-001 P2: 模块文件头必须包含版权信息与命名规范说明。
 - SPEC-PPA-001 P1: 面积不超过 5000 门；时钟频率不低于 200 MHz；功耗不超过 50 mW。
 - SPEC-CDC-001 P1: 跨时钟域信号必须经过两级同步器。
+- SPEC-TBD-001 P1: 错误计数饱和阈值 TBD，待架构评审确定。
 `, 'utf-8')
 
 writeFileSync(join(root, 'rtl', 'dma_wr_ctrl.v'), `
@@ -89,12 +90,17 @@ if (cdcClause?.channel !== 'static' || !cdcClause.classificationReason?.includes
 const simClause = first.requirementModel.requirements.find((item) => item.id === 'REQ-DMA-001')
 if (simClause?.channel !== 'simulation') throw new Error('功能行为条款应默认 simulation 通道（宁漏勿冤）')
 if (docClause.channel !== undefined) throw new Error('documentary 条款不应携带验收通道')
+// TBD 条款不进入验证矩阵（2026-09-08 契约）：待定项不是可验证义务，仅在 unknowns/规格缺口
+// 追踪；文本固化为确定条款后下次重建自动入矩阵
+if (first.requirementModel.requirements.some((item) => item.id.startsWith('SPEC-TBD-001'))) throw new Error('TBD 条款不得进入 requirement-model（验证矩阵来源）')
+if (!first.requirementModel.unknowns.some((item) => item.text.includes('SPEC-TBD-001'))) throw new Error('TBD 条款应在 unknowns 中保留追踪')
 // ===== v0.8.6：规格映射矩阵（闭集完备性，尚无 Intent 映射 → VERIF 通道全部 UNMAPPED，仅 warning 不 blocker） =====
 // 通道口径：clauseTotal 只计 VERIF 通道（simulation+static=5），synthesis 通道（3）单列不进分母
 const firstMapping = first.verificationState.specMapping
 if (firstMapping.clauseTotal !== 5 || firstMapping.documentaryCount !== 1) throw new Error(`映射矩阵分母错误：clauseTotal=${firstMapping.clauseTotal} documentary=${firstMapping.documentaryCount}`)
 if (firstMapping.channels.simulation !== 4 || firstMapping.channels.static !== 1 || firstMapping.channels.synthesis !== 3) throw new Error(`通道分布错误：${JSON.stringify(firstMapping.channels)}`)
 if (firstMapping.synthesisClauseTotal !== 3 || firstMapping.synthesisClauseClosed !== 0) throw new Error(`synthesis 条款单列计数错误：${firstMapping.synthesisClauseTotal}/${firstMapping.synthesisClauseClosed}`)
+if (firstMapping.clauses.some((item) => item.clauseId.startsWith('SPEC-TBD-001'))) throw new Error('TBD 条款不得出现在验证矩阵')
 const synthMappings = firstMapping.clauses.filter((item) => item.channel === 'synthesis')
 if (synthMappings.length !== 3 || !synthMappings.every((item) => item.acceptancePhase === 'SYNTH' && item.status === 'UNMAPPED')) throw new Error('synthesis 条款应照常入矩阵追踪并标注 SYNTH 阶段验收')
 // v0.8.6 延续（交流_20260901 回复 §三）：clause 派生 basic 候选使 VERIF 通道 UNMAPPED 清零、条款进入 MAPPED_UNTESTED；
@@ -540,5 +546,13 @@ const unifiedScenario = unifiedBuild.verificationState.scenarios.find((scenario)
 if (unifiedScenario?.status !== 'VERIFIED' || unifiedScenario?.state.freshness !== 'CURRENT') throw new Error('统一口径 hit 未能在 RTL 变更后重新闭环')
 rmSync(emptyRoot, { recursive: true, force: true })
 rmSync(doneRoot, { recursive: true, force: true })
+
+// ===== TBD 固化路径（2026-09-08 契约）：TBD 文本改为确定条款后，重建自动进入验证矩阵 =====
+writeFileSync(join(root, 'docs', '02_requirements', 'product_requirements.md'), readFileSync(join(root, 'docs', '02_requirements', 'product_requirements.md'), 'utf-8').replace('错误计数饱和阈值 TBD，待架构评审确定。', '错误计数达到饱和阈值 255 后必须锁存并置位溢出标志。'), 'utf-8')
+const tbdResolved = buildVerificationIntelligence(root)
+const resolvedClause = tbdResolved.verificationState.specMapping.clauses.find((item) => item.clauseId === 'SPEC-TBD-001')
+if (!resolvedClause) throw new Error('TBD 固化为确定条款后应自动进入验证矩阵')
+if (resolvedClause.channel !== 'simulation') throw new Error(`固化后的功能条款应归 simulation 通道：${resolvedClause.channel}`)
+if (tbdResolved.requirementModel.unknowns.some((item) => item.text.includes('SPEC-TBD-001'))) throw new Error('TBD 固化后不应再出现在 unknowns 中')
 
 console.log(`Verification Intelligence smoke passed: ${second.risks.length} risks, ${second.verificationState.scenarioCount} scenarios`)

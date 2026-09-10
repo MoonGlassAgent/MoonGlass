@@ -66,6 +66,8 @@ export interface VerilatorSimResult {
   coverage?: CoverageSummary
   coverageDataPath?: string
   coverageReportPath?: string
+  /** Cocotb 模式本次产出的 JUnit XML 路径（未产出时为 null）；供 scenario→测试绑定解析 */
+  resultsXmlPath?: string | null
 }
 
 export interface CocotbSimOptions {
@@ -221,7 +223,10 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
   const compileLogPath = join(options.resultDir, `compile_${simulator}.log`)
   const simulationLogPath = join(options.resultDir, `simulation_${simulator}.log`)
   const resultPath = join(options.resultDir, 'result.json')
-  const resultsXml = join(options.resultDir, `results_${simulator}.xml`)
+  // JUnit 文件名带 testModule（消毒为文件名安全字符），避免不同测试模块的多次
+  // run_simulation 互相覆盖只剩最后一次结果；无 testModule 时保留旧名兼容。
+  const testModuleSlug = options.testModule ? options.testModule.replace(/[^A-Za-z0-9_.-]+/g, '_') : ''
+  const resultsXml = join(options.resultDir, testModuleSlug ? `results_${simulator}_${testModuleSlug}.xml` : `results_${simulator}.xml`)
   const coverageDataPath = join(options.resultDir, 'coverage.dat')
   const functionalCoveragePath = resolve(options.functionalCoverageFile ?? join(options.resultDir, 'functional_coverage.json'))
   const compilerPath = simulator === 'verilator' && process.platform === 'win32' ? await locateTool(['g++.exe', 'g++']) : null
@@ -333,7 +338,8 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
     resultPath,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     coverageDataPath: rtlCoverage && existsSync(coverageDataPath) ? coverageDataPath : undefined,
-    coverageReportPath
+    coverageReportPath,
+    resultsXmlPath: existsSync(resultsXml) ? resultsXml : null
   }
 }
 

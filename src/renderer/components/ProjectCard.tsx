@@ -6,7 +6,8 @@
 
 import { Link } from '@tanstack/react-router'
 import { Folder, FolderInput, Pencil, Trash2 } from 'lucide-react'
-import { PHASE_LABELS, PHASE_ORDER, type ChipProject } from '@shared/types'
+import { PHASE_ORDER, type ChipProject } from '@shared/types'
+import { phaseLabel, useTranslation } from '../i18n'
 
 interface ProjectCardProps {
   project: ChipProject
@@ -16,6 +17,7 @@ interface ProjectCardProps {
 }
 
 export function ProjectCard({ project, onDelete, onMigrate, onEdit }: ProjectCardProps): React.JSX.Element {
+  const { t } = useTranslation()
   const resolvedCount = PHASE_ORDER.filter((p) =>
     ['completed', 'skipped'].includes(project.phases[p].status)
   ).length
@@ -32,7 +34,7 @@ export function ProjectCard({ project, onDelete, onMigrate, onEdit }: ProjectCar
               ? 'border-emerald-200 bg-emerald-50 text-emerald-700'
               : 'border-blue-200 bg-blue-50 text-blue-700'
           }`}>
-            {projectCompleted ? '项目完成' : `${project.currentPhase} · ${PHASE_LABELS[project.currentPhase]}`}
+            {projectCompleted ? t('projects.completed') : `${project.currentPhase} · ${phaseLabel(project.currentPhase)}`}
           </span>
         </div>
         {project.description && (
@@ -40,24 +42,24 @@ export function ProjectCard({ project, onDelete, onMigrate, onEdit }: ProjectCar
         )}
         <div
           className="mb-3 flex min-w-0 items-center gap-1.5 text-xs text-zinc-500"
-          title={project.workspacePath ?? 'MoonGlass 默认项目目录'}
+          title={project.workspacePath ?? t('projects.defaultDirectory')}
         >
           <Folder size={13} className="shrink-0" />
-          <span className="truncate">{project.workspacePath ?? 'MoonGlass 默认项目目录'}</span>
+          <span className="truncate">{project.workspacePath ?? t('projects.defaultDirectory')}</span>
         </div>
         <div className="mb-2 h-1.5 overflow-hidden rounded-full bg-zinc-200">
           <div className="h-full rounded-full bg-emerald-500" style={{ width: `${progress}%` }} />
         </div>
         <div className="flex justify-between text-xs text-zinc-500">
-          <span>进度 {resolvedCount}/{PHASE_ORDER.length}（{progress}%）</span>
-          <span>更新于 {new Date(project.updatedAt).toLocaleString()}</span>
+          <span>{t('projects.progress', { resolved: resolvedCount, total: PHASE_ORDER.length, percent: progress })}</span>
+          <span>{t('projects.updatedAt', { time: new Date(project.updatedAt).toLocaleString() })}</span>
         </div>
       </Link>
       {onEdit && (
         <button
           onClick={(event) => { event.preventDefault(); onEdit(project) }}
           className="absolute right-[4.5rem] top-2 hidden size-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-blue-600 group-hover:flex"
-          title="编辑项目信息"
+          title={t('projects.editTitle')}
         >
           <Pencil size={14} />
         </button>
@@ -69,7 +71,7 @@ export function ProjectCard({ project, onDelete, onMigrate, onEdit }: ProjectCar
             onMigrate(project)
           }}
           className="absolute right-10 top-2 hidden size-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-blue-600 group-hover:flex"
-          title="迁移项目目录"
+          title={t('projects.migrateTitle')}
         >
           <FolderInput size={14} />
         </button>
@@ -78,10 +80,10 @@ export function ProjectCard({ project, onDelete, onMigrate, onEdit }: ProjectCar
         <button
           onClick={(e) => {
             e.preventDefault()
-            if (window.confirm(`确认删除项目「${project.name}」？`)) onDelete(project.id)
+            if (window.confirm(t('projects.deleteConfirm', { name: project.name }))) onDelete(project.id)
           }}
           className="absolute right-2 top-2 hidden size-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-red-600 group-hover:flex"
-          title="删除项目"
+          title={t('projects.deleteTitle')}
         >
           <Trash2 size={14} />
         </button>

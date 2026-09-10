@@ -30,6 +30,12 @@ pnpm typecheck   # 全 workspace tsc --noEmit
 - `src/renderer/` —— React 19 + TanStack Router（代码式路由，`router.tsx`）+
   Tailwind v4（`@tailwindcss/vite`，无 tailwind.config）。页面放 `pages/`，
   可复用组件放 `components/`，全局状态用 zustand（`store/`）。
+  界面国际化（i18n）在 `src/renderer/i18n/`：运行时仿 `theme.ts`
+  （localStorage `moonglass-locale` + CustomEvent 广播），文案资源按命名空间
+  拆分为 `locales/zh-CN/<namespace>.ts`（中文为源）与 `locales/en/<namespace>.ts`
+  （以 `typeof` 中文资源为类型约束），新命名空间须注册进两个 `locales/*/index.ts`。
+  组件内用 `useTranslation()` 的 `t()`，纯逻辑模块直接 `import { t }`，
+  插值用 `{param}`，阶段显示名用 `phaseLabel(phase)`。
 - `packages/` —— pnpm workspace 子包（`@moonglass/*`），通过 `workspace:*` 引用；
   子包直接以 TS 源码导出（无构建步骤）。
 - `resources/moonglass/` —— 内置资产：IP 模板库、Lint 规则、工具链配置、外置提示词、
@@ -39,7 +45,9 @@ pnpm typecheck   # 全 workspace tsc --noEmit
 
 - TypeScript strict；ESM；命名：文件 PascalCase（类/组件）或 kebab-case（模块），
   类型/接口 PascalCase，常量 UPPER_SNAKE。
-- 注释与 UI 文案使用中文；标识符使用英文。
+- 注释使用中文；**UI 文案一律走 `src/renderer/i18n/` 资源（zh-CN 为源语言），
+  禁止在组件中硬编码界面文案**；发给 Agent 的提示词与写入项目文件/报告的内容
+  不受 i18n 约束，保持中文。标识符使用英文。
 - 未实现的能力统一 `throw new Error('NotImplemented: ...')`，并在注释中以
   `TODO(Phase N)` 标注对应规格书阶段，禁止静默返回假数据。
 - 芯片领域约定：6 阶段枚举 `Phase`（REQ_SPEC/ARCH/RTL/VERIF/QA/SYNTH）定义在

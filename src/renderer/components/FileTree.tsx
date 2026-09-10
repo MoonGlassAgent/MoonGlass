@@ -8,6 +8,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import { Activity, ChevronDown, ChevronRight, FileCode2, Folder, FolderOpen, RefreshCw } from 'lucide-react'
 import type { FileTreeNode } from '@shared/types'
+import { useTranslation } from '../i18n'
 
 interface FileTreeProps {
   projectId: string
@@ -18,6 +19,7 @@ interface FileTreeProps {
 }
 
 export function FileTree({ projectId, onOpenFile, refreshTick = 0 }: FileTreeProps): React.JSX.Element {
+  const { t } = useTranslation()
   const [nodes, setNodes] = useState<FileTreeNode[]>([])
   const [loading, setLoading] = useState(false)
 
@@ -37,10 +39,10 @@ export function FileTree({ projectId, onOpenFile, refreshTick = 0 }: FileTreePro
   return (
     <div className="file-tree flex h-full flex-col">
       <div className="mb-2 flex items-center justify-between">
-        <span className="font-medium text-zinc-700">项目文件</span>
+        <span className="font-medium text-zinc-700">{t('components.fileTree.title')}</span>
         <button
           onClick={() => void reload()}
-          title="刷新文件树"
+          title={t('components.fileTree.refresh')}
           className="file-tree-refresh flex h-7 w-7 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
         >
           <RefreshCw size={14} className={loading ? 'animate-spin' : ''} />
@@ -49,9 +51,9 @@ export function FileTree({ projectId, onOpenFile, refreshTick = 0 }: FileTreePro
       <div className="min-h-0 flex-1 overflow-y-auto">
         {nodes.length === 0 ? (
           <p className="mt-2 text-xs text-zinc-400">
-            工作目录暂无文件
+            {t('components.fileTree.empty')}
             <br />
-            （Agent 生成的代码会出现在这里）
+            {t('components.fileTree.emptyHint')}
           </p>
         ) : (
           <ul className="space-y-0.5 text-xs">
@@ -74,6 +76,7 @@ function TreeNode({
   depth: number
   onOpenFile: (relPath: string) => void
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const [open, setOpen] = useState(depth < 1)
   const indent = { paddingLeft: `${depth * 12 + 4}px` }
 
@@ -115,7 +118,7 @@ function TreeNode({
           onClick={(event) => {
             if (event.detail >= 2) onOpenFile(node.path)
           }}
-          title={`${node.path}（双击打开）`}
+          title={t('components.fileTree.openHint', { path: node.path })}
           className="flex min-w-0 flex-1 items-center gap-1 px-1 py-0.5 text-left font-mono text-zinc-600"
           style={indent}
         >
@@ -127,7 +130,7 @@ function TreeNode({
           <button
             type="button"
             onClick={() => onOpenFile(node.path)}
-            title="用 GTKWave 打开波形"
+            title={t('components.fileTree.openWave')}
             className="mr-1 shrink-0 rounded p-0.5 text-emerald-600 opacity-70 hover:bg-emerald-50 hover:opacity-100"
           >
             <Activity size={14} />

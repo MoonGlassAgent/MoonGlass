@@ -161,6 +161,8 @@ export interface ScenarioHitWriteInput {
   scenarioIds?: string[]
   /** 用例名；含 scn_<8位hex> 标记时可解析出场景 ID */
   testcase?: string
+  /** 场景 ID → 执行该场景的 cocotb 测试函数名（从本次 JUnit XML 解析）；拿不到的场景不传，不写空 */
+  testNames?: Record<string, string>
   passed: boolean
   rtlFiles: string[]
   evidence: string[]
@@ -207,6 +209,9 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
   for (const item of existing.scenarios ?? []) if (typeof item.id === 'string') byId.set(item.id, item)
   for (const id of scenarioIds) {
     const previous = byId.get(id)
+    // testName：把执行该场景的 cocotb 测试函数名记入条目，供 FileService 映射 TEST ID；
+    // 仅在拿到非空名字时写入（不写空字段），旧数据无此字段时读取侧回退 evidence 解析
+    const testName = input.testNames?.[id]
     byId.set(id, {
       ...previous,
       id,
@@ -215,6 +220,7 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
       reachCount: Number(previous?.reachCount ?? 0) + 1,
       rtlHash,
       evidence: [...new Set([...((previous?.evidence as string[] | undefined) ?? []), ...evidence])],
+      ...(typeof testName === 'string' && testName ? { testName } : {}),
       generatedAt: new Date().toISOString()
     })
   }
@@ -1141,7 +1147,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     label: 'Run Simulation',
     description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势；scenario_hits.json 由本工具独占写入，禁止手工编辑。',
     promptSnippet: 'Run Cocotb or legacy C++ RTL simulation and collect artifacts',
-    promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench. Pass scenarioIds from select_next_verification_batch so scenario hits are auto-registered; never hand-write scenario_hits.json.',
+    promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench. Pass scenarioIds from select_next_verification_batch so scenario hits are auto-registered; never hand-write scenario_hits.json. When authoring tests, bind each test function to its TEST ID in verification/<tb>/test_manifest.json ({"<test函数名>": {"testId": "TEST-..."}}) — or at least put the TEST ID in the first line of the test docstring — so the verification posture panel can map results back to the plan.',
     parameters: Type.Object({
       mode: Type.Optional(Type.Union([Type.Literal('cocotb'), Type.Literal('cpp')], { description: '缺省 cocotb；cpp 仅兼容旧项目' })),
       topModule: Type.String({ description: '顶层模块名（对应 RTL module 名称）' }),
@@ -1276,9 +1282,22 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         report.push('', '### 渐进式诊断控制', '', `**诊断等级**: ${diagnostic.attempts.at(-1)?.diagnosticLevel ?? 'L0'}`, `**本次耗时**: ${Math.round((diagnostic.attempts.at(-1)?.durationMs ?? 0) / 1000)} 秒（仅记录，不据此强制终止）`, `**当前模式**: ${diagnostic.mode}`, `**建议**: ${diagnostic.recommendation}`, '', '诊断账本：verification/results/diagnostic-control.json')
 
         // 证据管线：PASS/FAIL 都自动登记 scenario_hits（失败同样是证据），并重建验证态势
+        // 从本次 JUnit XML 的 testcase name 解析 scn_<8hex> 标记 → 测试函数名，
+        // 随条目写入 testName，供验证态势面板把场景映射回 TEST ID（拿不到就不写）
+        const testNames: Record<string, string> = {}
+        if (result.resultsXmlPath && existsSync(result.resultsXmlPath)) {
+          const xml = readFileSync(result.resultsXmlPath, 'utf-8')
+          for (const nameMatch of xml.matchAll(/<testcase\b[^>]*?\bname="([^"]+)"/g)) {
+            const rawName = nameMatch[1]
+            if (!/scn_[0-9a-fA-F]{8}/.test(rawName)) continue
+            const funcName = /\b(test_\w+)/.exec(rawName)?.[1] ?? rawName
+            for (const scn of rawName.matchAll(/scn_([0-9a-fA-F]{8})/g)) testNames[`SCN-${scn[1].toUpperCase()}`] = funcName
+          }
+        }
         const hits = writeScenarioHits(resolve(ctx.cwd), topModule, {
           scenarioIds: params.scenarioIds as string[] | undefined,
           testcase: params.testcase as string | undefined,
+          testNames,
           passed: result.passed,
           rtlFiles,
           evidence: [result.resultPath, result.simulationLogPath, result.vcdPath ?? '']

@@ -7,7 +7,6 @@
  */
 
 import {
-  PHASE_LABELS,
   PHASE_ORDER,
   type ChipProject,
   type GateCheckResult,
@@ -15,6 +14,7 @@ import {
   type PhaseStatus
 } from '@shared/types'
 import { RotateCcw, Trash2 } from 'lucide-react'
+import { useTranslation, phaseLabel } from '../i18n'
 
 const STATUS_STYLES: Record<PhaseStatus, string> = {
   locked: 'border-zinc-300 bg-zinc-100 text-zinc-400',
@@ -68,6 +68,7 @@ export function PhaseBoard({
   backgroundRunningPhases,
   gate
 }: PhaseBoardProps): React.JSX.Element {
+  const { t } = useTranslation()
   const currentIdx = PHASE_ORDER.indexOf(project.currentPhase)
   const nextPhase = PHASE_ORDER[currentIdx + 1] as Phase | undefined
   const prevPhase = PHASE_ORDER[currentIdx - 1] as Phase | undefined
@@ -86,7 +87,7 @@ export function PhaseBoard({
             <div key={phase} className="flex items-center gap-1">
               {idx > 0 && <span className="text-zinc-400">→</span>}
               <div
-                title={`${PHASE_LABELS[phase]} — ${status}\n交付物: ${phaseState.deliverables.length} 项\n双击进入阶段`}
+                title={t('phaseBoard.nodeTitle', { phase: phaseLabel(phase), status, count: phaseState.deliverables.length })}
                 onDoubleClick={() => onEnterPhase?.(phase)}
                 className={`group flex cursor-pointer items-center gap-2 rounded-md border px-3 py-1.5 text-sm transition-colors ${
                   changePending ? 'border-yellow-400 bg-yellow-50 text-yellow-800' : STATUS_STYLES[status]
@@ -96,19 +97,19 @@ export function PhaseBoard({
               >
                 <span className={`h-2 w-2 rounded-full ${changePending ? 'bg-yellow-500' : STATUS_DOTS[status]}`} />
                 <span className="font-medium">{phase}</span>
-                <span className="text-xs opacity-70">{PHASE_LABELS[phase]}</span>
+                <span className="text-xs opacity-70">{phaseLabel(phase)}</span>
                 {backgroundRunningPhases?.includes(phase) && (
                   <span
-                    title={`${PHASE_LABELS[phase]}阶段的 Agent 仍在后台运行，双击进入该阶段可查看进度`}
-                    aria-label={`${PHASE_LABELS[phase]}后台运行中`}
+                    title={t('phaseBoard.backgroundRunningTitle', { phase: phaseLabel(phase) })}
+                    aria-label={t('phaseBoard.backgroundRunningAria', { phase: phaseLabel(phase) })}
                     className="h-1.5 w-1.5 shrink-0 animate-pulse rounded-full bg-blue-500"
                   />
                 )}
                 {changePending && changeNotice && (
                   <button
                     type="button"
-                    aria-label={`${PHASE_LABELS[phase]}有来自${PHASE_LABELS[changeNotice.sourcePhase]}的变更待响应`}
-                    title={`来自${PHASE_LABELS[changeNotice.sourcePhase]}的变更待响应：${changeNotice.reason}`}
+                    aria-label={t('phaseBoard.changePendingAria', { phase: phaseLabel(phase), source: phaseLabel(changeNotice.sourcePhase) })}
+                    title={t('phaseBoard.changePendingTitle', { source: phaseLabel(changeNotice.sourcePhase), reason: changeNotice.reason })}
                     onClick={(event) => {
                       event.stopPropagation()
                       onRespondChange?.(phase)
@@ -122,7 +123,7 @@ export function PhaseBoard({
                   <span className="group/issues relative">
                     <button
                       type="button"
-                      aria-label={`${PHASE_LABELS[phase]}有 ${unresolved.length} 项遗留问题`}
+                      aria-label={t('phaseBoard.issuesAria', { phase: phaseLabel(phase), count: unresolved.length })}
                       className="flex h-4 w-4 shrink-0 items-center justify-center rounded-full bg-red-600 text-[11px] font-bold leading-none text-white outline-none ring-red-300 focus:ring-2"
                     >
                       !
@@ -135,7 +136,7 @@ export function PhaseBoard({
                     >
                       <span className="block max-h-72 overflow-auto rounded-md border border-red-200 bg-white p-3 text-left text-xs text-zinc-700 shadow-lg select-text">
                         <span className="mb-2 block font-semibold text-red-700">
-                          {PHASE_LABELS[phase]}遗留问题（{unresolved.length}）
+                          {t('phaseBoard.issuesTitle', { phase: phaseLabel(phase), count: unresolved.length })}
                         </span>
                         <span className="block space-y-2">
                           {unresolved.map((result) => (
@@ -146,7 +147,7 @@ export function PhaseBoard({
                           ))}
                         </span>
                         <span className="mt-2 block border-t border-zinc-100 pt-2 text-zinc-400">
-                          浮层内文字可选择；点击感叹号可保持显示。
+                          {t('phaseBoard.issuesHint')}
                         </span>
                         {onFixGateIssues && (
                           <button
@@ -154,7 +155,7 @@ export function PhaseBoard({
                             onClick={() => onFixGateIssues(phase, unresolved)}
                             className="mt-2 rounded border border-red-300 bg-red-50 px-2 py-1 font-medium text-red-700 hover:bg-red-100"
                           >
-                            在会话中修复
+                            {t('phaseBoard.fixInChat')}
                           </button>
                         )}
                       </span>
@@ -163,8 +164,8 @@ export function PhaseBoard({
                 )}
                 {onResetPhase && (
                   <span className="ml-1 hidden items-center gap-0.5 group-hover:flex">
-                    <button type="button" title="归档本阶段产物并重新开始" aria-label="归档重做" onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'archive') }} className="rounded p-0.5 hover:bg-black/10"><RotateCcw size={13} /></button>
-                    <button type="button" title="彻底清除本阶段产物（不自动重新开始）" aria-label="彻底清除" onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'purge') }} className="rounded p-0.5 text-red-600 hover:bg-red-100"><Trash2 size={13} /></button>
+                    <button type="button" title={t('phaseBoard.resetArchiveTitle')} aria-label={t('phaseBoard.resetArchiveAria')} onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'archive') }} className="rounded p-0.5 hover:bg-black/10"><RotateCcw size={13} /></button>
+                    <button type="button" title={t('phaseBoard.resetPurgeTitle')} aria-label={t('phaseBoard.resetPurgeAria')} onClick={(event) => { event.stopPropagation(); onResetPhase(phase, 'purge') }} className="rounded p-0.5 text-red-600 hover:bg-red-100"><Trash2 size={13} /></button>
                   </span>
                 )}
               </div>
@@ -179,7 +180,7 @@ export function PhaseBoard({
             onClick={() => onAdvance(nextPhase)}
             className="rounded border border-blue-200 bg-blue-50 px-2 py-1 text-blue-700 hover:bg-blue-100"
           >
-            推进到 {nextPhase} →
+            {t('phaseBoard.advanceTo', { phase: nextPhase })}
           </button>
         )}
         {prevPhase && onRollback && (
@@ -187,7 +188,7 @@ export function PhaseBoard({
             onClick={() => onRollback(prevPhase)}
             className="rounded border border-zinc-300 bg-zinc-100 px-2 py-1 text-zinc-600 hover:bg-zinc-200"
           >
-            ← 回退到 {prevPhase}
+            {t('phaseBoard.rollbackTo', { phase: prevPhase })}
           </button>
         )}
         {project.currentPhase === 'RTL' && onFastTrackSynthesis && (
@@ -195,7 +196,7 @@ export function PhaseBoard({
             onClick={onFastTrackSynthesis}
             className="rounded border border-amber-300 bg-amber-50 px-2 py-1 text-amber-700 hover:bg-amber-100"
           >
-            跳过 VERIF/QA，快速评估面积
+            {t('phaseBoard.fastTrackSynthesis')}
           </button>
         )}
         {project.currentPhase === 'SYNTH' &&
@@ -205,12 +206,12 @@ export function PhaseBoard({
               onClick={onCompleteProject}
               className="rounded border border-emerald-300 bg-emerald-50 px-2 py-1 font-medium text-emerald-700 hover:bg-emerald-100"
             >
-              完成综合并结束项目
+              {t('phaseBoard.completeProject')}
             </button>
           )}
         {project.phases.SYNTH.status === 'completed' && (
           <span className="rounded border border-emerald-200 bg-emerald-50 px-2 py-1 font-medium text-emerald-700">
-            项目已完成
+            {t('phaseBoard.projectCompleted')}
           </span>
         )}
       </div>
@@ -223,16 +224,16 @@ export function PhaseBoard({
         >
           {gate.blocked && (
             <p className="mb-1 font-medium text-red-700">
-              门禁未通过，已阻止推进。修复后请重试；也可再次点击“推进”按钮并确认强制推进。
+              {t('phaseBoard.gateBlocked')}
             </p>
           )}
           {!gate.blocked && gate.forced && gate.results.some((result) => !result.passed) && (
             <p className="mb-1 font-medium text-amber-700">
-              门禁未完全通过，已由用户确认强制推进；以下问题保留为遗留事项（红色感叹号）。
+              {t('phaseBoard.gateForced')}
             </p>
           )}
           {!gate.blocked && !gate.forced && gate.results.some((result) => !result.passed) && (
-            <p className="mb-1 font-medium text-amber-700">已允许推进，以下问题已记录为遗留事项。</p>
+            <p className="mb-1 font-medium text-amber-700">{t('phaseBoard.gateAllowed')}</p>
           )}
           <ul className="space-y-0.5">
             {gate.results.map((r) => (
@@ -267,7 +268,7 @@ export function PhaseBoard({
               }
               className="mt-2 rounded border border-red-300 bg-white px-2 py-1 font-medium text-red-700 hover:bg-red-100"
             >
-              在会话中修复
+              {t('phaseBoard.fixInChat')}
             </button>
           )}
         </div>

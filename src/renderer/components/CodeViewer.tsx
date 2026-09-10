@@ -3,6 +3,7 @@ import Editor, { loader, type Monaco } from '@monaco-editor/react'
 import * as monaco from 'monaco-editor/editor/editor.api'
 import 'monaco-editor/basic-languages/monaco.contribution'
 import editorWorker from 'monaco-editor/editor/editor.worker?worker'
+import { useTranslation } from '../i18n'
 
 loader.config({ monaco })
 
@@ -71,6 +72,7 @@ interface CodeViewerProps {
 }
 
 export function CodeViewer({ path, content, line, column, revealKey, findRequestKey = 0, wordWrap = false, fontSize = 13 }: CodeViewerProps): React.JSX.Element {
+  const { t } = useTranslation()
   const [theme, setTheme] = useState<'vs' | 'vs-dark'>(() =>
     document.documentElement.dataset.colorMode === 'dark' ? 'vs-dark' : 'vs'
   )
@@ -147,13 +149,13 @@ export function CodeViewer({ path, content, line, column, revealKey, findRequest
               if (event.key === 'Escape') setFindOpen(false)
             }}
             className="h-6 w-56 rounded border border-zinc-300 px-2 text-xs text-zinc-800 outline-none focus:border-blue-400"
-            placeholder="查找文件内容"
-            aria-label="查找内容"
+            placeholder={t('components.codeViewer.findPlaceholder')}
+            aria-label={t('components.codeViewer.findAriaLabel')}
           />
-          <span className="min-w-12 text-center text-[10px] text-zinc-400">{findCount ? `${findIndex + 1}/${findCount}` : '无结果'}</span>
-          <button onClick={() => find(-1)} className="h-6 w-6 rounded text-xs text-zinc-600 hover:bg-zinc-100" title="上一个">↑</button>
-          <button onClick={() => find(1)} className="h-6 w-6 rounded text-xs text-zinc-600 hover:bg-zinc-100" title="下一个">↓</button>
-          <button onClick={() => setFindOpen(false)} className="h-6 w-6 rounded text-xs text-zinc-600 hover:bg-zinc-100" title="关闭">×</button>
+          <span className="min-w-12 text-center text-[10px] text-zinc-400">{findCount ? `${findIndex + 1}/${findCount}` : t('components.codeViewer.noResults')}</span>
+          <button onClick={() => find(-1)} className="h-6 w-6 rounded text-xs text-zinc-600 hover:bg-zinc-100" title={t('components.codeViewer.previous')}>↑</button>
+          <button onClick={() => find(1)} className="h-6 w-6 rounded text-xs text-zinc-600 hover:bg-zinc-100" title={t('components.codeViewer.next')}>↓</button>
+          <button onClick={() => setFindOpen(false)} className="h-6 w-6 rounded text-xs text-zinc-600 hover:bg-zinc-100" title={t('common.close')}>×</button>
         </div>
       )}
       <Editor
@@ -173,7 +175,7 @@ export function CodeViewer({ path, content, line, column, revealKey, findRequest
             window.setTimeout(() => findInputRef.current?.focus(), 0)
           }
         }}
-        loading={<div className="flex h-full items-center justify-center text-xs text-zinc-400">正在加载代码查看器...</div>}
+        loading={<div className="flex h-full items-center justify-center text-xs text-zinc-400">{t('components.codeViewer.loading')}</div>}
         options={{
           readOnly: true,
           domReadOnly: true,

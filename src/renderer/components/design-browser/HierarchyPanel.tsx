@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { ChevronDown, ChevronRight, ChevronsDownUp, ChevronsUpDown } from 'lucide-react'
 import type { DesignDiagnostic, DesignInstance } from '@moonglass/design-browser-engine'
+import { useTranslation } from '../../i18n'
 import { displayModuleName } from './module-name'
 
 function HierarchyNode({
@@ -18,6 +19,7 @@ function HierarchyNode({
   onSelect: (node: DesignInstance) => void
   onOpenDefinition: (node: DesignInstance) => void
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const hasChildren = node.children.length > 0
   const expanded = expandedPaths.has(node.path)
   return (
@@ -32,8 +34,12 @@ function HierarchyNode({
             type="button"
             onClick={() => onToggle(node.path)}
             className="flex h-4 w-4 shrink-0 items-center justify-center text-zinc-500 hover:text-blue-700"
-            aria-label={expanded ? `收起 ${node.name}` : `展开 ${node.name}`}
-            title={expanded ? '收起' : '展开'}
+            aria-label={
+              expanded
+                ? t('designBrowser.hierarchy.collapseNode', { name: node.name })
+                : t('designBrowser.hierarchy.expandNode', { name: node.name })
+            }
+            title={expanded ? t('designBrowser.hierarchy.collapse') : t('designBrowser.hierarchy.expand')}
           >
             {expanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
           </button>
@@ -47,7 +53,7 @@ function HierarchyNode({
             event.stopPropagation()
             onOpenDefinition(node)
           }}
-          title={`${node.path}（双击打开模块定义）`}
+          title={t('designBrowser.hierarchy.openDefinitionHint', { path: node.path })}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
           <span className="truncate font-medium">{node.name}</span>
@@ -97,6 +103,7 @@ export function HierarchyPanel({
   onExpandAll: () => void
   onCollapseAll: () => void
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const [filter, setFilter] = useState('')
   const flatMatches = useMemo(() => {
     const needle = filter.trim().toLowerCase()
@@ -124,8 +131,8 @@ export function HierarchyPanel({
             type="button"
             onClick={onExpandAll}
             className="flex h-6 w-6 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200 hover:text-blue-700"
-            title="全部展开"
-            aria-label="全部展开设计层次"
+            title={t('designBrowser.hierarchy.expandAll')}
+            aria-label={t('designBrowser.hierarchy.expandAllAria')}
           >
             <ChevronsUpDown size={14} />
           </button>
@@ -133,8 +140,8 @@ export function HierarchyPanel({
             type="button"
             onClick={onCollapseAll}
             className="flex h-6 w-6 items-center justify-center rounded text-zinc-500 hover:bg-zinc-200 hover:text-blue-700"
-            title="全部收起"
-            aria-label="全部收起设计层次"
+            title={t('designBrowser.hierarchy.collapseAll')}
+            aria-label={t('designBrowser.hierarchy.collapseAllAria')}
           >
             <ChevronsDownUp size={14} />
           </button>
@@ -144,14 +151,14 @@ export function HierarchyPanel({
         <input
           value={filter}
           onChange={(event) => setFilter(event.target.value)}
-          placeholder="过滤实例 / 模块…"
+          placeholder={t('designBrowser.hierarchy.filterPlaceholder')}
           className="w-full rounded border border-zinc-300 px-2 py-1 text-xs"
         />
       </div>
       <div className="min-h-0 flex-1 overflow-auto py-1">
         {flatMatches ? (
           flatMatches.length === 0 ? (
-            <p className="px-3 py-2 text-xs text-zinc-400">无匹配实例</p>
+            <p className="px-3 py-2 text-xs text-zinc-400">{t('designBrowser.hierarchy.noMatchingInstances')}</p>
           ) : (
             flatMatches.map((node) => (
               <button

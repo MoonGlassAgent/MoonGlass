@@ -255,6 +255,9 @@ function classifyChannel(text: string): { channel: SpecClauseChannel; reason: st
   return { channel: 'simulation', reason: '未命中 PPA/静态检查规则，按功能行为条款处理（宁漏勿冤）' }
 }
 
+/** TBD/待定条款识别（条款级与行级共用）：TBD 项不是可验证义务，不进入验证矩阵。 */
+const TBD_PATTERN = /\b(?:TBD|TODO|待定|未定义|待确认)\b/i
+
 /** 条款分类（确定性规则，理由写入条款记录；documentary 宁可漏判成 verifiable 不可误判，channel 宁漏勿冤归 simulation）。 */
 function classifyClause(text: string): { clauseKind: 'verifiable' | 'documentary'; channel?: SpecClauseChannel; classificationReason?: string } {
   for (const rule of DOCUMENTARY_RULES) {
@@ -280,13 +283,18 @@ function requirementModel(workspace: string): RequirementModel {
         const priority = /\bP[012]\b/.exec(line)?.[0] as RequirementFact['priority']
         const source = { file: relative(workspace, file), line: index + 1 }
         for (const clause of splitClauses(id, lineText)) {
+          // TBD 条款不进入验证矩阵（2026-09-08 契约）：待定项不是可验证义务，不生成
+          // RequirementFact（该行仍经下方 unknowns 追踪，规格缺口可见）；文本固化为
+          // 确定条款后，下次重建自动作为新条款进入 RTL 评审与验证矩阵。
+          // 判定时剥掉条款 ID——ID 片段（如 SPEC-TBD-001 里的 TBD）不构成内容待定。
+          if (TBD_PATTERN.test(clause.text.replace(/\b(?:REQ|SPEC)-[A-Z0-9_-]+\b/g, ''))) continue
           const classification = classifyClause(clause.text)
           requirements.push({ id: clause.clauseId, text: clause.text, features: featuresOf(clause.text), priority, kind: 'SPEC_FACT', clauseKind: classification.clauseKind, channel: classification.channel, parentId: clause.parentId, classificationReason: classification.classificationReason, source })
         }
       }
       const trimmed = line.trim()
       const isStructural = trimmed.startsWith('|') || trimmed.startsWith('#') || trimmed.startsWith('```')
-      if (!isStructural && /\b(?:TBD|TODO|待定|未定义|待确认)\b/i.test(line)) unknowns.push({ id: `UNK-${unknowns.length + 1}`, text: line.trim().slice(0, 500), source: { file: relative(workspace, file), line: index + 1 } })
+      if (!isStructural && TBD_PATTERN.test(line.replace(/\b(?:REQ|SPEC)-[A-Z0-9_-]+\b/g, ''))) unknowns.push({ id: `UNK-${unknowns.length + 1}`, text: line.trim().slice(0, 500), source: { file: relative(workspace, file), line: index + 1 } })
     }
   }
   return { version: 1, generatedAt: new Date().toISOString(), requirements, unknowns, sourceFiles: files.map((file) => relative(workspace, file)) }

@@ -1,5 +1,6 @@
 import { useMemo, useState } from 'react'
 import type { DesignModule } from '@moonglass/design-browser-engine'
+import { useTranslation } from '../../i18n'
 import { displayModuleName } from './module-name'
 
 /** 中部下方信号列表：当前模块的 net 一览（类 Verdi 信号窗格） */
@@ -12,6 +13,7 @@ export function SignalPanel({
   selectedNet: string | null
   onSelect: (net: string) => void
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const [query, setQuery] = useState('')
   const filtered = useMemo(() => {
     const traces = module?.traces ?? []
@@ -31,7 +33,7 @@ export function SignalPanel({
         <input
           value={query}
           onChange={(event) => setQuery(event.target.value)}
-          placeholder="搜索 net"
+          placeholder={t('designBrowser.signals.searchPlaceholder')}
           className="ml-auto w-48 rounded border border-zinc-300 px-2 py-0.5 text-xs"
         />
       </div>
@@ -54,11 +56,11 @@ export function SignalPanel({
             </button>
           ))}
           {filtered.length === 0 && (
-            <p className="col-span-3 px-3 py-2 text-xs text-zinc-400">无匹配信号</p>
+            <p className="col-span-3 px-3 py-2 text-xs text-zinc-400">{t('designBrowser.signals.noMatchingSignals')}</p>
           )}
         </div>
       ) : (
-        <p className="px-3 py-2 text-xs text-zinc-400">尚未选择模块</p>
+        <p className="px-3 py-2 text-xs text-zinc-400">{t('designBrowser.signals.noModuleSelected')}</p>
       )}
     </div>
   )
