@@ -8,6 +8,7 @@ import {
   type TraceDirection,
   type TraceTarget
 } from '@moonglass/design-browser-engine/trace'
+import { useTranslation } from '../../i18n'
 
 const KIND_BADGE: Record<DesignEndpoint['kind'], { text: string; className: string }> = {
   port: { text: 'PORT', className: 'bg-sky-100 text-sky-700' },
@@ -29,6 +30,7 @@ function EndpointRow({
   onJump: () => void
   depth: number
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const badge = KIND_BADGE[endpoint.kind]
   return (
     <div
@@ -39,7 +41,7 @@ function EndpointRow({
         <button
           type="button"
           onClick={onToggle}
-          aria-label={expanded ? '收起追踪' : '展开追踪'}
+          aria-label={expanded ? t('designBrowser.trace.collapseTrace') : t('designBrowser.trace.expandTrace')}
           className="flex h-4 w-4 shrink-0 items-center justify-center text-zinc-400 hover:text-blue-700"
         >
           {expanded ? <ChevronDown size={12} /> : <ChevronRight size={12} />}
@@ -79,6 +81,7 @@ function TraceBranch({
   depth: number
   onJumpSource: (source?: string) => void
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const endpoints = traceNet(database, target.context, target.net, direction)
   return (
     <div>
@@ -92,7 +95,9 @@ function TraceBranch({
       </div>
       {endpoints.length === 0 ? (
         <p className="py-0.5 pr-2 text-[10px] text-zinc-300" style={{ paddingLeft: `${26 + depth * 14}px` }}>
-          无进一步{direction === 'driver' ? '驱动' : '负载'}
+          {direction === 'driver'
+            ? t('designBrowser.trace.noFurtherDriver')
+            : t('designBrowser.trace.noFurtherLoad')}
         </p>
       ) : (
         endpoints.slice(0, 100).map((endpoint, index) => (
@@ -170,6 +175,7 @@ function TraceSection({
   direction: TraceDirection
   onJumpSource: (source?: string) => void
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const endpoints = traceNet(database, context, net, direction)
   return (
     <div>
@@ -177,7 +183,7 @@ function TraceSection({
         {title}（{endpoints.length}）
       </h4>
       {endpoints.length === 0 ? (
-        <p className="px-2 text-xs text-zinc-400">无</p>
+        <p className="px-2 text-xs text-zinc-400">{t('common.none')}</p>
       ) : (
         endpoints.map((endpoint, index) => (
           <EndpointNode

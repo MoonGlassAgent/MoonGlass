@@ -51,14 +51,15 @@ import { CodeViewer, fileLanguage } from '../components/CodeViewer'
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import { useChatStore } from '../store/chatStore'
 import { deriveVerificationActions, deriveVerificationSteps, type GuidanceState } from '../verification-guidance'
+import { useTranslation, phaseLabel, type MessageKey } from '../i18n'
 
 const BOTTOM_TABS = [
-  { id: 'problems', label: '问题', icon: AlertTriangle },
-  { id: 'runs', label: '运行', icon: Play },
-  { id: 'verification', label: '验证', icon: FlaskConical },
-  { id: 'synthesis', label: '综合', icon: Box },
-  { id: 'artifacts', label: '产物', icon: FileOutput }
-] as const
+  { id: 'problems', labelKey: 'workspace.tabs.problems', icon: AlertTriangle },
+  { id: 'runs', labelKey: 'workspace.tabs.runs', icon: Play },
+  { id: 'verification', labelKey: 'workspace.tabs.verification', icon: FlaskConical },
+  { id: 'synthesis', labelKey: 'workspace.tabs.synthesis', icon: Box },
+  { id: 'artifacts', labelKey: 'workspace.tabs.artifacts', icon: FileOutput }
+] as const satisfies ReadonlyArray<{ id: string; labelKey: MessageKey; icon: typeof AlertTriangle }>
 type BottomTab = (typeof BOTTOM_TABS)[number]['id']
 const MIN_SIDEBAR = 140
 const MAX_SIDEBAR = 400
@@ -75,6 +76,7 @@ const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => w
 const isManagedPause = (message: string): boolean => /用户停止托管|托管已暂停|L3\/L4 高影响/.test(message)
 
 function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasic, onCorner, onSignoff }: { projectId: string; agentStreaming: boolean; onAction: (prompt: string) => void; onPlanEnv: () => void; onBasic: () => void; onCorner: () => void; onSignoff: () => void }): React.JSX.Element {
+  const { t } = useTranslation()
   const [state, setState] = useState<GuidanceState | null>(null)
   const [loading, setLoading] = useState(true)
   const load = useCallback(async () => {
@@ -98,18 +100,18 @@ function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasi
   const current = steps.find((step) => step.status === 'blocked') ?? steps.find((step) => step.status === 'running') ?? steps.at(-1)!
   return <div className="mt-3 border-t border-zinc-100 pt-3">
     <div className="flex items-center gap-3">
-      <span className="shrink-0 text-xs font-medium text-zinc-500">VERIF 状态：</span>
+      <span className="shrink-0 text-xs font-medium text-zinc-500">{t('workspace.verifBar.statusLabel')}</span>
       <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">{steps.map((step, index) => <div key={step.id} className="flex min-w-0 items-center gap-1.5"><span title={`${step.label}：${step.detail}`} className={`flex min-w-0 items-center gap-1 rounded px-2 py-1 text-[10px] ${step.status === 'completed' ? 'bg-emerald-50 text-emerald-700' : step.status === 'blocked' ? 'bg-red-50 text-red-700' : step.status === 'running' ? 'bg-amber-50 text-amber-700' : 'bg-zinc-50 text-zinc-400'}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${step.status === 'completed' ? 'bg-emerald-500' : step.status === 'blocked' ? 'bg-red-500' : step.status === 'running' ? 'bg-amber-500' : 'bg-zinc-300'}`} /><span className="truncate">{step.label}</span></span>{index < steps.length - 1 && <ArrowRight size={10} className="shrink-0 text-zinc-300" />}</div>)}</div>
-      <button onClick={() => void load()} disabled={loading} className="rounded border border-zinc-200 p-1.5 text-zinc-400 hover:text-zinc-700" title="刷新 VERIF 状态"><RefreshCw size={12} className={loading ? 'animate-spin' : ''} /></button>
+      <button onClick={() => void load()} disabled={loading} className="rounded border border-zinc-200 p-1.5 text-zinc-400 hover:text-zinc-700" title={t('workspace.verifBar.refresh')}><RefreshCw size={12} className={loading ? 'animate-spin' : ''} /></button>
     </div>
     <div className="mt-2 flex items-center gap-3 bg-zinc-50 px-3 py-2">
-      <div className="min-w-0 flex-1"><span className={`text-xs font-medium ${current.status === 'blocked' ? 'text-red-700' : 'text-zinc-700'}`}>当前：{current.label}</span><span className="ml-2 text-xs text-zinc-500">{current.detail}</span><span className="ml-3 text-xs text-zinc-400">下一步：{primary?.title ?? '生成 AIGV 验证规划'}</span></div>
+      <div className="min-w-0 flex-1"><span className={`text-xs font-medium ${current.status === 'blocked' ? 'text-red-700' : 'text-zinc-700'}`}>{t('workspace.verifBar.current', { label: current.label })}</span><span className="ml-2 text-xs text-zinc-500">{current.detail}</span><span className="ml-3 text-xs text-zinc-400">{t('workspace.verifBar.next', { action: primary?.title ?? t('workspace.verifBar.defaultNextAction') })}</span></div>
       {primary && <button disabled={agentStreaming} onClick={() => onAction(primary.prompt)} className="shrink-0 rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50"><Play size={12} className="mr-1 inline" />{primary.title}</button>}
       <div className="flex shrink-0 overflow-hidden rounded border border-zinc-200 bg-white">
-        <button onClick={onPlanEnv} disabled={agentStreaming} title="验证点登记 + 环境搭建 + 冒烟验收（W0）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">① 规划与环境</button>
-        <button onClick={onBasic} disabled={agentStreaming} title="规格映射矩阵条款逐条闭环（W1）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50">② 基础功能</button>
-        <button onClick={onCorner} disabled={agentStreaming} title="按主题波执行 corner 场景（W2）" className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-violet-700 hover:bg-violet-50 disabled:opacity-50">③ 增补验证</button>
-        <button onClick={onSignoff} disabled={agentStreaming} title="覆盖率/Formal/Mutation/残余风险审批（W3）" className="px-2.5 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">④ 签核</button>
+        <button onClick={onPlanEnv} disabled={agentStreaming} title={t('workspace.verifBar.planEnvTitle')} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">{t('workspace.verifBar.planEnv')}</button>
+        <button onClick={onBasic} disabled={agentStreaming} title={t('workspace.verifBar.basicTitle')} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50">{t('workspace.verifBar.basic')}</button>
+        <button onClick={onCorner} disabled={agentStreaming} title={t('workspace.verifBar.cornerTitle')} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-violet-700 hover:bg-violet-50 disabled:opacity-50">{t('workspace.verifBar.corner')}</button>
+        <button onClick={onSignoff} disabled={agentStreaming} title={t('workspace.verifBar.signoffTitle')} className="px-2.5 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">{t('workspace.verifBar.signoff')}</button>
       </div>
     </div>
   </div>
@@ -264,6 +266,7 @@ function buildChangeResponsePrompt(project: ChipProject, targetPhase: Phase): st
 
 export function WorkspacePage(): React.JSX.Element {
   const { projectId } = useParams({ from: '/workspace/$projectId' })
+  const { t } = useTranslation()
   const [project, setProject] = useState<ChipProject | null>(null)
   const [gate, setGate] = useState<GatePanelData | null>(null)
   const [generatingDashboard, setGeneratingDashboard] = useState(false)
@@ -341,13 +344,13 @@ export function WorkspacePage(): React.JSX.Element {
       try {
         const result = await window.moonglass.eda.openWaveform(projectId, relPath)
         const text = result.ok
-          ? `已用 GTKWave 打开：${relPath}`
-          : `波形打开失败：${result.error ?? relPath}`
+          ? t('workspace.log.waveformOpened', { path: relPath })
+          : t('workspace.log.waveformOpenFailed', { error: result.error ?? relPath })
         appendLog(text)
         setFileNotice({ ok: result.ok, text })
         window.setTimeout(() => setFileNotice(null), 5000)
       } catch (error) {
-        const text = `波形打开失败：${error instanceof Error ? error.message : String(error)}`
+        const text = t('workspace.log.waveformOpenFailed', { error: error instanceof Error ? error.message : String(error) })
         appendLog(text)
         setFileNotice({ ok: false, text })
         window.setTimeout(() => setFileNotice(null), 5000)
@@ -356,8 +359,8 @@ export function WorkspacePage(): React.JSX.Element {
     }
     if (shouldOpenExternally(relPath)) {
       const opened = await window.moonglass.fs.openExternal(projectId, relPath)
-      if (!opened) appendLog(`⚠️ ${relPath} 无法在外部打开`)
-      else { appendLog(`🌐 已打开: ${relPath}`); return }
+      if (!opened) appendLog(t('workspace.log.cannotOpenExternal', { path: relPath }))
+      else { appendLog(t('workspace.log.openedExternal', { path: relPath })); return }
     }
     if (!openFiles.some((f) => f.path === relPath)) {
       if (openingFilesRef.current.has(relPath)) return
@@ -368,10 +371,10 @@ export function WorkspacePage(): React.JSX.Element {
           ...files,
           result
             ? { path: relPath, content: result.content, truncated: result.truncated, line: location.line, column: location.column, revealKey: Date.now() }
-            : { path: relPath, content: '（无法读取该文件）', truncated: false, line: location.line, column: location.column, revealKey: Date.now() }
+            : { path: relPath, content: t('workspace.viewer.unreadable'), truncated: false, line: location.line, column: location.column, revealKey: Date.now() }
         ])
       } catch (error) {
-        const text = `文件打开失败：${relPath}：${error instanceof Error ? error.message : String(error)}`
+        const text = t('workspace.log.fileOpenFailed', { path: relPath, error: error instanceof Error ? error.message : String(error) })
         appendLog(text)
         setFileNotice({ ok: false, text })
         window.setTimeout(() => setFileNotice(null), 5000)
@@ -440,26 +443,22 @@ export function WorkspacePage(): React.JSX.Element {
       if (result.gate.blocked) {
         // 门禁阻断：允许用户确认后强制推进（失败项以红色感叹号保留为遗留问题）
         const failed = result.gate.results.filter((r) => r.severity === 'error' && !r.passed)
-        const confirmed = window.confirm(
-          `门禁未完全通过（${failed.length} 项 Error 级检查失败）。\n\n` +
-            `确定在门禁没有完全通过的情况下继续推进到 ${to} 吗？\n` +
-            '未通过的检查项将以红色感叹号保留为遗留问题。'
-        )
+        const confirmed = window.confirm(t('workspace.confirm.gateBlocked', { count: failed.length, phase: to }))
         if (!confirmed) return
-        appendLog(`⚠️ 用户确认在门禁未完全通过的情况下强制推进到 ${to}`)
+        appendLog(t('workspace.log.forceAdvanced', { phase: to }))
         const forced = await window.moonglass.phase.advance(projectId, to, { force: true })
         if (!forced) return
         setProject(forced.project)
         setGate(forced.gate)
       }
     } catch (error) {
-      appendLog(`阶段推进失败: ${error instanceof Error ? error.message : String(error)}`)
+      appendLog(t('workspace.log.advanceFailed', { error: error instanceof Error ? error.message : String(error) }))
       setGate({ blocked: true, results: [] })
     }
   }
 
   const handleRollback = async (to: Phase): Promise<void> => {
-    if (!window.confirm(`回退到 ${to} 后，后续阶段产出将被标记为废弃。确认回退？`)) return
+    if (!window.confirm(t('workspace.confirm.rollback', { phase: to }))) return
     setProject(await window.moonglass.phase.rollback(projectId, to))
     setGate(null)
   }
@@ -469,16 +468,16 @@ export function WorkspacePage(): React.JSX.Element {
     if (!project) return
     const nextPhase = PHASE_ORDER[PHASE_ORDER.indexOf(project.currentPhase) + 1]
     if (!nextPhase) return
-    appendLog('🔄 重新运行门禁检查...')
+    appendLog(t('workspace.log.rechecking'))
     try {
       const results = await window.moonglass.phase.gateCheck(projectId, nextPhase)
       if (results) {
         const blocked = results.some((r) => r.severity === 'error' && !r.passed)
         setGate({ blocked, results })
-        appendLog(blocked ? '❌ 门禁未通过' : '✅ 门禁检查完成')
+        appendLog(blocked ? t('workspace.log.gateFailed') : t('workspace.log.gateCheckDone'))
       }
     } catch (err) {
-      appendLog(`❌ 门禁检查失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(t('workspace.log.gateCheckFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
 
@@ -491,17 +490,17 @@ export function WorkspacePage(): React.JSX.Element {
     // 切换阶段不再中断正在运行的 Agent（转后台续跑）；托管中仍需确认，
     // 因为托管流程依赖阶段推进顺序，手动切换会打乱编排
     if (managedRunning) {
-      if (!window.confirm('一键托管进行中，托管流程依赖阶段推进顺序，手动切换阶段可能打乱编排。确认切换？')) return
+      if (!window.confirm(t('workspace.confirm.enterDuringManaged'))) return
     }
     try {
       const entered = await window.moonglass.phase.enter(projectId, to)
       if (entered) {
         setProject(entered)
         setGate(null)
-        appendLog(`已进入 ${PHASE_LABELS[to]}，后续阶段产物已保留`)
+        appendLog(t('workspace.log.enteredPhase', { phase: phaseLabel(to) }))
       }
     } catch (error) {
-      appendLog(`进入阶段失败: ${error instanceof Error ? error.message : String(error)}`)
+      appendLog(t('workspace.log.enterPhaseFailed', { error: error instanceof Error ? error.message : String(error) }))
     }
   }
 
@@ -518,7 +517,7 @@ export function WorkspacePage(): React.JSX.Element {
         setGate(null)
         await ensureAgent(projectId)
       }
-      appendLog(`开始响应 ${PHASE_LABELS[targetPhase]} 的变更影响`)
+      appendLog(t('workspace.log.respondChangeStart', { phase: phaseLabel(targetPhase) }))
       await sendAgentPrompt(buildChangeResponsePrompt(activeProject, targetPhase))
       const acknowledged = await window.moonglass.phase.acknowledgeChange(
         projectId,
@@ -527,10 +526,10 @@ export function WorkspacePage(): React.JSX.Element {
       )
       if (acknowledged) {
         setProject(acknowledged)
-        appendLog(`✅ ${PHASE_LABELS[targetPhase]} 变更响应已完成`)
+        appendLog(t('workspace.log.respondChangeDone', { phase: phaseLabel(targetPhase) }))
       }
     } catch (error) {
-      appendLog(`变更响应失败: ${error instanceof Error ? error.message : String(error)}`)
+      appendLog(t('workspace.log.respondChangeFailed', { error: error instanceof Error ? error.message : String(error) }))
     }
   }
 
@@ -543,7 +542,7 @@ export function WorkspacePage(): React.JSX.Element {
     const details = results
       .map((result, index) => `${index + 1}. [${result.checkName}] ${result.message}`)
       .join('\n')
-    appendLog(`已将 ${results.length} 项门禁问题发送到 Agent 会话`)
+    appendLog(t('workspace.log.gateIssuesSent', { count: results.length }))
     try {
       await sendAgentPrompt(
         `请修复以下 ${PHASE_LABELS[phase]} 阶段门禁问题：\n\n${details}\n\n` +
@@ -556,13 +555,13 @@ export function WorkspacePage(): React.JSX.Element {
         '完成后提醒我点击“重新检查门禁”。'
       )
     } catch (error) {
-      appendLog(`门禁修复指令发送失败: ${error instanceof Error ? error.message : String(error)}`)
+      appendLog(t('workspace.log.gateFixSendFailed', { error: error instanceof Error ? error.message : String(error) }))
     }
   }
 
   // ---- 验证操作（波段化 W0-W3，与态势页波段进度一一对应） ----
   const handlePlanEnv = async (): Promise<void> => {
-    appendLog('开始验证规划与环境搭建（W0）...')
+    appendLog(t('workspace.log.planEnvStart'))
     try {
       await sendAgentPrompt(
         '请完成验证规划与环境搭建。停止边界是“验证点已登记、环境可编译、冒烟通过”，不要执行基础功能批次、增补验证或签核：\n' +
@@ -574,23 +573,28 @@ export function WorkspacePage(): React.JSX.Element {
         '6. 冒烟验收（W0）：reset、接口连通、一个正常事务经 run_simulation 真实执行通过（环境自检不绑 scenarioIds）；冒烟不过则环境不算就绪\n' +
         '7. 完成后列出登记的验证点、模块分层、环境入口和冒烟结果，然后停止'
       )
-      appendLog('验证规划与环境搭建任务已完成')
+      appendLog(t('workspace.log.planEnvDone'))
     } catch (err) {
-      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(t('workspace.log.commandSendFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
 
   const handleResetPhase = async (phase: Phase, mode: 'archive' | 'purge'): Promise<void> => {
     try {
       const preview = await window.moonglass.phase.previewReset(projectId, phase, mode)
-      const pathList = preview.paths.length > 0 ? preview.paths.map((path) => `  - ${path}`).join('\n') : '  - 当前没有阶段产物'
+      const pathList = preview.paths.length > 0 ? preview.paths.map((path) => `  - ${path}`).join('\n') : t('workspace.confirm.resetNoArtifacts')
       const sizeMb = (preview.totalBytes / 1024 / 1024).toFixed(2)
-      const action = mode === 'archive' ? '归档并重新开始' : '永久清除'
-      const confirmed = window.confirm(
-        `${action}“${PHASE_LABELS[phase]}”？\n\n将处理 ${preview.fileCount} 个文件（${sizeMb} MB）：\n${pathList}\n\n${mode === 'purge' ? '该阶段会话历史也将清除；不会自动重新开始，需由你在会话中输入或使用一键托管。\n' : ''}上游阶段成果会保留；已完成的后续阶段将标记黄色变更提醒。`
-      )
+      const action = mode === 'archive' ? t('workspace.confirm.resetArchive') : t('workspace.confirm.resetPurge')
+      const confirmed = window.confirm(t('workspace.confirm.resetPhase', {
+        action,
+        phase: phaseLabel(phase),
+        count: preview.fileCount,
+        size: sizeMb,
+        paths: pathList,
+        purgeNote: mode === 'purge' ? t('workspace.confirm.resetPurgeNote') : ''
+      }))
       if (!confirmed) return
-      if (mode === 'purge' && !window.confirm('这是不可恢复的彻底清除。确认永久删除上述阶段产物？')) return
+      if (mode === 'purge' && !window.confirm(t('workspace.confirm.resetPurgeConfirm'))) return
       const result = await window.moonglass.phase.reset(projectId, phase, mode)
       setProject(result.project)
       setGate(null)
@@ -599,16 +603,16 @@ export function WorkspacePage(): React.JSX.Element {
       if (mode === 'purge') clearAgentAfterPhasePurge()
       appendLog(
         mode === 'archive'
-          ? `已归档 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件到 ${result.archivePath}，并以空白会话重新开始`
-          : `已彻底清除 ${PHASE_LABELS[phase]} 的 ${result.fileCount} 个文件及阶段会话；未自动重新开始`
+          ? t('workspace.log.archived', { phase: phaseLabel(phase), count: result.fileCount, path: result.archivePath ?? '' })
+          : t('workspace.log.purged', { phase: phaseLabel(phase), count: result.fileCount })
       )
     } catch (error) {
-      appendLog(`阶段处理失败: ${error instanceof Error ? error.message : String(error)}`)
+      appendLog(t('workspace.log.phaseResetFailed', { error: error instanceof Error ? error.message : String(error) }))
     }
   }
 
   const handleBasicValidation = async (): Promise<void> => {
-    appendLog('开始 W1 基础功能验证...')
+    appendLog(t('workspace.log.basicStart'))
     try {
       await sendAgentPrompt(
         '请完成 W1 基础功能验证：目标是规格映射矩阵中每条可验证条款（simulation/static 通道）都有 happy path 证据。停止边界是“条款全部有执行证据或明确缺口记录”，不要做增补验证（W2）或签核（W3）：\n' +
@@ -617,14 +621,14 @@ export function WorkspacePage(): React.JSX.Element {
         '3. 失败时按 diagnostic-control 提升诊断等级，确认根因后调用 record_root_cause；L3/L4 影响必须发起用户决策\n' +
         '4. 完成后报告条款覆盖（coveredClause/clauseTotal）与仍未闭合条款清单，然后停止'
       )
-      appendLog('基础功能验证任务已完成')
+      appendLog(t('workspace.log.basicDone'))
     } catch (err) {
-      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(t('workspace.log.commandSendFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
 
   const handleCornerWaves = async (): Promise<void> => {
-    appendLog('开始 W2 增补验证（按主题波）...')
+    appendLog(t('workspace.log.cornerStart'))
     try {
       await sendAgentPrompt(
         '请完成 W2 增补验证：按主题波执行 corner 场景。停止边界是“各主题波闭环或探索饱和”，不要进入签核（W3）：\n' +
@@ -635,14 +639,14 @@ export function WorkspacePage(): React.JSX.Element {
         '5. 执行派生状态由工具证据派生，record_scenario_adjudication 仅用于规格澄清/豁免（WAIVED 需已有具名审批）；失败根因确认后调用 record_root_cause\n' +
         '6. 完成后报告各主题波闭环情况与残余风险，然后停止'
       )
-      appendLog('增补验证任务已完成')
+      appendLog(t('workspace.log.cornerDone'))
     } catch (err) {
-      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(t('workspace.log.commandSendFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
 
   const handleSignoff = async (): Promise<void> => {
-    appendLog('开始 W3 签核...')
+    appendLog(t('workspace.log.signoffStart'))
     try {
       await sendAgentPrompt(
         '请完成 W3 签核。停止边界是“签核包生成且独立证据审查有结论”：\n' +
@@ -652,17 +656,14 @@ export function WorkspacePage(): React.JSX.Element {
         '4. 残余风险逐项处理：优先用证据关闭，确需豁免的等待用户在 signoff-approvals.json 中具名审批，Agent 不得代替用户写审批\n' +
         '5. 最后调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始证据；输出签核结论（READY_FOR_HUMAN_SIGNOFF / CONDITIONALLY_READY / NOT_READY）、证据包路径与遗留项，然后停止'
       )
-      appendLog('签核任务已完成')
+      appendLog(t('workspace.log.signoffDone'))
     } catch (err) {
-      appendLog(`指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(t('workspace.log.commandSendFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
 
   const handleFastTrackSynthesis = async (): Promise<void> => {
-    const confirmed = window.confirm(
-      '将跳过验证检查和 QA 质量检查，直接进入综合实现。\n\n' +
-      '该路径仅用于快速评估面积，综合结果不能视为功能验证、质量签核或发布依据。确认继续？'
-    )
+    const confirmed = window.confirm(t('workspace.confirm.fastTrack'))
     if (!confirmed) return
     const updated = await window.moonglass.phase.fastTrackSynthesis(projectId)
     if (!updated) return
@@ -671,7 +672,7 @@ export function WorkspacePage(): React.JSX.Element {
   }
 
   const handleCompleteProject = async (): Promise<void> => {
-    if (!window.confirm('确认综合实现已完成，并将项目标记为完成？')) return
+    if (!window.confirm(t('workspace.confirm.completeProject'))) return
     const updated = await window.moonglass.phase.completeProject(projectId)
     if (updated) setProject(updated)
   }
@@ -680,11 +681,11 @@ export function WorkspacePage(): React.JSX.Element {
     setGeneratingDashboard(true)
     try {
       const result = await window.moonglass.project.generateDashboard(projectId)
-      appendLog(`总体报告已生成: ${result.path}`)
-      if (!result.opened) appendLog('总体报告未能自动打开，请从文件树打开 docs/07_release/project_dashboard.html')
+      appendLog(t('workspace.log.dashboardGenerated', { path: result.path }))
+      if (!result.opened) appendLog(t('workspace.log.dashboardNotOpened'))
       setTreeTick((tick) => tick + 1)
     } catch (error) {
-      appendLog(`总体报告生成失败: ${error instanceof Error ? error.message : String(error)}`)
+      appendLog(t('workspace.log.dashboardFailed', { error: error instanceof Error ? error.message : String(error) }))
     } finally {
       setGeneratingDashboard(false)
     }
@@ -692,12 +693,12 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handleVerificationGuidanceAction = async (prompt: string): Promise<void> => {
     setMainTab('chat')
-    appendLog('已按验证态势推荐动作交给主 Agent…')
+    appendLog(t('workspace.log.guidanceActionSent'))
     try {
       await sendAgentPrompt(prompt)
-      appendLog('验证推荐动作已完成，请刷新 VERIF 状态或验证态势')
+      appendLog(t('workspace.log.guidanceActionDone'))
     } catch (error) {
-      appendLog(`验证推荐动作失败：${error instanceof Error ? error.message : String(error)}`)
+      appendLog(t('workspace.log.guidanceActionFailed', { error: error instanceof Error ? error.message : String(error) }))
     }
   }
 
@@ -712,7 +713,7 @@ export function WorkspacePage(): React.JSX.Element {
       try { await sendAgentPrompt(prompt); lastError = ''; break } catch (error) {
         lastError = error instanceof Error ? error.message : String(error)
         if (isManagedPause(lastError) || managedStopRef.current) throw error
-        appendLog(`一键托管：Agent 执行异常，第 ${attempt}/3 次重试：${lastError}`)
+        appendLog(t('workspace.log.managedRetry', { attempt, error: lastError }))
         if (attempt < 3) await wait(attempt * 1500)
       }
     }
@@ -735,7 +736,7 @@ export function WorkspacePage(): React.JSX.Element {
       for (let attempt = 1; attempt <= 3 && !sent; attempt += 1) {
         try { await sendAgentPrompt(response); sent = true } catch (error) {
           const message = error instanceof Error ? error.message : String(error)
-          appendLog(`一键托管：自动决策回传失败，第 ${attempt}/3 次重试：${message}`)
+          appendLog(t('workspace.log.managedDecisionSendFailed', { attempt, error: message }))
           if (attempt < 3) await wait(attempt * 1000)
           else throw error
         }
@@ -815,7 +816,7 @@ export function WorkspacePage(): React.JSX.Element {
         try {
           await startAgentTask(`一键托管 ${phase} 阶段`)
         } catch (error) {
-          appendLog(`一键托管：开启任务会话失败，沿用当前会话：${error instanceof Error ? error.message : String(error)}`)
+          appendLog(t('workspace.log.managedTaskSessionFailed', { error: error instanceof Error ? error.message : String(error) }))
         }
         if (active.phases[phase].changeNotice?.status === 'pending') {
           try {
@@ -825,7 +826,7 @@ export function WorkspacePage(): React.JSX.Element {
             const message = error instanceof Error ? error.message : String(error)
             if (isManagedPause(message)) throw error
             totalRisks += 1; step.detail = `变更响应异常已记录：${message}`
-            appendLog(`一键托管：${PHASE_LABELS[phase]} 变更响应异常，记录风险并继续：${message}`)
+            appendLog(t('workspace.log.managedChangeFailed', { phase: phaseLabel(phase), error: message }))
           }
         }
         try {
@@ -834,7 +835,7 @@ export function WorkspacePage(): React.JSX.Element {
             await runManagedAgent(MANAGED_VERIF_PLANNING_PROMPT)
             if (managedStopRef.current) throw new Error('用户停止托管')
             const loop = await window.moonglass.agent.runVerifBatches(projectId)
-            appendLog(`一键托管：VERIF 批次编排完成 ${loop.batches.length} 批（${loop.stoppedBy}）：${loop.message}`)
+            appendLog(t('workspace.log.managedVerifBatches', { count: loop.batches.length, stoppedBy: loop.stoppedBy, message: loop.message }))
             if (loop.stoppedBy !== 'exhausted') {
               totalRisks += 1
               step.detail = `VERIF 批次编排中止（${loop.stoppedBy}）：${loop.message}`
@@ -848,7 +849,7 @@ export function WorkspacePage(): React.JSX.Element {
           const message = error instanceof Error ? error.message : String(error)
           if (isManagedPause(message)) throw error
           totalRisks += 1; step.detail = `阶段 Agent 异常已记录：${message}`
-          appendLog(`一键托管：${PHASE_LABELS[phase]} Agent 异常，记录风险并继续检查门禁：${message}`)
+          appendLog(t('workspace.log.managedAgentFailed', { phase: phaseLabel(phase), error: message }))
         }
         if (managedStopRef.current) throw new Error('用户停止托管')
 
@@ -877,7 +878,7 @@ export function WorkspacePage(): React.JSX.Element {
               totalRisks += failed.length
               setProject(forced.project)
               setGate(forced.gate)
-              appendLog(`一键托管：${PHASE_LABELS[phase]} 门禁仍有 ${failed.length} 个阻断项，已标记未签核并继续推进`)
+              appendLog(t('workspace.log.managedGateCarried', { phase: phaseLabel(phase), count: failed.length }))
               advanced = true
               break
             }
@@ -886,7 +887,7 @@ export function WorkspacePage(): React.JSX.Element {
             } catch (error) {
               const message = error instanceof Error ? error.message : String(error)
               if (isManagedPause(message)) throw error
-              appendLog(`一键托管：门禁恢复 Agent 异常，继续下一轮：${message}`)
+              appendLog(t('workspace.log.managedGateRecoveryFailed', { error: message }))
             }
           }
           if (carriedGateIssues > 0) {
@@ -909,7 +910,12 @@ export function WorkspacePage(): React.JSX.Element {
     } finally {
       if (outcome === 'completed' && totalRisks > 0) outcome = 'completed_with_risk'
       const path = await writeManagedReport(outcome, startedAt, steps, failure)
-      appendLog(`${outcome === 'completed' ? '一键托管完整通过' : outcome === 'completed_with_risk' ? `一键托管带 ${totalRisks} 项风险完成（未签核）` : '一键托管已暂停'}，报告：${path}`)
+      const resultText = outcome === 'completed'
+        ? t('workspace.log.managedCompleted')
+        : outcome === 'completed_with_risk'
+          ? t('workspace.log.managedCompletedWithRisk', { count: totalRisks })
+          : t('workspace.log.managedPaused')
+      appendLog(t('workspace.log.managedFinished', { result: resultText, path }))
       setManagedRunning(false)
       await reload()
     }
@@ -939,11 +945,11 @@ export function WorkspacePage(): React.JSX.Element {
     setTreeTick((tick) => tick + 1)
     await ensureAgent(projectId)
     await sendAgentPrompt(`处理变更单 ${path}。先完成影响分析并修改 ${PHASE_LABELS[changeSourcePhase]} 阶段相关文件；保留已有有效成果，更新追溯矩阵和变更记录。完成本阶段修改后，后续阶段将通过黄色感叹号和一键托管完成响应、回归与质量闭环。`)
-    appendLog(`已创建${labels[changeType]} ${id}，进入 ${PHASE_LABELS[changeSourcePhase]}`)
+    appendLog(t('workspace.log.changeCreated', { kind: t(`workspace.changeKind.${changeType}`), id, phase: phaseLabel(changeSourcePhase) }))
   }
 
   const handleRunSynthesis = async (): Promise<void> => {
-    appendLog('⚙ 开始逻辑综合流程...')
+    appendLog(t('workspace.log.synthesisStart'))
     setActiveTab('synthesis')
     try {
       await sendAgentPrompt(
@@ -956,16 +962,16 @@ export function WorkspacePage(): React.JSX.Element {
         '6. 汇总网表、单元数量、面积、时序估算、警告和报告路径\n' +
         '注意区分通用单元统计、Liberty 映射估算与正式 STA 签核结果'
       )
-      appendLog('综合评估任务已完成')
+      appendLog(t('workspace.log.synthesisDone'))
     } catch (err) {
-      appendLog(`❌ 综合指令发送失败: ${err instanceof Error ? err.message : String(err)}`)
+      appendLog(t('workspace.log.synthesisSendFailed', { error: err instanceof Error ? err.message : String(err) }))
     }
   }
 
   if (!project) {
     return (
       <div className="flex h-full items-center justify-center text-zinc-500">
-        项目不存在或加载中… <Link to="/projects" className="ml-2 text-blue-600 underline">返回项目列表</Link>
+        {t('workspace.notFound')} <Link to="/projects" className="ml-2 text-blue-600 underline">{t('workspace.backToProjects')}</Link>
       </div>
     )
   }
@@ -985,23 +991,23 @@ export function WorkspacePage(): React.JSX.Element {
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-6">
           <section className="w-full max-w-lg rounded-md border border-zinc-300 bg-white shadow-2xl">
             <header className="border-b border-zinc-200 px-5 py-4">
-              <h2 className="text-base font-semibold text-zinc-900">一键托管</h2>
-              <p className="mt-1 text-xs leading-5 text-zinc-500">从当前阶段开始自动执行、修复门禁并推进。门禁重试失败时立即停止，不会强制越过。</p>
+              <h2 className="text-base font-semibold text-zinc-900">{t('workspace.managedDialog.title')}</h2>
+              <p className="mt-1 text-xs leading-5 text-zinc-500">{t('workspace.managedDialog.description')}</p>
             </header>
             <div className="space-y-4 p-5">
-              <label className="block text-xs font-medium text-zinc-700">托管完成至</label>
+              <label className="block text-xs font-medium text-zinc-700">{t('workspace.managedDialog.endPhase')}</label>
               <select value={managedEndPhase} onChange={(event) => setManagedEndPhase(event.target.value as Phase)} className="w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm">
                 {PHASE_ORDER.slice(PHASE_ORDER.indexOf(project.currentPhase)).map((phase) => (
-                  <option key={phase} value={phase}>{phase} · {PHASE_LABELS[phase]}</option>
+                  <option key={phase} value={phase}>{phase} · {phaseLabel(phase)}</option>
                 ))}
               </select>
               <div className="rounded border border-amber-200 bg-amber-50 p-3 text-xs leading-5 text-amber-800">
-                自动决策会优先选择推荐项并记录到报告。涉及正式签核、第三方许可证或不可逆操作时，托管结果仍需工程师复核。
+                {t('workspace.managedDialog.hint')}
               </div>
             </div>
             <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-3">
-              <button onClick={() => setManagedDialogOpen(false)} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600">取消</button>
-              <button onClick={() => void startManagedRun()} className="rounded bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-500">开始托管</button>
+              <button onClick={() => setManagedDialogOpen(false)} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600">{t('common.cancel')}</button>
+              <button onClick={() => void startManagedRun()} className="rounded bg-blue-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-blue-500">{t('workspace.managedDialog.start')}</button>
             </footer>
           </section>
         </div>
@@ -1010,27 +1016,27 @@ export function WorkspacePage(): React.JSX.Element {
         <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-6">
           <section className="w-full max-w-xl rounded-md border border-zinc-300 bg-white shadow-2xl">
             <header className="border-b border-zinc-200 px-5 py-4">
-              <h2 className="text-base font-semibold text-zinc-900">发起受控变更</h2>
-              <p className="mt-1 text-xs text-zinc-500">保留已有成果，建立变更单，并从受影响的最早阶段开始处理。</p>
+              <h2 className="text-base font-semibold text-zinc-900">{t('workspace.changeDialog.title')}</h2>
+              <p className="mt-1 text-xs text-zinc-500">{t('workspace.changeDialog.description')}</p>
             </header>
             <div className="grid grid-cols-2 gap-4 p-5">
-              <label className="text-xs font-medium text-zinc-700">变更类型
+              <label className="text-xs font-medium text-zinc-700">{t('workspace.changeDialog.typeLabel')}
                 <select value={changeType} onChange={(event) => setChangeType(event.target.value as typeof changeType)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm">
-                  <option value="requirement">需求变更</option><option value="specification">规格变更</option><option value="bug">第三方/测试缺陷</option>
+                  <option value="requirement">{t('workspace.changeDialog.typeRequirement')}</option><option value="specification">{t('workspace.changeDialog.typeSpecification')}</option><option value="bug">{t('workspace.changeDialog.typeBug')}</option>
                 </select>
               </label>
-              <label className="text-xs font-medium text-zinc-700">影响起点
+              <label className="text-xs font-medium text-zinc-700">{t('workspace.changeDialog.sourcePhase')}
                 <select value={changeSourcePhase} onChange={(event) => setChangeSourcePhase(event.target.value as Phase)} className="mt-1 w-full rounded border border-zinc-300 bg-white px-3 py-2 text-sm">
-                  {PHASE_ORDER.map((phase) => <option key={phase} value={phase}>{phase} · {PHASE_LABELS[phase]}</option>)}
+                  {PHASE_ORDER.map((phase) => <option key={phase} value={phase}>{phase} · {phaseLabel(phase)}</option>)}
                 </select>
               </label>
-              <label className="col-span-2 text-xs font-medium text-zinc-700">变更或缺陷说明
-                <textarea value={changeDescription} onChange={(event) => setChangeDescription(event.target.value)} rows={5} placeholder="说明现象、期望行为、涉及接口、复现条件或新增规格..." className="mt-1 w-full resize-y rounded border border-zinc-300 bg-white px-3 py-2 text-sm" />
+              <label className="col-span-2 text-xs font-medium text-zinc-700">{t('workspace.changeDialog.descriptionLabel')}
+                <textarea value={changeDescription} onChange={(event) => setChangeDescription(event.target.value)} rows={5} placeholder={t('workspace.changeDialog.descriptionPlaceholder')} className="mt-1 w-full resize-y rounded border border-zinc-300 bg-white px-3 py-2 text-sm" />
               </label>
             </div>
             <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-3">
-              <button onClick={() => setChangeDialogOpen(false)} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600">取消</button>
-              <button disabled={!changeDescription.trim()} onClick={() => void createChangeRequest()} className="rounded bg-blue-600 px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50">创建并进入处理</button>
+              <button onClick={() => setChangeDialogOpen(false)} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600">{t('common.cancel')}</button>
+              <button disabled={!changeDescription.trim()} onClick={() => void createChangeRequest()} className="rounded bg-blue-600 px-4 py-1.5 text-xs font-medium text-white disabled:opacity-50">{t('workspace.changeDialog.submit')}</button>
             </footer>
           </section>
         </div>
@@ -1040,19 +1046,19 @@ export function WorkspacePage(): React.JSX.Element {
         <div className="mb-3 flex items-center gap-3">
           <h1 className="text-lg font-bold text-zinc-900">{project.name}</h1>
           <span className="text-sm text-zinc-500">
-            当前阶段：{project.currentPhase} · {PHASE_LABELS[project.currentPhase]}
+            {t('workspace.currentPhase', { phase: project.currentPhase, label: phaseLabel(project.currentPhase) })}
           </span>
           {managedRunning ? (
             <button type="button" onClick={() => void stopManagedRun()} className="ml-auto flex items-center gap-1.5 rounded border border-red-300 bg-red-50 px-3 py-1.5 text-xs font-medium text-red-700">
-              <Square size={12} /> 停止托管
+              <Square size={12} /> {t('workspace.managedDialog.stop')}
             </button>
           ) : (
             <button type="button" onClick={() => { setManagedEndPhase('SYNTH'); setManagedDialogOpen(true) }} disabled={agentStreaming} className="ml-auto flex items-center gap-1.5 rounded border border-blue-300 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50">
-              <Bot size={14} /> 一键托管
+              <Bot size={14} /> {t('workspace.managedDialog.title')}
             </button>
           )}
           <button type="button" onClick={() => setChangeDialogOpen(true)} disabled={managedRunning || agentStreaming} className="rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50">
-            发起变更
+            {t('workspace.startChange')}
           </button>
           <button
             type="button"
@@ -1060,14 +1066,14 @@ export function WorkspacePage(): React.JSX.Element {
             disabled={generatingDashboard}
             className="rounded border border-zinc-300 bg-white px-3 py-1.5 text-xs font-medium text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
           >
-            {generatingDashboard ? '正在生成…' : '生成总体报告'}
+            {generatingDashboard ? t('workspace.generatingDashboard') : t('workspace.generateDashboard')}
           </button>
           <Link
             to="/verification-posture/$projectId"
             params={{ projectId }}
             className="rounded border border-emerald-300 bg-emerald-50 px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-100"
           >
-            验证态势
+            {t('workspace.verificationPosture')}
           </Link>
           <Link
             to="/design-browser/$projectId"
@@ -1080,13 +1086,13 @@ export function WorkspacePage(): React.JSX.Element {
         {(managedRunning || managedSteps.length > 0) && (
           <div className="mb-3 flex items-center gap-2 overflow-x-auto rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs">
             <Bot size={14} className="shrink-0 text-blue-600" />
-            <span className="shrink-0 font-medium text-blue-800">{managedRunning ? '托管进行中' : '最近托管'}</span>
+            <span className="shrink-0 font-medium text-blue-800">{managedRunning ? t('workspace.managedRun.running') : t('workspace.managedRun.lastRun')}</span>
             {managedSteps.map((step) => (
               <span key={step.phase} className={`shrink-0 rounded px-2 py-1 ${step.status === 'completed' ? 'bg-emerald-100 text-emerald-700' : step.status === 'completed_with_risk' ? 'bg-amber-100 text-amber-700' : step.status === 'failed' ? 'bg-red-100 text-red-700' : 'bg-white text-blue-700'}`} title={step.detail}>
-                {PHASE_LABELS[step.phase]} {step.status === 'completed' ? '✓' : step.status === 'completed_with_risk' ? '!' : step.status === 'failed' ? '×' : '…'}
+                {phaseLabel(step.phase)} {step.status === 'completed' ? '✓' : step.status === 'completed_with_risk' ? '!' : step.status === 'failed' ? '×' : '…'}
               </span>
             ))}
-            {managedReportPath && <button onClick={() => void openFile(managedReportPath)} className="ml-auto shrink-0 text-blue-700 underline">查看托管报告</button>}
+            {managedReportPath && <button onClick={() => void openFile(managedReportPath)} className="ml-auto shrink-0 text-blue-700 underline">{t('workspace.managedRun.viewReport')}</button>}
           </div>
         )}
         <PhaseBoard
@@ -1111,14 +1117,14 @@ export function WorkspacePage(): React.JSX.Element {
               disabled={agentStreaming}
               className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-600 hover:bg-zinc-100 disabled:opacity-50"
             >
-              🔄 重新检查门禁
+              {t('workspace.gate.recheck')}
             </button>
             {gate.blocked ? (
-              <span className="text-xs text-amber-600">修复问题后点击重新检查</span>
+              <span className="text-xs text-amber-600">{t('workspace.gate.fixThenRecheck')}</span>
             ) : gate.forced ? (
-              <span className="text-xs text-amber-600">⚠️ 已强制推进，遗留问题以红色感叹号标注</span>
+              <span className="text-xs text-amber-600">{t('workspace.gate.forcedNotice')}</span>
             ) : (
-              <span className="text-xs text-emerald-600">✅ 门禁通过，可推进</span>
+              <span className="text-xs text-emerald-600">{t('workspace.gate.passed')}</span>
             )}
           </div>
         )}
@@ -1127,15 +1133,15 @@ export function WorkspacePage(): React.JSX.Element {
 
         {project.currentPhase === 'SYNTH' && (
           <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">
-            <span className="text-xs font-medium text-zinc-500">综合操作：</span>
+            <span className="text-xs font-medium text-zinc-500">{t('workspace.synthBar.label')}</span>
             <button
               onClick={() => void handleRunSynthesis()}
               disabled={agentStreaming}
               className="rounded border border-blue-200 bg-blue-50 px-3 py-1.5 text-xs font-medium text-blue-700 hover:bg-blue-100 disabled:opacity-50"
             >
-              ⚙ 生成 SDC 并运行综合
+              {t('workspace.synthBar.run')}
             </button>
-            {agentStreaming && <span className="text-xs text-amber-600">Agent 运行中…</span>}
+            {agentStreaming && <span className="text-xs text-amber-600">{t('workspace.synthBar.agentRunning')}</span>}
           </div>
         )}
       </header>
@@ -1165,7 +1171,7 @@ export function WorkspacePage(): React.JSX.Element {
                   mainTab === 'chat' ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
                 }`}
               >
-                💬 对话
+                {t('workspace.tabs.chat')}
               </button>
               <SessionTabs projectId={project.id} onActivate={() => setMainTab('chat')} />
               {openFiles.map((f) => (
@@ -1178,7 +1184,7 @@ export function WorkspacePage(): React.JSX.Element {
                   <button onClick={() => setMainTab(f.path)} className="max-w-40 truncate font-mono hover:text-zinc-700">
                     {f.path.split(/[\\/]/).pop()}
                   </button>
-                  <button onClick={() => closeFile(f.path)} className="text-zinc-400 hover:text-red-600" title="关闭">×</button>
+                  <button onClick={() => closeFile(f.path)} className="text-zinc-400 hover:text-red-600" title={t('common.close')}>×</button>
                 </span>
               ))}
             </div>
@@ -1203,58 +1209,58 @@ export function WorkspacePage(): React.JSX.Element {
                       </span>
                       <span className="max-w-80 truncate font-mono text-xs text-zinc-400" title={activeFile.path}>{activeFile.path}</span>
                       <span className="text-[11px] text-zinc-400">
-                        {activeFile.content.split(/\r\n|\r|\n/).length} 行 · 只读
+                        {t('workspace.viewer.lineCount', { count: activeFile.content.split(/\r\n|\r|\n/).length })}
                       </span>
                     </div>
                     <div className="flex shrink-0 gap-1">
                       <button
                         onClick={requestFileFind}
                         className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
-                        title="查找（Ctrl+F）"
-                        aria-label="查找文件内容"
+                        title={t('workspace.viewer.findTitle')}
+                        aria-label={t('workspace.viewer.findAria')}
                       ><Search size={12} /></button>
                       {/\.md$/i.test(activeFile.path) && (
                         <button
                           onClick={() => setMarkdownPreview((value) => !value)}
                           className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-100"
                         >
-                          {markdownPreview ? '源码' : '预览'}
+                          {markdownPreview ? t('workspace.viewer.source') : t('workspace.viewer.preview')}
                         </button>
                       )}
                       <button
                         onClick={() => void refreshOpenFile(activeFile.path)}
                         className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
-                        title="重新加载文件"
+                        title={t('workspace.viewer.reload')}
                       ><RefreshCw size={12} /></button>
                       <button
                         onClick={() => setWordWrap((value) => !value)}
                         className={`rounded border px-2 py-0.5 text-xs ${wordWrap ? 'border-blue-300 bg-blue-50 text-blue-700' : 'border-zinc-300 text-zinc-600 hover:bg-zinc-100'}`}
-                        title="切换自动换行"
-                      >自动换行</button>
+                        title={t('workspace.viewer.wordWrapTitle')}
+                      >{t('workspace.viewer.wordWrap')}</button>
                       <button
                         onClick={() => setViewerFontSize((size) => Math.max(10, size - 1))}
                         className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
-                        title="缩小字体"
+                        title={t('workspace.viewer.decreaseFont')}
                       ><Minus size={12} /></button>
                       <span className="min-w-7 text-center text-[11px] leading-6 text-zinc-400">{viewerFontSize}</span>
                       <button
                         onClick={() => setViewerFontSize((size) => Math.min(24, size + 1))}
                         className="flex h-6 w-6 items-center justify-center rounded border border-zinc-300 text-zinc-600 hover:bg-zinc-100"
-                        title="放大字体"
+                        title={t('workspace.viewer.increaseFont')}
                       ><Plus size={12} /></button>
                       {shouldOpenExternally(activeFile.path) && (
                         <button
                           onClick={() => window.moonglass.fs.openExternal(projectId, activeFile.path).catch(() => {})}
                           className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-100"
                         >
-                          🌐 外部打开
+                          {t('workspace.viewer.openExternal')}
                         </button>
                       )}
                       <button
                         onClick={() => navigator.clipboard.writeText(activeFile.content).catch(() => {})}
                         className="rounded border border-zinc-300 px-2 py-0.5 text-xs text-zinc-600 hover:bg-zinc-100"
                       >
-                        📋 复制
+                        📋 {t('common.copy')}
                       </button>
                     </div>
                   </div>
@@ -1275,7 +1281,7 @@ export function WorkspacePage(): React.JSX.Element {
                     )}
                   </div>
                   {activeFile.truncated && (
-                    <p className="mt-1 shrink-0 text-xs text-zinc-400">（内容过大，仅显示前 256 KB）</p>
+                    <p className="mt-1 shrink-0 text-xs text-zinc-400">{t('workspace.viewer.truncated')}</p>
                   )}
                 </div>
               )}
@@ -1302,21 +1308,21 @@ export function WorkspacePage(): React.JSX.Element {
                   }`}
                 >
                   <tab.icon size={13} />
-                  {tab.label}
+                  {t(tab.labelKey)}
                 </button>
               ))}
-              <span className="ml-auto text-[11px] text-zinc-400">工程控制台</span>
+              <span className="ml-auto text-[11px] text-zinc-400">{t('workspace.console.title')}</span>
               <button
                 onClick={() => { setBottomCollapsed(false); setBottomH(MAX_BOTTOM) }}
                 className="console-icon-button"
-                title="最大化控制台"
+                title={t('workspace.console.maximize')}
               >
                 <Maximize2 size={13} />
               </button>
               <button
                 onClick={() => setBottomCollapsed((value) => !value)}
                 className="console-icon-button"
-                title={bottomCollapsed ? '展开控制台' : '收起控制台'}
+                title={bottomCollapsed ? t('workspace.console.expand') : t('workspace.console.collapse')}
               >
                 {bottomCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
               </button>
@@ -1341,11 +1347,11 @@ export function WorkspacePage(): React.JSX.Element {
 
       {/* 状态栏 */}
       <footer className="workspace-status shrink-0 flex items-center gap-4 border-t border-zinc-200 bg-white px-4 py-1.5 text-xs text-zinc-500">
-        <span>工具链: {project.edaToolchain}</span>
+        <span>{t('workspace.statusBar.toolchain', { toolchain: project.edaToolchain })}</span>
         <span>
-          阶段处理: {PHASE_ORDER.filter((p) => ['completed', 'skipped'].includes(project.phases[p].status)).length}/{PHASE_ORDER.length}
+          {t('workspace.statusBar.phases', { done: PHASE_ORDER.filter((p) => ['completed', 'skipped'].includes(project.phases[p].status)).length, total: PHASE_ORDER.length })}
         </span>
-        <span className="ml-auto">MoonGlass v{APP_INFO.version} · 六阶段 ASIC 开发链</span>
+        <span className="ml-auto">{t('workspace.statusBar.footer', { version: APP_INFO.version })}</span>
       </footer>
     </div>
   )
@@ -1429,6 +1435,7 @@ function BottomPanel({
   onRefresh,
   onAskAgent
 }: BottomPanelProps): React.JSX.Element {
+  const { t } = useTranslation()
   const [inventory, setInventory] = useState<ProjectInventory>(EMPTY_INVENTORY)
   const [loading, setLoading] = useState(false)
   const [waveformStatus, setWaveformStatus] = useState('')
@@ -1479,9 +1486,9 @@ function BottomPanel({
         className="console-action"
       >
         <RotateCw size={13} className={loading ? 'animate-spin' : ''} />
-        刷新
+        {t('common.refresh')}
       </button>
-      <span className="text-[11px] text-zinc-400">{inventory.artifacts.length} 个可追踪产物</span>
+      <span className="text-[11px] text-zinc-400">{t('workspace.console.trackableArtifacts', { count: inventory.artifacts.length })}</span>
     </div>
   )
 
@@ -1490,14 +1497,14 @@ function BottomPanel({
       <div className="flex h-full flex-col">
         {toolbar}
         <div className="mb-2 flex items-center gap-3 text-xs">
-          <span className="problem-count problem-count-error">{failedGates.length + errorLogs.length} 错误</span>
-          <span className="problem-count problem-count-warning">{warningLogs.length} 警告</span>
+          <span className="problem-count problem-count-error">{t('workspace.console.errors', { count: failedGates.length + errorLogs.length })}</span>
+          <span className="problem-count problem-count-warning">{t('workspace.console.warnings', { count: warningLogs.length })}</span>
           <button
             onClick={() => onAskAgent('请检查工程控制台中的门禁失败、Lint、仿真和综合问题，定位根因，修改对应文件并重新运行相关工具验证。')}
             disabled={agentStreaming}
             className="console-action ml-auto"
           >
-            交给 Agent 修复
+            {t('workspace.console.askAgentFix')}
           </button>
         </div>
         <div className="console-list flex-1 overflow-auto">
@@ -1509,12 +1516,12 @@ function BottomPanel({
                 const reference = extractFileReference(result.message)
                 if (reference) onOpenFile(reference)
               }}
-              title={extractFileReference(result.message) ? '双击打开问题文件并定位' : result.message}
+              title={extractFileReference(result.message) ? t('workspace.console.openProblemFile') : result.message}
             >
               <AlertTriangle size={14} className="shrink-0 text-red-500" />
               <strong className="shrink-0 text-xs text-zinc-700">{result.checkName}</strong>
               <span className="truncate text-xs text-zinc-500" title={result.message}>{result.message}</span>
-              <span className="ml-auto shrink-0 text-[10px] text-zinc-400">门禁</span>
+              <span className="ml-auto shrink-0 text-[10px] text-zinc-400">{t('workspace.console.gateBadge')}</span>
             </div>
           ))}
           {[...errorLogs, ...warningLogs].map((entry, index) => (
@@ -1525,14 +1532,14 @@ function BottomPanel({
                 const reference = extractFileReference(entry)
                 if (reference) onOpenFile(reference)
               }}
-              title={extractFileReference(entry) ? '双击打开问题文件并定位' : entry}
+              title={extractFileReference(entry) ? t('workspace.console.openProblemFile') : entry}
             >
               <TerminalSquare size={14} className="shrink-0 text-amber-500" />
               <span className="truncate font-mono text-xs text-zinc-600" title={entry}>{entry}</span>
             </div>
           ))}
           {failedGates.length + errorLogs.length + warningLogs.length === 0 && (
-            <div className="console-empty">当前没有已知问题。运行 Lint、验证或综合后，诊断信息会集中显示在这里。</div>
+            <div className="console-empty">{t('workspace.problems.empty')}</div>
           )}
         </div>
       </div>
@@ -1552,7 +1559,7 @@ function BottomPanel({
         )}
         <FileRows
           files={inventory.logs}
-          empty="尚无运行记录。工具启动后，实时状态显示在这里，落盘日志也会自动汇总。"
+          empty={t('workspace.runs.empty')}
           onOpenFile={onOpenFile}
         />
       </div>
@@ -1564,42 +1571,42 @@ function BottomPanel({
       <div className="flex h-full flex-col">
         {toolbar}
         <div className="mb-2 grid grid-cols-6 gap-2">
-          <ConsoleMetric label="验证产物" value={inventory.verification.length} />
+          <ConsoleMetric label={t('workspace.verification.metricArtifacts')} value={inventory.verification.length} />
           <ConsoleMetric label="Scenario" value={intelligence?.scenarioCount ?? 0} />
-          <ConsoleMetric label="关键未闭环" value={intelligence?.criticalOpen.length ?? 0} />
-          <ConsoleMetric label="Formal 证据" value={intelligence?.formalResults?.length ?? 0} />
-          <ConsoleMetric label="验证意图" value={intelligence?.verificationIntents?.length ?? 0} />
-          <ConsoleMetric label="规格缺口" value={intelligence?.specGaps?.length ?? 0} />
+          <ConsoleMetric label={t('workspace.verification.metricCriticalOpen')} value={intelligence?.criticalOpen.length ?? 0} />
+          <ConsoleMetric label={t('workspace.verification.metricFormalEvidence')} value={intelligence?.formalResults?.length ?? 0} />
+          <ConsoleMetric label={t('workspace.verification.metricIntents')} value={intelligence?.verificationIntents?.length ?? 0} />
+          <ConsoleMetric label={t('workspace.verification.metricSpecGaps')} value={intelligence?.specGaps?.length ?? 0} />
         </div>
         {intelligence && (
-          <div className="mb-2 flex items-center gap-1" aria-label="验证智能视图">
-            {([['scenario', '风险场景'], ['intent', '验证意图'], ['holes', '覆盖缺口'], ['interaction', '交互图'], ['schedule', '执行队列'], ['formal', 'Formal']] as const).map(([value, label]) => (
+          <div className="mb-2 flex items-center gap-1" aria-label={t('workspace.verification.viewsAria')}>
+            {([['scenario', t('workspace.verification.viewScenario')], ['intent', t('workspace.verification.viewIntent')], ['holes', t('workspace.verification.viewHoles')], ['interaction', t('workspace.verification.viewInteraction')], ['schedule', t('workspace.verification.viewSchedule')], ['formal', t('workspace.verification.viewFormal')]] as const).map(([value, label]) => (
               <button key={value} onClick={() => setIntelligenceView(value)} className={`console-action ${intelligenceView === value ? 'border-emerald-500 text-emerald-600' : ''}`}>{label}</button>
             ))}
-            <span className="ml-auto truncate text-[10px] text-zinc-400" title={intelligence.analyzer?.limitations.join('；')}>分析器：{intelligence.analyzer?.engine ?? '旧版模型'}{intelligence.analyzer?.version ? ` · ${intelligence.analyzer.version}` : ''}</span>
+            <span className="ml-auto truncate text-[10px] text-zinc-400" title={intelligence.analyzer?.limitations.join('；')}>{t('workspace.verification.analyzer', { engine: intelligence.analyzer?.engine ?? t('workspace.verification.analyzerLegacy') })}{intelligence.analyzer?.version ? ` · ${intelligence.analyzer.version}` : ''}</span>
           </div>
         )}
-        {intelligence?.structuralSummary && <div className="mb-2 truncate text-[10px] text-zinc-400" title={intelligence.structuralSummary.protocols.map((item) => `${item.module}:${item.protocol}`).join('；')}>FSM {intelligence.structuralSummary.fsm} · CFG {intelligence.structuralSummary.cfgNodes} · 依赖 {intelligence.structuralSummary.dependencies} · COI {intelligence.structuralSummary.cones} · 协议 {intelligence.structuralSummary.protocols.length}</div>}
+        {intelligence?.structuralSummary && <div className="mb-2 truncate text-[10px] text-zinc-400" title={intelligence.structuralSummary.protocols.map((item) => `${item.module}:${item.protocol}`).join('；')}>{t('workspace.verification.structuralSummary', { fsm: intelligence.structuralSummary.fsm, cfg: intelligence.structuralSummary.cfgNodes, deps: intelligence.structuralSummary.dependencies, coi: intelligence.structuralSummary.cones, protocols: intelligence.structuralSummary.protocols.length })}</div>}
         {!intelligence && (
           <div className="console-empty mb-2 flex items-center justify-between gap-3">
-            <span>尚未生成 Verification Intelligence 模型。</span>
+            <span>{t('workspace.verification.noIntelligence')}</span>
             <button
               onClick={() => onAskAgent('请调用 build_verification_intelligence，基于当前规格、RTL 结构事实和覆盖率反馈生成风险与 Scenario 看板，并说明最高优先级场景的选择依据。')}
               disabled={agentStreaming}
               className="console-action shrink-0"
             >
-              生成智能验证模型
+              {t('workspace.verification.buildIntelligence')}
             </button>
           </div>
         )}
         {intelligence && intelligenceView === 'scenario' && intelligence.scenarios.length > 0 && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Verification Intelligence Scenario 看板">
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.scenarioBoardAria')}>
             {intelligence.scenarios.slice(0, 12).map((scenario) => (
               <button
                 key={scenario.id}
                 onDoubleClick={() => onOpenFile(scenario.evidence?.[0] ?? 'verification/intelligence/scenario-registry.json')}
                 className="console-row w-full text-left"
-                title="双击打开完整 Scenario Registry"
+                title={t('workspace.verification.openScenarioRegistry')}
               >
                 <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{scenario.id}</strong>
                 <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{scenario.title}</span>
@@ -1610,60 +1617,60 @@ function BottomPanel({
           </div>
         )}
         {intelligence && intelligenceView === 'interaction' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Feature Interaction Graph">
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.interactionAria')}>
             {(intelligence.interactionGraph?.edges ?? []).slice(0, 40).map((edge) => {
               const source = intelligence.interactionGraph?.nodes.find((node) => node.id === edge.from)?.source
-              return <button key={edge.id} onDoubleClick={() => source?.file && onOpenFile(source.file)} className="console-row w-full text-left" title={source?.file ? '双击跳转到结构证据' : edge.id}>
+              return <button key={edge.id} onDoubleClick={() => source?.file && onOpenFile(source.file)} className="console-row w-full text-left" title={source?.file ? t('workspace.verification.jumpToEvidence') : edge.id}>
                 <strong className="shrink-0 font-mono text-[10px] text-sky-600">{edge.type}</strong>
                 <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{edge.from} → {edge.to}</span>
                 <span className="shrink-0 text-[10px] text-zinc-400">{edge.confidence}</span>
               </button>
             })}
-            {(intelligence.interactionGraph?.edges.length ?? 0) === 0 && <div className="console-empty">当前没有可展示的交互边。</div>}
+            {(intelligence.interactionGraph?.edges.length ?? 0) === 0 && <div className="console-empty">{t('workspace.verification.noInteractions')}</div>}
           </div>
         )}
         {intelligence && intelligenceView === 'intent' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Verification Intent">
-            {(intelligence.verificationIntents ?? []).slice(0, 30).map((intent) => <button key={intent.id} onDoubleClick={() => onOpenFile('verification/intelligence/verification-intent-registry.json')} className="console-row w-full text-left" title="双击打开完整 Verification Intent Registry">
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.intentAria')}>
+            {(intelligence.verificationIntents ?? []).slice(0, 30).map((intent) => <button key={intent.id} onDoubleClick={() => onOpenFile('verification/intelligence/verification-intent-registry.json')} className="console-row w-full text-left" title={t('workspace.verification.openIntentRegistry')}>
               <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{intent.id}</strong>
               <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{intent.objective}</span>
               <span className="shrink-0 text-[10px] text-sky-600">{intent.recommendedMethods.join(' + ')}</span>
-              <span className="shrink-0 text-[10px] text-zinc-500">边界 {intent.boundaries.length}</span>
+              <span className="shrink-0 text-[10px] text-zinc-500">{t('workspace.verification.boundaryCount', { count: intent.boundaries.length })}</span>
               <span className="shrink-0 text-[10px] text-amber-600">{intent.status}</span>
             </button>)}
-            {(intelligence.verificationIntents?.length ?? 0) === 0 && <div className="console-empty">尚未生成 Verification Intent。</div>}
+            {(intelligence.verificationIntents?.length ?? 0) === 0 && <div className="console-empty">{t('workspace.verification.noIntents')}</div>}
           </div>
         )}
         {intelligence && intelligenceView === 'holes' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Coverage Hole 分类">
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.holesAria')}>
             {(intelligence.coverageHoles ?? []).slice(0, 30).map((hole) => <button key={hole.id} onDoubleClick={() => onOpenFile('verification/intelligence/coverage-hole-register.json')} className="console-row w-full text-left" title={`${hole.reason} ${hole.recommendedAction}`}>
               <strong className={`shrink-0 font-mono text-[11px] ${hole.blocking ? 'text-red-600' : 'text-amber-600'}`}>{hole.classification}</strong>
               <span className="shrink-0 font-mono text-[10px] text-zinc-500">{hole.scenarioId}</span>
               <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{hole.reason}</span>
               <span className="shrink-0 text-[10px] text-zinc-400">{hole.confidence}</span>
             </button>)}
-            {(intelligence.coverageHoles?.length ?? 0) === 0 && <div className="console-empty">当前没有待处理的 Coverage Hole。</div>}
+            {(intelligence.coverageHoles?.length ?? 0) === 0 && <div className="console-empty">{t('workspace.verification.noHoles')}</div>}
           </div>
         )}
         {intelligence && intelligenceView === 'schedule' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="验证执行队列">
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.scheduleAria')}>
             {(intelligence.executionPlan ?? []).map((plan) => <div key={plan.scenarioId} className="console-row" title={plan.reason}>
               <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{plan.scenarioId}</strong>
               <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{plan.sequence}</span>
-              <span className="shrink-0 text-[10px] text-zinc-500">{plan.iterations} 次 · {plan.budgetSeconds}s</span>
+              <span className="shrink-0 text-[10px] text-zinc-500">{t('workspace.verification.iterations', { iterations: plan.iterations, budget: plan.budgetSeconds })}</span>
             </div>)}
-            {(intelligence.executionPlan?.length ?? 0) === 0 && <div className="console-empty">关键 Scenario 已闭环，当前没有待调度任务。</div>}
+            {(intelligence.executionPlan?.length ?? 0) === 0 && <div className="console-empty">{t('workspace.verification.noScheduled')}</div>}
           </div>
         )}
         {intelligence && intelligenceView === 'formal' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label="Formal 验证证据">
-            {(intelligence.formalResults ?? []).map((result) => <button key={result.resultFile} onDoubleClick={() => onOpenFile(result.resultFile)} className="console-row w-full text-left" title="双击打开 formal-result.json">
+          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.formalAria')}>
+            {(intelligence.formalResults ?? []).map((result) => <button key={result.resultFile} onDoubleClick={() => onOpenFile(result.resultFile)} className="console-row w-full text-left" title={t('workspace.verification.openFormalResult')}>
               <strong className={`shrink-0 font-mono text-[11px] ${result.status === 'PASS' ? 'text-emerald-600' : result.status === 'FAIL' ? 'text-red-600' : 'text-amber-600'}`}>{result.status}</strong>
               <span className="shrink-0 text-[10px] text-zinc-500">{result.mode}</span>
               <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{result.scenarioId ?? result.resultFile}</span>
-              <span className="shrink-0 text-[10px] text-zinc-400">trace {result.traces.length}</span>
+              <span className="shrink-0 text-[10px] text-zinc-400">{t('workspace.verification.traceCount', { count: result.traces.length })}</span>
             </button>)}
-            {(intelligence.formalResults ?? []).length === 0 && <div className="console-empty">尚无 Formal 证据。Formal Candidate 可由主 Agent 使用 SymbiYosys 执行。</div>}
+            {(intelligence.formalResults ?? []).length === 0 && <div className="console-empty">{t('workspace.verification.noFormal')}</div>}
           </div>
         )}
         {inventory.waveforms.length > 0 && (
@@ -1673,14 +1680,14 @@ function BottomPanel({
                 <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-600">{file}</span>
                 <button
                   onClick={async () => {
-                    setWaveformStatus(`正在打开 ${file}...`)
+                    setWaveformStatus(t('workspace.verification.openingWaveform', { file }))
                     const result = await window.moonglass.eda.openWaveform(projectId, file)
-                    setWaveformStatus(result.ok ? `已用 GTKWave 打开 ${file}` : `打开失败: ${result.error}`)
+                    setWaveformStatus(result.ok ? t('workspace.verification.waveformOpened', { file }) : t('workspace.verification.waveformFailed', { error: result.error ?? '' }))
                   }}
                   className="console-action shrink-0"
-                  title="使用 GTKWave 打开波形"
+                  title={t('workspace.verification.openWaveformTitle')}
                 >
-                  打开波形
+                  {t('workspace.verification.openWaveform')}
                 </button>
               </div>
             ))}
@@ -1689,7 +1696,7 @@ function BottomPanel({
         {waveformStatus && <p className="text-xs text-zinc-500">{waveformStatus}</p>}
         <FileRows
           files={inventory.verification.filter((file) => !/\.(vcd|fst)$/i.test(file))}
-          empty="暂无验证结果。运行仿真后，result.json、JUnit、覆盖率、日志和波形会出现在 verification/results/。"
+          empty={t('workspace.verification.empty')}
           onOpenFile={onOpenFile}
         />
       </div>
@@ -1701,11 +1708,11 @@ function BottomPanel({
       <div className="flex h-full flex-col">
         {toolbar}
         <div className="mb-2 grid grid-cols-3 gap-2">
-          <ConsoleMetric label="综合产物" value={inventory.synthesis.length} />
-          <ConsoleMetric label="约束文件" value={inventory.synthesis.filter((file) => /\.sdc$/i.test(file)).length} />
-          <ConsoleMetric label="报告" value={inventory.synthesis.filter((file) => /\.(rpt|json|log)$/i.test(file)).length} />
+          <ConsoleMetric label={t('workspace.synthesis.metricArtifacts')} value={inventory.synthesis.length} />
+          <ConsoleMetric label={t('workspace.synthesis.metricConstraints')} value={inventory.synthesis.filter((file) => /\.sdc$/i.test(file)).length} />
+          <ConsoleMetric label={t('workspace.synthesis.metricReports')} value={inventory.synthesis.filter((file) => /\.(rpt|json|log)$/i.test(file)).length} />
         </div>
-        <FileRows files={inventory.synthesis} empty="尚未发现综合产物。运行综合后，这里会汇总 SDC、网表、面积和时序报告。" onOpenFile={onOpenFile} />
+        <FileRows files={inventory.synthesis} empty={t('workspace.synthesis.empty')} onOpenFile={onOpenFile} />
       </div>
     )
   }
@@ -1713,7 +1720,7 @@ function BottomPanel({
   return (
     <div className="flex h-full flex-col">
       {toolbar}
-      <FileRows files={inventory.artifacts} empty="暂无可追踪产物。工具输出的日志、报告、波形、网表和结果文件会汇总在这里。" onOpenFile={onOpenFile} />
+      <FileRows files={inventory.artifacts} empty={t('workspace.artifacts.empty')} onOpenFile={onOpenFile} />
     </div>
   )
 }
@@ -1728,11 +1735,12 @@ function ConsoleMetric({ label, value }: { label: string; value: number }): Reac
 }
 
 function FileRows({ files, empty, onOpenFile }: { files: string[]; empty: string; onOpenFile: (path: string) => void }): React.JSX.Element {
+  const { t } = useTranslation()
   if (files.length === 0) return <div className="console-empty">{empty}</div>
   return (
     <div className="console-list flex-1 overflow-auto">
       {files.map((file) => (
-        <button key={file} onDoubleClick={() => onOpenFile(file)} className="console-row w-full text-left" title="双击打开">
+        <button key={file} onDoubleClick={() => onOpenFile(file)} className="console-row w-full text-left" title={t('workspace.console.doubleClickOpen')}>
           <FileOutput size={14} className="shrink-0 text-sky-600" />
           <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-600">{file}</span>
           <span className="shrink-0 text-[10px] uppercase text-zinc-400">{file.split('.').pop()}</span>

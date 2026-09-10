@@ -1,8 +1,8 @@
 # MoonGlass 开发进度说明 — v0.8.0（最新开发报告）
 
-> **日期**：2026-08-31  
-> **代码分支**：`feature/rtl-design-browser`  
-> **前一份报告**：[`dev-summary-v0.3.md`](./dev-summary-v0.3.md)  
+> **日期**：2026-08-31
+> **代码分支**：`feature/rtl-design-browser`
+> **前一份报告**：[`dev-summary-v0.3.md`](./dev-summary-v0.3.md)
 > **设计依据**：根目录 `ChipForge_Studio_Specification.md`
 
 ## 1. 当前结论
@@ -123,7 +123,7 @@ pnpm lint:rtl -- --project <RTL项目目录> --top <顶层模块>
 - [`dev-summary-v0.3.md`](./dev-summary-v0.3.md)：上一份开发交接报告。
 - [`MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html`](./MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)：AIGV 方法学。
 - [`MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html`](./MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html)：长时 Agent 工程学。
-- [`paper.html`](./paper.html)：证据驱动 ASIC Agent 工作流。
+- [`EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html`](./EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html)：证据驱动 ASIC Agent 工作流。
 
 ---
 

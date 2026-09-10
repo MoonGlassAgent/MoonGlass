@@ -15,34 +15,56 @@ import type {
   ToolDetection
 } from '@shared/types'
 import { ThemePicker } from '../components/ThemePicker'
+import { LOCALES, setLocale, useTranslation, type MessageKey } from '../i18n'
 
 const notifyLlmConfigurationChanged = (): void => {
   window.dispatchEvent(new Event('moonglass:llm-config-changed'))
 }
 
 export function SettingsPage(): React.JSX.Element {
+  const { t } = useTranslation()
+
   return (
     <div className="h-full overflow-y-auto p-6">
-      <h1 className="mb-6 text-xl font-bold text-zinc-900">设置</h1>
+      <h1 className="mb-6 text-xl font-bold text-zinc-900">{t('settings.title')}</h1>
       <AppearanceSection />
       <LlmProviderSection />
       <EdaDetectSection />
       <section className="rounded-lg border border-dashed border-zinc-300 p-4 text-sm text-zinc-500">
-        <h2 className="mb-1 font-semibold text-zinc-600">更多设置（占位）</h2>
-        工具链路径配置（resources/moonglass/toolchains.json）· 公司编码规则管理 · 外观设置
+        <h2 className="mb-1 font-semibold text-zinc-600">{t('settings.more.title')}</h2>
+        {t('settings.more.description')}
       </section>
     </div>
   )
 }
 
 function AppearanceSection(): React.JSX.Element {
+  const { t, locale } = useTranslation()
+
   return (
     <section className="surface-panel mb-5 rounded-lg border border-zinc-200 bg-white p-4">
       <div className="mb-3">
-        <h2 className="font-semibold text-zinc-800">外观</h2>
-        <p className="mt-0.5 text-xs text-zinc-500">选择浅色、深色或跟随系统，并设置界面强调色。设置会自动保存。</p>
+        <h2 className="font-semibold text-zinc-800">{t('settings.appearance.title')}</h2>
+        <p className="mt-0.5 text-xs text-zinc-500">{t('settings.appearance.description')}</p>
       </div>
       <ThemePicker />
+      <div className="mt-4">
+        <h3 className="mb-2 text-xs font-medium text-zinc-500">{t('common.language')}</h3>
+        <div className="color-mode-picker" role="radiogroup" aria-label={t('common.language')}>
+          {LOCALES.map((item) => (
+            <button
+              key={item.id}
+              type="button"
+              role="radio"
+              aria-checked={locale === item.id}
+              className={`color-mode-option ${locale === item.id ? 'is-selected' : ''}`}
+              onClick={() => setLocale(item.id)}
+            >
+              <span>{item.name}</span>
+            </button>
+          ))}
+        </div>
+      </div>
     </section>
   )
 }
@@ -50,6 +72,7 @@ function AppearanceSection(): React.JSX.Element {
 // ==================== 模型服务 ====================
 
 function LlmProviderSection(): React.JSX.Element {
+  const { t } = useTranslation()
   const [providers, setProviders] = useState<LlmProviderConfig[] | null>(null)
   const [selectedId, setSelectedId] = useState<string | null>(null)
   const [draft, setDraft] = useState<LlmProviderConfig | null>(null)
@@ -88,11 +111,11 @@ function LlmProviderSection(): React.JSX.Element {
     } catch (err) {
       setTestResult({
         ok: false,
-        error: `测试异常：${err instanceof Error ? err.message : String(err)}`,
+        error: t('settings.llm.testException', { message: err instanceof Error ? err.message : String(err) }),
         models: draft.models.map((model) => ({
           model,
           status: 'unknown',
-          message: '测试异常，模型未测试'
+          message: t('settings.llm.testExceptionModel')
         }))
       })
     } finally {
@@ -115,12 +138,12 @@ function LlmProviderSection(): React.JSX.Element {
       const saved = await window.moonglass.llm.upsert(next)
       setProviders((current) => current?.map((provider) => provider.id === saved.id ? saved : provider) ?? null)
       setDraft({ ...saved, models: [...saved.models] })
-      setSavedTip(enabled ? '已启用' : '已停用')
+      setSavedTip(enabled ? t('settings.llm.enabled') : t('settings.llm.disabled'))
       notifyLlmConfigurationChanged()
       setTimeout(() => setSavedTip(''), 1600)
     } catch (error) {
       setDraft(draft)
-      setSavedTip(`保存失败：${error instanceof Error ? error.message : String(error)}`)
+      setSavedTip(t('settings.llm.saveFailed', { message: error instanceof Error ? error.message : String(error) }))
     } finally {
       setSaving(false)
     }
@@ -134,7 +157,7 @@ function LlmProviderSection(): React.JSX.Element {
       const list = await window.moonglass.llm.list()
       setProviders(list)
       setDraft({ ...saved, models: [...saved.models] })
-      setSavedTip(saved.enabled ? '已保存并启用' : '已保存，但尚未启用')
+      setSavedTip(saved.enabled ? t('settings.llm.savedEnabled') : t('settings.llm.savedDisabled'))
       notifyLlmConfigurationChanged()
       setTimeout(() => setSavedTip(''), 2000)
     } finally {
@@ -145,7 +168,7 @@ function LlmProviderSection(): React.JSX.Element {
   const addCustom = async (): Promise<void> => {
     const created = await window.moonglass.llm.upsert({
       id: crypto.randomUUID(),
-      name: '自定义 Provider',
+      name: t('settings.llm.customProviderName'),
       protocol: 'openai-compatible',
       baseUrl: '',
       apiKey: '',
@@ -181,16 +204,16 @@ function LlmProviderSection(): React.JSX.Element {
   }
 
   return (
-    <section className="mb-8 rounded-lg border border-zinc-200 bg-white p-4">
+    <section className="surface-panel mb-8 rounded-lg border border-zinc-200 bg-white p-4">
       <div className="mb-3">
-        <h2 className="font-semibold text-zinc-800">模型服务</h2>
+        <h2 className="font-semibold text-zinc-800">{t('settings.llm.title')}</h2>
         <p className="mt-1 text-sm text-zinc-500">
-          配置大模型 Provider 的 API Key / Base URL / 模型列表（配置保存在本地，对话功能 Phase 2 接入）
+          {t('settings.llm.description')}
         </p>
       </div>
 
       {!providers ? (
-        <p className="text-sm text-zinc-500">加载中…</p>
+        <p className="text-sm text-zinc-500">{t('common.loading')}</p>
       ) : (
         <div className="flex gap-4">
           {/* Provider 列表 */}
@@ -209,7 +232,7 @@ function LlmProviderSection(): React.JSX.Element {
                     <span className="truncate">{p.name}</span>
                     <span className="ml-2 flex items-center gap-1.5">
                       {!p.apiKey && (
-                        <span className="size-1.5 rounded-full bg-zinc-400" aria-label="未配置 Key" />
+                        <span className="size-1.5 rounded-full bg-zinc-400" aria-label={t('settings.llm.noKey')} />
                       )}
                       {p.enabled && <span className="size-1.5 rounded-full bg-emerald-500" />}
                     </span>
@@ -221,7 +244,7 @@ function LlmProviderSection(): React.JSX.Element {
               onClick={() => void addCustom()}
               className="mt-2 w-full rounded border border-dashed border-zinc-300 px-3 py-2 text-sm text-zinc-500 hover:border-zinc-400 hover:text-zinc-700"
             >
-              + 添加自定义 Provider
+              + {t('settings.llm.addCustom')}
             </button>
           </div>
 
@@ -237,15 +260,15 @@ function LlmProviderSection(): React.JSX.Element {
                     disabled={saving}
                     className="accent-blue-600"
                   />
-                  启用该 Provider
+                  {t('settings.llm.enableProvider')}
                 </label>
                 <span className="text-xs text-zinc-500">
-                  协议：{draft.protocol === 'anthropic' ? 'Anthropic Messages' : 'OpenAI 兼容'}
+                  {t('settings.llm.protocol', { name: draft.protocol === 'anthropic' ? t('settings.llm.protocolAnthropic') : t('settings.llm.protocolOpenai') })}
                 </span>
               </div>
 
               <div>
-                <label className="mb-1 block text-xs text-zinc-500">名称</label>
+                <label className="mb-1 block text-xs text-zinc-500">{t('settings.llm.name')}</label>
                 <input
                   value={draft.name}
                   onChange={(e) => patch({ name: e.target.value })}
@@ -278,13 +301,13 @@ function LlmProviderSection(): React.JSX.Element {
                     onClick={() => setShowKey((v) => !v)}
                     className="shrink-0 rounded border border-zinc-300 px-3 text-xs text-zinc-600 hover:text-zinc-800"
                   >
-                    {showKey ? '隐藏' : '显示'}
+                    {showKey ? t('settings.llm.hideKey') : t('settings.llm.showKey')}
                   </button>
                 </div>
               </div>
 
               <div>
-                <label className="mb-1 block text-xs text-zinc-500">模型列表</label>
+                <label className="mb-1 block text-xs text-zinc-500">{t('settings.llm.models')}</label>
                 <div className="mb-2 flex flex-wrap gap-2">
                   {draft.models.map((m) => (
                     <span
@@ -295,14 +318,14 @@ function LlmProviderSection(): React.JSX.Element {
                       <button
                         onClick={() => patch({ models: draft.models.filter((x) => x !== m) })}
                         className="text-zinc-400 hover:text-red-600"
-                        aria-label={`移除模型 ${m}`}
+                        aria-label={t('settings.llm.removeModel', { model: m })}
                       >
                         ×
                       </button>
                     </span>
                   ))}
                   {draft.models.length === 0 && (
-                    <span className="text-xs text-zinc-400">暂无模型，请添加</span>
+                    <span className="text-xs text-zinc-400">{t('settings.llm.noModels')}</span>
                   )}
                 </div>
                 <div className="flex gap-2">
@@ -310,14 +333,14 @@ function LlmProviderSection(): React.JSX.Element {
                     value={newModel}
                     onChange={(e) => setNewModel(e.target.value)}
                     onKeyDown={(e) => e.key === 'Enter' && addModel()}
-                    placeholder="输入模型 ID，回车添加"
+                    placeholder={t('settings.llm.modelPlaceholder')}
                     className="w-full rounded border border-zinc-300 bg-white px-3 py-2 font-mono text-sm text-zinc-800"
                   />
                   <button
                     onClick={addModel}
                     className="shrink-0 rounded border border-zinc-300 px-3 text-sm text-zinc-700 hover:bg-zinc-100"
                   >
-                    添加
+                    {t('settings.llm.add')}
                   </button>
                 </div>
               </div>
@@ -328,21 +351,21 @@ function LlmProviderSection(): React.JSX.Element {
                   disabled={saving}
                   className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
                 >
-                  {saving ? '保存中…' : '保存'}
+                  {saving ? t('common.saving') : t('common.save')}
                 </button>
                 <button
                   onClick={() => void testProvider()}
                   disabled={testing || !draft.apiKey}
                   className="rounded border border-zinc-300 px-4 py-2 text-sm text-zinc-700 hover:bg-zinc-100 disabled:opacity-50"
                 >
-                  {testing ? '测试中…' : '测试连接'}
+                  {testing ? t('settings.llm.testing') : t('settings.llm.testConnection')}
                 </button>
                 {!draft.builtin && (
                   <button
                     onClick={() => void remove()}
                     className="rounded border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
                   >
-                    删除
+                    {t('common.delete')}
                   </button>
                 )}
                 {savedTip && <span className="text-sm text-emerald-600">{savedTip}</span>}
@@ -351,7 +374,7 @@ function LlmProviderSection(): React.JSX.Element {
               {testResult && (
                 <div className="border-t border-zinc-200 pt-3">
                   <div className="mb-2 flex flex-wrap items-center gap-x-3 gap-y-1">
-                    <span className="text-xs font-medium text-zinc-500">Provider 连接</span>
+                    <span className="text-xs font-medium text-zinc-500">{t('settings.llm.providerConnection')}</span>
                     <span
                       className={`text-sm font-semibold ${
                         testResult.ok ? 'text-emerald-700' : 'text-red-700'
@@ -362,9 +385,9 @@ function LlmProviderSection(): React.JSX.Element {
                     <span className="text-xs text-zinc-500">
                       {testResult.ok
                         ? testResult.availableModelCount !== undefined
-                          ? `HTTP ${testResult.status ?? 200}，发现 ${testResult.availableModelCount} 个模型`
-                          : `HTTP ${testResult.status ?? 200}，已逐一探测 ${testResult.models.length} 个配置模型`
-                        : testResult.error ?? '未知连接错误'}
+                          ? t('settings.llm.httpFoundModels', { status: testResult.status ?? 200, count: testResult.availableModelCount })
+                          : t('settings.llm.httpProbedModels', { status: testResult.status ?? 200, count: testResult.models.length })
+                        : testResult.error ?? t('settings.llm.unknownError')}
                     </span>
                   </div>
 
@@ -378,9 +401,9 @@ function LlmProviderSection(): React.JSX.Element {
                     <table className="w-full text-left text-xs">
                       <thead>
                         <tr className="border-b border-zinc-200 text-zinc-500">
-                          <th className="py-1.5 pr-3 font-medium">模型 ID</th>
-                          <th className="w-24 py-1.5 pr-3 font-medium">状态</th>
-                          <th className="py-1.5 font-medium">说明</th>
+                          <th className="py-1.5 pr-3 font-medium">{t('settings.llm.thModelId')}</th>
+                          <th className="w-24 py-1.5 pr-3 font-medium">{t('settings.llm.thStatus')}</th>
+                          <th className="py-1.5 font-medium">{t('settings.llm.thNote')}</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -401,7 +424,7 @@ function LlmProviderSection(): React.JSX.Element {
                                   ? 'PASS'
                                   : model.status === 'fail'
                                     ? 'FAIL'
-                                    : '未测试'}
+                                    : t('settings.llm.statusUntested')}
                               </span>
                             </td>
                             <td className="py-1.5 text-zinc-500">{model.message}</td>
@@ -410,7 +433,7 @@ function LlmProviderSection(): React.JSX.Element {
                         {testResult.models.length === 0 && (
                           <tr>
                             <td colSpan={3} className="py-2 text-zinc-400">
-                              当前未配置模型 ID；Provider 连接结果仍然有效。
+                              {t('settings.llm.noModelIds')}
                             </td>
                           </tr>
                         )}
@@ -430,6 +453,7 @@ function LlmProviderSection(): React.JSX.Element {
 // ==================== EDA 工具链探测 ====================
 
 function EdaDetectSection(): React.JSX.Element {
+  const { t } = useTranslation()
   const [tools, setTools] = useState<ToolDetection[] | null>(null)
   const [detecting, setDetecting] = useState(false)
   const [detectError, setDetectError] = useState('')
@@ -442,10 +466,10 @@ function EdaDetectSection(): React.JSX.Element {
     try {
       const detected = await window.moonglass.eda.detectTools(force)
       setTools(detected)
-      if (detected.length === 0) setDetectError('主进程未返回任何环境检测项，请重启 MoonGlass 后重试。')
+      if (detected.length === 0) setDetectError(t('settings.eda.noItems'))
     } catch (error) {
       setTools([])
-      setDetectError(`环境检测失败：${error instanceof Error ? error.message : String(error)}`)
+      setDetectError(t('settings.eda.detectFailed', { message: error instanceof Error ? error.message : String(error) }))
     } finally {
       setDetecting(false)
     }
@@ -470,7 +494,7 @@ function EdaDetectSection(): React.JSX.Element {
         }
       } catch (error) {
         if (!closed) {
-          setInstallMessage(`安装状态读取失败：${error instanceof Error ? error.message : String(error)}`)
+          setInstallMessage(t('settings.eda.installStatusFailed', { message: error instanceof Error ? error.message : String(error) }))
           setInstalling(null)
           await detect(true)
         }
@@ -488,26 +512,26 @@ function EdaDetectSection(): React.JSX.Element {
 
   const installBundle = async (id: string): Promise<void> => {
     const prompt = id === 'python-cocotb'
-      ? '将使用当前 Python 的 pip 安装或升级 Cocotb、cocotb-bus 和 cocotb-coverage，是否继续？'
-      : '将从官方 GitHub Release 下载 OSS CAD Suite。文件较大，是否继续？'
+      ? t('settings.eda.confirmCocotb')
+      : t('settings.eda.confirmOssCad')
     if (!window.confirm(prompt)) return
     setInstalling(id)
-    setInstallMessage(id === 'python-cocotb' ? '正在通过 pip 安装 Cocotb…' : '正在下载并解压工具包，请保持网络连接…')
+    setInstallMessage(id === 'python-cocotb' ? t('settings.eda.installingCocotb') : t('settings.eda.installingBundle'))
     try {
       const job = await window.moonglass.eda.installBundle(id)
       setInstallMessage(job.message)
     } catch (error) {
-      setInstallMessage(`启动安装失败：${error instanceof Error ? error.message : String(error)}`)
+      setInstallMessage(t('settings.eda.installStartFailed', { message: error instanceof Error ? error.message : String(error) }))
       setInstalling(null)
     }
   }
 
-  const categories: Array<{ id: NonNullable<ToolDetection['category']>; label: string; detail: string }> = [
-    { id: 'runtime', label: '基础运行环境', detail: 'Agent、技能脚本和依赖管理' },
-    { id: 'build', label: '构建环境', detail: '版本管理与本地编译' },
-    { id: 'eda', label: 'RTL 与综合', detail: 'Lint、仿真与逻辑综合' },
-    { id: 'verification', label: '验证工具', detail: 'Cocotb、仿真器和波形查看' },
-    { id: 'physical', label: '时序与物理实现', detail: 'STA 和物理感知优化' }
+  const categories: Array<{ id: NonNullable<ToolDetection['category']>; labelKey: MessageKey; detailKey: MessageKey }> = [
+    { id: 'runtime', labelKey: 'settings.eda.categories.runtime.label', detailKey: 'settings.eda.categories.runtime.detail' },
+    { id: 'build', labelKey: 'settings.eda.categories.build.label', detailKey: 'settings.eda.categories.build.detail' },
+    { id: 'eda', labelKey: 'settings.eda.categories.eda.label', detailKey: 'settings.eda.categories.eda.detail' },
+    { id: 'verification', labelKey: 'settings.eda.categories.verification.label', detailKey: 'settings.eda.categories.verification.detail' },
+    { id: 'physical', labelKey: 'settings.eda.categories.physical.label', detailKey: 'settings.eda.categories.physical.detail' }
   ]
 
   const inferLegacyCategory = (tool: ToolDetection): NonNullable<ToolDetection['category']> => {
@@ -522,16 +546,16 @@ function EdaDetectSection(): React.JSX.Element {
     ...tool,
     category: tool.category ?? inferLegacyCategory(tool),
     importance: tool.importance ?? 'recommended' as const,
-    description: tool.description ?? '由旧版主进程返回的工具检测项'
+    description: tool.description ?? t('settings.eda.legacyDescription')
   }))
 
   return (
     <section className="surface-panel mb-8 rounded-lg border border-zinc-200 bg-white p-4">
       <div className="mb-3 flex items-center justify-between">
         <div>
-          <h2 className="font-semibold text-zinc-800">开发环境与 EDA 工具链</h2>
+          <h2 className="font-semibold text-zinc-800">{t('settings.eda.title')}</h2>
           <p className="mt-1 text-sm text-zinc-500">
-            检查 MoonGlass 完整工作流所需的运行时、构建、验证、综合与时序工具。
+            {t('settings.eda.description')}
           </p>
         </div>
         <button
@@ -540,7 +564,7 @@ function EdaDetectSection(): React.JSX.Element {
           className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
         >
           <RefreshCw size={14} className={detecting ? 'animate-spin' : ''} />
-          {detecting ? '检测中…' : '重新检测'}
+          {detecting ? t('settings.eda.detecting') : t('settings.eda.redetect')}
         </button>
       </div>
 
@@ -551,7 +575,7 @@ function EdaDetectSection(): React.JSX.Element {
       {detecting && tools === null && (
         <div className="environment-feedback">
           <RefreshCw size={15} className="animate-spin" />
-          正在逐项检查环境、版本与可执行文件路径…
+          {t('settings.eda.detectingDetail')}
         </div>
       )}
       {detectError && (
@@ -567,14 +591,14 @@ function EdaDetectSection(): React.JSX.Element {
         return (
           <div key={category.id} className="environment-group">
             <div className="environment-group-title">
-              <strong>{category.label}</strong>
-              <span>{category.detail}</span>
-              <span className="ml-auto">{readyCount}/{entries.length} 就绪</span>
+              <strong>{t(category.labelKey)}</strong>
+              <span>{t(category.detailKey)}</span>
+              <span className="ml-auto">{t('settings.eda.ready', { ready: readyCount, total: entries.length })}</span>
             </div>
             <div className="environment-list">
               {entries.length === 0 && (
                 <div className="environment-row text-xs text-zinc-400">
-                  此分组没有收到检测项。请重启 MoonGlass，使主进程与界面版本保持一致。
+                  {t('settings.eda.emptyGroup')}
                 </div>
               )}
               {entries.map((tool) => (
@@ -587,27 +611,27 @@ function EdaDetectSection(): React.JSX.Element {
                   <div className="min-w-0 flex-1">
                     <div className="flex items-center gap-2">
                       <strong className="text-sm text-zinc-700">{tool.tool}</strong>
-                      <span className={`environment-importance importance-${tool.importance}`}>{tool.importance === 'required' ? '必要' : tool.importance === 'recommended' ? '推荐' : '可选'}</span>
-                      <span className={tool.found ? 'text-xs text-emerald-700' : 'text-xs text-zinc-400'}>{tool.found ? '已就绪' : '未找到'}</span>
-                      {tool.found && <span className="rounded border border-zinc-200 px-1.5 py-0.5 text-[10px] text-zinc-500">{tool.source === 'bundled' ? 'MoonGlass 内置' : tool.source === 'managed' ? 'MoonGlass 管理安装' : '系统环境'}</span>}
-                      {!tool.found && tool.builtin && <span className="rounded border border-red-200 px-1.5 py-0.5 text-[10px] text-red-600">内置组件异常</span>}
+                      <span className={`environment-importance importance-${tool.importance}`}>{tool.importance === 'required' ? t('settings.eda.importance.required') : tool.importance === 'recommended' ? t('settings.eda.importance.recommended') : t('settings.eda.importance.optional')}</span>
+                      <span className={tool.found ? 'text-xs text-emerald-700' : 'text-xs text-zinc-400'}>{tool.found ? t('settings.eda.statusReady') : t('settings.eda.statusNotFound')}</span>
+                      {tool.found && <span className="rounded border border-zinc-200 px-1.5 py-0.5 text-[10px] text-zinc-500">{tool.source === 'bundled' ? t('settings.eda.source.bundled') : tool.source === 'managed' ? t('settings.eda.source.managed') : t('settings.eda.source.system')}</span>}
+                      {!tool.found && tool.builtin && <span className="rounded border border-red-200 px-1.5 py-0.5 text-[10px] text-red-600">{t('settings.eda.builtinError')}</span>}
                     </div>
                     <p className="mt-0.5 text-xs text-zinc-500">{tool.description}</p>
                     {tool.found && (
                       <p className="mt-0.5 truncate font-mono text-[10px] text-zinc-400" title={tool.path}>{tool.version ?? tool.path}</p>
                     )}
-                    {!tool.found && tool.builtin && <p className="mt-0.5 text-xs text-red-600">该工具应随 MoonGlass 提供，请重新安装或更换完整软件包。</p>}
+                    {!tool.found && tool.builtin && <p className="mt-0.5 text-xs text-red-600">{t('settings.eda.builtinErrorDetail')}</p>}
                   </div>
                   {!tool.found && !tool.builtin && tool.installId && (
                     <button onClick={() => void installBundle(tool.installId!)} disabled={installing !== null} className="environment-install-button">
                       <Download size={13} />
-                      {installing === tool.installId ? '安装中…' : tool.installId === 'python-cocotb' ? '安装 Cocotb' : '安装工具包'}
+                      {installing === tool.installId ? t('settings.eda.installing') : tool.installId === 'python-cocotb' ? t('settings.eda.installCocotb') : t('settings.eda.installBundle')}
                     </button>
                   )}
                   {!tool.found && !tool.builtin && !tool.installId && tool.installUrl && (
-                    <button onClick={() => void window.moonglass.eda.openInstallPage(tool.installUrl!)} className="environment-install-button" title="打开官方安装指南">
+                    <button onClick={() => void window.moonglass.eda.openInstallPage(tool.installUrl!)} className="environment-install-button" title={t('settings.eda.openGuideTitle')}>
                       <ExternalLink size={14} />
-                      安装指南
+                      {t('settings.eda.installGuide')}
                     </button>
                   )}
                 </div>

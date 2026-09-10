@@ -14,6 +14,7 @@ import { SourcePanel } from '../components/design-browser/SourcePanel'
 import { SignalPanel } from '../components/design-browser/SignalPanel'
 import { TracePanel } from '../components/design-browser/TracePanel'
 import { displayModuleName } from '../components/design-browser/module-name'
+import { useTranslation } from '../i18n'
 
 const MIN_HIERARCHY_WIDTH = 180
 const MAX_HIERARCHY_WIDTH = 480
@@ -70,6 +71,7 @@ function searchDesign(database: DesignDatabase, query: string): SearchResults {
 }
 
 export function DesignBrowserPage(): React.JSX.Element {
+  const { t } = useTranslation()
   const { projectId } = useParams({ from: '/design-browser/$projectId' })
   const [project, setProject] = useState<ChipProject | null>(null)
   const [tops, setTops] = useState<Array<{
@@ -329,7 +331,7 @@ export function DesignBrowserPage(): React.JSX.Element {
     <div className="flex h-full flex-col bg-zinc-100">
       <header className="flex h-14 shrink-0 items-center gap-3 border-b border-zinc-300 bg-white px-4">
         <Link to="/workspace/$projectId" params={{ projectId }} className="text-sm text-zinc-500 hover:text-zinc-900">
-          ← 工作区
+          {t('designBrowser.backToWorkspace')}
         </Link>
         <div className="h-5 w-px bg-zinc-200" />
         <div>
@@ -346,7 +348,7 @@ export function DesignBrowserPage(): React.JSX.Element {
             value={top}
             onChange={(event) => setTop(event.target.value)}
             className="min-w-40 rounded border border-amber-300 bg-amber-50 px-2 py-1.5 text-xs"
-            title="检测到多个根模块，请选择设计顶层"
+            title={t('designBrowser.selectTopTitle')}
           >
             {tops.map((candidate) => (
               <option key={`${candidate.name}-${candidate.file}`} value={candidate.name}>
@@ -361,7 +363,13 @@ export function DesignBrowserPage(): React.JSX.Element {
           disabled={!top || loading}
           className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
         >
-          {loading ? 'Elaborating…' : database ? '重新解析' : hasRecommendedTop ? '自动解析' : '使用所选 Top'}
+          {loading
+            ? t('designBrowser.elaborating')
+            : database
+              ? t('designBrowser.reElaborate')
+              : hasRecommendedTop
+                ? t('designBrowser.autoElaborate')
+                : t('designBrowser.useSelectedTop')}
         </button>
         <div className="h-5 w-px bg-zinc-200" />
         <div className="flex items-center gap-1">
@@ -369,8 +377,8 @@ export function DesignBrowserPage(): React.JSX.Element {
             type="button"
             onClick={() => goHistory(-1)}
             disabled={histIndex <= 0}
-            title="后退"
-            aria-label="导航后退"
+            title={t('designBrowser.navBack')}
+            aria-label={t('designBrowser.navBackAria')}
             className="flex h-7 w-7 items-center justify-center rounded border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
           >
             <ArrowLeft size={14} />
@@ -379,8 +387,8 @@ export function DesignBrowserPage(): React.JSX.Element {
             type="button"
             onClick={() => goHistory(1)}
             disabled={histIndex >= historyRef.current.length - 1}
-            title="前进"
-            aria-label="导航前进"
+            title={t('designBrowser.navForward')}
+            aria-label={t('designBrowser.navForwardAria')}
             className="flex h-7 w-7 items-center justify-center rounded border border-zinc-300 bg-white text-zinc-600 hover:bg-zinc-50 disabled:opacity-40"
           >
             <ArrowRight size={14} />
@@ -398,7 +406,7 @@ export function DesignBrowserPage(): React.JSX.Element {
             onKeyDown={(event) => {
               if (event.key === 'Escape') setSearchOpen(false)
             }}
-            placeholder="全局搜索实例 / 模块 / 信号…"
+            placeholder={t('designBrowser.searchPlaceholder')}
             className="w-64 rounded border border-zinc-300 py-1.5 pl-7 pr-2 text-xs"
           />
           {searchResults && query.trim() && (
@@ -406,11 +414,11 @@ export function DesignBrowserPage(): React.JSX.Element {
               {searchResults.instances.length === 0 &&
                 searchResults.modules.length === 0 &&
                 searchResults.nets.length === 0 && (
-                  <p className="px-3 py-2 text-xs text-zinc-400">无匹配结果</p>
+                  <p className="px-3 py-2 text-xs text-zinc-400">{t('designBrowser.noSearchResults')}</p>
                 )}
               {searchResults.instances.length > 0 && (
                 <div>
-                  <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">实例</p>
+                  <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">{t('designBrowser.searchGroups.instances')}</p>
                   {searchResults.instances.map((node) => (
                     <button
                       key={node.path}
@@ -433,7 +441,7 @@ export function DesignBrowserPage(): React.JSX.Element {
               )}
               {searchResults.modules.length > 0 && (
                 <div>
-                  <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">模块</p>
+                  <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">{t('designBrowser.searchGroups.modules')}</p>
                   {searchResults.modules.map((module) => (
                     <button
                       key={module.name}
@@ -451,7 +459,7 @@ export function DesignBrowserPage(): React.JSX.Element {
               )}
               {searchResults.nets.length > 0 && (
                 <div>
-                  <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">信号</p>
+                  <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">{t('designBrowser.searchGroups.nets')}</p>
                   {searchResults.nets.map((item) => (
                     <button
                       key={`${item.module}.${item.net}`}
@@ -481,7 +489,7 @@ export function DesignBrowserPage(): React.JSX.Element {
           <button
             type="button"
             onClick={() => setError('')}
-            aria-label="关闭错误提示"
+            aria-label={t('designBrowser.dismissError')}
             className="shrink-0 rounded px-1 text-red-400 hover:bg-red-100 hover:text-red-700"
           >
             ✕
@@ -492,10 +500,10 @@ export function DesignBrowserPage(): React.JSX.Element {
       {!database || !context ? (
         <div className="flex flex-1 items-center justify-center text-sm text-zinc-500">
           {loading
-            ? `正在自动加载 ${top || 'design'}…`
+            ? t('designBrowser.autoLoading', { top: top || 'design' })
             : hasRecommendedTop
-              ? '正在准备设计数据库…'
-              : '检测到多个可能的根模块，请选择 Top 后加载'}
+              ? t('designBrowser.preparingDatabase')
+              : t('designBrowser.multipleRootsHint')}
         </div>
       ) : (
         <div className="flex min-h-0 flex-1">
@@ -521,7 +529,7 @@ export function DesignBrowserPage(): React.JSX.Element {
           </aside>
 
           <ColumnResizeHandle
-            label="调整设计层次区域宽度"
+            label={t('designBrowser.resizeHierarchy')}
             onDrag={(deltaX) =>
               setHierarchyWidth((width) =>
                 Math.min(MAX_HIERARCHY_WIDTH, Math.max(MIN_HIERARCHY_WIDTH, width + deltaX))
@@ -542,7 +550,7 @@ export function DesignBrowserPage(): React.JSX.Element {
               />
             </div>
             <RowResizeHandle
-              label="调整信号列表区域高度"
+              label={t('designBrowser.resizeSignals')}
               onDrag={(deltaY) =>
                 setSignalHeight((height) =>
                   Math.min(MAX_SIGNAL_HEIGHT, Math.max(MIN_SIGNAL_HEIGHT, height - deltaY))
@@ -555,7 +563,7 @@ export function DesignBrowserPage(): React.JSX.Element {
           </div>
 
           <ColumnResizeHandle
-            label="调整 Inspector 区域宽度"
+            label={t('designBrowser.resizeInspector')}
             onDrag={(deltaX) =>
               setInspectorWidth((width) =>
                 Math.min(MAX_INSPECTOR_WIDTH, Math.max(MIN_INSPECTOR_WIDTH, width - deltaX))
@@ -602,7 +610,7 @@ export function DesignBrowserPage(): React.JSX.Element {
                       }
                       className="mt-2 rounded border border-blue-300 bg-blue-50 px-2 py-1 text-blue-700 hover:bg-blue-100"
                     >
-                      进入该实例 →
+                      {t('designBrowser.enterInstance')}
                     </button>
                   )}
                   <table className="mt-2 w-full">
@@ -618,7 +626,7 @@ export function DesignBrowserPage(): React.JSX.Element {
                 </div>
               ) : (
                 <p className="p-3 text-xs text-zinc-400">
-                  在信号列表或源码中单击标识符选择信号；选中后可逐层展开 Driver / Load 追踪树
+                  {t('designBrowser.inspectorHint')}
                 </p>
               )}
             </div>

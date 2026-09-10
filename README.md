@@ -2,9 +2,9 @@
 
 MoonGlass 是面向 ASIC/SoC 工程师的芯片开发全流程 AI 工作台。它把需求、规格、架构、RTL、验证、质量和综合组织成一条可追踪、可审查、可恢复的工程链，让 Agent 的工作结果不仅是“生成了一段代码”，而是能够逐步形成设计文件、验证证据、问题记录和交付报告。
 
-当前版本：**v0.9.0** ｜ Windows x64
+当前版本：**v0.9.2** ｜ Windows x64
 
-[下载绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.0) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
+[下载绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.2) · [v0.9.2 更新说明](./RELEASE-NOTES-v0.9.2-ZH-CN.md) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
 
 ## MoonGlass 能做什么
 
@@ -71,7 +71,7 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 
 ## 快速开始
 
-普通用户建议直接下载 [Windows x64 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.0)，解压后运行 `MoonGlass.exe`。首次使用：
+普通用户建议直接下载 [Windows x64 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.2)，解压后运行 `MoonGlass.exe`。首次使用：
 
 1. 在“设置”中配置模型 Provider、API Key、Base URL 和模型列表。
 2. 在“设置”中检查开发环境与 EDA 工具链状态。
@@ -81,20 +81,13 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 
 完整说明：[MoonGlass 用户手册](./docs/USER-MANUAL-ZH-CN.md) ｜ [HTML 快速手册](./docs/QUICK-START-ZH-CN.html)
 
-## 从源码运行
+## 公开源码与完整产品
 
-要求：Node.js ≥ 22，pnpm ≥ 10。Python 3.10+ 和 EDA 工具可由设置页检测，也可以使用系统中已有安装。
+当前仓库按“方案 B”公开产品 UI、国际化资源、共享类型、公共 IPC 契约、六阶段流程表达和工程文档，主要用于代码阅读、交互改进、方法学讨论与公共接口协作。
 
-```bash
-pnpm install
-pnpm dev
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm dist
-```
+完整 Agent、AIGV/EDA/RTL 后台执行实现、Pi 运行时、内置工具链和 Demo 工程不在当前公开范围内，因此本仓库**不是完整绿色版的可复现构建源**。普通用户请直接使用 GitHub Release 中经过打包与校验的 Windows x64 绿色版。
 
-绿色版构建入口：[`Build-Green.ps1`](./Build-Green.ps1)。它会执行检查、构建、打包、敏感信息扫描并输出 SHA-256 校验文件。
+详细边界见：[公开源码范围说明](./PUBLIC-SOURCE-SCOPE.md)。
 
 ## 工程思想
 
@@ -116,6 +109,7 @@ MoonGlass 同时作为一个工程实验平台，持续整理 ASIC Agent、证�
 - [MoonGlass AIGV 方法学](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)
 - [MoonGlass AIGV 2.0 白皮书](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html)
 - [长时 Agent 芯片开发工程学](./docs/MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html)
+- [MoonGlass IP 可靠性交付客户问答](./docs/MOONGLASS-IP-RELIABILITY-FAQ-ZH-CN.html)
 - [总体工程报告](./reports/overall-report.md)
 
 欢迎通过 GitHub Issues 讨论复现问题、验证策略、工具链适配、AIGV 语义和工程改进建议。

@@ -9,26 +9,28 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { BookOpen, Boxes, CircleHelp, Factory, FolderKanban, Palette, ScrollText, Settings } from 'lucide-react'
 import { APP_INFO } from '@shared/app-info'
 import logoUrl from '../assets/logo.png'
+import { useTranslation, type MessageKey } from '../i18n'
 import { ThemePicker } from './ThemePicker'
 
 interface NavItem {
   to: string
-  label: string
+  labelKey: MessageKey
   icon: typeof FolderKanban
 }
 
 const NAV_ITEMS: NavItem[] = [
-  { to: '/projects', label: '项目', icon: FolderKanban },
-  { to: '/ip-library', label: 'IP库', icon: Boxes },
-  { to: '/process-libraries', label: '工艺库', icon: Factory },
-  { to: '/scripts', label: '脚本', icon: ScrollText },
-  { to: '/knowledge', label: '知识库', icon: BookOpen },
-  { to: '/settings', label: '设置', icon: Settings },
-  { to: '/information', label: '关于', icon: CircleHelp }
+  { to: '/projects', labelKey: 'sidebar.projects', icon: FolderKanban },
+  { to: '/ip-library', labelKey: 'sidebar.ipLibrary', icon: Boxes },
+  { to: '/process-libraries', labelKey: 'sidebar.processLibraries', icon: Factory },
+  { to: '/scripts', labelKey: 'sidebar.scripts', icon: ScrollText },
+  { to: '/knowledge', labelKey: 'sidebar.knowledge', icon: BookOpen },
+  { to: '/settings', labelKey: 'sidebar.settings', icon: Settings },
+  { to: '/information', labelKey: 'sidebar.information', icon: CircleHelp }
 ]
 
 export function Sidebar(): React.JSX.Element {
   const { location } = useRouterState()
+  const { t } = useTranslation()
 
   return (
     <nav className="app-sidebar flex w-16 flex-col items-center gap-1 border-r border-zinc-200 bg-white py-4">
@@ -37,7 +39,7 @@ export function Sidebar(): React.JSX.Element {
         <div className="logo-preview" role="tooltip">
           <img src={logoUrl} alt="" />
           <strong>MoonGlass</strong>
-          <span>ASIC Design Agent</span>
+          <span>{t('sidebar.tagline')}</span>
         </div>
       </div>
       {NAV_ITEMS.map((item) => {
@@ -54,14 +56,14 @@ export function Sidebar(): React.JSX.Element {
             }`}
           >
             <Icon size={17} strokeWidth={active ? 2.2 : 1.8} aria-hidden="true" />
-            <span className="mt-1 scale-90">{item.label}</span>
+            <span className="mt-1 scale-90">{t(item.labelKey)}</span>
           </Link>
         )
       })}
       <div className="sidebar-theme mt-auto">
-        <button type="button" className="theme-trigger" title="切换主题" aria-label="切换主题"><Palette size={17} /></button>
+        <button type="button" className="theme-trigger" title={t('sidebar.toggleTheme')} aria-label={t('sidebar.toggleTheme')}><Palette size={17} /></button>
         <div className="theme-popover">
-          <div className="theme-popover-title">外观与强调色</div>
+          <div className="theme-popover-title">{t('sidebar.themePopoverTitle')}</div>
           <ThemePicker compact />
         </div>
       </div>

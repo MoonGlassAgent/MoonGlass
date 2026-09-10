@@ -628,6 +628,8 @@ export interface VerificationRunStatus {
   }
   planned: VerificationPlannedCase[]
   executed: VerificationExecutedCase[]
+  /** test_plan.md 缺少标准表头（首列 TEST ID）时的提示；渲染端展示以代替静默列错位 */
+  headerWarning?: string
   summary: {
     planned: number
     executed: number

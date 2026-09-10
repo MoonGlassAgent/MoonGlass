@@ -1,0 +1,123 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MoonGlass IP 可靠性交付问答</title>
+  <meta name="description" content="面向客户、芯片工程师与技术决策者的 MoonGlass IP 可靠性交付问答，覆盖规格追溯、验证证据、覆盖率、Formal、工具链、变更回归、签核边界与验收方法。">
+  <meta name="author" content="MoonGlassAgent">
+  <meta property="og:title" content="MoonGlass IP 可靠性交付问答">
+  <meta property="og:description" content="MoonGlass 如何证明交付的 IP 可靠？一份不回避边界、以工程证据回答问题的客户问答手册。">
+  <meta property="og:image" content="https://raw.githubusercontent.com/MoonGlassAgent/MoonGlass/main/docs/images/v086/03-verification-posture.png">
+  <style>
+    :root{--ink:#182029;--muted:#61707c;--line:#d8e0e5;--paper:#fff;--wash:#f2f5f6;--accent:#087f6b;--accent-dark:#075f52;--blue:#245c9f;--warn:#8a5a00;--danger:#a33a32;--max:1160px}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--wash);color:var(--ink);font:16px/1.72 "Segoe UI","Microsoft YaHei",sans-serif;letter-spacing:0}a{color:var(--blue);text-decoration:none}a:hover{text-decoration:underline}
+    .hero{background:#111a21;color:#fff;border-bottom:5px solid var(--accent);padding:54px 24px 48px}.hero-inner{max-width:var(--max);margin:auto}.kicker{font-size:13px;color:#8ed6ca;font-weight:700}.hero h1{font:700 44px/1.2 Georgia,"Microsoft YaHei",serif;margin:14px 0 16px}.hero p{max-width:900px;color:#d4dde4;font-size:19px;margin:0}.meta{display:flex;gap:22px;flex-wrap:wrap;color:#aab8c2;font-size:13px;margin-top:24px}
+    .toolbar{position:sticky;top:0;z-index:10;background:rgba(255,255,255,.96);border-bottom:1px solid var(--line);backdrop-filter:blur(10px)}.toolbar-inner{max-width:var(--max);margin:auto;padding:12px 24px;display:flex;gap:10px;align-items:center}.search{min-width:260px;flex:1;border:1px solid #aebbc4;padding:10px 12px;font:inherit}.filter,.command{border:1px solid #aebbc4;background:#fff;color:var(--ink);padding:10px 12px;font:inherit;cursor:pointer}.command:hover,.filter:hover{border-color:var(--accent)}
+    main{max-width:var(--max);margin:28px auto 70px;background:var(--paper);padding:42px 58px;box-shadow:0 6px 24px rgba(20,35,45,.08)}h2{font:700 28px/1.35 Georgia,"Microsoft YaHei",serif;margin:52px 0 18px;border-top:1px solid var(--line);padding-top:32px}h2:first-of-type{margin-top:12px;border-top:0;padding-top:0}h3{font-size:19px;margin:0}.lead{font-size:19px}.thesis{border-left:5px solid var(--accent);background:#edf8f5;padding:22px 25px;margin:0 0 28px}.thesis strong{font-size:19px}.warning{border:1px solid #e4ca8e;background:#fff8e8;padding:16px 20px;margin:20px 0}.grid{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;margin:20px 0}.grid>div{border-top:4px solid var(--accent);background:#f4f7f7;padding:16px}.grid b{display:block;margin-bottom:6px}.small{font-size:13px;color:var(--muted)}
+    .faq{border:1px solid var(--line);margin:12px 0;background:#fff}.faq[open]{border-color:#9fc8c0;box-shadow:0 3px 12px rgba(20,60,55,.06)}summary{cursor:pointer;padding:17px 50px 17px 18px;font-weight:700;position:relative;list-style:none}summary::-webkit-details-marker{display:none}summary:after{content:"+";position:absolute;right:18px;top:13px;color:var(--accent);font-size:25px;font-weight:400}.faq[open] summary:after{content:"−"}.answer{border-top:1px solid var(--line);padding:18px 22px}.answer p:first-child{margin-top:0}.answer p:last-child{margin-bottom:0}.direct{font-weight:700;color:var(--accent-dark)}.boundary{color:var(--danger);font-weight:700}.evidence{background:#f5f8fa;border-left:3px solid var(--blue);padding:10px 14px;margin:12px 0}.tag{display:inline-block;font-size:12px;color:var(--accent-dark);background:#e5f4f1;padding:2px 7px;margin-left:8px;vertical-align:2px}
+    table{width:100%;border-collapse:collapse;margin:18px 0 26px;font-size:14px}th,td{border:1px solid var(--line);padding:10px 12px;text-align:left;vertical-align:top}th{background:#eef3f5}.checklist li{margin:7px 0}.no-results{display:none;text-align:center;padding:34px;color:var(--muted)}.footer{margin-top:48px;padding-top:22px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}
+    @media(max-width:780px){.hero h1{font-size:32px}.toolbar-inner{flex-wrap:wrap}.search{min-width:100%}.grid{grid-template-columns:1fr}main{margin:0;padding:28px 18px}table{display:block;overflow-x:auto}}
+    @media print{body{background:#fff}.hero{background:#fff;color:#000;border-bottom:2px solid #000;padding:24px}.hero p,.meta,.kicker{color:#333}.toolbar{display:none}main{box-shadow:none;margin:0;max-width:none;padding:24px}.faq{break-inside:avoid}.faq .answer{display:block}.faq:not([open])>.answer{display:block}summary:after{display:none}}
+  </style>
+</head>
+<body>
+  <header class="hero"><div class="hero-inner">
+    <div class="kicker">Customer FAQ · Evidence-driven ASIC IP Delivery</div>
+    <h1>MoonGlass IP 可靠性交付问答</h1>
+    <p>客户真正关心的不是 Agent 写了多少代码，而是：规格是否满足、风险是否释放、证据是否可信，以及谁为最终签核负责。</p>
+    <div class="meta"><span>MoonGlass ASIC Design Agent</span><span>适用版本：v0.9.0+</span><span>更新：2026-09-10</span><span>moonglassagent@126.com</span></div>
+  </div></header>
+
+  <div class="toolbar"><div class="toolbar-inner">
+    <input id="search" class="search" type="search" placeholder="搜索：覆盖率、Formal、Golden Model、签核……" aria-label="搜索问答">
+    <select id="category" class="filter" aria-label="选择分类"><option value="all">全部分类</option><option value="position">基本立场</option><option value="evidence">验证证据</option><option value="tool">工具链</option><option value="agent">Agent 风险</option><option value="change">变更与复现</option><option value="delivery">交付与验收</option><option value="boundary">能力边界</option></select>
+    <button class="command" id="expand" type="button">全部展开</button><button class="command" id="collapse" type="button">全部收起</button>
+  </div></div>
+
+  <main>
+    <section class="thesis">
+      <strong>最短回答：MoonGlass 不用“AI 说完成了”证明 IP 可靠。</strong>
+      <p>MoonGlass 通过需求与规格追溯、结构化 Verification Intent、风险场景、可复现测试、独立 Oracle、覆盖率、Formal、Lint、综合、RTL 哈希和变更回归构造证据链，并据此形成机器签核建议。最终签核仍应由有责任能力的芯片工程师或组织完成。</p>
+    </section>
+    <div class="grid">
+      <div><b>可靠不等于零缺陷</b><span class="small">可靠性交付是对已定义规格和已识别风险提供充分、可复现、可审查的证据。</span></div>
+      <div><b>覆盖率不等于完备性</b><span class="small">代码覆盖、功能覆盖、需求覆盖、风险覆盖和 Oracle 有效性必须结合判断。</span></div>
+      <div><b>Agent 不能自我签核</b><span class="small">自然语言结论必须回到日志、测试、覆盖率、属性、波形和版本化工件。</span></div>
+    </div>
+
+    <h2>一、基本立场</h2>
+    <details class="faq" data-category="position" open><summary>Q1：MoonGlass 能保证生成的 IP 绝对没有 Bug 吗？<span class="tag">核心问题</span></summary><div class="answer"><p class="direct">不能，任何严肃的 EDA 工具、验证方法或工程团队都不应承诺“绝对无 Bug”。</p><p>MoonGlass 能做的是把“相信生成结果”变成“审查交付证据”：哪些需求已验证、哪些场景已覆盖、哪些属性已证明、哪些风险仍然开放、使用了什么 RTL 版本和工具版本，都应能够被追踪。可靠性的合理表达是“在约定规格、验证空间、工具能力和证据门槛下达到可接受风险”，而不是宣称数学意义上的零缺陷。</p></div></details>
+    <details class="faq" data-category="position"><summary>Q2：既然不能保证零缺陷，MoonGlass 的价值是什么？</summary><div class="answer"><p class="direct">价值在于提高发现缺陷、解释风险和复现结论的能力，同时减少重复性的工程劳动。</p><p>Agent 可以承担规格整理、RTL 实现、验证环境搭建、回归执行、证据归档和缺口迭代；工程师把精力放在规格取舍、架构选择、Corner Case、风险接受和最终签核上。它改变的是工程分工和闭环效率，不是取消工程责任。</p></div></details>
+    <details class="faq" data-category="position"><summary>Q3：MoonGlass 与普通 Coding Agent 最大的区别是什么？</summary><div class="answer"><p class="direct">普通 Coding Agent 主要优化“完成任务”，MoonGlass 还管理阶段、状态、变更、工具和证据。</p><p>MoonGlass 使用六阶段流程组织需求-规格、架构、RTL、验证、QA 和综合；前序修改会使已完成的后序证据失效或进入变更响应；验证结论需要绑定当前 RTL，而不能只依据对话中的完成声明。</p></div></details>
+    <details class="faq" data-category="position"><summary>Q4：MoonGlass 是要替代设计工程师和验证工程师吗？</summary><div class="answer"><p class="direct">不是。它更适合替代大量搬运、搭建、执行和整理工作，而不是替代技术判断与责任主体。</p><p>规格冲突如何取舍、架构为何这样选、哪些残余风险可以接受、是否满足产品与流片要求，仍需要工程师判断。MoonGlass 让架构到 RTL 再到验证的执行活动更多成为受控的质量工作。</p></div></details>
+
+    <h2>二、需求、规格与验证证据</h2>
+    <details class="faq" data-category="evidence"><summary>Q5：如何证明 RTL 满足了客户规格？<span class="tag">追溯</span></summary><div class="answer"><p class="direct">通过 Requirement → Specification → Design → Verification Intent → Scenario/Test → Evidence 的双向追溯链证明。</p><p>每个稳定需求 ID 应映射到可实施规格、设计位置、验证目标和证据。缺少映射的需求不能仅凭测试通过判定关闭；规格发生变化时，相关设计与验证证据需要重新响应。</p><div class="evidence"><b>客户应查看：</b>需求-规格矩阵、Verification Intent 清单、场景命中记录、测试结果、覆盖率报告、未关闭风险。</div></div></details>
+    <details class="faq" data-category="evidence"><summary>Q6：追溯矩阵会不会只是形式完整，实际语义不正确？</summary><div class="answer"><p class="direct">会，所以“有 ID”只是最低门槛，不是充分证明。</p><p>有效追溯还要检查：测试刺激是否真正触达需求条件、观测点是否能看到预期行为、Checker 是否判断了核心结果、异常路径是否有独立场景。MoonGlass 可发现缺失和结构不一致，但语义合理性仍应接受工程 Review 和隐藏测试检验。</p></div></details>
+    <details class="faq" data-category="evidence"><summary>Q7：为什么不能把“所有测试 PASS”直接当成验证完成？</summary><div class="answer"><p class="direct">因为测试可能没有有效刺激，也可能没有有效检查。</p><p>一个永远不进入目标状态的测试、一个只打印结果而不比较的测试、一个被错误约束屏蔽的场景，都可能显示 PASS。MoonGlass 因此同时检查测试结果、场景命中、Oracle、覆盖率、约束和证据新鲜度。</p></div></details>
+    <details class="faq" data-category="evidence"><summary>Q8：MoonGlass 使用哪些覆盖率？</summary><div class="answer"><p class="direct">覆盖率应至少分为代码覆盖、功能/场景覆盖、需求覆盖和风险覆盖。</p><p>Verilator 可提供行、分支、Toggle 等 RTL 覆盖数据；Cocotb 可收集功能 Coverpoint 与 Cross；追溯矩阵衡量需求是否有验证证据；AIGV 验证态势衡量高风险 Scenario、Intent 和 Coverage Hole 的闭环状态。具体可用项取决于项目工具链和测试实现。</p></div></details>
+    <details class="faq" data-category="evidence"><summary>Q9：覆盖率达到 100% 是否意味着可靠？</summary><div class="answer"><p class="direct">不意味着。高覆盖率可以证明代码被执行，却不能单独证明行为正确。</p><p>弱 Checker 也能跑出高覆盖率。必须结合需求语义、Corner Case、断言、Golden Model、协议 Checker、端到端结果、变异测试和残余风险判断。覆盖率是发现验证空洞的传感器，不是质量结论本身。</p></div></details>
+    <details class="faq" data-category="evidence"><summary>Q10：Verification Intent 与普通测试点有什么区别？</summary><div class="answer"><p class="direct">Intent 描述要证明的行为语义，测试只是实现该目标的一种手段。</p><p>例如“响应与错误同时出现”只是分类；有效 Intent 应表达成：“当事务 CH2 在已有 outstanding 请求时收到错误响应，设计必须只完成一次出队、保持计数不下溢并上报对应错误”。它应同时定义前置条件、刺激、观测点、预期结果和证据。</p></div></details>
+    <details class="faq" data-category="evidence"><summary>Q11：Golden Model 和 Checker 本身错了怎么办？</summary><div class="answer"><p class="direct">不能把任何单一 Oracle 当成绝对真值。</p><p>高风险功能应尽量采用多源 Oracle：Golden Model、协议 Checker、不变量断言、端到端语义比较、Metamorphic Relation 或独立参考实现。Oracle 之间冲突时应进入仲裁，而不是选择有利于 RTL 的结果。必要时用已知向量、反例和变异缺陷检验 Checker 是否真正能报错。</p></div></details>
+    <details class="faq" data-category="evidence"><summary>Q12：MoonGlass 如何寻找 Corner Case？</summary><div class="answer"><p class="direct">从规格边界、RTL 结构、状态交互、时序关系和已有覆盖反馈共同生成候选场景。</p><p>AIGV 将 Feature、Boundary、Interaction、Temporal、State 作为描述维度，结合 FSM、共享状态、计数器边界、背压、复位、并发与错误路径排序。Agent 可以扩展场景，但最终优先级应由风险和证据缺口驱动，而不是无限枚举组合。</p></div></details>
+    <details class="faq" data-category="evidence"><summary>Q13：Formal 能证明什么？</summary><div class="answer"><p class="direct">Formal 可以在明确模型、约束、属性和深度下证明属性成立、找到反例或证明状态不可达。</p><p>它不能自动证明全部产品语义；错误的约束可能造成 vacuity，错误的属性会证明错误目标，BMC 深度不足也不能冒充完整证明。MoonGlass 会记录属性、引擎、深度、结果和日志，并区分 PASS、FAIL、UNKNOWN 与工具限制。</p></div></details>
+    <details class="faq" data-category="evidence"><summary>Q14：子模块和顶层是否都跑同样完整的验证流程？</summary><div class="answer"><p class="direct">不应一刀切，应按模块角色和风险分层。</p><p>简单胶水模块可采用 Lint、接口检查和少量冒烟；算法核心、仲裁器、计数/队列、协议转换、跨时钟控制等模块可能需要独立 Golden Model、断言和覆盖率；顶层重点验证端到端功能、模块交互、并发、复位和系统级错误传播。</p></div></details>
+
+    <h2>三、工具链与结果可信度</h2>
+    <details class="faq" data-category="tool"><summary>Q15：开源 EDA 工具产生的结论可信吗？</summary><div class="answer"><p class="direct">在其支持的语言、模型和检查范围内可以形成有效工程证据，但不能自动等同于商业签核。</p><p>Icarus、Verilator、Yosys、Slang、SymbiYosys 等工具有明确能力边界。MoonGlass 应保存版本、命令、输入、日志和退出状态，并通过最小自检确认工具真正可用。关键项目仍可接入组织认可的商业仿真、CDC/RDC、Lint、Formal 和综合工具复核。</p></div></details>
+    <details class="faq" data-category="tool"><summary>Q16：如何区分 RTL 缺陷、测试缺陷和工具链缺陷？</summary><div class="answer"><p class="direct">通过分层复现和根因分类，而不是看到红色日志就修改 RTL。</p><p>先确认编译是否进入设计、测试是否有效启动、Checker 是否命中、工具语法是否支持，再用最小用例、第二工具或第二 Oracle 交叉验证。解析失败、环境缺失和超时应登记为工具/环境限制，不能记成 RTL FAIL，也不能虚报 PASS。</p></div></details>
+    <details class="faq" data-category="tool"><summary>Q17：为什么要保存原始日志，报告摘要不够吗？</summary><div class="answer"><p class="direct">摘要用于决策，原始日志用于审计和复现，两者不可互相替代。</p><p>Agent 可能误解日志，解析器也可能有缺陷。交付证据应保留原始命令、标准输出、错误输出、JUnit、覆盖数据、波形和工具版本；总体报告只引用这些证据，不应重新创造事实。</p></div></details>
+    <details class="faq" data-category="tool"><summary>Q18：同一工程在另一台机器上能得到相同结果吗？</summary><div class="answer"><p class="direct">目标是可复现，但必须固定环境和随机性。</p><p>应记录工具版本、依赖版本、命令参数、随机种子、RTL/测试哈希、宏定义、Filelist、时钟复位配置和工艺库。若依赖未固定或测试含非确定行为，就不能承诺逐字节一致，只能比较功能结论和关键指标。</p></div></details>
+
+    <h2>四、Agent 自身风险</h2>
+    <details class="faq" data-category="agent"><summary>Q19：模型会不会“幻觉”出不存在的测试结果？</summary><div class="answer"><p class="direct">会，所以 MoonGlass 不接受自然语言自述作为机器证据。</p><p>验证完成必须能够找到实际产物，并检查运行状态、退出码、结果结构、RTL 哈希和时间戳。不存在的路径、被截断的输出、过期日志或仅出现在 thinking 中的文件，都不能支持签核。</p></div></details>
+    <details class="faq" data-category="agent"><summary>Q20：设计和验证都由同一个模型完成，会不会产生同源错误？</summary><div class="answer"><p class="direct">存在同源偏差，因此高风险目标需要独立证据与适度分离。</p><p>主 Agent 可以承担端到端交付，但 Review 应直接读取规格、RTL、测试、日志和覆盖率，而不是接受主 Agent 的总结。必要时使用不同模型、不同上下文、隐藏测试、独立 Oracle 或人工专家 Review。</p></div></details>
+    <details class="faq" data-category="agent"><summary>Q21：模型换了，交付质量会不会变化？</summary><div class="answer"><p class="direct">会变化，但门禁和证据标准不应随模型降低。</p><p>模型影响需求理解、代码质量、调试速度和 Token 成本；确定性工具、交付 Schema、证据要求和人工签核应保持稳定。模型变更应作为运行元数据记录，并通过基准项目和缺陷注入评估。</p></div></details>
+    <details class="faq" data-category="agent"><summary>Q22：Agent 长时间反复调试，会不会把代码越改越坏？</summary><div class="answer"><p class="direct">这是现实风险，需要任务隔离、失败预算、版本控制和诊断优先机制。</p><p>MoonGlass 的方向是按任务建立会话，记录修改血缘；重复失败时停止盲改，优先增强 Checker、断言和故障定位证据；RTL 修改后使旧证据失效并重新回归。用户仍应使用 Git 保留可回退基线。</p></div></details>
+
+    <h2>五、变更、回归与项目生命周期</h2>
+    <details class="faq" data-category="change"><summary>Q23：规格修改后，原来的验证结果还能用吗？</summary><div class="answer"><p class="direct">只能在影响分析后部分复用，不能默认继续有效。</p><p>MoonGlass 将前序变更传播到已经完成的后续阶段，要求架构、RTL、验证、QA 和综合分别响应。与变更无关且输入哈希一致的证据可保留；受影响的 Intent、Scenario、测试、覆盖率和综合结果必须重跑。</p></div></details>
+    <details class="faq" data-category="change"><summary>Q24：如何确保报告对应的是当前 RTL，而不是旧版本？</summary><div class="answer"><p class="direct">证据必须绑定 RTL、测试和配置的版本或哈希。</p><p>当 RTL、Testbench、约束、Golden Model 或关键参数发生变化，相关证据应标记为 stale。只有输入身份一致、工具执行完成且产物有效，证据才可进入当前签核包。</p></div></details>
+    <details class="faq" data-category="change"><summary>Q25：第三方发现 Bug 后，MoonGlass 如何支持修复？</summary><div class="answer"><p class="direct">把 Bug 转化为可复现失败、语义化证据和永久回归资产。</p><p>建议流程是：固定原始版本与现场条件；建立最小复现；增强 Checker/断言把“输出错误”收敛为周期、事务、状态和不变量违例；修改 RTL；运行受影响回归和全量回归；将该场景加入风险与追溯体系，防止再次逃逸。</p></div></details>
+    <details class="faq" data-category="change"><summary>Q26：一键托管会不会为了推进阶段而绕过门禁？</summary><div class="answer"><p class="direct">托管可以自动处理可修复缺口，但不能把阻断事实改写为通过。</p><p>合理策略是等待 Agent 真正完成任务，再读取门禁；对文档缺口自动修复和重试；对工具故障分类处理；对重大规格影响、不可解释高风险和签核例外要求人工决策。最终报告应列出所有自动处理、强制推进和未关闭项。</p></div></details>
+
+    <h2>六、交付内容与客户验收</h2>
+    <details class="faq" data-category="delivery"><summary>Q27：客户最终应收到哪些交付物？<span class="tag">验收</span></summary><div class="answer"><p class="direct">至少包括规格、RTL、验证资产、证据、风险清单和可复现说明，而不只是若干 `.v` 文件。</p><div class="evidence"><b>建议签核包：</b>需求/规格与追溯矩阵；架构和接口文档；RTL、Filelist、约束和版本清单；Testbench、VIP、Golden Model、Checker 与断言；测试结果、JUnit、覆盖率、Formal/Lint/综合日志；验证态势；已知限制与残余风险；复现命令和工具版本。</div></div></details>
+    <details class="faq" data-category="delivery"><summary>Q28：客户应该怎样独立验收 MoonGlass 交付的 IP？</summary><div class="answer"><p class="direct">不要只看演示，应在隔离环境中重跑签核包并加入客户自己的隐藏测试。</p><p>建议先验证构建和回归可复现，再抽查需求到证据链，针对最高风险场景加入隐藏测试和变异缺陷，最后用客户认可的 Lint、CDC/RDC、仿真、Formal、综合或 FPGA 原型流程复核。</p></div></details>
+    <details class="faq" data-category="delivery"><summary>Q29：如何评价一次交付是否真的比人工流程更好？</summary><div class="answer"><p class="direct">同时比较质量、时间、成本和人工决策负担，不能只比较代码生成速度。</p><p>推荐指标包括需求一次满足率、追溯完整率、隐藏缺陷逃逸率、变异得分、回归可重复率、证据一致率、修复闭环时间、人工确认次数、Token/计算成本和后续维护成本。</p></div></details>
+    <details class="faq" data-category="delivery"><summary>Q30：是否可以先做小规模 PoC 再决定采购？</summary><div class="answer"><p class="direct">可以，而且这是更负责任的评估方式。</p><p>选择一个边界清晰、具有真实协议和 Corner Case 的数字 IP；预先冻结规格、隐藏测试、质量门槛和人工基线；比较 MoonGlass、通用 Coding Agent 与传统流程。PoC 应同时报告成功、失败、人工介入和未解决风险。</p></div></details>
+    <details class="faq" data-category="delivery"><summary>Q31：谁对最终交付和流片结果负责？</summary><div class="answer"><p class="direct">责任由采购合同、组织流程和签核角色决定，不能转移给一个模型或软件按钮。</p><p>MoonGlass 提供工程执行、证据组织和机器签核建议。产品负责人、设计负责人、验证负责人和签核委员会仍需依据适用标准、工具资格、工艺约束和业务风险作最终批准。</p></div></details>
+
+    <h2>七、当前能力边界</h2>
+    <details class="faq" data-category="boundary"><summary>Q32：MoonGlass 当前最适合什么项目？</summary><div class="answer"><p class="direct">最适合边界明确的数字 ASIC IP、控制与数据通路模块、常见总线外设及可由 RTL 仿真和开源综合验证的项目。</p><p>复杂 SoC、一致性协议、模拟混合信号、安全认证、先进低功耗、多电源域和大规模物理实现，需要更完整的商业工具链、组织方法和专家团队。</p></div></details>
+    <details class="faq" data-category="boundary"><summary>Q33：MoonGlass 已经覆盖 CDC/RDC、DFT、低功耗和时序签核了吗？</summary><div class="answer"><p class="boundary">不能笼统宣称已经覆盖。</p><p>MoonGlass 可以辅助生成结构检查、约束、文档和部分开源验证证据，但专业 CDC/RDC、UPF 低功耗、DFT ATPG、STA/物理实现和工艺相关签核仍应接入组织认可的专业工具与流程。没有真实执行证据时，报告必须标记为未验证或外部依赖。</p></div></details>
+    <details class="faq" data-category="boundary"><summary>Q34：开源 Formal 能替代商业 Formal 平台吗？</summary><div class="answer"><p class="direct">对部分中小模块和明确属性很有价值，但不能普遍替代商业平台。</p><p>语言前端、调试能力、容量、性能、应用包和认证支持都有差异。开源 Formal 更适合作为补充证据、早期反例发现和可达性分析；关键签核是否接受，应由项目工具资格要求决定。</p></div></details>
+    <details class="faq" data-category="boundary"><summary>Q35：如果验证态势显示绿色，就可以直接流片吗？</summary><div class="answer"><p class="boundary">不可以把验证态势的绿色直接解释为流片许可。</p><p>绿色表示按当前数据模型，已登记 Intent、Scenario、证据和门槛达到配置条件。它不自动覆盖规格本身错误、未建模风险、工艺签核、模拟效应、CDC/RDC、DFT、低功耗、STA、可靠性和系统软件协同。</p></div></details>
+    <details class="faq" data-category="boundary"><summary>Q36：MoonGlass 最诚实的可靠性承诺应该怎样表述？</summary><div class="answer"><p class="direct">MoonGlass 不承诺自动生成绝对无缺陷的 IP；它承诺努力让交付过程受控、证据可追踪、结论可复现、风险可见、变更可响应。</p><p>具体项目的质量水平由输入规格、架构决策、模型能力、验证预算、工具链、工艺环境和人工签核共同决定。客户应把 MoonGlass 视为证据驱动的 ASIC 工程协同平台，而不是“按一下按钮即可承担流片责任”的黑箱。</p></div></details>
+
+    <div id="noResults" class="no-results">没有匹配的问题，请更换关键词或分类。</div>
+
+    <h2>客户尽调与验收清单</h2>
+    <table><thead><tr><th>检查项</th><th>客户应要求看到的材料</th><th>不充分的回答</th></tr></thead><tbody>
+      <tr><td>规格满足</td><td>稳定需求 ID、规格、设计、Intent、测试与证据的双向映射</td><td>“Agent 已经理解规格”</td></tr>
+      <tr><td>验证有效</td><td>有效刺激、观测点、Oracle、失败注入与场景命中</td><td>“所有测试都是 PASS”</td></tr>
+      <tr><td>覆盖完备</td><td>代码、功能、需求、风险覆盖及未覆盖原因</td><td>“行覆盖率很高”</td></tr>
+      <tr><td>证据新鲜</td><td>RTL/Testbench/配置哈希、工具版本、时间戳</td><td>无版本信息的历史报告</td></tr>
+      <tr><td>结果复现</td><td>固定依赖、命令、种子、Filelist、宏和原始日志</td><td>只能在开发者机器演示</td></tr>
+      <tr><td>风险透明</td><td>开放项、工具限制、排除场景、残余风险及责任人</td><td>报告中没有任何风险</td></tr>
+      <tr><td>独立验收</td><td>客户隐藏测试、第二工具/Oracle、抽样人工 Review</td><td>只接受生成 Agent 的自评</td></tr>
+    </tbody></table>
+
+    <section class="warning"><b>建议对外统一口径：</b>不要说“MoonGlass 生成的 IP 已被证明绝对可靠”。应说：“MoonGlass 以规格追溯、风险场景、可复现回归、多 Oracle、覆盖率、Formal 和版本化证据构建可审查的可靠性交付包；项目最终质量仍由工程门槛、专业工具和责任工程师共同签核。”</section>
+    <div class="footer">MoonGlass ASIC Design Agent · Source Available · 商务合作与技术交流：moonglassagent@126.com</div>
+  </main>
+  <script>
+    const faqs=[...document.querySelectorAll('.faq')],search=document.getElementById('search'),category=document.getElementById('category'),empty=document.getElementById('noResults');
+    function filter(){const q=search.value.trim().toLowerCase(),c=category.value;let shown=0;faqs.forEach(x=>{const ok=(c==='all'||x.dataset.category===c)&&(!q||x.textContent.toLowerCase().includes(q));x.hidden=!ok;if(ok)shown++});empty.style.display=shown?'none':'block'}
+    search.addEventListener('input',filter);category.addEventListener('change',filter);
+    document.getElementById('expand').addEventListener('click',()=>faqs.filter(x=>!x.hidden).forEach(x=>x.open=true));
+    document.getElementById('collapse').addEventListener('click',()=>faqs.forEach(x=>x.open=false));
+  </script>
+</body>
+</html>

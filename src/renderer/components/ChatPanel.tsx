@@ -9,10 +9,11 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
 import { Minimize2, MoreVertical, RotateCcw, Ruler } from 'lucide-react'
-import { PHASE_LABELS, type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
+import { type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
 import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
 import { useChatStore } from '../store/chatStore'
+import { useTranslation, phaseLabel, t } from '../i18n'
 
 interface SessionInfo {
   name: string
@@ -53,22 +54,23 @@ function parseTokenCountInput(raw: string): number | null {
 
 function statsTitle(stats: AgentSessionStats): string {
   const lines = [
-    `输入 Token：${stats.tokens.input.toLocaleString()}`,
-    `输出 Token：${stats.tokens.output.toLocaleString()}`
+    t('chat.stats.inputTokens', { value: stats.tokens.input.toLocaleString() }),
+    t('chat.stats.outputTokens', { value: stats.tokens.output.toLocaleString() })
   ]
-  if (stats.tokens.cacheRead) lines.push(`缓存读取：${stats.tokens.cacheRead.toLocaleString()}`)
-  if (stats.tokens.cacheWrite) lines.push(`缓存写入：${stats.tokens.cacheWrite.toLocaleString()}`)
-  lines.push(`会话累计：${stats.tokens.total.toLocaleString()}`)
-  if (stats.contextWindowStatus === 'verified') lines.push(`上下文上限：已核实（${stats.contextWindowSource ?? '官方资料'}）`)
-  if (stats.contextWindowStatus === 'estimated') lines.push(`上下文上限：服务商估计（${stats.contextWindowSource ?? '待复核'}）`)
-  if (stats.contextWindowStatus === 'custom') lines.push(`上下文上限：用户自定义（${formatTokens(stats.contextWindowOverride ?? 0)} Token）`)
-  if (stats.contextWindowStatus === 'unknown') lines.push('上下文上限：未核实，不计算占用率')
-  if (typeof stats.cost === 'number' && stats.cost > 0) lines.push(`估算费用：$${stats.cost.toFixed(4)}`)
-  lines.push(`消息：${stats.userMessages} 用户 / ${stats.assistantMessages} Agent / ${stats.toolCalls} 工具调用`)
+  if (stats.tokens.cacheRead) lines.push(t('chat.stats.cacheRead', { value: stats.tokens.cacheRead.toLocaleString() }))
+  if (stats.tokens.cacheWrite) lines.push(t('chat.stats.cacheWrite', { value: stats.tokens.cacheWrite.toLocaleString() }))
+  lines.push(t('chat.stats.sessionTotal', { value: stats.tokens.total.toLocaleString() }))
+  if (stats.contextWindowStatus === 'verified') lines.push(t('chat.stats.contextVerified', { source: stats.contextWindowSource ?? t('chat.stats.sourceOfficial') }))
+  if (stats.contextWindowStatus === 'estimated') lines.push(t('chat.stats.contextEstimated', { source: stats.contextWindowSource ?? t('chat.stats.sourcePendingReview') }))
+  if (stats.contextWindowStatus === 'custom') lines.push(t('chat.stats.contextCustom', { value: formatTokens(stats.contextWindowOverride ?? 0) }))
+  if (stats.contextWindowStatus === 'unknown') lines.push(t('chat.stats.contextUnknown'))
+  if (typeof stats.cost === 'number' && stats.cost > 0) lines.push(t('chat.stats.estimatedCost', { value: stats.cost.toFixed(4) }))
+  lines.push(t('chat.stats.messageCounts', { user: stats.userMessages, assistant: stats.assistantMessages, tool: stats.toolCalls }))
   return lines.join('\n')
 }
 
 export function SessionTabs({ projectId, onActivate }: { projectId: string; onActivate?: () => void }): React.JSX.Element {
+  const { t } = useTranslation()
   const { sessionInfo, startTask, switchSession, closeSession } = useChatStore()
   const [sessions, setSessions] = useState<SessionInfo[]>([])
   const [showDialog, setShowDialog] = useState(false)
@@ -124,7 +126,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
 
   const close = async (session: SessionInfo): Promise<void> => {
     if (busy || session.name === 'main') return
-    if (!window.confirm(`确认关闭平行会话“${session.label}”？\n\n该会话的聊天历史将被删除。`)) return
+    if (!window.confirm(t('chat.tabs.confirmClose', { label: session.label }))) return
     setBusy(true)
     setError('')
     try {
@@ -142,7 +144,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
       {sessions.map((session) => (
         <span
           key={session.name}
-          title={`${session.label}，${session.messageCount} 条消息${session.modelLabel ? `，模型 ${session.modelLabel}` : '，尚未选择模型'}`}
+          title={`${t('chat.tabs.sessionTitle', { label: session.label, count: session.messageCount })}${session.modelLabel ? t('chat.tabs.sessionTitleModel', { model: session.modelLabel }) : t('chat.tabs.sessionTitleNoModel')}`}
           className={`flex max-w-48 shrink-0 items-center rounded-t border-x border-t text-xs ${
             session.isActive
               ? 'border-blue-300 bg-blue-50 font-medium text-blue-700'
@@ -157,17 +159,17 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
               if (isBatchSession(session.name)) setPeekSession(session)
               else void select(session.name)
             }}
-            title={isBatchSession(session.name) ? '查看批次会话（只读）' : undefined}
+            title={isBatchSession(session.name) ? t('chat.tabs.peekBatch') : undefined}
             className="min-w-0 truncate px-3 py-1.5 disabled:opacity-50"
           >
-            {session.name === 'main' ? '主会话' : session.label.replace(/\s*\([^)]*\)$/, '')}
+            {session.name === 'main' ? t('chat.mainSession') : session.label.replace(/\s*\([^)]*\)$/, '')}
             {isBatchSession(session.name) && (
               <span className={`ml-1 text-[10px] font-normal ${session.isRunning ? 'text-amber-600' : 'opacity-60'}`}>
-                {session.isRunning ? '● 运行中' : '查看'}
+                {session.isRunning ? t('chat.tabs.runningBadge') : t('chat.tabs.viewBadge')}
               </span>
             )}
             <span className="ml-1 max-w-24 truncate text-[10px] font-normal opacity-60">
-              {session.modelLabel || '未选模型'}
+              {session.modelLabel || t('chat.tabs.noModel')}
             </span>
           </button>
           {session.name !== 'main' && !isBatchSession(session.name) && (
@@ -175,8 +177,8 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
               type="button"
               disabled={busy}
               onClick={() => void close(session)}
-              aria-label={`关闭会话 ${session.label}`}
-              title="关闭会话"
+              aria-label={t('chat.tabs.closeAria', { label: session.label })}
+              title={t('chat.tabs.closeTitle')}
               className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-100 hover:text-red-600 disabled:opacity-50"
             >
               ×
@@ -190,7 +192,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
           setError('')
           setShowDialog(true)
         }}
-        title="开启新任务会话（零历史继承，基于工作区产物继续）"
+        title={t('chat.tabs.newTaskTitle')}
         className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-base text-zinc-500 hover:bg-zinc-100 hover:text-blue-700"
       >
         +
@@ -210,8 +212,8 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
             aria-labelledby="parallel-session-title"
             className="w-full max-w-sm rounded-md border border-zinc-300 bg-white p-4 shadow-xl"
           >
-            <h2 id="parallel-session-title" className="text-sm font-semibold text-zinc-900">新任务</h2>
-            <p className="mt-1 text-xs text-zinc-500">为当前阶段开启独立的任务会话：不继承对话历史，自动基于工作区已落盘产物继续；原会话保留可随时切回。</p>
+            <h2 id="parallel-session-title" className="text-sm font-semibold text-zinc-900">{t('chat.tabs.newTask')}</h2>
+            <p className="mt-1 text-xs text-zinc-500">{t('chat.tabs.newTaskDesc')}</p>
             <input
               autoFocus
               value={name}
@@ -220,7 +222,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
                 if (event.key === 'Enter') void create()
                 if (event.key === 'Escape' && !busy) setShowDialog(false)
               }}
-              placeholder="任务标题（可留空，如：修复 axi_timer 握手）"
+              placeholder={t('chat.tabs.newTaskPlaceholder')}
               className="mt-3 w-full rounded border border-zinc-300 px-3 py-2 text-sm outline-none focus:border-blue-500 focus:ring-1 focus:ring-blue-200"
             />
             {error && <p className="mt-2 whitespace-pre-wrap text-xs text-red-600">{error}</p>}
@@ -231,7 +233,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
                 onClick={() => setShowDialog(false)}
                 className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 hover:bg-zinc-100 disabled:opacity-50"
               >
-                取消
+                {t('common.cancel')}
               </button>
               <button
                 type="button"
@@ -239,7 +241,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
                 onClick={() => void create()}
                 className="rounded bg-blue-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
               >
-                {busy ? '创建中…' : '创建'}
+                {busy ? t('chat.tabs.creating') : t('common.create')}
               </button>
             </div>
           </div>
@@ -266,6 +268,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
  * 每 5 秒轮询刷新并标注"运行中（只读）"。只读——不提供输入框。
  */
 function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; session: SessionInfo; onClose: () => void }): React.JSX.Element {
+  const { t } = useTranslation()
   const [messages, setMessages] = useState<AgentUiMessage[]>([])
   const [loadError, setLoadError] = useState('')
   const [running, setRunning] = useState(session.isRunning)
@@ -298,20 +301,20 @@ function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; 
       <div
         role="dialog"
         aria-modal="true"
-        aria-label={`批次会话 ${session.label}`}
+        aria-label={t('chat.tabs.batchDialogAria', { label: session.label })}
         className="flex h-[80vh] w-full max-w-3xl flex-col rounded-md border border-zinc-300 bg-white shadow-xl"
       >
         <div className="flex items-center justify-between border-b border-zinc-200 px-4 py-2">
           <h2 className="text-sm font-semibold text-zinc-900">
             {session.label.replace(/\s*\([^)]*\)$/, '')}
             <span className={`ml-2 text-xs font-normal ${running ? 'text-amber-600' : 'text-zinc-400'}`}>
-              {running ? '运行中（只读）' : '已完成（只读回看）'}
+              {running ? t('chat.tabs.runningReadonly') : t('chat.tabs.finishedReadonly')}
             </span>
           </h2>
           <button
             type="button"
             onClick={onClose}
-            aria-label="关闭批次会话查看"
+            aria-label={t('chat.tabs.closePeekAria')}
             className="flex h-6 w-6 items-center justify-center rounded text-zinc-400 hover:bg-zinc-100 hover:text-zinc-700"
           >
             ×
@@ -320,7 +323,7 @@ function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; 
         <div className="flex-1 overflow-y-auto p-4">
           {loadError && <p className="text-xs text-red-600">{loadError}</p>}
           {!loadError && messages.length === 0 && (
-            <p className="mt-8 text-center text-sm text-zinc-400">该批次会话暂无可显示的消息</p>
+            <p className="mt-8 text-center text-sm text-zinc-400">{t('chat.tabs.emptyBatch')}</p>
           )}
           <div className="flex flex-col gap-3">
             {messages.map((m) => (
@@ -340,6 +343,7 @@ function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; 
 }
 
 export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Element {
+  const { t } = useTranslation()
   const {
     sessionInfo,
     messages,
@@ -385,8 +389,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     setProviders(ready)
     const configuredButDisabled = list.some((p) => !p.enabled && p.apiKey.trim() && p.models.length > 0)
     setProviderHint(configuredButDisabled
-      ? '检测到已保存但尚未启用的模型服务。请在设置中打开“启用”开关。'
-      : '还没有可用的大模型 Provider。请配置 API Key、模型 ID，并启用该 Provider。')
+      ? t('chat.providerHintDisabled')
+      : t('chat.providerHintEmpty'))
   }, [])
 
   useEffect(() => {
@@ -490,7 +494,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
 
   const handleCompactSession = async (): Promise<void> => {
     if (streaming || sessionActionBusy) return
-    if (!window.confirm('压缩当前会话上下文？\n\nPi 会生成一份关键摘要并用它继续对话，历史文件仍然保留。摘要过程会调用当前模型并产生 Token。')) return
+    if (!window.confirm(t('chat.confirmCompact'))) return
     setSessionMenuOpen(false)
     setSessionActionBusy(true)
     try {
@@ -505,7 +509,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
 
   const handleRestartSessionFresh = async (): Promise<void> => {
     if (streaming || sessionActionBusy) return
-    if (!window.confirm('确认无上下文重启当前会话？\n\n当前聊天历史会被归档，标签和模型保持不变，但新的 Agent 不会获得旧消息或摘要。该操作适合彻底切断旧上下文。')) return
+    if (!window.confirm(t('chat.confirmRestartFresh'))) return
     setSessionMenuOpen(false)
     setSessionActionBusy(true)
     try {
@@ -521,7 +525,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   /** M2 §3.3 占用引导动作：压缩当前会话（保留摘要）→ 以同主题开新任务会话 */
   const handleFinishAndStartTask = async (): Promise<void> => {
     if (streaming || sessionActionBusy) return
-    if (!window.confirm('收尾当前任务并开新任务会话？\n\nPi 会先压缩当前会话保留关键摘要，然后以同主题开启零历史继承的新任务会话。摘要过程会调用当前模型并产生 Token。')) return
+    if (!window.confirm(t('chat.confirmFinishAndStart'))) return
     setSessionActionBusy(true)
     try {
       await finishAndStartTask()
@@ -552,7 +556,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const submitContextLimit = (): void => {
     const parsed = parseTokenCountInput(contextLimitDraft)
     if (parsed == null) {
-      setContextLimitError('请输入有效数字，如 200000、200k 或 1M（1024 ~ 10M）')
+      setContextLimitError(t('chat.contextLimitInvalid'))
       return
     }
     void handleSetContextLimit(parsed)
@@ -564,14 +568,14 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
       <div className="flex h-full items-center justify-center p-6">
         <div className="max-w-md rounded-lg border border-dashed border-zinc-300 p-8 text-center text-zinc-500">
           <div className="mb-2 text-3xl">🤖</div>
-          <p className="font-medium text-zinc-700">{PHASE_LABELS[phase]}阶段 Agent 已就绪</p>
-          <p className="mt-2 text-sm">{providerHint || '正在读取模型服务配置…'}</p>
+          <p className="font-medium text-zinc-700">{t('chat.readyTitle', { phase: phaseLabel(phase) })}</p>
+          <p className="mt-2 text-sm">{providerHint || t('chat.readingProviderConfig')}</p>
           <p className="mt-1 text-sm">
-            前往
+            {t('chat.goToSettingsPrefix')}
             <Link to="/settings" className="mx-1 text-blue-600 underline">
-              设置 → 模型服务
+              {t('chat.goToSettingsLink')}
             </Link>
-            管理 Provider 配置。
+            {t('chat.goToSettingsSuffix')}
           </p>
         </div>
       </div>
@@ -584,17 +588,17 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
       <div className="chat-toolbar relative z-40 flex items-center justify-between border-b border-zinc-200 px-4 py-2">
         <div className="flex items-center gap-2">
           <span className="text-sm font-medium text-zinc-700">
-            🤖 {PHASE_LABELS[phase]}阶段 Agent
+            🤖 {t('chat.phaseAgent', { phase: phaseLabel(phase) })}
           </span>
           {sessionInfo && (
             <span className="text-xs text-zinc-400">
-              · {sessionInfo.sessionName === 'main' ? '主会话' : sessionInfo.sessionName}
+              · {sessionInfo.sessionName === 'main' ? t('chat.mainSession') : sessionInfo.sessionName}
             </span>
           )}
-          {ensuring && <span className="text-xs text-zinc-400">会话启动中…</span>}
+          {ensuring && <span className="text-xs text-zinc-400">{t('chat.sessionStarting')}</span>}
           {!ensuring && (
             <span className={`text-xs ${streaming ? 'text-amber-600' : 'text-emerald-600'}`}>
-              {streaming ? '运行中' : '已就绪'}
+              {streaming ? t('chat.statusRunning') : t('chat.statusReady')}
             </span>
           )}
 
@@ -613,8 +617,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               title={statsTitle(sessionStats)}
             >
               {sessionStats.contextUsage?.tokens != null
-                ? `上下文 ${formatTokens(sessionStats.contextUsage.tokens)}/${formatTokens(sessionStats.contextUsage.contextWindow)} · ${Math.round(sessionStats.contextUsage.percent ?? 0)}%`
-                : `会话 ${formatTokens(sessionStats.tokens.total)} Token · 上下文上限待核实`}
+                ? t('chat.contextUsage', { used: formatTokens(sessionStats.contextUsage.tokens), total: formatTokens(sessionStats.contextUsage.contextWindow), percent: Math.round(sessionStats.contextUsage.percent ?? 0) })
+                : t('chat.sessionTokensUnknown', { total: formatTokens(sessionStats.tokens.total) })}
               {typeof sessionStats.cost === 'number' && sessionStats.cost > 0 ? ` · $${sessionStats.cost.toFixed(3)}` : ''}
             </span>
           )}
@@ -625,9 +629,9 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               onClick={() => void handleFinishAndStartTask()}
               disabled={!sessionInfo || streaming || sessionActionBusy}
               className="whitespace-nowrap rounded border border-amber-300 bg-amber-50 px-2 py-1 text-[11px] text-amber-700 hover:bg-amber-100 disabled:opacity-40"
-              title="压缩当前会话保留关键摘要，然后以同主题开启新任务会话"
+              title={t('chat.finishAndStartTitle')}
             >
-              收尾并开新任务
+              {t('chat.finishAndStart')}
             </button>
           )}
           <div className="relative">
@@ -639,14 +643,14 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               }}
               disabled={!sessionInfo || streaming || sessionActionBusy}
               className="flex h-7 w-7 items-center justify-center rounded border border-zinc-300 text-zinc-500 hover:bg-zinc-100 hover:text-zinc-800 disabled:opacity-40"
-              title="会话上下文操作"
-              aria-label="打开会话上下文操作"
+              title={t('chat.sessionMenuTitle')}
+              aria-label={t('chat.sessionMenuAria')}
             >
               <MoreVertical size={15} />
             </button>
             {sessionMenuOpen && <div className="absolute right-0 top-8 z-[80] w-64 border border-zinc-200 bg-white py-1 shadow-lg">
-              <button type="button" onClick={() => void handleCompactSession()} className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-zinc-50"><Minimize2 size={15} className="mt-0.5 shrink-0 text-blue-600" /><span><b className="block text-xs text-zinc-800">压缩上下文</b><span className="mt-0.5 block text-[10px] text-zinc-500">保留关键摘要，降低上下文占用</span></span></button>
-              <button type="button" onClick={() => void handleRestartSessionFresh()} className="flex w-full items-start gap-2 border-t border-zinc-100 px-3 py-2 text-left hover:bg-zinc-50"><RotateCcw size={15} className="mt-0.5 shrink-0 text-amber-600" /><span><b className="block text-xs text-zinc-800">无上下文重启</b><span className="mt-0.5 block text-[10px] text-zinc-500">归档历史，以空白 session 重新开始</span></span></button>
+              <button type="button" onClick={() => void handleCompactSession()} className="flex w-full items-start gap-2 px-3 py-2 text-left hover:bg-zinc-50"><Minimize2 size={15} className="mt-0.5 shrink-0 text-blue-600" /><span><b className="block text-xs text-zinc-800">{t('chat.compact')}</b><span className="mt-0.5 block text-[10px] text-zinc-500">{t('chat.compactDesc')}</span></span></button>
+              <button type="button" onClick={() => void handleRestartSessionFresh()} className="flex w-full items-start gap-2 border-t border-zinc-100 px-3 py-2 text-left hover:bg-zinc-50"><RotateCcw size={15} className="mt-0.5 shrink-0 text-amber-600" /><span><b className="block text-xs text-zinc-800">{t('chat.restartFresh')}</b><span className="mt-0.5 block text-[10px] text-zinc-500">{t('chat.restartFreshDesc')}</span></span></button>
               <button
                 type="button"
                 onClick={() => {
@@ -658,11 +662,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               >
                 <Ruler size={15} className="mt-0.5 shrink-0 text-emerald-600" />
                 <span>
-                  <b className="block text-xs text-zinc-800">自定义上下文上限</b>
+                  <b className="block text-xs text-zinc-800">{t('chat.contextLimit')}</b>
                   <span className="mt-0.5 block text-[10px] text-zinc-500">
-                    登记表查不到自有模型时手动指定，按模型记忆
+                    {t('chat.contextLimitDesc')}
                     {sessionStats?.contextWindowStatus === 'custom' && sessionStats.contextWindowOverride != null && (
-                      <b className="ml-1 text-emerald-600">当前：{formatTokens(sessionStats.contextWindowOverride)}</b>
+                      <b className="ml-1 text-emerald-600">{t('chat.contextLimitCurrent', { value: formatTokens(sessionStats.contextWindowOverride) })}</b>
                     )}
                   </span>
                 </span>
@@ -680,7 +684,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
                       onKeyDown={(event) => {
                         if (event.key === 'Enter') submitContextLimit()
                       }}
-                      placeholder="如 200000、200k、1M"
+                      placeholder={t('chat.contextLimitPlaceholder')}
                       disabled={sessionActionBusy}
                       className="min-w-0 flex-1 rounded border border-zinc-300 px-2 py-1 text-xs outline-none focus:border-blue-500 disabled:opacity-60"
                     />
@@ -690,7 +694,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
                       onClick={submitContextLimit}
                       className="shrink-0 rounded bg-blue-600 px-2 py-1 text-[11px] text-white hover:bg-blue-500 disabled:opacity-40"
                     >
-                      保存
+                      {t('common.save')}
                     </button>
                     {sessionStats?.contextWindowStatus === 'custom' && (
                       <button
@@ -699,18 +703,18 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
                         onClick={() => void handleSetContextLimit(null)}
                         className="shrink-0 rounded border border-zinc-300 px-2 py-1 text-[11px] text-zinc-600 hover:bg-zinc-100 disabled:opacity-40"
                       >
-                        恢复自动
+                        {t('chat.restoreAuto')}
                       </button>
                     )}
                   </div>
                   {contextLimitError
                     ? <p className="mt-1 text-[10px] text-red-600">{contextLimitError}</p>
-                    : !sessionInfo?.selectedModel && <p className="mt-1 text-[10px] text-zinc-400">当前会话尚未选择模型</p>}
+                    : !sessionInfo?.selectedModel && <p className="mt-1 text-[10px] text-zinc-400">{t('chat.noModelSelected')}</p>}
                 </div>
               )}
             </div>}
           </div>
-          <span className="text-[11px] text-zinc-400">当前会话模型</span>
+          <span className="text-[11px] text-zinc-400">{t('chat.currentModel')}</span>
           <select
           value={selectedModelValue}
           onChange={(e) => {
@@ -722,11 +726,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700"
         >
           <option value="" disabled>
-            {sessionInfo ? '选择模型…' : '加载中…'}
+            {sessionInfo ? t('chat.selectModel') : t('common.loading')}
           </option>
           {sessionInfo?.selectedModel && !selectedModelAvailable && (
             <option value={selectedModelValue}>
-              {sessionInfo.modelLabel || `${sessionInfo.selectedModel.providerId} / ${sessionInfo.selectedModel.modelId}`}（已恢复）
+              {sessionInfo.modelLabel || `${sessionInfo.selectedModel.providerId} / ${sessionInfo.selectedModel.modelId}`}{t('chat.modelRestored')}
             </option>
           )}
           {providers.flatMap((p) =>
@@ -744,7 +748,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
       <div className="chat-messages flex-1 overflow-y-auto p-4">
         {messages.length === 0 && !streaming && (
           <p className="mt-8 text-center text-sm text-zinc-400">
-            向 {PHASE_LABELS[phase]}阶段 Agent 提问，开始本阶段的工作
+            {t('chat.emptyHint', { phase: phaseLabel(phase) })}
           </p>
         )}
         <div className="flex flex-col gap-3">
@@ -761,13 +765,13 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
             />
           ))}
           {streaming && messages.at(-1)?.role !== 'assistant' && (
-            <div className="text-sm text-zinc-400">Agent 思考中…</div>
+            <div className="text-sm text-zinc-400">{t('chat.thinking')}</div>
           )}
         </div>
         {pendingDecisions.length > 0 && (
           <div className="mt-3 flex items-center justify-between gap-3 rounded border border-blue-200 bg-blue-50 px-4 py-3">
             <span className="text-xs text-blue-800">
-              待确认项目：{completedDraftCount}/{pendingDecisions.length}。完成全部项目后统一发送，Agent 才会继续。
+              {t('chat.pendingDecisions', { done: completedDraftCount, total: pendingDecisions.length })}
             </span>
             <button
               type="button"
@@ -775,7 +779,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               onClick={submitAllDecisions}
               className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
             >
-              提交全部确认并继续
+              {t('chat.submitAllDecisions')}
             </button>
           </div>
         )}
@@ -815,7 +819,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               }
             }}
             rows={2}
-            placeholder={streaming ? 'Agent 回复中…' : '输入消息，Enter 发送，↑/↓ 回顾历史，Ctrl/Alt/Shift+Enter 换行'}
+            placeholder={streaming ? t('chat.inputPlaceholderStreaming') : t('chat.inputPlaceholder')}
             disabled={streaming}
             className="flex-1 resize-none rounded border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-blue-500 disabled:opacity-60"
           />
@@ -825,7 +829,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               disabled={aborting}
               className="rounded border border-red-300 px-4 py-2 text-sm text-red-600 hover:bg-red-50"
             >
-              {aborting ? '正在中止…' : '中止'}
+              {aborting ? t('chat.aborting') : t('chat.abort')}
             </button>
           ) : (
             <button
@@ -833,7 +837,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               disabled={!input.trim()}
               className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
             >
-              发送
+              {t('chat.send')}
             </button>
           )}
         </div>
@@ -855,10 +859,11 @@ function MessageBubble({
   onDecision: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
   decisionDraft?: { selectedIds: string[]; customText: string }
 }): React.JSX.Element {
+  const { t, locale } = useTranslation()
   const thinkingRef = useRef<HTMLDetailsElement>(null)
   const [thinkingOpen, setThinkingOpen] = useState(true)
   const [toolOpen, setToolOpen] = useState(true)
-  const time = new Date(msg.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
+  const time = new Date(msg.timestamp).toLocaleTimeString(locale, { hour: '2-digit', minute: '2-digit', second: '2-digit' })
 
   if (msg.role === 'user') {
     const displayText = msg.decisionResponse
@@ -891,23 +896,23 @@ function MessageBubble({
         className={`message-tool w-full rounded border px-3 py-1.5 text-xs ${msg.isError ? 'border-red-200 bg-red-50' : 'border-zinc-200 bg-zinc-50'}`}
       >
         <summary className="cursor-pointer text-zinc-600">
-          🔧 工具调用：<span className="font-mono">{msg.toolName ?? 'tool'}</span>
+          🔧 {t('chat.toolCall')}<span className="font-mono">{msg.toolName ?? 'tool'}</span>
           {msg.isError ? (
-            <span className="ml-2 text-red-600">失败</span>
+            <span className="ml-2 text-red-600">{t('chat.toolFailed')}</span>
           ) : (
-            <span className="ml-2 text-emerald-600">完成</span>
+            <span className="ml-2 text-emerald-600">{t('chat.toolDone')}</span>
           )}
           <span className="ml-2 text-[10px] text-zinc-400">{time}</span>
         </summary>
         {msg.toolInput && (
           <div className="mt-2 border-t border-zinc-200 pt-2">
-            <div className="mb-1 font-medium text-zinc-500">调用参数</div>
+            <div className="mb-1 font-medium text-zinc-500">{t('chat.toolInputLabel')}</div>
             <pre className="max-h-40 overflow-auto whitespace-pre-wrap rounded bg-white p-2 font-mono text-zinc-700">{msg.toolInput}</pre>
           </div>
         )}
         <div className="mt-2 border-t border-zinc-200 pt-2">
           <div className={`mb-1 font-medium ${msg.isError ? 'text-red-600' : 'text-zinc-500'}`}>
-            {msg.isError ? '失败原因 / 工具输出' : '工具输出'}
+            {msg.isError ? t('chat.toolOutputError') : t('chat.toolOutput')}
           </div>
           <pre className={`max-h-56 overflow-auto whitespace-pre-wrap rounded bg-white p-2 ${msg.isError ? 'text-red-700' : 'text-zinc-700'}`}><FileReferenceText text={msg.text} /></pre>
         </div>
@@ -939,7 +944,7 @@ function MessageBubble({
               setThinkingOpen((v) => !v)
             }}
           >
-            🧠 思考过程 {thinkingOpen ? '▾' : '▸'}
+            {t('chat.thinkingProcess')} {thinkingOpen ? '▾' : '▸'}
           </summary>
           <pre className="mt-1 max-h-48 overflow-auto whitespace-pre-wrap text-zinc-600">{msg.thinking}</pre>
         </details>
@@ -949,6 +954,7 @@ function MessageBubble({
 }
 
 function FileReferenceText({ text }: { text: string }): React.JSX.Element {
+  const { t } = useTranslation()
   const pattern = new RegExp(`(${FILE_REFERENCE_SOURCE})`, 'g')
   const parts = text.split(pattern)
   return (
@@ -958,7 +964,7 @@ function FileReferenceText({ text }: { text: string }): React.JSX.Element {
           key={`${part}-${index}`}
           type="button"
           className="font-mono text-blue-600 underline decoration-blue-300 underline-offset-2 hover:text-blue-800"
-          title="打开并定位到该文件"
+          title={t('chat.openFile')}
           onClick={() => window.dispatchEvent(new CustomEvent('moonglass-open-project-file', { detail: { path: part } }))}
         >
           {part}
@@ -981,6 +987,7 @@ function DecisionCard({
   onSubmit: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
   draft?: { selectedIds: string[]; customText: string }
 }): React.JSX.Element {
+  const { t } = useTranslation()
   const [selectedIds, setSelectedIds] = useState<string[]>(response?.selectedIds ?? draft?.selectedIds ?? [])
   const [customText, setCustomText] = useState(response?.customText ?? draft?.customText ?? '')
   const [error, setError] = useState('')
@@ -996,7 +1003,7 @@ function DecisionCard({
 
   const submit = (): void => {
     if (request.required && selectedIds.length === 0 && !customText.trim()) {
-      setError('请选择至少一个方案，或填写自己的要求。')
+      setError(t('chat.decision.requiredError'))
       return
     }
     onSubmit(request, selectedIds, customText.trim())
@@ -1007,7 +1014,7 @@ function DecisionCard({
       <header className="border-b border-zinc-200 bg-zinc-50 px-4 py-3">
         <div className="flex items-center justify-between gap-3">
           <h3 className="text-sm font-semibold text-zinc-900">{request.title}</h3>
-          <span className="shrink-0 text-xs text-zinc-500">{request.mode === 'single' ? '单选' : '多选'}</span>
+          <span className="shrink-0 text-xs text-zinc-500">{request.mode === 'single' ? t('chat.decision.single') : t('chat.decision.multiple')}</span>
         </div>
         {request.prompt && <p className="mt-1 text-xs leading-5 text-zinc-600">{request.prompt}</p>}
       </header>
@@ -1034,7 +1041,7 @@ function DecisionCard({
                 <span className="flex flex-wrap items-center gap-2 text-sm font-medium text-zinc-800">
                   {option.label}
                   {option.recommended && (
-                    <span className="rounded-sm border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-normal text-emerald-700">推荐</span>
+                    <span className="rounded-sm border border-emerald-200 bg-emerald-50 px-1.5 py-0.5 text-[11px] font-normal text-emerald-700">{t('chat.decision.recommended')}</span>
                   )}
                 </span>
                 {option.description && <span className="mt-0.5 block text-xs leading-5 text-zinc-500">{option.description}</span>}
@@ -1045,7 +1052,7 @@ function DecisionCard({
 
         {request.allowCustom && (
           <label className="block pt-1">
-            <span className="mb-1.5 block text-xs font-medium text-zinc-600">{request.customLabel ?? '补充你的要求（可选）'}</span>
+            <span className="mb-1.5 block text-xs font-medium text-zinc-600">{request.customLabel ?? t('chat.decision.customLabel')}</span>
             <textarea
               rows={3}
               value={customText}
@@ -1054,7 +1061,7 @@ function DecisionCard({
                 setCustomText(event.target.value)
                 setError('')
               }}
-              placeholder="可以补充预设选项之外的方案、限制条件或偏好"
+              placeholder={t('chat.decision.customPlaceholder')}
               className="w-full resize-y rounded border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-blue-500 disabled:bg-zinc-50 disabled:text-zinc-600"
             />
           </label>
@@ -1063,7 +1070,7 @@ function DecisionCard({
         {error && <p className="text-xs text-red-600">{error}</p>}
         <div className="flex items-center justify-between gap-3 pt-1">
           <span className="text-xs text-zinc-500">
-            {response ? '该决策已提交并记录到当前会话' : draft ? '本项已完成，等待其他确认项' : disabled ? '等待 Agent 完成本轮回复' : '完成本项后不会立即触发下一轮'}
+            {response ? t('chat.decision.submitted') : draft ? t('chat.decision.drafted') : disabled ? t('chat.decision.waitingAgent') : t('chat.decision.noImmediateTrigger')}
           </span>
           {!locked && (
             <button
@@ -1072,7 +1079,7 @@ function DecisionCard({
               onClick={submit}
               className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:opacity-50"
             >
-              完成本项
+              {t('chat.decision.complete')}
             </button>
           )}
         </div>

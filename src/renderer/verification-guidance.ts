@@ -1,4 +1,5 @@
 import type { SpecMapping, WaveProgressEntry } from '@shared/types'
+import { t, type MessageKey } from './i18n/index.ts'
 
 export const CLOSED_VERIFICATION_STATUSES = new Set(['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'])
 
@@ -98,9 +99,12 @@ export interface VerificationAction {
   prompt: string
 }
 
+/** 风险等级标识（界面显示经 verification.riskLevels 映射为文案） */
+export type RiskLevel = 'confirmed' | 'highRisk' | 'infraGap' | 'specGap' | 'accepted'
+
 export interface ExplainedRisk {
   risk: GuidanceRisk
-  level: '已确认问题' | '高风险待验证' | '验证基础设施缺口' | '规格缺口' | '已接受风险'
+  level: RiskLevel
   relatedIntents: GuidanceIntent[]
   gap: string
   impact: string
@@ -115,19 +119,20 @@ export interface VerificationStep {
   detail: string
 }
 
-const IMPACTS: Array<[RegExp, string]> = [
-  [/reset|复位/i, '可能导致在途事务丢失、重复完成或状态机无法恢复。'],
-  [/fifo|backpressure|反压/i, '可能导致数据覆盖、丢失、乱序或接口停滞。'],
-  [/timeout|response|响应/i, '可能造成迟到响应被重复接收、错误计数或错误完成。'],
-  [/interrupt|中断/i, '可能造成中断漏报、重复上报或软件无法清除状态。'],
-  [/counter|计数|outstanding/i, '可能在容量边界发生上溢、下溢或资源统计失配。'],
-  [/cdc|clock|时钟/i, '可能产生跨时钟域脉冲丢失、亚稳态或多比特数据不一致。'],
-  [/error|fault|错误/i, '可能使错误路径与正常完成路径产生冲突，影响外部可见结果。']
+const IMPACTS: Array<[RegExp, MessageKey]> = [
+  [/reset|复位/i, 'verification.impacts.reset'],
+  [/fifo|backpressure|反压/i, 'verification.impacts.fifo'],
+  [/timeout|response|响应/i, 'verification.impacts.timeout'],
+  [/interrupt|中断/i, 'verification.impacts.interrupt'],
+  [/counter|计数|outstanding/i, 'verification.impacts.counter'],
+  [/cdc|clock|时钟/i, 'verification.impacts.cdc'],
+  [/error|fault|错误/i, 'verification.impacts.error']
 ]
 
 function impactOf(risk: GuidanceRisk): string {
   const text = `${risk.title} ${risk.features.join(' ')}`
-  return IMPACTS.find(([pattern]) => pattern.test(text))?.[1] ?? '可能影响外部可见行为、边界条件或异常恢复，需要以原始证据裁决。'
+  const key = IMPACTS.find(([pattern]) => pattern.test(text))?.[1]
+  return key ? t(key) : t('verification.impacts.default')
 }
 
 /** 从 Intent/Hole 里提取具体模块名，让“下一步”落到具体对象而不是只有数量。 */
@@ -161,7 +166,10 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
   const s = normalizeGuidanceState(state)
   const actions: VerificationAction[] = []
   const modules = moduleNames(s)
-  const moduleHint = modules.length ? `（${modules.slice(0, 3).join('、')}${modules.length > 3 ? ' 等' : ''}）` : ''
+  // 模块名提示：界面详情与 Agent 提示词共用，随界面语言本地化
+  const moduleHint = modules.length
+    ? t(modules.length > 3 ? 'verification.guidance.moduleHintMore' : 'verification.guidance.moduleHint', { modules: modules.slice(0, 3).join(t('verification.guidance.listJoin')) })
+    : ''
 
   const highSpecGaps = s.specGaps.filter((item) => item.confidence === 'high')
   const specUndefined = s.coverageHoles.filter((item) => item.classification === 'C5_SPEC_UNDEFINED' && item.blocking)
@@ -189,8 +197,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
       actions.push({
         id: 'wave-w1',
         priority: 'P0',
-        title: '继续基础功能验证',
-        detail: `规格映射矩阵 ${w1.specClauseCovered}/${w1.specClauseTotal} 条款已覆盖，补齐剩余可验证规格的 happy path`,
+        title: t('verification.actionTexts.continueW1Title'),
+        detail: t('verification.actionTexts.continueW1Detail', { covered: w1.specClauseCovered ?? 0, total: w1.specClauseTotal ?? 0 }),
         count: (w1.specClauseTotal ?? 0) - (w1.specClauseCovered ?? 0),
         prompt: '继续 W1 基础功能：为规格映射矩阵中尚未覆盖的可验证规格条款补充验证 Intent 与 testcase（每条条款至少一条 happy path），用 register_verification_intents 登记（wave=basic），run_simulation 绑定 scenarioIds 执行。'
       })
@@ -198,8 +206,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
       actions.push({
         id: 'wave-w2',
         priority: 'P0',
-        title: '执行下一增补波',
-        detail: w2.topics?.length ? `增补波：${w2.topics.map((t) => t.name).join('、')}` : '继续 W2 增补验证',
+        title: t('verification.actionTexts.continueW2Title'),
+        detail: w2.topics?.length ? t('verification.actionTexts.continueW2Topics', { topics: w2.topics.map((topic) => topic.name).join(t('verification.guidance.listJoin')) }) : t('verification.actionTexts.continueW2Default'),
         count: Math.max(0, (w2.scenarioCount ?? 0) - (w2.passedCount ?? 0)),
         prompt: '继续 W2 增补：按主题波执行剩余场景（wave=corner + topic），同组聚类一次 authoring 多条 testcase，run_simulation 绑定多个 scenarioIds。'
       })
@@ -207,8 +215,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
       actions.push({
         id: 'wave-w3',
         priority: 'P0',
-        title: '推进签核门禁',
-        detail: 'W2 增补已完成，处理覆盖率/Formal/Mutation/残余风险等签核门禁',
+        title: t('verification.actionTexts.w3Title'),
+        detail: t('verification.actionTexts.w3Detail'),
         count: 1,
         prompt: '推进 W3 签核：执行覆盖率闭合、Formal、Mutation、全量回归，处理残余风险审批，完成后 review_verification_evidence。'
       })
@@ -220,18 +228,18 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'clarify-spec',
       priority: 'P0',
-      title: '先澄清规格缺口',
-      detail: `${specUndefined.length} 个场景被“规格未定义”阻断无法裁决${moduleHint}`,
+      title: t('verification.actionTexts.clarifySpecTitle'),
+      detail: t('verification.actionTexts.clarifySpecDetail', { count: specUndefined.length, moduleHint }),
       count: specUndefined.length,
-      prompt: nextStepPrompt('先澄清规格缺口', specUndefined.map((h) => h.scenarioId), `逐条关联需求、规格与 RTL 对象，澄清被阻场景的判定语义${moduleHint}；能从已批准文档裁决的直接更新追踪，涉及外部可见语义变化的发起用户决策，不要自行猜测。`)
+      prompt: nextStepPrompt(t('verification.actionTexts.clarifySpecTitle'), specUndefined.map((h) => h.scenarioId), `逐条关联需求、规格与 RTL 对象，澄清被阻场景的判定语义${moduleHint}；能从已批准文档裁决的直接更新追踪，涉及外部可见语义变化的发起用户决策，不要自行猜测。`)
     })
   } else if (highSpecGaps.length > 0) {
     // 文档级规格缺口（TBD 待定稿），不阻断当前场景执行，优先级低于真实验证工作
     actions.push({
       id: 'clarify-spec-docs',
       priority: 'P2',
-      title: '澄清剩余规格缺口（文档级 TBD）',
-      detail: `${highSpecGaps.length} 项高置信度规格缺口待定稿`,
+      title: t('verification.actionTexts.clarifySpecDocsTitle'),
+      detail: t('verification.actionTexts.clarifySpecDocsDetail', { count: highSpecGaps.length }),
       count: highSpecGaps.length,
       prompt: '读取 spec-gap-register.json，对高置信度规格缺口逐条定稿并更新追踪关系；涉及外部可见语义变化的发起用户决策。'
     })
@@ -242,8 +250,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'fix-regressions',
       priority: 'P0',
-      title: '定位并修复失败回归',
-      detail: `${failedRegressions} 项回归失败`,
+      title: t('verification.actionTexts.fixRegressionsTitle'),
+      detail: t('verification.actionTexts.fixRegressionsDetail', { count: failedRegressions }),
       count: failedRegressions,
       prompt: '读取失败回归的日志/JUnit/波形，定位根因并按 L1-L4 影响分级修复，完成后定向复现、受影响回归、全量回归并更新证据。'
     })
@@ -253,8 +261,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'fix-formal',
       priority: 'P0',
-      title: '修复 Formal 阻断',
-      detail: `${failedFormal} 项 Formal 反例或强制证明未完成（阻断签核）`,
+      title: t('verification.actionTexts.fixFormalTitle'),
+      detail: t('verification.actionTexts.fixFormalDetail', { count: failedFormal }),
       count: failedFormal,
       prompt: '处理 Formal FAIL（反例=真实缺陷，按 L1-L4 修复）与 required ERROR（工具/环境限制：配置工具链或经批准调整验证义务）；不得把工具限制当 RTL 缺陷，也不得把反例当工具限制。'
     })
@@ -265,10 +273,10 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'add-checkers',
       priority: 'P0',
-      title: '补充观察点/Checker，让已到达场景可裁决',
-      detail: `${observation.length} 个场景已触发但无法判断通过/失败${moduleHint}`,
+      title: t('verification.actionTexts.addCheckersTitle'),
+      detail: t('verification.actionTexts.addCheckersDetail', { count: observation.length, moduleHint }),
       count: observation.length,
-      prompt: nextStepPrompt('补充观察点/Checker', observation.map((h) => h.scenarioId), `${observation.length} 个场景已到达但无法裁决${moduleHint}；补充 scoreboard/断言/协议检查，运行定向回归记录 assertionPassed 与证据，不要修改正确预期迎合 RTL。`)
+      prompt: nextStepPrompt(t('verification.actionTexts.addCheckersTitle'), observation.map((h) => h.scenarioId), `${observation.length} 个场景已到达但无法裁决${moduleHint}；补充 scoreboard/断言/协议检查，运行定向回归记录 assertionPassed 与证据，不要修改正确预期迎合 RTL。`)
     })
   }
 
@@ -277,10 +285,10 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'run-batch',
       priority: 'P0',
-      title: '运行第一批高风险场景',
-      detail: `${notRun.length} 个场景尚未真正执行，缺少仿真/覆盖率证据${moduleHint}`,
+      title: t('verification.actionTexts.runBatchTitle'),
+      detail: t('verification.actionTexts.runBatchDetail', { count: notRun.length, moduleHint }),
       count: notRun.length,
-      prompt: nextStepPrompt('运行第一批高风险场景', notRun.map((h) => h.scenarioId), `调用 select_next_verification_batch 选最高优先级场景${moduleHint}，用现有 Cocotb 环境执行真实回归，把 hit/verdict/证据写回 scenario_hits.json 与结果目录。`)
+      prompt: nextStepPrompt(t('verification.actionTexts.runBatchTitle'), notRun.map((h) => h.scenarioId), `调用 select_next_verification_batch 选最高优先级场景${moduleHint}，用现有 Cocotb 环境执行真实回归，把 hit/verdict/证据写回 scenario_hits.json 与结果目录。`)
     })
   }
 
@@ -288,10 +296,10 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'run-batch',
       priority: 'P0',
-      title: '执行下一批高风险场景',
-      detail: `${stimulus.length} 个场景缺定向激励，选最高优先级逐个执行并记录 hit${moduleHint}`,
+      title: t('verification.actionTexts.runNextBatchTitle'),
+      detail: t('verification.actionTexts.runNextBatchDetail', { count: stimulus.length, moduleHint }),
       count: stimulus.length,
-      prompt: nextStepPrompt('执行下一批高风险场景', stimulus.map((h) => h.scenarioId), `调用 select_next_verification_batch 选最高优先级场景${moduleHint}，用现有 Cocotb 环境生成定向激励、run_simulation、记录 scenario_hits/波形，关闭 C3 激励缺失 hole。`)
+      prompt: nextStepPrompt(t('verification.actionTexts.runNextBatchTitle'), stimulus.map((h) => h.scenarioId), `调用 select_next_verification_batch 选最高优先级场景${moduleHint}，用现有 Cocotb 环境生成定向激励、run_simulation、记录 scenario_hits/波形，关闭 C3 激励缺失 hole。`)
     })
   }
 
@@ -299,8 +307,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'refresh-change-impact',
       priority: 'P0',
-      title: '处理 RTL 变更影响',
-      detail: `${impactUnknown} 个 Scenario 的旧证据已失效或影响未知`,
+      title: t('verification.actionTexts.changeImpactTitle'),
+      detail: t('verification.actionTexts.changeImpactDetail', { count: impactUnknown }),
       count: impactUnknown,
       prompt: '读取 closure-assessment.json，对 freshness=IMPACT_UNKNOWN 的场景执行保守影响分析；证明无关的记录结构证据，其余用 run_simulation(scenarioIds=...) 执行受影响回归，rtlHash 由工具自动绑定当前值。'
     })
@@ -310,8 +318,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'resolve-oracle-conflicts',
       priority: 'P0',
-      title: '仲裁 Oracle 冲突',
-      detail: `${oracleConflicts} 个 Scenario 存在独立判定冲突`,
+      title: t('verification.actionTexts.oracleConflictsTitle'),
+      detail: t('verification.actionTexts.oracleConflictsDetail', { count: oracleConflicts }),
       count: oracleConflicts,
       prompt: '读取 oracle-evaluation.json 及每个冲突 Oracle 的原始证据，分别检查命题、输入、共享 assumptions、Checker/Reference Model 与 RTL 行为；修复后重跑并发布绑定当前 rtlHash 的 verdict。'
     })
@@ -319,8 +327,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'complete-oracle-evidence',
       priority: 'P1',
-      title: '补齐独立 Oracle',
-      detail: `${oracleInsufficient} 个关键 Scenario 不足两个独立判定域`,
+      title: t('verification.actionTexts.completeOracleTitle'),
+      detail: t('verification.actionTexts.completeOracleDetail', { count: oracleInsufficient }),
       count: oracleInsufficient,
       prompt: '为关键 Scenario 补充不同 independenceDomain 的有效 Oracle（Scoreboard、Architecture Assertion、Protocol Checker 或 Formal），把 verdict、证据路径与 rtlHash 写入 oracle_verdicts.json。'
     })
@@ -330,8 +338,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'escape-exploration-stall',
       priority: 'P0',
-      title: '退出重复探索',
-      detail: `连续 ${saturation.noProgressStreak} 轮没有语义新增且仍有关键缺口`,
+      title: t('verification.actionTexts.escapeStallTitle'),
+      detail: t('verification.actionTexts.escapeStallDetail', { count: saturation.noProgressStreak }),
       count: saturation.noProgressStreak,
       prompt: '停止重复相同 testcase/seed 和盲改 RTL；比较最近批次，优先增强 Checker/Assertion、扩大合法激励、增加观测点，再开下一轮。'
     })
@@ -341,8 +349,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'run-risk-mutation',
       priority: mutation?.status === 'BLOCKED_BY_SURVIVOR' ? 'P0' : 'P1',
-      title: mutation?.status === 'BLOCKED_BY_SURVIVOR' ? '杀死或审查 Mutation survivor' : '执行风险加权 Mutation',
-      detail: mutation ? `状态 ${mutation.status} · Score ${mutation.weightedScore ?? '-'} / ${mutation.threshold}` : '尚无绑定当前 RTL 的 Mutation 结果',
+      title: mutation?.status === 'BLOCKED_BY_SURVIVOR' ? t('verification.actionTexts.mutationKillTitle') : t('verification.actionTexts.mutationRunTitle'),
+      detail: mutation ? t('verification.actionTexts.mutationDetail', { status: mutation.status, score: mutation.weightedScore ?? '-', threshold: mutation.threshold }) : t('verification.actionTexts.mutationNoResult'),
       count: Math.max(1, mutation?.blockingSurvivors.length ?? 0),
       prompt: '按 risk-register.json 对控制优先级、事务计数、边界和错误路径执行风险加权 Mutation；INVALID 不计分，EQUIVALENT 必须具名审查。'
     })
@@ -352,8 +360,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'resolve-residual-risks',
       priority: 'P1',
-      title: '关闭或审批剩余风险',
-      detail: `${unapprovedResidual.length} 项剩余风险尚未批准`,
+      title: t('verification.actionTexts.residualTitle'),
+      detail: t('verification.actionTexts.residualDetail', { count: unapprovedResidual.length }),
       count: unapprovedResidual.length,
       prompt: '读取 residual-risk-register.json；优先用新增证据关闭风险，确需接受时由具名审批人写入 signoff-approvals.json。'
     })
@@ -363,8 +371,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'repair-formal-compatibility',
       priority: 'P1',
-      title: '修复补强 Formal 兼容性',
-      detail: `${supplementalFormalErrors} 项补强 Formal 未产生求解结论`,
+      title: t('verification.actionTexts.formalCompatTitle'),
+      detail: t('verification.actionTexts.formalCompatDetail', { count: supplementalFormalErrors }),
       count: supplementalFormalErrors,
       prompt: '处理补强 Formal 的 ERROR/UNKNOWN；Yosys 前端不兼容时改用 immediate assert/assume/cover、$past 和监控计数器，Liveness 写出有规格依据的最小 assume。'
     })
@@ -374,8 +382,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'continue-closure',
       priority: 'P1',
-      title: '继续 Verification Intent 闭环',
-      detail: `${open} 个 Intent 尚未闭环`,
+      title: t('verification.actionTexts.continueClosureTitle'),
+      detail: t('verification.actionTexts.continueClosureDetail', { count: open }),
       count: open,
       prompt: '选择最高优先级未闭环 Intent，执行适合的 Simulation、Assertion、Formal 或 Static 方法，保存原始证据并重新生成态势。'
     })
@@ -384,8 +392,8 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     actions.push({
       id: 'signoff-review',
       priority: 'P2',
-      title: '执行独立证据审查与签核',
-      detail: '关键 Intent 已闭环，进入最终签核检查',
+      title: t('verification.actionTexts.signoffReviewTitle'),
+      detail: t('verification.actionTexts.signoffReviewDetail'),
       count: 1,
       prompt: '调用 review_verification_scenarios 与 review_verification_evidence，独立读取测试、日志、JUnit、覆盖率、Formal 与 RTL 原始证据，明确是否具备签核条件。'
     })
@@ -418,21 +426,21 @@ export function deriveTopRisks(state: GuidanceState, risks: GuidanceRisk[]): Exp
     const specBlocked = relatedIntents.some((item) => item.status === 'BLOCKED_BY_SPEC') || holes.some((item) => item.classification === 'C5_SPEC_UNDEFINED')
     const infrastructure = holes.some((item) => ['C4_OBSERVATION_MISSING', 'C6_TOOL_INSTRUMENTATION'].includes(item.classification))
     const closed = relatedIntents.length > 0 && relatedIntents.every((item) => CLOSED_VERIFICATION_STATUSES.has(item.status))
-    const level: ExplainedRisk['level'] = failed ? '已确认问题' : specBlocked ? '规格缺口' : infrastructure ? '验证基础设施缺口' : closed ? '已接受风险' : '高风险待验证'
+    const level: RiskLevel = failed ? 'confirmed' : specBlocked ? 'specGap' : infrastructure ? 'infraGap' : closed ? 'accepted' : 'highRisk'
     const firstHole = holes[0]
-    const gap = firstHole?.missingTarget ?? firstHole?.reason ?? (relatedIntents.length ? `${relatedIntents.filter((item) => !CLOSED_VERIFICATION_STATUSES.has(item.status)).length}/${relatedIntents.length} 个关联 Intent 尚未闭环。` : '旧版快照尚无 Risk → Intent 精确关联；需重新生成 AIGV 态势。')
+    const gap = firstHole?.missingTarget ?? firstHole?.reason ?? (relatedIntents.length ? t('verification.topRisks.intentsOpen', { open: relatedIntents.filter((item) => !CLOSED_VERIFICATION_STATUSES.has(item.status)).length, total: relatedIntents.length }) : t('verification.topRisks.noLink'))
     const recommendation = risk.failureModes?.length
-      ? `重点验证：${risk.object} 是否出现「${risk.failureModes[0]}」，以 ${risk.observableEffects?.[0] ?? '外部可见结果'} 作为通过/失败判定。`
-      : (firstHole?.recommendedAction ?? (closed ? '保留现有证据并纳入签核审查。' : '执行关联高优先级 Scenario，并补齐 Checker、Coverage 与原始证据。'))
-    const impact = (risk.failureModes?.join('；') ?? '') || risk.observableEffects?.join('；') || impactOf(risk)
+      ? t('verification.topRisks.verifyFocus', { object: risk.object, failureMode: risk.failureModes[0], effect: risk.observableEffects?.[0] ?? t('verification.topRisks.defaultEffect') })
+      : (firstHole?.recommendedAction ?? (closed ? t('verification.topRisks.keepEvidence') : t('verification.topRisks.runScenarios')))
+    const impact = (risk.failureModes?.join(t('verification.guidance.clauseJoin')) ?? '') || risk.observableEffects?.join(t('verification.guidance.clauseJoin')) || impactOf(risk)
     return { risk, level, relatedIntents, gap, impact, recommendation, prompt: `请处理验证风险 ${risk.id}。风险语义：${risk.riskStatement ?? `${risk.title}，对象 ${risk.object}`} 当前缺口：${gap} 可能影响：${impact} 建议：${recommendation} 请读取关联 RTL、VI/SCN 和原始证据，按 Intent 中的激励步骤、观察点和通过标准执行定向仿真、Assertion 或 Formal，完成后重新生成验证态势。` }
   })
 }
 
 export function deriveVerificationSteps(state: GuidanceState | null): VerificationStep[] {
   if (!state) return [
-    { id: 'planning', label: '验证规划', status: 'running', detail: '尚未生成 AIGV 状态' },
-    ...['环境就绪', '基础回归', '风险场景', '覆盖闭环', 'Formal 补强', '验证签核'].map((label, index) => ({ id: `pending-${index}`, label, status: 'pending' as const, detail: '等待前序步骤' }))
+    { id: 'planning', label: t('verification.stepLabels.planning'), status: 'running', detail: t('verification.stepDetails.noState') },
+    ...(['environment', 'regression', 'risk', 'coverage', 'formal', 'signoff'] as const).map((stepId, index) => ({ id: `pending-${index}`, label: t(`verification.stepLabels.${stepId}`), status: 'pending' as const, detail: t('verification.stepDetails.waitPrevious') }))
   ]
   const s = normalizeGuidanceState(state)
   // 波段化（展示层契约）：有 waveProgress 时用 W0-W3 波段视图
@@ -453,13 +461,13 @@ export function deriveVerificationSteps(state: GuidanceState | null): Verificati
   const formalFailed = s.formalResults.filter((item) => item.status === 'FAIL' || (item.obligation === 'required' && ['ERROR', 'UNKNOWN'].includes(item.status))).length
   const supplementalFormalErrors = s.formalResults.filter((item) => item.obligation !== 'required' && ['ERROR', 'UNKNOWN'].includes(item.status)).length
   const steps: VerificationStep[] = [
-    { id: 'planning', label: '验证规划', status: intents.length ? 'completed' : 'running', detail: intents.length ? `${intents.length} 个 Intent` : '等待生成 Intent' },
-    { id: 'environment', label: '环境就绪', status: s.regressions.length ? 'completed' : 'running', detail: s.regressions.length ? '已有结构化回归结果' : '等待仿真环境与结果' },
-    { id: 'regression', label: '基础回归', status: regressionsPassed ? 'completed' : s.regressions.length ? 'blocked' : 'pending', detail: s.regressions.length ? (regressionsPassed ? '回归通过' : '存在失败回归') : '尚未执行' },
-    { id: 'risk', label: '风险场景', status: closure === 100 ? 'completed' : intents.length ? 'running' : 'pending', detail: `${closed}/${intents.length} Intent 闭环` },
-    { id: 'coverage', label: '覆盖闭环', status: blockingHoles === 0 && intents.length ? 'completed' : blockingHoles ? 'blocked' : 'pending', detail: blockingHoles ? `${blockingHoles} 项阻断` : '无阻断 Coverage Hole' },
-    { id: 'formal', label: 'Formal 补强', status: formalFailed ? 'blocked' : supplementalFormalErrors ? 'running' : s.formalResults.length ? 'completed' : 'pending', detail: formalFailed ? `${formalFailed} 项强制失败/错误` : supplementalFormalErrors ? `${supplementalFormalErrors} 项补强工具限制` : s.formalResults.length ? `${s.formalResults.length} 项证据` : '按候选场景执行' },
-    { id: 'signoff', label: '验证签核', status: closure === 100 && regressionsPassed && blockingHoles === 0 && formalFailed === 0 ? 'completed' : 'pending', detail: closure === 100 && blockingHoles === 0 ? '等待独立证据审查' : '等待前序闭环' }
+    { id: 'planning', label: t('verification.stepLabels.planning'), status: intents.length ? 'completed' : 'running', detail: intents.length ? t('verification.stepDetails.intentCount', { count: intents.length }) : t('verification.stepDetails.waitIntents') },
+    { id: 'environment', label: t('verification.stepLabels.environment'), status: s.regressions.length ? 'completed' : 'running', detail: s.regressions.length ? t('verification.stepDetails.envReady') : t('verification.stepDetails.envWaiting') },
+    { id: 'regression', label: t('verification.stepLabels.regression'), status: regressionsPassed ? 'completed' : s.regressions.length ? 'blocked' : 'pending', detail: s.regressions.length ? (regressionsPassed ? t('verification.stepDetails.regressionPassed') : t('verification.stepDetails.regressionFailed')) : t('verification.stepDetails.notExecuted') },
+    { id: 'risk', label: t('verification.stepLabels.risk'), status: closure === 100 ? 'completed' : intents.length ? 'running' : 'pending', detail: t('verification.stepDetails.intentClosure', { closed, total: intents.length }) },
+    { id: 'coverage', label: t('verification.stepLabels.coverage'), status: blockingHoles === 0 && intents.length ? 'completed' : blockingHoles ? 'blocked' : 'pending', detail: blockingHoles ? t('verification.stepDetails.blocking', { count: blockingHoles }) : t('verification.stepDetails.noBlocking') },
+    { id: 'formal', label: t('verification.stepLabels.formal'), status: formalFailed ? 'blocked' : supplementalFormalErrors ? 'running' : s.formalResults.length ? 'completed' : 'pending', detail: formalFailed ? t('verification.stepDetails.formalFailed', { count: formalFailed }) : supplementalFormalErrors ? t('verification.stepDetails.formalToolLimited', { count: supplementalFormalErrors }) : s.formalResults.length ? t('verification.stepDetails.formalEvidence', { count: s.formalResults.length }) : t('verification.stepDetails.formalRun') },
+    { id: 'signoff', label: t('verification.stepLabels.signoff'), status: closure === 100 && regressionsPassed && blockingHoles === 0 && formalFailed === 0 ? 'completed' : 'pending', detail: closure === 100 && blockingHoles === 0 ? t('verification.stepDetails.waitReview') : t('verification.stepDetails.waitClosure') }
   ]
   return steps
 }
@@ -467,10 +475,10 @@ export function deriveVerificationSteps(state: GuidanceState | null): Verificati
 /** 波段步骤详情：W1 用规格条款，W2 用主题波，其余用通过数。 */
 function waveDetail(wave: WaveProgressEntry): string {
   if (wave.id === 'W1' && wave.specClauseTotal !== undefined) {
-    return `${wave.specClauseCovered ?? 0}/${wave.specClauseTotal} 条款通过`
+    return t('verification.stepDetails.clausesPassed', { covered: wave.specClauseCovered ?? 0, total: wave.specClauseTotal })
   }
   if (wave.id === 'W2' && wave.topics?.length) {
-    return `${wave.topics.length} 波：${wave.topics.map((topic) => `${topic.name} ${topic.passedCount}/${topic.scenarioCount}`).join('、')}`
+    return t('verification.stepDetails.waves', { count: wave.topics.length, topics: wave.topics.map((topic) => `${topic.name} ${topic.passedCount}/${topic.scenarioCount}`).join(t('verification.guidance.listJoin')) })
   }
-  return `${wave.passedCount}/${wave.scenarioCount} 通过`
+  return t('verification.stepDetails.passed', { passed: wave.passedCount, total: wave.scenarioCount })
 }
