@@ -199,7 +199,8 @@ v${VERSION} 主要更新：
 `)
 
 // ── 4. 压缩 ────────────────────────────────────────────────
-const zipName = `MoonGlass-${VERSION}-Windows-x64-Green-${RELEASE}-MIC_NPU-Demo-${today}.zip`
+// ZIP 命名：MoonGlass-<版本>-Windows-x64-Green-v<版本>-<yyyymmdd>.zip
+const zipName = `MoonGlass-${VERSION}-Windows-x64-Green-${RELEASE}-${today}.zip`
 const zipPath = join(outRoot, zipName)
 const fileCount = readdirSync(appDir, { recursive: true, withFileTypes: true })
   .filter((entry) => entry.isFile()).length

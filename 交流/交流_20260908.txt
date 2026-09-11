@@ -478,3 +478,145 @@ VerificationPosturePage.tsx / moonglass.ts 类型 / +报告外未动他处），
 联调待验证：真实 run_simulation 下 cocotb 2.x JUnit 的 testcase name
 是否为裸函数名（\b(test_\w+) 提取已兜底）；pi-bridge 运行时副本需
 重启会话加载新版。
+
+============================================================
+进展：深色模式颜色缺陷修复（设置页不可读 + 全端审计）—— Kimi（2026-09-08）
+============================================================
+
+用户报告：深色外观下"开发环境与 EDA 工具链"检测行浅灰底浅字不可读。
+
+根因（两处缺口）：
+1. 直接原因：.environment-list 等语义类硬编码浅色（rgb(255 255 255/66%)），
+   无深色覆盖——文字被既有映射改浅、背景保持白，浅字压浅底。
+2. 系统性缺口：styles.css 520-579 既有工具类映射段只覆盖中性色与少数
+   彩色；审计发现 213 处硬编码类无深色映射（bg-*-100 徽章、
+   text-*-600~800、hover/disabled 变体等），另有 --text-strong 等三个
+   语义变量被引用但从未定义（Markdown 预览深色黑字压深底）、
+   .message-assistant/.message-tool/.console-metric 硬编码白底、
+   .project-source 深色底仍用 Prism 亮色 token。
+
+修复（仅 2 文件，纯追加，遵循既有惯用法，未引入 dark: 变体体系）：
+- styles.css +154 行：补齐三个语义变量（亮/暗两组）；深色映射扩展段
+  （中性缺口 + 彩色徽章"加深底+浅字" + hover/disabled，全部限定
+  [data-color-mode='dark'] .app-shell 作用域，不碰亮色/图表/代码块）；
+  硬编码浅色的语义类逐个深色覆盖；.project-source Prism token 重着色。
+- SettingsPage.tsx 1 行：LLM 区块补 surface-panel 语义类对齐。
+
+验证：typecheck 0 / root 基线 11 不新增；审计脚本前后计数 213→0。
+已修复/遗留清单见交接口头报告；遗留均为"可读"项（错误兜底页、
+深底实心按钮、半透明蒙层），有意未动。
+
+并行状态知悉：TBD 修复两侧（引擎+smoke）已随 v0.9.2 基线提交；
+当前工作区 engine.ts 的未提交改动是团队的 BUG-AIGV-001 修复
+（R10 CDC 改结构判定 + 注释剥离），我方未触碰。
+
+目视抽查建议（pnpm dev 切深色）：SettingsPage（重点）、ChatPanel
+三种气泡、VerificationPosturePage 热度图与徽章、WorkspacePage
+源代码查看器新 token 配色、Markdown 预览。
+
+============================================================
+进展：doc-repository 追溯检查器 + 门禁层缺陷修复（MG-DOC-001~005）—— Kimi（2026-09-08）
+============================================================
+
+按使用方报告（moonglass_tool_issue_report.md）修复，五条全部落地。
+
+【MG-DOC-004 归因判定（报告 §6 问 A/B 与三连问的答案）】
+- 判定为归因 A 的变体：缺陷在确定性代码，非摘要模型改写。
+  ① 文案产自 PhaseEngine.rtmComplete（PhaseEngine.ts:280）；
+  ② 非模型重写——是 REQUIREMENT_ID 正则（L160）的三个确定性问题：
+  接受裸前缀（PERF-001 本就可匹配，无所谓"剥离"）、\b 在
+  SPEC-PERF-006 内成立导致 PERF-006 子串污染需求集合（故 SPEC 计入
+  需求数 13）、missing 为 Set 插入序未排序（故非字典序）；
+  ③ 同源 regex 用于 requirementsUsable，已在 regex 层统一修复。
+- 检查器侧（归因 B）在当前脚本（MD5 一致）上不可复现，维持报告结论。
+
+【修复内容】
+A. check_doc_repo.py（MG-DOC-001/002/003/005）：
+   - 矩阵单元格粗筛疑似 ID token，未被 ids() 识别的（裸/错前缀）报
+     "矩阵 ID 格式"错误，带 文件/表k/数据行n/列名 定位与按所在列
+     命名空间的写法建议；前缀错与编号错诊断对称化；
+   - mapped 集合改 dict[ID]->位置列表，未知 ID 附全部命中位置；
+     缺失列表保留 sorted 并附"若矩阵中已列，请检查前缀是否完整"提示；
+   - "未识别到 ID"警告补真实原因（仅写在矩阵中的 ID 不算定义）。
+   payload()/results 形状不变，仅新增 item 类型与文案。SKILL.md 同步。
+B. PhaseEngine.ts（MG-DOC-004）：REQUIREMENT_ID / SPECIFICATION_ID /
+   range 展开三处加负向回顾 (?<![A-Za-z0-9]-)，SPEC-PERF-006 内的
+   PERF-006 不再计入需求；REQ-PERF-001 整体匹配与 legacy 裸 ID 兼容
+   保留；missing 输出排序。
+C. 验证：doc-repository-validator-smoke 新增实验 A/B 断言（格式错误
+   定位、未知 ID 命中位置、缺失排序与前缀提示、新文案）全过；
+   eda-gate-smoke 新增 rtm-complete 防污染 3 用例（31 项全过）；
+   verification-intelligence smoke 过；typecheck 0 / root 基线 11。
+
+【分发提醒】green-dist-v0.9.2 内 userdata 的检查器副本为旧版，
+需下次打包分发刷新；使用方项目的规避措施（矩阵写完整前缀）在新版
+下依然有效，且裸前缀现在会得到带定位的明确错误。
+
+改动 5 文件（check_doc_repo.py / SKILL.md / PhaseEngine.ts /
+两个 smoke），未做 git 变更，与深色模式修复一起在工作区待审。
+
+============================================================
+进展：模型上下文窗口联动修复（切换模型回落 128K 问题）—— Kimi（2026-09-08）
+============================================================
+
+问题：会话中切换模型，上下文上限有时不跟随，回落默认 128K，需反复手动调整。
+
+根因（两条链路缺陷）：
+1. 用户自定义覆盖值只在主进程显示层（getSessionStats）与 VERIF compaction
+   阈值生效，从未注入 pi——pi 进程内的自动压缩等上下文管理永远用登记表
+   或 128K 回退。即"手动调整"只改了显示，没改 pi 的实际行为。
+2. 切换模型后统计徽标不刷新（chatStore.setModel 成功后不重取统计）。
+
+修复（4 文件，+79/-12）：
+- AgentService 新增 effectiveModelContext() 统一解析（覆盖 > 登记表，
+  无命中返回 null 由调用方决定回退），三处口径（spawn 注入、compaction
+  阈值、统计显示）收敛到一处，消除口径漂移；
+- providers payload 新增 contextWindows 字段（逐模型有效窗口），
+  moonglass-providers.ts 桥接优先读 payload、缺省完整回退旧逻辑
+  （向后兼容）；
+- ChatPanel 模型切换成功后立即刷新统计徽标。
+
+行为说明：覆盖值变更对**新 spawn 的会话**生效（pi 模型注册表在进程
+启动时固定）；显示层即时生效。登记表命中模型一直自动正确，本轮不
+扩充登记表（建议后续补 deepseek-chat/reasoner、doubao-* 等，见下）。
+
+验证：typecheck 0 / root 基线 11；pi-tools-smoke 新增 contextWindows
+覆盖/回退断言（覆盖 777777 压过登记表 1M、无条目回退 128K）通过；
+pi-rpc-smoke（旧 payload 兼容路径）及其余五个 smoke 全过。
+
+未提交，与前述深色模式/MG-DOC 修复一起在工作区待审。
+
+【建议（未实施）】登记表（model-context.ts 两处副本）缺 deepseek-chat/
+deepseek-reasoner、doubao-* 等主流型号；建议团队按官方文档核实后补充，
+注意两处副本同步。
+
+============================================================
+进展：模型上下文登记表刷新（9 家厂商官方核实，2026-09-11）—— Kimi
+============================================================
+
+动作：9 路并行核实各厂商官方文档后，刷新两处登记表副本
+（src/shared/model-context.ts 与 resources/moonglass/pi-bridge/
+model-context.ts，保持同步）与预置清单（llm-provider-presets.ts）。
+
+关键事实（全部带来源 URL，详见调研）：
+- DeepSeek：用户反馈属实。deepseek-chat/reasoner 2026-07-24 已退役；
+  v4-flash 旧名临时路由 V4.1-Flash；v4-pro 自 2026-09-14 路由至 Flash。
+  主力仅 deepseek-flash = 1M 上下文 / 384K 输出（官方定价页）。
+  预置模型清单已改为 ['deepseek-flash']。
+- 修正一个错误登记：claude-haiku-4-5 旧表写 1M，官方实为 200K/64K
+  （Haiku 无 1M 变体）。sonnet-4-6 输出上限官方两页口径不一致
+  （64K vs 128K），取 128K 但标 verified=false。
+- 新增现役旗舰：gpt-6-astra / gpt-5.6 系列（1.05M/128K）、
+  claude-opus-5 / sonnet-5 / fable-5-1（1M/128K）、gemini-3.8-flash、
+  grok-4.6（500K）、MiniMax-M3（1M）、qwen3.8-max（1M/128K）、
+  kimi-k3（1M/128K 官方）等；glm-5（200K/128K）、qwen3-coder-plus
+  （1M/64K）、qwen3-coder-next（256K/64K）、groq 两款（131K）补登记。
+- 官方未公布输出上限的（xAI 全线、Mistral 全线、MiniMax、Kimi Code
+  通道）一律取保守值并标 verified=false，不编造数字。
+- 聚合商（OpenRouter/Together/硅基流动）的带前缀目录 ID 未动：
+  其模型 ID 与官方 API 不同体系，未经各自目录核实，贸然改名有风险
+  （其中 Together/硅基流动的 DeepSeek-V4-Pro/V4-Flash 条目指向的
+  上游模型正在退役，建议团队核实后处理）。
+
+验证：typecheck 0 / root 基线 11；pi-tools-smoke 通过；37 条规则
+断言（覆盖全部预置模型 ID + 回退路径）全过。未提交，工作区待审。

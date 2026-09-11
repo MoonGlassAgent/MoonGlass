@@ -1,0 +1,86 @@
+# MoonGlass 团队 × Kimi 工作记录（2026-09-11）
+
+## 对 DEFECT-PACK-001（Flow_Cross，16 项缺陷）的受理与修复回复
+
+按提交包 §13 的期望响应逐条回复：
+
+### 1. 受理确认（16/16 全部受理）
+
+16 项缺陷全部受理，无需补充信息——报告的函数级锚点与最小复现质量足够，
+我们复核源码后全部确认属实（含 SYNTH-D2 标注为假设的审慎口径）。
+
+### 2. 批次 1（#8/#16/#9(a)/#9(c)/AIGV-D2）——已修复
+
+- **#8**：formal-result.json 的 rtlHash 进入工作区统一哈希空间——
+  eda-bridge/formal.ts 新增 workspaceRtlHash 入参（桥接层以
+  computeRtlHash(workspace) 穿线，保持 eda-bridge 不反向依赖引擎的
+  分层），rtlHash 字段记工作区口径；原"输入文件清单"口径改记
+  scopeHash 保留溯源。验收判据 1（逐字节相等）已由全链路冒烟验证。
+- **#16**：团队的 BUG-AIGV-001 修复已拦截陈旧 Formal 覆盖仿真 hit
+  （stale 跳过）；#8 统一口径后，同空间 Formal 结果可正常合并。
+  遗留（已记录待后续）：同场景多份 Formal 证据的 addVerdict 按目录
+  枚举顺序后者覆盖前者，建议按 generatedAt 优选。
+- **#9(a)/#9(c)**：criticalInsufficient 与 impactUnknown 统一排除
+  closure ∈ {WAIVED, EXCLUDED}（新增共享常量 EXEMPT_CLOSURES，
+  杜绝三处口径漂移）。
+- **AIGV-D1/D2**：团队修复（R10 结构事实判定 + 注释剥离 + 新鲜度
+  降级不回退）与我方改动无交集，回归 smoke 互证通过。
+
+### 3. 批次 2（#13/#17/#14）——已修复（证据完整性）
+
+- run_simulation 新增 purpose: regression|mutation|probe（缺省
+  regression 向后兼容）：非回归用途不写 scenario_hits（含 scn_ 自动
+  解析）、产物落盘隔离目录 <module>/<purpose>-runs/<用例-时间戳>/；
+- 主 result.json 防覆盖防线：失败运行写入前把既有成功证据旁路归档为
+  result.pass-<时间戳>.json（逐字节保留）；
+- 引擎/门禁/看板/证据审查四处收集侧统一口径：只认顶层模块目录直下的
+  result.json，隔离路径段排除，无法归属的显式 warning。
+
+### 4. 批次 3（#10）——已修复
+
+compile_icarus.log 按 cocotb runner.build 完成标记切分编译段（空段写
+明确说明行，日志恒非空且内容真实）；compileExitCode 反映真实编译结果
+（84/84 PASS 不再携带 2）；review_verification_evidence 必需集合按
+framework/simulator 推导并回显判定依据；存量 0 字节旧日志降级为
+warning（不阻断）。
+
+### 5. 批次 4（#6/#11/#12/#15 + §5 补充）——已修复
+
+- **#6 按报告 §4.4 D-1 的相对路径方案修复**（采纳）：用户 .cpp 与 RTL
+  全部转为相对 objDir 的 ASCII 相对路径、以 objDir 为 cwd 执行；
+  synthesis.ts 的 Yosys 调用同源地改（SYNTH-D2 同源假设）；非 ASCII
+  路径下失败时错误提示明确指向编码问题。已用真实 oss-cad-suite 在
+  非 ASCII 临时目录端到端验证编译+仿真成功、产出行覆盖率。
+- **#11**：消解语义识别（已关闭/已解决/已裁决/不适用/DEC-* 等），
+  结论文本不再计为规格缺口；真实 TBD 仍计入。
+- **#12**：W1 闭环口径改为 PASSED+WAIVED，差值全豁免时 P0 卡片消失。
+- **#15**：mutation-results.json 无 records[] 时显式 schema 告警；
+  兼容 results[] 映射采信；缺 rtlHash/evidence 各有可操作提示。
+- **§5 补充**：已具名审批的残余风险不再逐条列为「尚未批准」，
+  合并为「已批准 N / 待批准 M」摘要。
+
+### 6. SYNTH-D1 / SYNTH-D2
+
+- **SYNTH-D1 确证并修复**：scripts/stage-aigv-runtime.mjs 的 bin 复制
+  清单漏了 yosys-abc.exe（源工具链中存在，23.2 MB）。已补入清单与
+  manifest。**需重新执行 stage 脚本并重打包**；ABC 为 MIT 许可，
+  发布前确认授权清单是否补 LICENSE.abc。
+- **SYNTH-D2**：维持报告的"未证实假设"口径。synthesis.ts 相对路径
+  改造后请在纯 ASCII 路径复测判定；修复前 PPA/综合条款记 C6 工具
+  阻断的处置正确。
+
+### 7. §6.5 联合验收判据状态
+
+判据 1-6 已在 smoke 与临时冒烟层验证（哈希同源、不被覆盖、豁免
+单调下降、隔离后黄金证据逐字节不变等）；判据 3-5 中依赖贵工程
+实际数据的（SCN-E33A9D4A 转 VERIFIED、88/88、阻断清零）与判据
+7-8（覆盖率产出、综合出网表）需在重打包后的新版本上复核——
+注意 app.asar 优先于 userData 磁盘副本（正是你们本地补丁未生效的
+原因），必须以新出包为准。
+
+### 其他说明
+
+- 全部改动在工作区未提交，待内部审查后随下一版本发布；
+- 引擎用户数据（userData 的 pi-bridge 副本）随应用重启自动刷新；
+- 报告中"被覆盖的历史证据不可追溯"类损失无法回溯补救，本轮修复
+  保证不再发生（#17 旁路归档 + 用途隔离）。
