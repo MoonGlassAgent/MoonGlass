@@ -84,3 +84,18 @@ warning（不阻断）。
 - 引擎用户数据（userData 的 pi-bridge 副本）随应用重启自动刷新；
 - 报告中"被覆盖的历史证据不可追溯"类损失无法回溯补救，本轮修复
   保证不再发生（#17 旁路归档 + 用途隔离）。
+
+============================================================
+基线：v0.9.5 + 绿色版已出包 —— Kimi（2026-09-11）
+============================================================
+
+提交线（release/v0.9.2 分支）：e05f28f（深色模式/上下文窗口/登记表）→
+337a7aa（MG-DOC-001~005）→ ee731b4（DEFECT-PACK-001 批次 1-4 +
+BUG-AIGV-001）→ 1c12557（v0.9.5 基线 + 归档）→ APP_INFO 版本同步。
+
+绿色版：green-dist-v0.9.5/MoonGlass-0.9.5-Windows-x64-Green-v0.9.5-20260911.zip
+（341.5 MB，471 文件，SHA-256 6AFD4123…8FBD）。流水线全绿：版本一致性、
+typecheck、core 测试、EXE 真实启动自检。已验证包内 AIGV 工具链归档含
+yosys-abc.exe（SYNTH-D1 修复生效），manifest tools 列已含 ABC。
+流程中发现并修复：APP_INFO（src/shared/app-info.ts）版本号与
+package.json 不同步会被 version-consistency-check 拦截——已对齐 0.9.5。
