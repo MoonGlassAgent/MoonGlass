@@ -22,7 +22,8 @@ const suites = {
     'scripts/formal-smoke.mjs',
     'scripts/waveform-guard-smoke.mjs',
     'scripts/llm-error-smoke.mjs',
-    'scripts/eda-install-plan-smoke.mjs'
+    'scripts/eda-install-plan-smoke.mjs',
+    'scripts/download-mirror-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

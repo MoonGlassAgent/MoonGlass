@@ -7,13 +7,11 @@
  */
 
 import { spawn } from 'node:child_process'
-import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, extname, join, resolve, sep } from 'node:path'
-import { Readable } from 'node:stream'
-import { pipeline } from 'node:stream/promises'
-import { computeMissingInstallPlan, detectToolchain, locateTool, mergePathEntries } from '@moonglass/eda-bridge'
+import { computeMissingInstallPlan, detectToolchain, downloadFileWithMirrors, fetchWithMirrors, locateTool, mergePathEntries } from '@moonglass/eda-bridge'
 import type { InstallMissingSummary, ToolDetection, ToolInstallJob, ToolInstallResult, WaveformOpenResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
 import type { ProjectService } from './ProjectService'
@@ -248,33 +246,35 @@ export class EdaService implements MoonGlassService {
     const suiteDir = join(this.toolchainRoot, 'oss-cad-suite')
     const archivePath = join(this.toolchainRoot, 'oss-cad-suite-windows-x64.tgz')
     try {
-      const releaseResponse = await fetch('https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases/latest', {
-        headers: { 'User-Agent': 'MoonGlass' },
-        signal: AbortSignal.timeout(EdaService.REQUEST_TIMEOUT_MS)
-      })
-      if (!releaseResponse.ok) throw new Error(`GitHub Release 查询失败: HTTP ${releaseResponse.status}`)
-      const release = await releaseResponse.json() as { assets?: Array<{ name: string; browser_download_url: string }> }
+      // 元数据查询（api.github.com）与资产下载（github.com）都走镜像回退，
+      // 网络受限环境下 github.com 常被重置而镜像可通
+      let release: { assets?: Array<{ name: string; browser_download_url: string }> }
+      try {
+        const meta = await fetchWithMirrors('https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases/latest', {
+          timeoutMs: EdaService.REQUEST_TIMEOUT_MS
+        })
+        release = await meta.response.json() as typeof release
+      } catch (error) {
+        throw new Error(`GitHub Release 元数据查询失败：${error instanceof Error ? error.message : String(error)}`)
+      }
       const asset = release.assets?.find((item) => /^oss-cad-suite-windows-x64-.*\.tgz$/i.test(item.name))
       if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
 
       await rm(suiteDir, { recursive: true, force: true })
-      this.reportInstallProgress(id, '正在下载 OSS CAD Suite，请保持网络连接…', onProgress)
-      const download = await fetch(asset.browser_download_url, {
-        headers: { 'User-Agent': 'MoonGlass' },
-        signal: AbortSignal.timeout(EdaService.DOWNLOAD_TIMEOUT_MS)
+      const { channel } = await downloadFileWithMirrors(asset.browser_download_url, archivePath, {
+        timeoutMs: EdaService.DOWNLOAD_TIMEOUT_MS,
+        onChannel: (ch) => this.reportInstallProgress(id, `正在下载 OSS CAD Suite（${ch}），请保持网络连接…`, onProgress)
       })
-      if (!download.ok || !download.body) throw new Error(`工具包下载失败: HTTP ${download.status}`)
-      await pipeline(Readable.fromWeb(download.body as never), createWriteStream(archivePath))
       this.reportInstallProgress(id, '下载完成，正在后台解压工具包…', onProgress)
       await this.runProcess(TAR_EXE, ['-xzf', archivePath, '-C', this.toolchainRoot])
       await rm(archivePath, { force: true })
       if (!existsSync(join(suiteDir, 'bin'))) throw new Error('工具包解压完成，但未找到 bin 目录')
       this.activateToolchains()
-      return { ok: true, message: 'OSS CAD Suite 安装完成', path: suiteDir }
+      return { ok: true, message: `OSS CAD Suite 安装完成（下载自 ${channel}）`, path: suiteDir }
     } catch (error) {
       await rm(archivePath, { force: true }).catch(() => {})
       const message = error instanceof Error ? error.message : String(error)
-      return { ok: false, message: /abort|timeout/i.test(message) ? '工具包下载超时，请检查网络或代理后重试' : message }
+      return { ok: false, message }
     }
   }
 
@@ -291,24 +291,25 @@ export class EdaService implements MoonGlassService {
     const veribleDir = join(this.toolchainRoot, 'verible')
     const archivePath = join(this.toolchainRoot, 'verible-windows-amd64.zip')
     try {
-      const releaseResponse = await fetch('https://api.github.com/repos/chipsalliance/verible/releases/latest', {
-        headers: { 'User-Agent': 'MoonGlass' },
-        signal: AbortSignal.timeout(EdaService.REQUEST_TIMEOUT_MS)
-      })
-      if (!releaseResponse.ok) throw new Error(`GitHub Release 查询失败: HTTP ${releaseResponse.status}`)
-      const release = await releaseResponse.json() as { assets?: Array<{ name: string; browser_download_url: string }> }
+      // 元数据查询（api.github.com）与资产下载（github.com）都走镜像回退
+      let release: { assets?: Array<{ name: string; browser_download_url: string }> }
+      try {
+        const meta = await fetchWithMirrors('https://api.github.com/repos/chipsalliance/verible/releases/latest', {
+          timeoutMs: EdaService.REQUEST_TIMEOUT_MS
+        })
+        release = await meta.response.json() as typeof release
+      } catch (error) {
+        throw new Error(`GitHub Release 元数据查询失败：${error instanceof Error ? error.message : String(error)}`)
+      }
       const asset = release.assets?.find((item) => /^verible-v.*-win64\.zip$/i.test(item.name) || /^verible-v.*-windows-amd64\.zip$/i.test(item.name))
       if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
 
       await rm(veribleDir, { recursive: true, force: true })
       await mkdir(veribleDir, { recursive: true })
-      this.reportInstallProgress('verible', '正在下载 Verible，请保持网络连接…', onProgress)
-      const download = await fetch(asset.browser_download_url, {
-        headers: { 'User-Agent': 'MoonGlass' },
-        signal: AbortSignal.timeout(EdaService.DOWNLOAD_TIMEOUT_MS)
+      const { channel } = await downloadFileWithMirrors(asset.browser_download_url, archivePath, {
+        timeoutMs: EdaService.DOWNLOAD_TIMEOUT_MS,
+        onChannel: (ch) => this.reportInstallProgress('verible', `正在下载 Verible（${ch}），请保持网络连接…`, onProgress)
       })
-      if (!download.ok || !download.body) throw new Error(`工具包下载失败: HTTP ${download.status}`)
-      await pipeline(Readable.fromWeb(download.body as never), createWriteStream(archivePath))
       this.reportInstallProgress('verible', '下载完成，正在后台解压工具包…', onProgress)
       await this.runProcess(TAR_EXE, ['-xf', archivePath, '-C', veribleDir])
       await rm(archivePath, { force: true })
@@ -329,11 +330,11 @@ export class EdaService implements MoonGlassService {
       const root = this.veribleToolchainDir()
       if (!root) throw new Error('工具包解压完成，但未找到 bin 目录')
       this.activateToolchains()
-      return { ok: true, message: 'Verible 安装完成', path: root }
+      return { ok: true, message: `Verible 安装完成（下载自 ${channel}）`, path: root }
     } catch (error) {
       await rm(archivePath, { force: true }).catch(() => {})
       const message = error instanceof Error ? error.message : String(error)
-      return { ok: false, message: /abort|timeout/i.test(message) ? '工具包下载超时，请检查网络或代理后重试' : message }
+      return { ok: false, message }
     }
   }
 
