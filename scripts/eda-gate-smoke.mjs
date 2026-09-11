@@ -201,6 +201,44 @@ check(
   reqSpecResults.find((result) => result.checkId === 'rtm-complete')?.message
 )
 
+// ---------- 3b. rtm-complete 跨命名空间污染防护（MG-DOC-004） ----------
+const rtmGuardDir = join(root, 'rtm-guard')
+mkdirSync(join(rtmGuardDir, 'docs', '02_requirements'), { recursive: true })
+writeFileSync(
+  join(rtmGuardDir, 'docs', '02_requirements', 'product_requirements.md'),
+  '# 产品需求\n\nREQ-PERF-002：带宽需求，互连带宽必须满足全负载场景下的峰值传输要求。\n\nREQ-PERF-001：算力需求，峰值算力必须达到设计目标并保持稳定。\n\nSPEC-PERF-006 为规格侧编号示例，不计入需求。PERF-009 为遗留裸编号需求，仍然有效。\n'
+)
+const rtmGuardPath = join(rtmGuardDir, 'docs', '02_requirements', 'requirements_traceability.md')
+writeFileSync(
+  rtmGuardPath,
+  '# 需求-规格追溯矩阵\n\n## 版本历史\n\n| 版本 | 日期 | 作者 | 变更 |\n|---|---|---|---|\n| 0.1 | 2026-09 | 测试 | 初稿 |\n\n| 需求 ID | 规格 ID  | 状态 |\n|---|---|---|\n| REQ-FUNC-001 | SPEC-FUNC-001 | 草稿 |\n'
+)
+const rtmGuardMissing = await engine.runGateChecks(fakeProject('REQ_SPEC'), 'ARCH', { workspaceDir: rtmGuardDir })
+const rtmGuardMissingResult = rtmGuardMissing.find((result) => result.checkId === 'rtm-complete')
+check(
+  'SPEC-PERF-006 出现在需求文档时不计入需求 ID',
+  rtmGuardMissingResult?.passed === false &&
+    rtmGuardMissingResult.message.includes('缺少 3 个需求 ID') &&
+    !rtmGuardMissingResult.message.includes('PERF-006'),
+  rtmGuardMissingResult?.message
+)
+check(
+  'missing 列表按字典序输出',
+  rtmGuardMissingResult?.message.includes('PERF-009、REQ-PERF-001、REQ-PERF-002') === true,
+  rtmGuardMissingResult?.message
+)
+writeFileSync(
+  rtmGuardPath,
+  '# 需求-规格追溯矩阵\n\n## 版本历史\n\n| 版本 | 日期 | 作者 | 变更 |\n|---|---|---|---|\n| 0.1 | 2026-09 | 测试 | 初稿 |\n\n| 需求 ID | 规格 ID  | 状态 |\n|---|---|---|\n| REQ-PERF-001 | SPEC-PERF-001 | 草稿 |\n| REQ-PERF-002 | SPEC-PERF-002 | 草稿 |\n| PERF-009 | SPEC-PERF-009 | 草稿 |\n'
+)
+const rtmGuardMapped = await engine.runGateChecks(fakeProject('REQ_SPEC'), 'ARCH', { workspaceDir: rtmGuardDir })
+const rtmGuardMappedResult = rtmGuardMapped.find((result) => result.checkId === 'rtm-complete')
+check(
+  'REQ 整体匹配不受防护影响且裸 legacy ID 仍兼容',
+  rtmGuardMappedResult?.passed === true && rtmGuardMappedResult.message.includes('3 个需求 ID 均已映射'),
+  rtmGuardMappedResult?.message
+)
+
 const simpleArchResults = await engine.runGateChecks(fakeProject('ARCH'), 'RTL', { workspaceDir: simpleArchDir })
 check(
   '简单设计缺少独立微架构/时钟复位文档不阻断 RTL',

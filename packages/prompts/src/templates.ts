@@ -157,8 +157,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'VERIF',
     injectMode: 'prepend',
-    version: '2.3.1',
-    updatedAt: '2026-09-08',
+    version: '2.3.2',
+    updatedAt: '2026-09-11',
     content: `当前处于【验证完备】阶段。
 
 ## 执行范围规则
@@ -190,7 +190,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 10. 执行派生状态（VERIFIED/FAILED/REACHED/NOT_REACHED/PARTIAL/FORMAL_PROVED/FORMAL_UNREACHABLE）只能由仿真/Formal 证据自动派生，不得宣布；record_scenario_adjudication 仅限 PLANNED/IMPLEMENTED/BLOCKED_BY_SPEC/WAIVED 四类判断类裁决，WAIVED 需 signoff-approvals.json 中已有具名审批。把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，再次构建智能模型并重排任务，直至关键 Verification Intent 闭环
 11. 读取 oracle-registry.json 与 oracle-evaluation.json；关键 Scenario 至少需要两个 independenceDomain 不同且 Level >= 2 的有效 PASS。任何 Oracle 冲突均进入 CONFLICT，必须检查命题范围、共享 assumptions、Checker 与 RTL 原始证据，不得设置固定赢家
 12. 每次真实选批由 select_next_verification_batch 写入 exploration-history.json；只有实际执行、回灌并再次选批才算完成一轮。连续三轮无语义新增只能称为当前 Space、策略与预算下的经验性饱和，不得称为证明；规格或 RTL 变化后旧 Snapshot 的饱和结论自动失效
-13. 按 risk-register.json 对控制优先级、事务计数、边界和错误处理运行风险加权 Mutation，写入 mutation-results.json；KILLED 才计为检出，INVALID 不进入分母，EQUIVALENT 必须具名审查，SURVIVED/EQUIVALENCE_UNKNOWN 默认阻断
+13. 按 risk-register.json 对控制优先级、事务计数、边界和错误处理运行风险加权 Mutation，写入 mutation-results.json；KILLED 才计为检出，INVALID 不进入分母，EQUIVALENT 必须具名审查，SURVIVED/EQUIVALENCE_UNKNOWN 默认阻断。Mutation/故障注入的仿真运行必须带 purpose="mutation"（证据隔离，不覆盖回归主 result.json、不登记 scenario_hits）
 14. 读取 residual-risk-register.json；优先用证据关闭风险，确需接受时由具名责任人在 signoff-approvals.json 记录 riskId、approver、rationale、approvedAt。Agent 不得代替用户伪造审批
 15. 用机器可读产物和原始证据持续更新 docs/04_verification/ 全套 AIGV 文档；最后依次调用 review_verification_scenarios 和 review_verification_evidence，并读取 signoff-package.json。有阻断项时继续修复和回归，不得自行宣称验证完成
 16. 验证失败时先固定 testcase/seed 并做单根因最小修改；若 diagnostic-control.json 或 exploration-history.json 进入 DIAGNOSTIC_ENHANCEMENT/STALLED，立即暂停继续盲改 RTL，优先增强阶段性 Checker、协议/状态 Assertion、事务标识、Scoreboard 队列输出和必要波形，提升 L0-L5 诊断等级后再修复。可增强诊断，但不得修改正确预期来迎合 RTL。根因确认后（record_root_cause 以 verdict=confirmed 调用成功）停止继续修改 RTL，结束当前回合：MoonGlass 将派发独立修复会话执行已确认的修复并做回归验证，结果会以新消息送达（含判定、rtlHash、证据路径）。回归未通过（STILL_FAIL/UNKNOWN）时回到诊断循环，在 root-causes.json 开新假设链（refutedHypotheses 链式引用先前记录），确认新根因后再触发下一次修复派发

@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, relative, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import type {
   Confidence,
   ClosureAssessment,
@@ -55,6 +55,8 @@ interface RiskRule {
   title: string
   features: string[]
   patterns: RegExp[]
+  /** 结构事实判定（替代文本正则）：返回 true 即命中。与 patterns 二选一（BUG-AIGV-001 D1/R2）。 */
+  structural?: (structure: StructuralModel, moduleName: string) => boolean
   trigger: string[]
   expected: string[]
   method: VerificationScenario['method']
@@ -82,7 +84,10 @@ const RISK_RULES: RiskRule[] = [
   { taxonomyId: 'R07', title: 'Error/Normal Collision', features: ['error', 'response'], patterns: [/(?:err|error|fault|bresp|rresp)/i, /(?:done|complete|valid|ready)/i], trigger: ['错误与正常完成同周期或相邻周期'], expected: ['错误状态、返回值和完成通知唯一且一致'], method: 'simulation', temporalDepth: 0.7, concurrency: 0.9 },
   { taxonomyId: 'R08', title: 'Reset/Transaction Collision', features: ['reset', 'response'], patterns: [/(?:rst|reset)(?:_n)?/i, /(?:valid|ready|busy|outstanding|pending)/i], trigger: ['事务进行中', '复位到达'], expected: ['接口和内部状态回到规格定义状态'], method: 'simulation', temporalDepth: 0.7, concurrency: 0.8 },
   { taxonomyId: 'R09', title: 'SW/HW Collision', features: ['configuration', 'busy'], patterns: [/(?:cfg|config|control|ctrl)_\w+/i, /(?:busy|hw_|status|state)/i], trigger: ['软件写配置', '硬件同周期更新相关状态'], expected: ['写入、硬件更新和状态清除优先级明确'], method: 'simulation', temporalDepth: 0.5, concurrency: 0.9 },
-  { taxonomyId: 'R10', title: 'CDC Interaction', features: ['cdc'], patterns: [/(?:sync|async|cdc|clk_[a-z0-9_]+).*?(?:sync|clk_[a-z0-9_]+)/is], trigger: ['源时钟域数据变化', '目标时钟域采样'], expected: ['同步策略明确且无脉冲丢失/重复'], method: 'static', temporalDepth: 1, concurrency: 0.8 },
+  // R10 不再做文本匹配（BUG-AIGV-001 D1：原文正则对全文含注释匹配，单时钟设计的注释/标识符中
+  // 出现两次 sync 即误报）；改为结构事实：该模块 always 敏感表中出现 ≥2 个不同时钟才判定跨时钟域。
+  // clockResetDomains 由 structural-analyzer 提取，复位信号已按 rst|reset 名称模式排除，不会误入时钟集合。
+  { taxonomyId: 'R10', title: 'CDC Interaction', features: ['cdc'], patterns: [], structural: (structure, moduleName) => new Set(structure.clockResetDomains.filter((domain) => domain.module === moduleName).map((domain) => domain.clock)).size >= 2, trigger: ['源时钟域数据变化', '目标时钟域采样'], expected: ['同步策略明确且无脉冲丢失/重复'], method: 'static', temporalDepth: 1, concurrency: 0.8 },
   { taxonomyId: 'R11', title: 'Timeout/Late Response', features: ['timeout', 'response'], patterns: [/time(?:out|r)/i, /(?:bvalid|rvalid|response|resp)/i], trigger: ['timeout 已发生', '迟到响应随后到达'], expected: ['迟到响应不会重复完成或破坏计数'], method: 'simulation', temporalDepth: 1, concurrency: 0.9 },
   { taxonomyId: 'R12', title: 'Backpressure', features: ['backpressure'], patterns: [/\bvalid\w*\b/i, /\bready\w*\b/i], trigger: ['valid 保持', 'ready 长期拉低'], expected: ['数据与控制保持稳定且无丢失'], method: 'simulation', temporalDepth: 0.8, concurrency: 0.6 },
   { taxonomyId: 'R13', title: 'Resource Exhaustion', features: ['fifo', 'outstanding'], patterns: [/(?:fifo|full|outstanding|credit)/i, /(?:max|depth|limit|>=|==)/i], trigger: ['资源达到容量上限', '继续到达请求'], expected: ['正确 backpressure，无覆盖或计数错误'], method: 'simulation', temporalDepth: 0.7, concurrency: 0.9 },
@@ -211,6 +216,18 @@ function sourceLine(text: string, pattern: RegExp): number {
 }
 
 /**
+ * 匹配前剥离 Verilog 注释与字符串字面量（以空格替换、保留换行，行号不变），
+ * 防止注释/字符串中的关键字触发文本启发式规则（BUG-AIGV-001 D1/R1）。
+ */
+function stripVerilogText(text: string): string {
+  const blank = (match: string): string => match.replace(/[^\r\n]/g, ' ')
+  return text
+    .replace(/\/\*[\s\S]*?\*\//g, blank)
+    .replace(/"(?:\\.|[^"\\\r\n])*"/g, blank)
+    .replace(/\/\/[^\r\n]*/g, blank)
+}
+
+/**
  * 把一条 SPEC 文本拆分为可观察断言级子条款（契约 §二.1：一条 SPEC 常含多个可判定断言）。
  * 拆分键为确定性分隔符（；;。与 inline 编号），过短碎片并回相邻条款；
  * 单条款保持原 id 不变（旧 anchors 兼容），多条款派生 `${id}#a`、`#b`。
@@ -258,6 +275,14 @@ function classifyChannel(text: string): { channel: SpecClauseChannel; reason: st
 /** TBD/待定条款识别（条款级与行级共用）：TBD 项不是可验证义务，不进入验证矩阵。 */
 const TBD_PATTERN = /\b(?:TBD|TODO|待定|未定义|待确认)\b/i
 
+/**
+ * 缺陷 DEFECT-PACK-001#11：TBD 消解语义标记集合（按项目实践扩充）。
+ * 行内出现这些标记说明该 TBD 项已有结论（如 "TBD-REQ-001 已关闭"、"TBD-IF-001/002 已关闭"），
+ * 属于结论文本而非待定缺口——不计入 unknowns，也就不经 deriveSpecGaps 虚增 high 置信规格缺口。
+ * 宁漏勿冤：仅命中明确消解措辞才豁免；真正的待定项（如"工艺/电压/角点 TBD"）不含这些标记。
+ */
+const TBD_RESOLUTION_PATTERN = /已关闭|已解决|已裁决|已确认|不适用|已定|\bRESOLVED\b|\bCLOSED\b|\bDEC-\w+/i
+
 /** 条款分类（确定性规则，理由写入条款记录；documentary 宁可漏判成 verifiable 不可误判，channel 宁漏勿冤归 simulation）。 */
 function classifyClause(text: string): { clauseKind: 'verifiable' | 'documentary'; channel?: SpecClauseChannel; classificationReason?: string } {
   for (const rule of DOCUMENTARY_RULES) {
@@ -294,7 +319,10 @@ function requirementModel(workspace: string): RequirementModel {
       }
       const trimmed = line.trim()
       const isStructural = trimmed.startsWith('|') || trimmed.startsWith('#') || trimmed.startsWith('```')
-      if (!isStructural && TBD_PATTERN.test(line.replace(/\b(?:REQ|SPEC)-[A-Z0-9_-]+\b/g, ''))) unknowns.push({ id: `UNK-${unknowns.length + 1}`, text: line.trim().slice(0, 500), source: { file: relative(workspace, file), line: index + 1 } })
+      // 缺陷 DEFECT-PACK-001#11：与 TBD_PATTERN 同口径剥掉 REQ/SPEC ID 后，行内仍含消解语义
+      // 标记（已关闭/RESOLVED/DEC-* 等）的是结论文本，不计入 unknowns/规格缺口
+      const stripped = line.replace(/\b(?:REQ|SPEC)-[A-Z0-9_-]+\b/g, '')
+      if (!isStructural && TBD_PATTERN.test(stripped) && !TBD_RESOLUTION_PATTERN.test(stripped)) unknowns.push({ id: `UNK-${unknowns.length + 1}`, text: line.trim().slice(0, 500), source: { file: relative(workspace, file), line: index + 1 } })
     }
   }
   return { version: 1, generatedAt: new Date().toISOString(), requirements, unknowns, sourceFiles: files.map((file) => relative(workspace, file)) }
@@ -525,14 +553,21 @@ function deriveRisks(workspace: string, structure: StructuralModel): RiskMarker[
   for (const file of structure.sourceFiles) {
     const absolute = resolve(workspace, file)
     const text = readFileSync(absolute, 'utf-8')
-    const moduleName = /\bmodule\s+([A-Za-z_$][\w$]*)/.exec(text)?.[1] ?? basename(file)
+    // 文本启发式一律在剥离注释/字符串后的代码上做（BUG-AIGV-001 D1/R1）
+    const code = stripVerilogText(text)
+    const moduleName = /\bmodule\s+([A-Za-z_$][\w$]*)/.exec(code)?.[1] ?? basename(file)
     for (const rule of RISK_RULES) {
-      if (!rule.patterns.every((pattern) => pattern.test(text))) continue
-      const features = [...new Set([...rule.features, ...featuresOf(text).filter((feature) => rule.features.includes(feature))])]
-      const structuralComplexity = Math.min(1, 0.35 + (text.match(/\b(?:if|case|always|assign)\b/g)?.length ?? 0) / 120)
+      // 带 structural 的规则（如 R10）按结构事实判定，否则按文本正则（BUG-AIGV-001 D1/R2）
+      const hit = rule.structural ? rule.structural(structure, moduleName) : rule.patterns.every((pattern) => pattern.test(code))
+      if (!hit) continue
+      const features = [...new Set([...rule.features, ...featuresOf(code).filter((feature) => rule.features.includes(feature))])]
+      const structuralComplexity = Math.min(1, 0.35 + (code.match(/\b(?:if|case|always|assign)\b/g)?.length ?? 0) / 120)
       const interaction = Math.min(1, 0.35 + features.length * 0.14)
       const riskScore = Number((0.3 * structuralComplexity + 0.3 * interaction + 0.2 * rule.temporalDepth + 0.2 * rule.concurrency).toFixed(3))
-      risks.push({ id: `RISK-${String(risks.length + 1).padStart(4, '0')}`, taxonomyId: rule.taxonomyId, title: rule.title, ...riskSemantics(rule, moduleName, features), object: moduleName, features, structuralComplexity, interaction, temporalDepth: rule.temporalDepth, concurrency: rule.concurrency, riskScore, confidence: 'medium', facts: structure.facts.filter((fact) => fact.module === moduleName).map((fact) => fact.id), source: { file, line: Math.min(...rule.patterns.map((pattern) => sourceLine(text, pattern))) } })
+      const line = rule.structural
+        ? Math.min(...structure.clockResetDomains.filter((domain) => domain.module === moduleName).map((domain) => domain.source.line ?? 1))
+        : Math.min(...rule.patterns.map((pattern) => sourceLine(code, pattern)))
+      risks.push({ id: `RISK-${String(risks.length + 1).padStart(4, '0')}`, taxonomyId: rule.taxonomyId, title: rule.title, ...riskSemantics(rule, moduleName, features), object: moduleName, features, structuralComplexity, interaction, temporalDepth: rule.temporalDepth, concurrency: rule.concurrency, riskScore, confidence: 'medium', facts: structure.facts.filter((fact) => fact.module === moduleName).map((fact) => fact.id), source: { file, line } })
     }
   }
   const nwaySeen = new Set<string>()
@@ -786,8 +821,12 @@ function buildWaveProgress(scenarios: VerificationScenario[], specMapping: SpecM
   const basic = byWave.get('basic') ?? []
   // W1 status 改挂规格映射矩阵（闭集，契约回应 §三.3）：不再由 basic 场景数量推导，
   // 修掉"0/0 场景却 in-progress"的空转；scenarioCount/passedCount 保留为实际 basic 场景展示口径
+  // 缺陷 DEFECT-PACK-001#12：W1 闭环口径 = PASSED + WAIVED（具名豁免条款也是已处置条款），
+  // 否则差值全为已豁免条款时 W1 永久 in-progress；specClauseCovered 展示口径保持 PASSED 不变，
+  // synthesis 通道条款本就不在分母（clauseTotal 只计 VERIF 通道），保持一致
+  const w1Closed = specMapping.clauses.filter((clause) => (clause.channel ?? 'simulation') !== 'synthesis' && (clause.status === 'PASSED' || clause.status === 'WAIVED')).length
   const w1Status: WaveProgressItem['status'] = specMapping.clauseTotal === 0 ? 'pending'
-    : specMapping.coveredClause >= specMapping.clauseTotal ? 'done'
+    : w1Closed >= specMapping.clauseTotal ? 'done'
       : 'in-progress'
   const corner = byWave.get('corner') ?? []
   const topicMap = new Map<string, { name: string; scenarioCount: number; passedCount: number }>()
@@ -884,15 +923,34 @@ function coordinatesFor(structure: StructuralModel, scenario: VerificationScenar
   return { feature: [...scenario.features], boundary: boundaryConditions(structure, scenario).map((item) => ({ object: item.object, values: item.values })), interaction: interactionTypes.map((type) => ({ type, object: risk.object })), temporal, systemState }
 }
 
-function collectResults(workspace: string): VerificationStateModel['regressions'] {
-  return walk(join(workspace, 'verification', 'results'), (file) => basename(file) === 'result.json').map((file) => {
+// 缺陷 DEFECT-PACK-001#14：run_simulation 非回归用途（mutation/probe）的隔离运行目录段，
+// 形如 verification/results/<module>/<purpose>-runs/<taskOrTimestamp>/result.json
+const ISOLATED_RUN_SEGMENT = /^(?:mutation|probe|regression)-runs$|^(?:mutation|probe)$/
+
+/**
+ * 收集回归证据。缺陷 DEFECT-PACK-001#14：只认顶层模块目录直下一层
+ * （verification/results/<topModule>/result.json）；隔离运行目录（*-runs/、mutation/、probe/）
+ * 内的 result.json 明确排除不计入；其余递归发现、无法归属的 result.json 既不静默计入
+ * 也不静默丢弃——路径返回给调用方写入 warnings。
+ */
+function collectResults(workspace: string): { regressions: VerificationStateModel['regressions']; orphanedResultFiles: string[] } {
+  const resultsRoot = join(workspace, 'verification', 'results')
+  const regressions: VerificationStateModel['regressions'] = []
+  const orphanedResultFiles: string[] = []
+  for (const file of walk(resultsRoot, (item) => basename(item) === 'result.json')) {
+    const segments = relative(resultsRoot, file).split(sep)
+    if (segments.length !== 2) {
+      if (!segments.some((segment) => ISOLATED_RUN_SEGMENT.test(segment))) orphanedResultFiles.push(relative(workspace, file))
+      continue
+    }
     try {
       const data = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>
       const rawCoverage = (data.coverage ?? {}) as Record<string, unknown>
       const coverage = Object.fromEntries(Object.entries(rawCoverage).filter(([, value]) => typeof value === 'number')) as Record<string, number>
-      return { resultFile: relative(workspace, file), passed: data.passed === true, testsTotal: Number(data.testsTotal ?? 0), coverage }
-    } catch { return { resultFile: relative(workspace, file), passed: false, testsTotal: 0, coverage: {} } }
-  })
+      regressions.push({ resultFile: relative(workspace, file), passed: data.passed === true, testsTotal: Number(data.testsTotal ?? 0), coverage })
+    } catch { regressions.push({ resultFile: relative(workspace, file), passed: false, testsTotal: 0, coverage: {} }) }
+  }
+  return { regressions, orphanedResultFiles }
 }
 
 function collectFormalResults(workspace: string): VerificationStateModel['formalResults'] {
@@ -925,7 +983,7 @@ function scenarioState(status: ScenarioStatus, evidence: string[], reachCount: n
   return { lifecycle, reach, judgment, evidence: evidenceState, freshness, closure }
 }
 
-function scenarioHits(workspace: string): Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string }> {
+function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string }> {
   const hits = new Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string }>()
   for (const file of walk(join(workspace, 'verification', 'results'), (path) => basename(path) === 'scenario_hits.json')) {
     try {
@@ -951,7 +1009,9 @@ function scenarioHits(workspace: string): Map<string, { status: ScenarioStatus; 
             : 'PARTIAL'
     const existing = hits.get(result.scenarioId)
     const decisive = ['COUNTEREXAMPLE', 'PROVEN', 'PROVEN_UNREACHABLE', 'COVERED'].includes(result.outcome)
-    if (!decisive && existing) continue
+    // BUG-AIGV-001 D2/R4：陈旧 Formal 结果（rtlHash 与当前 RTL 不一致）不得覆盖同场景的当前 hit
+    const stale = Boolean(result.rtlHash && currentRtlHash && result.rtlHash !== currentRtlHash)
+    if (existing && (!decisive || stale)) continue
     hits.set(result.scenarioId, { status, evidence: [...new Set([...(existing?.evidence ?? []), result.resultFile, ...result.propertyFiles, ...result.traces])], reachCount: result.outcome === 'COVERED' || result.outcome === 'PROVEN' ? Math.max(1, existing?.reachCount ?? 0) : existing?.reachCount ?? 0, assertionPassed: result.outcome === 'COUNTEREXAMPLE' ? false : result.outcome === 'PROVEN' ? true : existing?.assertionPassed, coverageDelta: existing?.coverageDelta ?? {}, rtlHash: result.rtlHash ?? existing?.rtlHash })
   }
   return hits
@@ -965,8 +1025,10 @@ function refreshScenarioWithHits(item: VerificationScenario, hits: ReturnType<ty
   const hit = hits.get(item.id)
   let status = hit?.status ?? item.status
   const rtlChanged = Boolean(item.rtlHash && item.rtlHash !== rtlHash)
+  // BUG-AIGV-001 D2/R4：hit 自身 rtlHash 陈旧即判 IMPACT_UNKNOWN 并触发降级，不回退历史 state
+  const staleHit = Boolean(hit && hit.rtlHash && hit.rtlHash !== rtlHash)
   const currentEvidence = Boolean(hit && (hit.rtlHash ? hit.rtlHash === rtlHash : !rtlChanged && item.state?.freshness !== 'IMPACT_UNKNOWN'))
-  const freshness: ScenarioState['freshness'] = currentEvidence ? 'CURRENT' : rtlChanged ? 'IMPACT_UNKNOWN' : item.state?.freshness ?? 'CURRENT'
+  const freshness: ScenarioState['freshness'] = currentEvidence ? 'CURRENT' : rtlChanged || staleHit ? 'IMPACT_UNKNOWN' : item.state?.freshness ?? 'CURRENT'
   if (freshness !== 'CURRENT' && ['VERIFIED', 'FORMAL_PROVED'].includes(status)) status = 'PARTIAL'
   const evidence = [...new Set(hit?.evidence ?? item.evidence ?? [])]
   const reachCount = hit?.reachCount ?? item.reachCount ?? 0
@@ -1036,7 +1098,7 @@ function deriveClauseScenarios(requirements: RequirementModel, base: Verificatio
 
 function buildScenarios(requirements: RequirementModel, structure: StructuralModel, risks: RiskMarker[], previous: VerificationScenario[], workspace: string): VerificationScenario[] {
   const previousById = new Map(previous.map((item) => [item.id, item]))
-  const hits = scenarioHits(workspace)
+  const hits = scenarioHits(workspace, structure.rtlHash)
   const derived = risks.map((risk) => {
     const rule = RISK_RULES.find((item) => item.taxonomyId === risk.taxonomyId)!
     const nway = risk.title.startsWith('N-way')
@@ -1048,8 +1110,10 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
     const criticality = requirements.requirements.some((item) => requirementIds.includes(item.id) && item.priority === 'P0') ? 1 : requirementIds.length > 0 ? 0.8 : 0.6
     let status = hit?.status ?? previousItem?.status ?? (requirementIds.length === 0 ? 'BLOCKED_BY_SPEC' : 'DISCOVERED')
     const rtlChanged = Boolean(previousItem?.rtlHash && previousItem.rtlHash !== structure.rtlHash)
+    // BUG-AIGV-001 D2/R4：hit 自身 rtlHash 陈旧即判 IMPACT_UNKNOWN 并触发降级，不回退历史 state
+    const staleHit = Boolean(hit && hit.rtlHash && hit.rtlHash !== structure.rtlHash)
     const currentEvidence = Boolean(hit && (hit.rtlHash ? hit.rtlHash === structure.rtlHash : !rtlChanged && previousItem?.state?.freshness !== 'IMPACT_UNKNOWN'))
-    const freshness: ScenarioState['freshness'] = currentEvidence ? 'CURRENT' : rtlChanged ? 'IMPACT_UNKNOWN' : previousItem?.state?.freshness ?? 'CURRENT'
+    const freshness: ScenarioState['freshness'] = currentEvidence ? 'CURRENT' : rtlChanged || staleHit ? 'IMPACT_UNKNOWN' : previousItem?.state?.freshness ?? 'CURRENT'
     if (freshness !== 'CURRENT' && ['VERIFIED', 'FORMAL_PROVED'].includes(status)) status = 'PARTIAL'
     const closed = ['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE', 'WAIVED'].includes(status)
     const coverageGap = closed ? 0 : status === 'PARTIAL' ? 0.5 : 1
@@ -1219,6 +1283,10 @@ function writeVerificationDocSnapshot(workspace: string, state: VerificationStat
   writeFileSync(join(docsDir, 'aigv_execution_snapshot.md'), content, 'utf-8')
 }
 
+// #9(a)/#9(c)：WAIVED/EXCLUDED（具名豁免/剔除）场景不参与阻断性统计的共享过滤集合，
+// buildMultiOracle.criticalInsufficient 与 assessClosure.impactUnknown 复用同一口径，避免多处漂移
+const EXEMPT_CLOSURES = new Set<ScenarioState['closure']>(['WAIVED', 'EXCLUDED'])
+
 const ORACLE_DEFINITIONS: OracleDefinition[] = [
   { id: 'ORACLE-REFERENCE-SCOREBOARD', type: 'REFERENCE_MODEL', name: '独立参考模型 / Scoreboard', independenceLevel: 2, independenceDomain: 'reference-model', implementation: 'cocotb scoreboard or executable reference model', sharedAssumptions: ['输入事务和规格映射正确'] },
   { id: 'ORACLE-INVARIANT-ASSERTION', type: 'INVARIANT', name: '架构不变量 / Assertion', independenceLevel: 2, independenceDomain: 'architecture-invariant', implementation: 'temporal or immediate assertions', sharedAssumptions: ['不变量来自已批准架构规则'] },
@@ -1230,11 +1298,43 @@ const ORACLE_DEFINITIONS: OracleDefinition[] = [
 
 function collectMutationAssessment(workspace: string, rtlHash: string, threshold = 0.9): MutationAssessment {
   const records: MutationRecord[] = []
+  const warnings: string[] = []
+  // 缺陷 DEFECT-PACK-001#15：期望 schema 说明（records[] 为主，兼容项目侧自述的 results[]）
+  const SCHEMA_HINT = '期望 schema：{ rtlHash?, records: [{ id, operator, weight?, status: KILLED|SURVIVED|INVALID|EQUIVALENT|EQUIVALENCE_UNKNOWN, evidence[], rtlHash?, review? }] }（兼容 results[]，字段映射 id/operator/status/evidence/rtlHash，缺省 weight=1）'
   for (const file of walk(join(workspace, 'verification', 'results'), (path) => basename(path) === 'mutation-results.json')) {
+    const rel = relative(workspace, file)
+    let data: { rtlHash?: string; records?: MutationRecord[]; results?: Array<Record<string, unknown>> }
     try {
-      const data = JSON.parse(readFileSync(file, 'utf-8')) as { rtlHash?: string; records?: MutationRecord[] }
-      for (const raw of data.records ?? []) records.push({ ...raw, weight: Math.max(0, Number(raw.weight ?? 0)), evidence: [relative(workspace, file), ...(raw.evidence ?? [])], rtlHash: raw.rtlHash ?? data.rtlHash })
-    } catch { /* malformed mutation files are represented by missing/invalid evidence */ }
+      data = JSON.parse(readFileSync(file, 'utf-8'))
+    } catch {
+      // 缺陷 DEFECT-PACK-001#15：文件存在但解析不出 JSON 不得静默按 MISSING 处理
+      warnings.push(`Mutation 结果文件无法解析为 JSON，未采信：${rel}；${SCHEMA_HINT}`)
+      continue
+    }
+    // 缺陷 DEFECT-PACK-001#15：文件存在但无 records[] 时兼容读取 results[] 并做字段映射；
+    // 两者皆无则显式告警（此前与"无输出文件"表现完全相同，面板长期静默显示 Mutation 为空）
+    const rawRecords: MutationRecord[] | null = Array.isArray(data.records)
+      ? data.records
+      : Array.isArray(data.results)
+        ? data.results.map((raw) => ({
+            id: String(raw.id ?? ''),
+            operator: String(raw.operator ?? 'unknown'),
+            weight: raw.weight !== undefined ? Number(raw.weight) : 1,
+            status: String(raw.status ?? '').toUpperCase() as MutationRecord['status'],
+            evidence: Array.isArray(raw.evidence) ? raw.evidence.map(String) : [],
+            rtlHash: typeof raw.rtlHash === 'string' ? raw.rtlHash : undefined
+          }))
+        : null
+    if (!rawRecords) {
+      warnings.push(`Mutation 结果文件缺少 records[]（兼容 results[]），按 MISSING 处理：${rel}；${SCHEMA_HINT}`)
+      continue
+    }
+    for (const raw of rawRecords) {
+      // 缺陷 DEFECT-PACK-001#15：rtlHash 缺失、evidence 为空分别给出可操作提示
+      if (!raw.rtlHash && !data.rtlHash) warnings.push(`Mutation 记录 ${raw.id || '(无 id)'} 缺少 rtlHash 且文件级 rtlHash 缺失，无法与当前 RTL 匹配（将被判为 stale 不计入）：${rel}；请在记录或文件级补 rtlHash`)
+      if (!Array.isArray(raw.evidence) || raw.evidence.length === 0) warnings.push(`Mutation 记录 ${raw.id || '(无 id)'} evidence 为空，不计入有效 Mutation 证据：${rel}；请关联击杀/存活判定的日志或结果文件路径`)
+      records.push({ ...raw, weight: Math.max(0, Number(raw.weight ?? 0)), evidence: [rel, ...(raw.evidence ?? [])], rtlHash: raw.rtlHash ?? data.rtlHash })
+    }
   }
   const current = records.filter((item) => item.rtlHash === rtlHash && item.evidence.length > 0)
   const scored = current.filter((item) => item.status === 'KILLED' || item.status === 'SURVIVED' || item.status === 'EQUIVALENCE_UNKNOWN' || (item.status === 'EQUIVALENT' && !item.review?.approved))
@@ -1244,7 +1344,7 @@ function collectMutationAssessment(workspace: string, rtlHash: string, threshold
   const blockingSurvivors = scored.filter((item) => item.status !== 'KILLED' && !item.review?.approved).map((item) => item.id)
   const invalidOrStale = records.filter((item) => item.status === 'INVALID' || item.rtlHash !== rtlHash).map((item) => item.id)
   const status: MutationAssessment['status'] = current.length === 0 || weightedScore === null ? 'MISSING' : blockingSurvivors.length ? 'BLOCKED_BY_SURVIVOR' : weightedScore < threshold ? 'BELOW_THRESHOLD' : 'PASS'
-  return { version: 1, generatedAt: new Date().toISOString(), rtlHash, threshold, weightedScore, records, validCount: scored.length, killedCount: scored.filter((item) => item.status === 'KILLED').length, blockingSurvivors, invalidOrStale, status }
+  return { version: 1, generatedAt: new Date().toISOString(), rtlHash, threshold, weightedScore, records, validCount: scored.length, killedCount: scored.filter((item) => item.status === 'KILLED').length, blockingSurvivors, invalidOrStale, status, warnings }
 }
 
 function readRiskApprovals(workspace: string): Map<string, ResidualRisk['approval']> {
@@ -1308,17 +1408,20 @@ function buildMultiOracle(workspace: string, rtlHash: string, scenarios: Verific
     const explanation = status === 'PASS' ? `${independentPassDomains.length} 个独立判定域通过` : status === 'CONFLICT' ? '有效 Oracle 之间存在 PASS/FAIL 冲突，禁止自动覆盖' : status === 'FAIL' ? `${fails.length} 个有效 Oracle 报告失败` : `仅 ${independentPassDomains.length}/${requiredIndependentPasses} 个独立判定域通过`
     return { scenarioId: scenario.id, requiredIndependentPasses, independentPassDomains, passOracleIds: passes.map((item) => item.oracleId), failOracleIds: fails.map((item) => item.oracleId), invalidOracleIds: relevant.filter((item) => !valid.includes(item)).map((item) => item.oracleId), status, explanation }
   })
-  return { version: 1, generatedAt: new Date().toISOString(), rtlHash, definitions, verdicts, assessments, criticalInsufficient: assessments.filter((item) => item.requiredIndependentPasses === 2 && item.status === 'INSUFFICIENT').map((item) => item.scenarioId), conflicts: assessments.filter((item) => item.status === 'CONFLICT').map((item) => item.scenarioId) }
+  // #9(a)：criticalInsufficient 只统计未豁免场景——assessments 只有 scenarioId，用场景表建 closure 映射后过滤
+  const closureByScenario = new Map(scenarios.map((item) => [item.id, item.state.closure]))
+  return { version: 1, generatedAt: new Date().toISOString(), rtlHash, definitions, verdicts, assessments, criticalInsufficient: assessments.filter((item) => item.requiredIndependentPasses === 2 && item.status === 'INSUFFICIENT' && !EXEMPT_CLOSURES.has(closureByScenario.get(item.scenarioId) ?? 'OPEN')).map((item) => item.scenarioId), conflicts: assessments.filter((item) => item.status === 'CONFLICT').map((item) => item.scenarioId) }
 }
 
-function assessClosure(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions'], formalResults: VerificationStateModel['formalResults'], coverageHoles: CoverageHole[], multiOracle: MultiOracleEvaluation, explorationHistory: ExplorationHistory, mutation: MutationAssessment, residualRiskRegister: ResidualRisk[], uncoveredRiskCandidates: RiskMarker[], specMapping: SpecMappingMatrix): ClosureAssessment {
+function assessClosure(scenarios: VerificationScenario[], regressions: VerificationStateModel['regressions'], formalResults: VerificationStateModel['formalResults'], coverageHoles: CoverageHole[], multiOracle: MultiOracleEvaluation, explorationHistory: ExplorationHistory, mutation: MutationAssessment, residualRiskRegister: ResidualRisk[], uncoveredRiskCandidates: RiskMarker[], specMapping: SpecMappingMatrix, orphanedResultFiles: string[]): ClosureAssessment {
   const blockers: string[] = []
   const warnings: string[] = []
   const residualRisks: string[] = []
   const nextActions: string[] = []
   const critical = scenarios.filter((item) => item.criticality >= 0.8)
   const criticalClosed = critical.filter((item) => item.state.closure === 'VERIFIED' || item.state.closure === 'EXCLUDED' || item.state.closure === 'WAIVED')
-  const impactUnknown = scenarios.filter((item) => item.state.freshness === 'IMPACT_UNKNOWN').length
+  // #9(c)：WAIVED/EXCLUDED 场景不再产生新 hit，永久 IMPACT_UNKNOWN 属预期，不计入"影响未知"阻断统计
+  const impactUnknown = scenarios.filter((item) => item.state.freshness === 'IMPACT_UNKNOWN' && !EXEMPT_CLOSURES.has(item.state.closure)).length
   const blockingCoverageHoles = coverageHoles.filter((item) => item.blocking).length
   const formalToolErrors = formalResults.filter((item) => item.outcome === 'TOOL_ERROR').length
   const requiredFormalBlocked = formalResults.filter((item) => item.obligation === 'required' && ['TOOL_ERROR', 'INCONCLUSIVE', 'BOUND_EXHAUSTED', 'ASSUMPTION_DEPENDENT'].includes(item.outcome)).length
@@ -1339,10 +1442,20 @@ function assessClosure(scenarios: VerificationScenario[], regressions: Verificat
   if (mutation.status === 'MISSING') blockers.push('尚无绑定当前 RTL 的风险加权 Mutation 结果')
   else if (mutation.status === 'BELOW_THRESHOLD') blockers.push(`风险加权 Mutation Score ${mutation.weightedScore} 低于阈值 ${mutation.threshold}`)
   else if (mutation.status === 'BLOCKED_BY_SURVIVOR') blockers.push(`${mutation.blockingSurvivors.length} 个 Mutation survivor/equivalence unknown 尚未处置`)
+  // 缺陷 DEFECT-PACK-001#15：mutation-results.json schema 不符/记录缺 rtlHash/evidence 的显式告警
+  for (const warning of mutation.warnings ?? []) warnings.push(warning)
   const unapprovedResidual = residualRiskRegister.filter((item) => item.approvalRequired && !item.approved)
   if (unapprovedResidual.length) blockers.push(`${unapprovedResidual.length} 项 Residual Risk 尚未批准或关闭`)
-  for (const risk of residualRiskRegister.filter((item) => item.approved)) residualRisks.push(`${risk.id}：${risk.title}（${risk.approval?.approver ?? '已批准'}）`)
+  // 缺陷 DEFECT-PACK-001 §5 补充：显示口径反映审批状态——已具名审批的残余风险不再逐条
+  // 按登记时标题列为警告（如 NEGATIVE_SPACE 标题含"尚未批准"是登记语义，不代表当前审批
+  // 状态），合并为一条"已批准 N / 待批准 M"计数摘要；待批准的仍逐条列出以便处置。
+  const approvedResidual = residualRiskRegister.filter((item) => item.approved)
+  for (const risk of unapprovedResidual) residualRisks.push(`${risk.id}：${risk.title}（待批准）`)
+  if (approvedResidual.length) residualRisks.push(`残余风险审批状态：已批准 ${approvedResidual.length} / 待批准 ${unapprovedResidual.length}（明细与审批人见 residual-risk-register.json / signoff-approvals.json）`)
   if (formalToolErrors) warnings.push(`${formalToolErrors} 项 Formal 工具错误仅记录为 C6，不得解释为不可达或 RTL 缺陷`)
+  // 缺陷 DEFECT-PACK-001#14：递归发现但无法归属（不在顶层模块目录直下、也不在隔离运行目录内）
+  // 的 result.json 显式提示，不静默计入回归证据也不静默丢弃
+  if (orphanedResultFiles.length) warnings.push(`发现 ${orphanedResultFiles.length} 个无法归属的 result.json，未计入回归证据（回归证据只认 verification/results/<topModule>/result.json）：${orphanedResultFiles.slice(0, 8).join('、')}${orphanedResultFiles.length > 8 ? ' 等' : ''}`)
   // 高分风险未被任何 Agent 验证意图锚定仅作提示，不阻断签核（避免门禁口径漂移）
   if (uncoveredRiskCandidates.length) warnings.push(`${uncoveredRiskCandidates.length} 个高分风险候选未被任何验证意图覆盖：${uncoveredRiskCandidates.slice(0, 8).map((item) => item.id).join('、')}${uncoveredRiskCandidates.length > 8 ? ' 等' : ''}`)
   // 无映射可验证规格条款（闭集完备性缺口）：Q2 先 warning 一个版本，NPU 试跑评估准确率后再升级 blocker；
@@ -1562,7 +1675,7 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   // 契约 §2.1：confirmed 根因挂到对应 scenario.evidence（并进入 signoff package 证据索引）
   const rootCauses = readRootCauses(workspace)
   attachConfirmedRootCauses(scenarios, rootCauses)
-  const regressions = collectResults(workspace)
+  const { regressions, orphanedResultFiles } = collectResults(workspace)
   const formalResults = collectFormalResults(workspace)
   const mutationAssessment = collectMutationAssessment(workspace, structure.rtlHash)
   const interactionGraph = buildInteractionGraph(requirements, structure, scenarios)
@@ -1584,7 +1697,7 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const uncoveredRiskCandidates = risks.slice(0, topRiskCount).filter((risk) => !intentAnchoredRiskIds.has(risk.id) && !evidenceCoveredRiskIds.has(risk.id))
   const currentCriticalOpen = scenarios.filter((item) => item.criticality >= 0.8 && !['VERIFIED', 'EXCLUDED', 'WAIVED'].includes(item.state.closure)).length
   const explorationHistory = readExplorationHistory(paths.explorationHistory, currentCriticalOpen, verificationSpace.snapshotId)
-  const closureAssessment = assessClosure(scenarios, regressions, formalResults, coverageHoles, multiOracle, explorationHistory, mutationAssessment, residualRiskRegister, uncoveredRiskCandidates, specMapping)
+  const closureAssessment = assessClosure(scenarios, regressions, formalResults, coverageHoles, multiOracle, explorationHistory, mutationAssessment, residualRiskRegister, uncoveredRiskCandidates, specMapping, orphanedResultFiles)
   const waveProgress = buildWaveProgress(scenarios, specMapping, closureAssessment.status)
   const signoffPackage = buildSignoffPackage(structure.rtlHash, verificationSpace, closureAssessment, residualRiskRegister, scenarios, regressions, formalResults, mutationAssessment, rootCauses)
   const statusCounts: VerificationStateModel['statusCounts'] = {}

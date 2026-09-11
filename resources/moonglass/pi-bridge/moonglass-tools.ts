@@ -1179,9 +1179,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'run_simulation',
     label: 'Run Simulation',
-    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势；scenario_hits.json 由本工具独占写入，禁止手工编辑。',
+    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势；scenario_hits.json 由本工具独占写入，禁止手工编辑。purpose 声明运行用途：缺省 regression（回归证据）；mutation/probe 为隔离运行——不写 scenario_hits.json、不回写主 result.json 与主目录日志，结果落盘到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不计入回归判定与场景登记。',
     promptSnippet: 'Run Cocotb or legacy C++ RTL simulation and collect artifacts',
-    promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench. Pass scenarioIds from select_next_verification_batch so scenario hits are auto-registered; never hand-write scenario_hits.json. When authoring tests, bind each test function to its TEST ID in verification/<tb>/test_manifest.json ({"<test函数名>": {"testId": "TEST-..."}}) — or at least put the TEST ID in the first line of the test docstring — so the verification posture panel can map results back to the plan.',
+    promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench. Pass scenarioIds from select_next_verification_batch so scenario hits are auto-registered; never hand-write scenario_hits.json. Mutation/fault-injection or exploratory runs MUST use purpose="mutation" (or "probe") so their expected-FAIL results stay isolated from regression evidence and scenario registration. When authoring tests, bind each test function to its TEST ID in verification/<tb>/test_manifest.json ({"<test函数名>": {"testId": "TEST-..."}}) — or at least put the TEST ID in the first line of the test docstring — so the verification posture panel can map results back to the plan.',
     parameters: Type.Object({
       mode: Type.Optional(Type.Union([Type.Literal('cocotb'), Type.Literal('cpp')], { description: '缺省 cocotb；cpp 仅兼容旧项目' })),
       topModule: Type.String({ description: '顶层模块名（对应 RTL module 名称）' }),
@@ -1189,7 +1189,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       testModule: Type.Optional(Type.String({ description: 'Cocotb Python 模块名，例如 tests.test_uart（不要带 .py）' })),
       testDir: Type.Optional(Type.String({ description: 'Cocotb 环境根目录，加入 PYTHONPATH' })),
       testcase: Type.Optional(Type.String({ description: '仅运行指定 @cocotb.test 测试，可选' })),
-      scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本用例定向关闭的场景 ID，来自 select_next_verification_batch 返回的批次' })),
+      scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本用例定向关闭的场景 ID，来自 select_next_verification_batch 返回的批次（仅 purpose=regression 时登记）' })),
+      purpose: Type.Optional(Type.Union([Type.Literal('regression'), Type.Literal('mutation'), Type.Literal('probe')], { description: '运行用途，缺省 regression。mutation/probe：变异体故障注入或探查性运行，证据隔离到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不写 scenario_hits.json、不回写主 result.json 与主目录编译/仿真日志，不计入回归判定与场景登记' })),
       simulator: Type.Optional(Type.Union([Type.Literal('icarus'), Type.Literal('verilator')], { description: 'Cocotb 后端；Windows 缺省 icarus' })),
       tbCpp: Type.Optional(Type.String({ description: 'mode=cpp 时的 C++ 测试台路径' })),
       trace: Type.Optional(Type.Boolean({ description: '是否生成波形，缺省 true' })),
@@ -1202,6 +1203,10 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       const topModule = params.topModule as string
       const rtlFiles = (params.rtlFiles as string[]).map((file) => resolve(ctx.cwd, file))
       const mode = (params.mode as 'cocotb' | 'cpp' | undefined) ?? 'cocotb'
+      // 缺陷 DEFECT-PACK-001#13/#17：显式运行用途。非回归用途（mutation/probe）与回归证据
+      // 完全隔离——不写 scenario_hits.json（含 scn_ 自动解析也不登记），结果与编译/仿真日志
+      // 落盘到独立目录，不回写主 result.json，避免预期 FAIL 的运行污染黄金证据。
+      const purpose = (params.purpose as 'regression' | 'mutation' | 'probe' | undefined) ?? 'regression'
       const tbCpp = params.tbCpp ? resolve(ctx.cwd, params.tbCpp as string) : undefined
       const trace = params.trace as boolean | undefined ?? true
       const maxWaveformGB = resolveMaxWaveformGB(params.maxWaveformGB as number | undefined)
@@ -1244,7 +1249,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       const simulationStartedAt = Date.now()
       try {
         onUpdate?.({ content: [{ type: 'text', text: `测试预检通过，正在运行 ${params.testcase ? `单用例 ${String(params.testcase)}` : '回归'}。缺省不使用固定 wall-clock 或仿真周期上限。` }] })
-        const resultDir = resolve(ctx.cwd, 'verification', 'results', topModule)
+        const resultDir = purpose === 'regression'
+          ? resolve(ctx.cwd, 'verification', 'results', topModule)
+          : resolve(ctx.cwd, 'verification', 'results', topModule, `${purpose}-runs`, `${((params.testcase as string | undefined) ?? 'run').replace(/[^A-Za-z0-9_.-]+/g, '_')}-${new Date().toISOString().replace(/[:.]/g, '-')}`)
         const result = mode === 'cocotb'
           ? await runCocotbSimulation({
               topModule,
@@ -1279,6 +1286,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           '',
           `**结果**: ${result.passed ? '✅ 通过' : '❌ 失败'}`,
           `**模式**: ${mode === 'cocotb' ? `Cocotb / ${(params.simulator as string | undefined) ?? 'icarus'}` : 'Verilator C++'}`,
+          `**运行用途**: ${purpose}${purpose === 'regression' ? '' : '（证据隔离：不计入回归判定与场景登记）'}`,
           `**VCD 波形**: ${result.vcdPath ? `✅ ${result.vcdPath}` : '❌ 未生成'}`,
           `**编译日志**: ${result.compileLogPath}`,
           `**仿真日志**: ${result.simulationLogPath}`,
@@ -1342,46 +1350,62 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         })
         report.push('', '### 渐进式诊断控制', '', `**诊断等级**: ${diagnostic.attempts.at(-1)?.diagnosticLevel ?? 'L0'}`, `**本次耗时**: ${Math.round((diagnostic.attempts.at(-1)?.durationMs ?? 0) / 1000)} 秒（仅记录，不据此强制终止）`, `**当前模式**: ${diagnostic.mode}`, `**建议**: ${diagnostic.recommendation}`, '', '诊断账本：verification/results/diagnostic-control.json')
 
+        // 缺陷 DEFECT-PACK-001#17 防线兜底：回归用途的失败运行若覆盖了既有成功
+        // result.json，eda-bridge 已把旧文件旁路归档，此处显式告知 Agent 证据可追溯。
+        if (result.archivedResultPath) {
+          report.push('', `**成功证据保护**: ⚠️ 本次失败结果未直接覆盖既有成功证据，旧 result.json 已旁路归档为 ${result.archivedResultPath}`)
+        }
+
         // 证据管线：PASS/FAIL 都自动登记 scenario_hits（失败同样是证据），并重建验证态势
         // 从本次 JUnit XML 的 testcase name 解析 scn_<8hex> 标记 → 测试函数名，
         // 随条目写入 testName，供验证态势面板把场景映射回 TEST ID（拿不到就不写）
-        const testNames: Record<string, string> = {}
-        if (result.resultsXmlPath && existsSync(result.resultsXmlPath)) {
-          const xml = readFileSync(result.resultsXmlPath, 'utf-8')
-          for (const nameMatch of xml.matchAll(/<testcase\b[^>]*?\bname="([^"]+)"/g)) {
-            const rawName = nameMatch[1]
-            if (!/scn_[0-9a-fA-F]{8}/.test(rawName)) continue
-            const funcName = /\b(test_\w+)/.exec(rawName)?.[1] ?? rawName
-            for (const scn of rawName.matchAll(/scn_([0-9a-fA-F]{8})/g)) testNames[`SCN-${scn[1].toUpperCase()}`] = funcName
+        // 缺陷 DEFECT-PACK-001#13：仅 purpose=regression 登记；mutation/probe 运行
+        // （预期 FAIL 的故障注入、探查）不得触碰 scenario_hits.json 与验证态势
+        let scenarioHitsRegistered: string[] = []
+        if (purpose === 'regression') {
+          const testNames: Record<string, string> = {}
+          if (result.resultsXmlPath && existsSync(result.resultsXmlPath)) {
+            const xml = readFileSync(result.resultsXmlPath, 'utf-8')
+            for (const nameMatch of xml.matchAll(/<testcase\b[^>]*?\bname="([^"]+)"/g)) {
+              const rawName = nameMatch[1]
+              if (!/scn_[0-9a-fA-F]{8}/.test(rawName)) continue
+              const funcName = /\b(test_\w+)/.exec(rawName)?.[1] ?? rawName
+              for (const scn of rawName.matchAll(/scn_([0-9a-fA-F]{8})/g)) testNames[`SCN-${scn[1].toUpperCase()}`] = funcName
+            }
           }
+          const hits = writeScenarioHits(resolve(ctx.cwd), topModule, {
+            scenarioIds: params.scenarioIds as string[] | undefined,
+            testcase: params.testcase as string | undefined,
+            testNames,
+            passed: result.passed,
+            rtlFiles,
+            evidence: [result.resultPath, result.simulationLogPath, result.vcdPath ?? '']
+          })
+          scenarioHitsRegistered = hits.registered
+          report.push('', '### Scenario 证据登记', '')
+          if (hits.registered.length) report.push(`已自动登记 ${hits.registered.length} 个场景到 scenario_hits.json：${hits.registered.join('、')}`)
+          for (const warning of hits.warnings) report.push(`⚠️ ${warning}`)
+          const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+          report.push(rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次仿真结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见')
+        } else {
+          report.push('', '### 运行用途隔离', '', `本次为 ${purpose} 用途运行，证据已隔离到 ${resultDir}，未计入回归判定与场景登记（scenario_hits.json 与主 result.json 均未改动）。`)
         }
-        const hits = writeScenarioHits(resolve(ctx.cwd), topModule, {
-          scenarioIds: params.scenarioIds as string[] | undefined,
-          testcase: params.testcase as string | undefined,
-          testNames,
-          passed: result.passed,
-          rtlFiles,
-          evidence: [result.resultPath, result.simulationLogPath, result.vcdPath ?? '']
-        })
-        report.push('', '### Scenario 证据登记', '')
-        if (hits.registered.length) report.push(`已自动登记 ${hits.registered.length} 个场景到 scenario_hits.json：${hits.registered.join('、')}`)
-        for (const warning of hits.warnings) report.push(`⚠️ ${warning}`)
-        const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
-        report.push(rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次仿真结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见')
 
         return {
           content: [{ type: 'text', text: report.join('\n') }],
           details: {
             passed: result.passed,
+            purpose,
             logPreview: result.log.slice(0, 1000),
             vcdPath: result.vcdPath,
             compileLogPath: result.compileLogPath,
             simulationLogPath: result.simulationLogPath,
             resultPath: result.resultPath,
+            archivedResultPath: result.archivedResultPath,
             coverage: result.coverage,
             coverageReportPath: result.coverageReportPath,
             diagnostic,
-            scenarioHits: hits.registered
+            scenarioHits: scenarioHitsRegistered
           },
           isError: !result.passed
         }
@@ -1861,7 +1885,12 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       onUpdate?.({ content: [{ type: 'text', text: `正在运行 Formal ${params.mode ?? 'bmc'}：${params.top}` }] })
-      const result = await runFormalVerification({ workspaceDir: ctx.cwd, ...params, signal })
+      // #8：Formal 证据进入工作区统一哈希空间（computeRtlHash，与新鲜度判定同一口径）；
+      // 分层约束：eda-bridge 不得 import verification-intelligence-engine，由桥接层穿线；
+      // 引擎口径失败时不传 workspaceRtlHash，eda-bridge 回退旧行为（清单哈希记入 scopeHash）
+      let workspaceRtlHash: string | undefined
+      try { workspaceRtlHash = computeRtlHash(ctx.cwd) } catch { workspaceRtlHash = undefined }
+      const result = await runFormalVerification({ workspaceDir: ctx.cwd, ...params, workspaceRtlHash, signal })
       // 证据管线：Formal 结果落盘后自动重建验证态势；失败不影响本次结果返回
       const rebuildError = rebuildVerificationPosture(ctx.cwd)
       return { content: [{ type: 'text', text: `## Formal 验证结果\n\n- 状态：${result.status}\n- 义务：${result.obligation === 'required' ? '强制签核' : '补强证据'}\n- 模式：${result.mode}\n- 顶层：${result.top}\n- 引擎：${result.engine}\n- 深度：${result.depth}\n- 分类：${result.classification ?? '求解结果'}\n- 说明：${result.message}\n- 日志：${result.logPath}\n${result.compatibilityIssues?.length ? `- 兼容性问题：\n${result.compatibilityIssues.map((item) => `  - ${item.file}:${item.line} ${item.construct}：${item.message}`).join('\n')}` : ''}\n${result.traces.length ? `- 反例/见证：${result.traces.join(', ')}` : ''}\n- ${rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次 Formal 结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见'}` }], details: result, isError: ['ERROR', 'UNKNOWN'].includes(result.status) }
@@ -1964,10 +1993,15 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const resultsDir = resolve(ctx.cwd, 'verification', 'results')
+      // 缺陷 DEFECT-PACK-001#14：签核证据审查与引擎同一口径——只认顶层模块目录直下的
+      // result.json；mutation/probe 隔离运行（*-runs/）与其他深层 result.json 不计入
       const resultFiles = collectEvidenceFiles(resultsDir, (name) => name === 'result.json')
+        .filter((file) => relative(resultsDir, file).split(/[\\/]/).length === 2)
       const testFiles = collectEvidenceFiles(resolve(ctx.cwd, 'verification'), (name) => /^(?:test_.+|.+_test)\.py$/i.test(name))
       const blockers: string[] = []
       const warnings: string[] = []
+      // 缺陷 DEFECT-PACK-001#10：逐份 result.json 记录必需证据集合的判定依据，审查报告中回显
+      const evidenceBasis: string[] = []
       let minimumLine: number | undefined
       let minimumBranch: number | undefined
       let minimumFunctional: number | undefined
@@ -1990,16 +2024,43 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           if (typeof values.line === 'number') minimumLine = Math.min(minimumLine ?? values.line, values.line)
           if (typeof values.branch === 'number') minimumBranch = Math.min(minimumBranch ?? values.branch, values.branch)
           if (typeof values.functional === 'number') minimumFunctional = Math.min(minimumFunctional ?? values.functional, values.functional)
-          const requiredEvidence = data.functionalPassed !== undefined && data.rtlCoveragePassed !== undefined
+          // 缺陷 DEFECT-PACK-001#10：必需证据集合按 framework/simulator 推导——cocotb 路径
+          // 以 resultsXml+simulationLogPath+compileLogPath 为准，判定依据写入审查报告回显
+          const isDualChannel = data.functionalPassed !== undefined && data.rtlCoveragePassed !== undefined
+          const isCocotb = data.framework === 'cocotb'
+          const requiredEvidence = isDualChannel
             ? ['functionalCompileLogPath', 'functionalSimulationLogPath', 'rtlCompileLogPath', 'rtlSimulationLogPath', 'resultsXml', 'coverageDataPath', 'coverageReportPath']
-            : ['compileLogPath', 'simulationLogPath', ...(data.framework === 'cocotb' ? ['resultsXml'] : [])]
+            : isCocotb
+              ? ['resultsXml', 'simulationLogPath', 'compileLogPath']
+              : ['compileLogPath', 'simulationLogPath']
+          evidenceBasis.push(`${relative(ctx.cwd, file)}：${isDualChannel
+            ? '双通道结果（functionalPassed+rtlCoveragePassed 齐备），必需集合=functional/rtl 编译与仿真日志+resultsXml+coverageDataPath+coverageReportPath'
+            : isCocotb
+              ? `framework=cocotb${typeof data.simulator === 'string' ? `/simulator=${data.simulator}` : ''}，必需集合=resultsXml+simulationLogPath+compileLogPath`
+              : '单通道结果（无 framework 标记），必需集合=compileLogPath+simulationLogPath'}`)
+          const isEvidenceValid = (name: string): boolean => {
+            const p = typeof data[name] === 'string' ? data[name] as string : ''
+            return Boolean(p) && existsSync(p) && statSync(p).size > 0
+          }
           for (const evidence of requiredEvidence) {
+            if (isEvidenceValid(evidence)) continue
             const path = typeof data[evidence] === 'string' ? data[evidence] as string : ''
-            if (!path || !existsSync(path) || statSync(path).size === 0) blockers.push(`${relative(ctx.cwd, file)} 缺少有效 ${evidence}`)
+            // 缺陷 DEFECT-PACK-001#10：存量 0 字节编译日志为旧版 cocotb 工具产物（编译实际由
+            // cocotb make 统一执行、旧版未写编译段）；resultsXml 与 simulationLog 有效且回归
+            // passed 时降级为 warning 而非 blocker，重新运行 run_simulation 可生成真实编译日志
+            const legacyEmptyCompileLog = isCocotb && evidence === 'compileLogPath'
+              && Boolean(path) && existsSync(path) && statSync(path).size === 0
+              && data.passed === true
+              && isEvidenceValid('resultsXml') && isEvidenceValid('simulationLogPath')
+            if (legacyEmptyCompileLog) {
+              warnings.push(`${relative(ctx.cwd, file)} 的 compileLogPath 为旧版工具产生的空编译日志（已降级警告；重新运行 run_simulation 可生成真实编译日志）`)
+            } else {
+              blockers.push(`${relative(ctx.cwd, file)} 缺少有效 ${evidence}`)
+            }
           }
         } catch { blockers.push(`结果文件无法解析：${relative(ctx.cwd, file)}`) }
       }
-      if (resultFiles.length === 0) blockers.push('未找到 verification/results/**/result.json')
+      if (resultFiles.length === 0) blockers.push('未找到 verification/results/<module>/result.json（隔离运行目录不计入）')
       if (totalTests === 0) blockers.push('没有可核验的 Cocotb/JUnit 测试数量')
       if (skippedTests > 0) warnings.push(`${skippedTests} 个测试被跳过，签核前需说明原因`)
       const lineThreshold = Number(params.lineThreshold ?? 90)
@@ -2045,12 +2106,12 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         if (!/\b(assert|scoreboard|compare|expected|check)\b/i.test(code)) blockers.push(`${relative(ctx.cwd, file)} 未发现有效检查点/Scoreboard`)
       }
       const verdict = blockers.length === 0 ? (warnings.length === 0 ? 'passed' : 'conditional') : 'rejected'
-      const review = { verdict, reviewedAt: new Date().toISOString(), evidence: { resultFiles: resultFiles.map((file) => relative(ctx.cwd, file)), testFiles: testFiles.map((file) => relative(ctx.cwd, file)), totalTests, passedTests, skippedTests }, coverage: { lineCoverage: minimumLine ?? null, branchCoverage: minimumBranch ?? null, functionalCoverage: minimumFunctional ?? null }, thresholds: { line: lineThreshold, branch: branchThreshold, functional: functionalThreshold }, blockers, warnings }
+      const review = { verdict, reviewedAt: new Date().toISOString(), evidence: { resultFiles: resultFiles.map((file) => relative(ctx.cwd, file)), testFiles: testFiles.map((file) => relative(ctx.cwd, file)), totalTests, passedTests, skippedTests }, evidenceBasis, coverage: { lineCoverage: minimumLine ?? null, branchCoverage: minimumBranch ?? null, functionalCoverage: minimumFunctional ?? null }, thresholds: { line: lineThreshold, branch: branchThreshold, functional: functionalThreshold }, blockers, warnings }
       mkdirSync(resultsDir, { recursive: true })
       const jsonPath = join(resultsDir, 'verification_signoff_review.json')
       const reportPath = join(resultsDir, 'verification_signoff_review.md')
       writeFileSync(jsonPath, JSON.stringify(review, null, 2), 'utf-8')
-      writeFileSync(reportPath, `# 验证证据独立审查\n\n- 结论：${verdict === 'passed' ? '通过' : verdict === 'conditional' ? '有限通过' : '拒绝签核'}\n- 回归：${passedTests}/${totalTests}\n- 行覆盖率：${minimumLine ?? '暂无'}%\n- 条件/分支覆盖率：${minimumBranch ?? '暂无'}%\n- 功能覆盖率：${minimumFunctional ?? '暂无'}%\n\n## 阻断项\n${blockers.length ? blockers.map((item) => `- ${item}`).join('\n') : '- 无'}\n\n## 警告\n${warnings.length ? warnings.map((item) => `- ${item}`).join('\n') : '- 无'}\n`, 'utf-8')
+      writeFileSync(reportPath, `# 验证证据独立审查\n\n- 结论：${verdict === 'passed' ? '通过' : verdict === 'conditional' ? '有限通过' : '拒绝签核'}\n- 回归：${passedTests}/${totalTests}\n- 行覆盖率：${minimumLine ?? '暂无'}%\n- 条件/分支覆盖率：${minimumBranch ?? '暂无'}%\n- 功能覆盖率：${minimumFunctional ?? '暂无'}%\n\n## 必需证据判定依据\n${evidenceBasis.length ? evidenceBasis.map((item) => `- ${item}`).join('\n') : '- 无 result.json 可判定'}\n\n## 阻断项\n${blockers.length ? blockers.map((item) => `- ${item}`).join('\n') : '- 无'}\n\n## 警告\n${warnings.length ? warnings.map((item) => `- ${item}`).join('\n') : '- 无'}\n`, 'utf-8')
       return { content: [{ type: 'text', text: `## 验证证据审查\n\n**结论**：${verdict === 'passed' ? '通过' : verdict === 'conditional' ? '有限通过' : '拒绝签核'}\n\n${blockers.length ? `### 阻断项\n${blockers.map((item) => `- ${item}`).join('\n')}` : '无阻断项。'}\n\n报告：${reportPath}` }], details: { ...review, jsonPath, reportPath }, isError: verdict === 'rejected' }
     }
   })

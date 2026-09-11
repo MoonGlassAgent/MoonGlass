@@ -311,6 +311,11 @@ if (!waivedWithApproval.updated.includes(intentScenarioId) || waivedWithApproval
 const afterWaived = buildVerificationIntelligence(root)
 if (afterWaived.verificationState.scenarios.find((scenario) => scenario.id === intentScenarioId)?.status !== 'WAIVED') throw new Error('WAIVED 裁决未持久化到 scenario-registry')
 if (readdirSync(join(root, 'verification', 'intelligence')).some((name) => name.endsWith('.tmp'))) throw new Error('裁决链路原子写入遗留临时文件')
+// ===== DEFECT-PACK-001 #9(a)：WAIVED 场景不计入 criticalInsufficient =====
+// 该意图锚定 P0 条款（criticality=1），无有效 Oracle 证据，assessment 应仍为 INSUFFICIENT（仅不再计入阻断统计）
+const waivedAssessment = afterWaived.verificationState.multiOracle.assessments.find((item) => item.scenarioId === intentScenarioId)
+if (waivedAssessment?.status !== 'INSUFFICIENT' || waivedAssessment.requiredIndependentPasses !== 2) throw new Error(`断言前置失效：豁免的关键场景应仍为 INSUFFICIENT：${JSON.stringify(waivedAssessment)}`)
+if (afterWaived.verificationState.multiOracle.criticalInsufficient.includes(intentScenarioId)) throw new Error('#9(a) 回归：WAIVED 场景仍计入 criticalInsufficient')
 
 // ===== VERIF 上下文治理第 2 批：recordRootCause + execution-summary =====
 const rcScenarioId = intentScenarioId
@@ -554,5 +559,53 @@ const resolvedClause = tbdResolved.verificationState.specMapping.clauses.find((i
 if (!resolvedClause) throw new Error('TBD 固化为确定条款后应自动进入验证矩阵')
 if (resolvedClause.channel !== 'simulation') throw new Error(`固化后的功能条款应归 simulation 通道：${resolvedClause.channel}`)
 if (tbdResolved.requirementModel.unknowns.some((item) => item.text.includes('SPEC-TBD-001'))) throw new Error('TBD 固化后不应再出现在 unknowns 中')
+
+// ===== DEFECT-PACK-001 #9(c)/#9(a)：WAIVED 场景不计入 impactUnknown / criticalInsufficient；#8：Formal 工作区哈希 verdict 有效 =====
+const exemptRoot = mkdtempSync(join(tmpdir(), 'moonglass-vi-exempt-'))
+mkdirSync(join(exemptRoot, 'docs', '02_requirements'), { recursive: true })
+mkdirSync(join(exemptRoot, 'rtl'), { recursive: true })
+writeFileSync(join(exemptRoot, 'docs', '02_requirements', 'product_requirements.md'), `
+# Exempt Requirements
+
+- REQ-EX-001 P0: counter wraps at maximum.
+- REQ-EX-002 P1: counter never skips a value.
+`, 'utf-8')
+writeFileSync(join(exemptRoot, 'rtl', 'exempt_counter.v'), `
+module exempt_counter(input clk, input rst_n, input advance, output reg [7:0] cnt);
+  always @(posedge clk or negedge rst_n) begin
+    if (!rst_n) cnt <= 0;
+    else if (advance) cnt <= cnt + 1;
+  end
+endmodule
+`, 'utf-8')
+const exemptFirst = buildVerificationIntelligence(exemptRoot)
+const exemptWaived = exemptFirst.verificationState.scenarios.find((scenario) => scenario.origin === 'CLAUSE_DERIVED' && scenario.requirementIds[0] === 'REQ-EX-001')
+const exemptFormal = exemptFirst.verificationState.scenarios.find((scenario) => scenario.origin === 'CLAUSE_DERIVED' && scenario.requirementIds[0] === 'REQ-EX-002')
+if (!exemptWaived || !exemptFormal) throw new Error('断言前置失效：夹具应派生 REQ-EX-001/REQ-EX-002 两个条款候选场景')
+mkdirSync(join(exemptRoot, 'verification', 'intelligence'), { recursive: true })
+writeFileSync(join(exemptRoot, 'verification', 'intelligence', 'signoff-approvals.json'), JSON.stringify({ approvals: [{ riskId: `RR-WAIVER-${exemptWaived.id}`, approver: 'smoke-user', rationale: '已评估并接受残余风险', approvedAt: new Date().toISOString() }] }, null, 2), 'utf-8')
+const exemptAdjudication = recordScenarioAdjudication(exemptRoot, [{ scenarioId: exemptWaived.id, status: 'WAIVED' }])
+if (!exemptAdjudication.updated.includes(exemptWaived.id)) throw new Error(`夹具 WAIVED 裁决失败：${JSON.stringify(exemptAdjudication.rejected)}`)
+// RTL 变更：豁免场景不会再产生新 hit，freshness 必为 IMPACT_UNKNOWN（修复前永久计入 impactUnknown 阻断）
+writeFileSync(join(exemptRoot, 'rtl', 'exempt_counter.v'), readFileSync(join(exemptRoot, 'rtl', 'exempt_counter.v'), 'utf-8') + '\n// rtl change\n', 'utf-8')
+const exemptBuild = buildVerificationIntelligence(exemptRoot)
+const exemptWaivedAfter = exemptBuild.verificationState.scenarios.find((scenario) => scenario.id === exemptWaived.id)
+if (exemptWaivedAfter?.state.closure !== 'WAIVED' || exemptWaivedAfter.state.freshness !== 'IMPACT_UNKNOWN') throw new Error(`断言前置失效：豁免场景应为 WAIVED + IMPACT_UNKNOWN：${exemptWaivedAfter?.state.closure}/${exemptWaivedAfter?.state.freshness}`)
+const expectedImpactUnknown = exemptBuild.verificationState.scenarios.filter((scenario) => scenario.state.freshness === 'IMPACT_UNKNOWN' && !['WAIVED', 'EXCLUDED'].includes(scenario.state.closure)).length
+if (exemptBuild.verificationState.closureAssessment.metrics.impactUnknown !== expectedImpactUnknown) throw new Error(`#9(c) 回归：WAIVED 场景仍计入 impactUnknown（${exemptBuild.verificationState.closureAssessment.metrics.impactUnknown} !== ${expectedImpactUnknown}）`)
+if (exemptBuild.verificationState.multiOracle.criticalInsufficient.includes(exemptWaived.id)) throw new Error('#9(a) 回归：WAIVED 场景计入 criticalInsufficient')
+if (!exemptBuild.verificationState.multiOracle.criticalInsufficient.includes(exemptFormal.id)) throw new Error('#9(a) 断言前置失效：未豁免的关键场景应计入 criticalInsufficient')
+// #8：Formal 结果携带工作区统一口径 rtlHash 后，verdict 有效且证据能合并进 hits（FORMAL_PROVED）
+mkdirSync(join(exemptRoot, 'verification', 'formal', 'results', 'ex_prove'), { recursive: true })
+writeFileSync(join(exemptRoot, 'verification', 'formal', 'results', 'ex_prove', 'formal-result.json'), JSON.stringify({
+  status: 'PASS', outcome: 'PROVEN', mode: 'prove', obligation: 'required', scenarioId: exemptFormal.id,
+  rtlHash: computeRtlHash(exemptRoot), propertyFiles: [], traces: []
+}, null, 2), 'utf-8')
+const exemptProved = buildVerificationIntelligence(exemptRoot)
+const formalAssessment = exemptProved.verificationState.multiOracle.assessments.find((item) => item.scenarioId === exemptFormal.id)
+if (!formalAssessment?.passOracleIds.includes('ORACLE-FORMAL-PROPERTY') || formalAssessment.invalidOracleIds.includes('ORACLE-FORMAL-PROPERTY')) throw new Error(`#8 回归：工作区口径 rtlHash 的 Formal verdict 仍被判无效：${JSON.stringify(formalAssessment)}`)
+const provedScenario = exemptProved.verificationState.scenarios.find((scenario) => scenario.id === exemptFormal.id)
+if (provedScenario?.status !== 'FORMAL_PROVED') throw new Error(`#8 回归：工作区口径 Formal 证据未合并进 hits：${provedScenario?.status}`)
+rmSync(exemptRoot, { recursive: true, force: true })
 
 console.log(`Verification Intelligence smoke passed: ${second.risks.length} risks, ${second.verificationState.scenarioCount} scenarios`)

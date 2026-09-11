@@ -78,7 +78,9 @@ export function generateProjectDashboard(project: ChipProject, workspaceDir: str
     ['EDA 工具链', project.edaToolchain]
   ]
 
+  // 缺陷 DEFECT-PACK-001#14 配套：mutation/probe 隔离运行的 result.json 不计入看板运行统计
   const resultFiles = collectFiles(join(workspaceDir, 'verification', 'results'), /^result\.json$/i)
+    .filter((file) => !file.split(/[\\/]/).some((segment) => /^(?:mutation|probe|regression)-runs$|^(?:mutation|probe)$/.test(segment)))
   let passedRuns = 0
   let failedRuns = 0
   let lineCoverage: number | undefined

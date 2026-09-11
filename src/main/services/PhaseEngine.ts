@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { join, relative } from 'node:path'
+import { basename, join, relative, sep } from 'node:path'
 import { runLint, runDesignLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
 import { buildVerificationIntelligence, reviewScenarioClosure, reviewSynthesisClauses } from '@moonglass/verification-intelligence-engine'
 import {
@@ -157,8 +157,10 @@ function optionalDocument(relativePath: string, simpleDesignReason: string) {
   }
 }
 
-const REQUIREMENT_ID = /\b(?:REQ(?:-[A-Z]+)?|FR|F|NFR|PERF|P|IF|SEC)[-_]?\d+\b/gi
-const SPECIFICATION_ID = /\bSPEC(?:-[A-Z]+)?[-_]?\d+\b/gi
+// 负向回顾 (?<![A-Za-z0-9]-) 阻止裸前缀匹配到另一 ID 内部（如 SPEC-PERF-006 中的 PERF-006），
+// 同时保留 REQ-PERF-001 整体匹配与 legacy 裸前缀 ID（如单独的 PERF-001）的兼容
+const REQUIREMENT_ID = /(?<![A-Za-z0-9]-)\b(?:REQ(?:-[A-Z]+)?|FR|F|NFR|PERF|P|IF|SEC)[-_]?\d+\b/gi
+const SPECIFICATION_ID = /(?<![A-Za-z0-9]-)\bSPEC(?:-[A-Z]+)?[-_]?\d+\b/gi
 
 function requirementIds(content: string): Set<string> {
   const ids = new Set(
@@ -167,7 +169,7 @@ function requirementIds(content: string): Set<string> {
       .filter((id) => !/^P[0-2]$/.test(id))
   )
   const ranges = content.matchAll(
-    /\b(REQ(?:-[A-Z]+)?|FR|F|NFR|PERF|IF|SEC)[-_]?(\d+)\s*(?:~|～|\.\.|至)\s*(\d+)\b/gi
+    /(?<![A-Za-z0-9]-)\b(REQ(?:-[A-Z]+)?|FR|F|NFR|PERF|IF|SEC)[-_]?(\d+)\s*(?:~|～|\.\.|至)\s*(\d+)\b/gi
   )
   for (const range of ranges) {
     const prefix = range[1].toUpperCase().replace(/_/g, '-')
@@ -271,7 +273,7 @@ async function rtmComplete(ctx: GateCheckContext, checkId: string): Promise<Gate
   const requirements = inspectDocument(ctx, 'docs/02_requirements/product_requirements.md')
   const requiredIds = requirementIds(requirements.content)
   const tracedIds = new Set(tableRows.flatMap((row) => [...requirementIds(row.requirementCell)]))
-  const missing = [...requiredIds].filter((id) => !tracedIds.has(id))
+  const missing = [...requiredIds].filter((id) => !tracedIds.has(id)).sort()
   if (missing.length > 0) {
     return makeResult(
       checkId,
@@ -353,9 +355,20 @@ function collectJsonFiles(dir: string): string[] {
   return files
 }
 
+// 缺陷 DEFECT-PACK-001#14/#17 配套：run_simulation 的 mutation/probe 隔离运行产物
+// （verification/results/<module>/<purpose>-runs/…，及历史 mutation/、probe/ 段）不计入
+// 门禁的回归判定与覆盖率统计；口径与 verification-intelligence 引擎 collectResults 一致
+const ISOLATED_RESULTS_SEGMENT = /^(?:mutation|probe|regression)-runs$|^(?:mutation|probe)$/
+function isIsolatedRunEvidence(file: string): boolean {
+  return file.split(/[\\/]/).some((segment) => ISOLATED_RESULTS_SEGMENT.test(segment))
+}
+
 async function simPassed(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
-  const resultFiles = collectJsonFiles(join(ctx.workspaceDir, 'verification', 'results'))
-    .filter((file) => file.endsWith('result.json'))
+  // 缺陷 DEFECT-PACK-001#14：回归证据只认顶层模块目录直下的 result.json；
+  // 隔离运行（*-runs/）与其他深层 result.json 不参与门禁判定
+  const resultsRoot = join(ctx.workspaceDir, 'verification', 'results')
+  const resultFiles = collectJsonFiles(resultsRoot)
+    .filter((file) => basename(file) === 'result.json' && relative(resultsRoot, file).split(sep).length === 2)
   if (resultFiles.length === 0) {
     return makeResult(checkId, false, 'error', 'verification/results/<module>/result.json 不存在')
   }
@@ -387,6 +400,8 @@ function coverageAtLeast(keys: string[], threshold: number) {
   return async (ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> => {
     const values: number[] = []
     for (const file of collectJsonFiles(join(ctx.workspaceDir, 'verification', 'results'))) {
+      // 缺陷 DEFECT-PACK-001#14：隔离运行目录内的覆盖率数据不拉低门禁最低值
+      if (isIsolatedRunEvidence(file)) continue
       try {
         const data = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>
         for (const key of keys) if (typeof data[key] === 'number') values.push(data[key] as number)

@@ -7,9 +7,11 @@ import { locateTool, run, toolEnv } from './tool-runner.ts'
 export type FormalMode = 'bmc' | 'prove' | 'cover'
 export type FormalObligation = 'required' | 'supplemental'
 export type FormalRunOutcome = 'PROVEN' | 'COUNTEREXAMPLE' | 'COVERED' | 'BOUND_EXHAUSTED' | 'INCONCLUSIVE' | 'TOOL_ERROR'
-export interface FormalRunOptions { workspaceDir: string; top: string; rtlFiles: string[]; propertyFiles: string[]; mode?: FormalMode; depth?: number; engine?: 'boolector' | 'bitwuzla' | 'z3'; taskName?: string; scenarioId?: string; obligation?: FormalObligation; signal?: AbortSignal }
+export interface FormalRunOptions { workspaceDir: string; top: string; rtlFiles: string[]; propertyFiles: string[]; mode?: FormalMode; depth?: number; engine?: 'boolector' | 'bitwuzla' | 'z3'; taskName?: string; scenarioId?: string; obligation?: FormalObligation; signal?: AbortSignal; workspaceRtlHash?: string }
 export interface FormalCompatibilityIssue { file: string; line: number; construct: string; message: string }
-export interface FormalRunResult { passed: boolean; status: 'PASS' | 'FAIL' | 'UNKNOWN' | 'ERROR'; outcome: FormalRunOutcome; mode: FormalMode; top: string; engine: string; depth: number; scenarioId?: string; rtlHash: string; obligation: FormalObligation; classification?: 'C6_FRONTEND_COMPATIBILITY'; compatibilityIssues?: FormalCompatibilityIssue[]; configPath: string; resultDir: string; logPath: string; traces: string[]; propertyFiles: string[]; message: string }
+// #8：rtlHash 在提供 workspaceRtlHash 时写工作区统一口径（computeRtlHash），使 Formal 证据进入单一哈希空间；
+// 原"输入文件清单哈希"改记 scopeHash（作用域溯源用）；未提供 workspaceRtlHash 时 rtlHash 保持旧口径（向后兼容直接调用）
+export interface FormalRunResult { passed: boolean; status: 'PASS' | 'FAIL' | 'UNKNOWN' | 'ERROR'; outcome: FormalRunOutcome; mode: FormalMode; top: string; engine: string; depth: number; scenarioId?: string; rtlHash: string; scopeHash: string; obligation: FormalObligation; classification?: 'C6_FRONTEND_COMPATIBILITY'; compatibilityIssues?: FormalCompatibilityIssue[]; configPath: string; resultDir: string; logPath: string; traces: string[]; propertyFiles: string[]; message: string }
 
 function safeName(value: string): string { return value.replace(/[^A-Za-z0-9_.-]+/g, '_').replace(/^\.+/, '') || 'formal' }
 function collect(dir: string, match: RegExp): string[] {
@@ -72,7 +74,9 @@ export async function runFormalVerification(options: FormalRunOptions): Promise<
   const configPath = join(root, `${task}.sby`)
   const rtlHash = createHash('sha256')
   for (const relativeFile of [...options.rtlFiles].sort()) { const file = resolve(workspace, relativeFile); rtlHash.update(relativeFile).update('\0').update(readFileSync(file)).update('\0') }
-  const currentRtlHash = rtlHash.digest('hex')
+  const scopeHash = rtlHash.digest('hex')
+  // #8：优先使用调用方传入的工作区统一口径哈希；未提供时保持旧行为（rtlHash = 输入文件清单哈希）
+  const currentRtlHash = options.workspaceRtlHash ?? scopeHash
   const files = [...names.entries()]
   writeFileSync(configPath, `[options]\nmode ${mode}\ndepth ${depth}\nwait on\n\n[engines]\nsmtbmc ${engine}\n\n[script]\nread -formal -sv ${files.map(([name]) => name).join(' ')}\nprep -top ${options.top}\n\n[files]\n${files.map(([name, file]) => `${name} ${file.replace(/\\/g, '/')}`).join('\n')}\n`, 'utf-8')
   const compatibilityIssues = checkYosysFormalCompatibility(workspace, options.propertyFiles)
@@ -81,7 +85,7 @@ export async function runFormalVerification(options: FormalRunOptions): Promise<
     const guidance = compatibilityIssues.map((issue) => `${issue.file}:${issue.line} [${issue.construct}] ${issue.message}`).join('\n')
     writeFileSync(logPath, `MoonGlass Formal compatibility preflight failed.\nNo solver was started and no PASS/FAIL verdict exists.\n\n${guidance}\n\nUse Yosys-compatible clocked always blocks with immediate assert/assume/cover and explicit monitor counters. Liveness properties must document environment response assumptions.\n`, 'utf-8')
     const result: FormalRunResult = {
-      passed: false, status: 'ERROR', outcome: 'TOOL_ERROR', mode, top: options.top, engine, depth, scenarioId: options.scenarioId, rtlHash: currentRtlHash, obligation,
+      passed: false, status: 'ERROR', outcome: 'TOOL_ERROR', mode, top: options.top, engine, depth, scenarioId: options.scenarioId, rtlHash: currentRtlHash, scopeHash, obligation,
       classification: 'C6_FRONTEND_COMPATIBILITY', compatibilityIssues, configPath: relative(workspace, configPath),
       resultDir: relative(workspace, resultDir), logPath: relative(workspace, logPath), traces: [], propertyFiles: options.propertyFiles,
       message: `Formal 兼容性预检拒绝 ${compatibilityIssues.length} 项 Yosys 不支持的 SVA 结构；未启动求解器，不能形成 PASS/FAIL 结论`
@@ -111,7 +115,7 @@ export async function runFormalVerification(options: FormalRunOptions): Promise<
       : outcome === 'BOUND_EXHAUSTED' ? `${mode} 仅完成当前深度检查，不能解释为不可达证明`
         : outcome === 'COUNTEREXAMPLE' ? `发现反例或属性失败${traces.length ? '，已生成 trace' : ''}`
           : `Formal 任务状态 ${status}，请检查日志`
-  const result: FormalRunResult = { passed: status === 'PASS', status, outcome, mode, top: options.top, engine, depth, scenarioId: options.scenarioId, rtlHash: currentRtlHash, obligation, configPath: relative(workspace, configPath), resultDir: relative(workspace, resultDir), logPath: relative(workspace, logPath), traces, propertyFiles: options.propertyFiles, message }
+  const result: FormalRunResult = { passed: status === 'PASS', status, outcome, mode, top: options.top, engine, depth, scenarioId: options.scenarioId, rtlHash: currentRtlHash, scopeHash, obligation, configPath: relative(workspace, configPath), resultDir: relative(workspace, resultDir), logPath: relative(workspace, logPath), traces, propertyFiles: options.propertyFiles, message }
   writeFileSync(join(resultDir, 'formal-result.json'), JSON.stringify({ ...result, generatedAt: new Date().toISOString(), exitCode: execution.code }, null, 2), 'utf-8')
   return result
 }

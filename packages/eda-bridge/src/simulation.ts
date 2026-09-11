@@ -5,8 +5,8 @@
  * VCS / Xcelium 为预留类型，当前仅 Verilator 有真实现。
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
-import { delimiter, dirname, join, resolve } from 'node:path'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { basename, delimiter, dirname, join, relative, resolve } from 'node:path'
 import {
   locateTool,
   run,
@@ -151,6 +151,8 @@ export interface VerilatorSimResult {
   waveformAbortedReason?: 'size-limit'
   /** 外部自带 C++ TB（无 TB 内熔断标记）波形已超限但未能受控停止的诚实标记 */
   waveformOverLimitUncontrolled?: boolean
+  /** 缺陷 DEFECT-PACK-001#17：本次失败结果写入前被旁路归档的既有成功 result.json 路径（未归档时无此字段） */
+  archivedResultPath?: string
 }
 
 export interface CocotbSimOptions {
@@ -224,6 +226,20 @@ function readFunctionalCoverage(path: string): number | undefined {
 function readResult(path: string): Record<string, unknown> {
   if (!existsSync(path)) return {}
   try { return JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown> } catch { return {} }
+}
+
+/**
+ * 缺陷 DEFECT-PACK-001#17 主 result.json 防覆盖：本次写入 passed=false 而既有文件
+ * passed=true 时，先把既有成功证据旁路归档为 result.pass-<时间戳>.json 再写入，
+ * 保证黄金证据可追溯；失败覆盖失败、成功覆盖成功直接写。返回归档路径（未归档为 null）。
+ */
+function archivePassedResult(resultPath: string, previous: Record<string, unknown>): string | null {
+  if (previous.passed !== true || !existsSync(resultPath)) return null
+  const archivePath = join(dirname(resultPath), `result.pass-${new Date().toISOString().replace(/[:.]/g, '-')}.json`)
+  try {
+    renameSync(resultPath, archivePath)
+    return archivePath
+  } catch { return null }
 }
 
 function writeCoverageReport(resultDir: string, coverage: CoverageSummary, dataPath?: string): string {
@@ -387,8 +403,26 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
   const waveformOverLimitUncontrolled = waveformAborted && !waveformAbortedEffective
   const output = [execution.stdout, execution.stderr].filter(Boolean).join('\n')
   const marker = output.indexOf('__MOONGLASS_BUILD_DONE__')
-  writeFileSync(compileLogPath, marker >= 0 ? output.slice(0, marker) : output, 'utf-8')
-  writeFileSync(simulationLogPath, marker >= 0 ? output.slice(marker + '__MOONGLASS_BUILD_DONE__'.length) : output, 'utf-8')
+  // 缺陷 DEFECT-PACK-001#10：cocotb 的编译发生在 runner.build() 阶段（icarus 由其内部
+  // make 流程统一编译），与仿真同属一次 python 进程输出，按 __MOONGLASS_BUILD_DONE__
+  // 标记切分；编译段为空时写明确说明行，保证 compile 日志非空且内容真实对应编译阶段。
+  const buildSegment = marker >= 0 ? output.slice(0, marker) : output
+  const simSegment = marker >= 0 ? output.slice(marker + '__MOONGLASS_BUILD_DONE__'.length) : ''
+  writeFileSync(
+    compileLogPath,
+    [
+      `[compile] cocotb runner.build(simulator=${simulator}, sources=${options.rtlFiles.length} 个 RTL 文件, build_dir=${options.buildDir})`,
+      buildSegment.trim()
+        ? buildSegment.trimEnd()
+        : `编译由 cocotb runner.build 统一执行且未产生独立编译输出，详见 ${basename(simulationLogPath)}`
+    ].join('\n'),
+    'utf-8'
+  )
+  writeFileSync(simulationLogPath, simSegment.trim() ? simSegment : output, 'utf-8')
+  // 缺陷 DEFECT-PACK-001#10：compileExitCode 反映本次真实编译步骤结果——build 完成标记
+  // 出现即编译成功（0）；未出现说明进程未走完编译阶段，记真实进程退出码。不得从
+  // previous 继承历史失败退出码（曾出现 84/84 PASS 的回归携带 compileExitCode: 2）。
+  const compileExitCode = marker >= 0 ? 0 : execution.code
 
   const sourceWaveform = findWaveform(options.buildDir) ?? findWaveform(options.resultDir)
   let waveformPath: string | null = null
@@ -411,6 +445,8 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
   const coverageReportPath = hasMergedCoverage ? writeCoverageReport(options.resultDir, mergedCoverage, rtlCoverage ? coverageDataPath : (previous.coverageDataPath as string | undefined)) : undefined
   const rtlCoveragePassed = previous.rtlCoveragePassed
   const overallPassed = rtlCoveragePassed === undefined ? passed : passed && rtlCoveragePassed === true
+  // 缺陷 DEFECT-PACK-001#17：失败结果不得直接覆盖既有成功证据
+  const archivedResultPath = overallPassed ? null : archivePassedResult(resultPath, previous)
   writeFileSync(resultPath, JSON.stringify({
     ...previous,
     passed: overallPassed,
@@ -420,6 +456,7 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
     topModule: options.topModule,
     testModule: options.testModule,
     testcase: options.testcase ?? null,
+    compileExitCode,
     runExitCode: execution.code,
     testsTotal,
     testsPassed,
@@ -457,7 +494,8 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     coverageDataPath: rtlCoverage && existsSync(coverageDataPath) ? coverageDataPath : undefined,
     coverageReportPath,
-    resultsXmlPath: existsSync(resultsXml) ? resultsXml : null
+    resultsXmlPath: existsSync(resultsXml) ? resultsXml : null,
+    ...(archivedResultPath ? { archivedResultPath } : {})
   }
 }
 
@@ -500,6 +538,14 @@ export async function runVerilatorSimulation(
   }
 
   // Step 1: verilator --cc (编译 RTL 到 C++)
+  // 缺陷 DEFECT-PACK-001#6：非 ASCII（如中文）项目路径下，Verilator（mingw/ANSI 运行时）
+  // 会把用户 .cpp 的绝对路径按 GBK 写入生成的 .mk 依赖行，而 MSYS2 make 按 UTF-8 读取，
+  // 路径错乱导致 "No rule to make target" 必败。对策（用户建议方案）：用户 .cpp 与 RTL
+  // 一律转为相对 objDir 的相对路径（统一正斜杠），并以 objDir 为 cwd 执行 verilator；
+  // 覆盖率 hook 就在 objDir 内，用纯文件名。RTL .v 虽不进 .mk 依赖，同口径处理避免
+  // Verilator 诊断信息内嵌 GBK 绝对路径。cocotb 路径不经过本函数，不受影响。
+  const toObjRelative = (p: string): string => relative(objDir, resolve(p)).replace(/\\/g, '/')
+  const hasNonAsciiPath = [objDir, tbCpp, ...rtlFiles].some((p) => /[^\x00-\x7F]/.test(p))
   const ccArgs = [
     '--cc',
     '--build',
@@ -508,9 +554,9 @@ export async function runVerilatorSimulation(
     '--Mdir',
     objDir,
     ...(trace ? ['--trace'] : []),
-    ...(rtlCoverage ? ['--coverage-line', '--coverage-expr', '--coverage-toggle', '--coverage-fsm', '-CFLAGS', '-Dmain=moonglass_user_main', coverageHookPath] : []),
-    tbCpp,
-    ...rtlFiles
+    ...(rtlCoverage ? ['--coverage-line', '--coverage-expr', '--coverage-toggle', '--coverage-fsm', '-CFLAGS', '-Dmain=moonglass_user_main', basename(coverageHookPath)] : []),
+    toObjRelative(tbCpp),
+    ...rtlFiles.map(toObjRelative)
   ]
   const verilatorEnv = toolEnv(verilatorPath)
   if (process.platform === 'win32') {
@@ -523,7 +569,9 @@ export async function runVerilatorSimulation(
     verilatorPath,
     ccArgs,
     verilatorEnv,
-    signal
+    signal,
+    // 缺陷 DEFECT-PACK-001#6：以 objDir 为 cwd，上述相对路径参数才能解析
+    objDir
   )
   writeFileSync(
     compileLogPath,
@@ -543,20 +591,30 @@ export async function runVerilatorSimulation(
       finishedAt: new Date().toISOString()
     }
     writeFileSync(simulationLogPath, '仿真未运行：Verilator 编译失败\n', 'utf-8')
+    // 缺陷 DEFECT-PACK-001#17：编译失败的 passed=false 不得直接覆盖既有成功证据
+    const archivedResultPath = archivePassedResult(resultPath, readResult(resultPath))
     writeFileSync(resultPath, JSON.stringify(failed, null, 2), 'utf-8')
+    // 缺陷 DEFECT-PACK-001#6：相对路径改造后仍失败且路径含非 ASCII 时，明确指向路径编码
+    // 残留风险（如 TB/hook 之外的自定义 --include 或 Verilator 版本差异），不静默失败
+    const encodingHint = hasNonAsciiPath
+      ? '\n提示：项目路径包含非 ASCII 字符。Verilator(mingw) 按 GBK 写 .mk 依赖而 MSYS2 make 按 UTF-8 读取，若日志出现 "No rule to make target" 或乱码路径，属路径编码错位；请将工作区/构建目录迁移到纯 ASCII 路径后重试。'
+      : ''
     return {
       passed: false,
-      log: `Verilator 编译失败 (code=${ccCode}):\n${ccErr.slice(0, 2000)}`,
+      log: `Verilator 编译失败 (code=${ccCode}):\n${ccErr.slice(0, 2000)}${encodingHint}`,
       vcdPath: null,
       compileLogPath,
       simulationLogPath,
-      resultPath
+      resultPath,
+      ...(archivedResultPath ? { archivedResultPath } : {})
     }
   }
 
   // Step 2: 运行仿真
   if (!existsSync(binExe)) {
     writeFileSync(simulationLogPath, `仿真可执行文件未找到: ${binExe}\n`, 'utf-8')
+    // 缺陷 DEFECT-PACK-001#17：失败结果不得直接覆盖既有成功证据
+    const archivedResultPath = archivePassedResult(resultPath, readResult(resultPath))
     writeFileSync(resultPath, JSON.stringify({
       passed: false,
       topModule,
@@ -573,7 +631,8 @@ export async function runVerilatorSimulation(
       vcdPath: null,
       compileLogPath,
       simulationLogPath,
-      resultPath
+      resultPath,
+      ...(archivedResultPath ? { archivedResultPath } : {})
     }
   }
 
@@ -587,7 +646,9 @@ export async function runVerilatorSimulation(
     : undefined
   const { stdout: runOut, stderr: runErr, code: runCode } = await run(
     binExe,
-    rtlCoverage ? [`+verilator+coverage+file+${coverageDataPath.replace(/\\/g, '/')}`] : [],
+    // 缺陷 DEFECT-PACK-001#6：仿真以 resultDir 为 cwd，覆盖率文件用纯文件名——
+    // Verilated 运行时（mingw/ANSI fopen）同样无法处理非 ASCII 绝对路径
+    rtlCoverage ? [`+verilator+coverage+file+${basename(coverageDataPath)}`] : [],
     verilatorEnv,
     signal,
     resultDir,
@@ -615,6 +676,8 @@ export async function runVerilatorSimulation(
   const coverageReportPath = hasMergedCoverage ? writeCoverageReport(resultDir, mergedCoverage, coverageDataPath) : undefined
   const functionalPassed = previous.functionalPassed ?? previous.passed
   const overallPassed = functionalPassed === undefined ? passed : functionalPassed === true && passed
+  // 缺陷 DEFECT-PACK-001#17：失败结果不得直接覆盖既有成功证据
+  const archivedResultPath = overallPassed ? null : archivePassedResult(resultPath, previous)
   writeFileSync(resultPath, JSON.stringify({
     ...previous,
     passed: overallPassed,
@@ -653,7 +716,8 @@ export async function runVerilatorSimulation(
     waveformOverLimitUncontrolled: waveformOverLimitUncontrolled || undefined,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     coverageDataPath: existsSync(coverageDataPath) ? coverageDataPath : undefined,
-    coverageReportPath
+    coverageReportPath,
+    ...(archivedResultPath ? { archivedResultPath } : {})
   }
 }
 

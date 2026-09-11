@@ -193,13 +193,18 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
     const w1 = s.waveProgress.find((w) => w.id === 'W1')
     const w2 = s.waveProgress.find((w) => w.id === 'W2')
     const w3 = s.waveProgress.find((w) => w.id === 'W3')
-    if (w1 && w1.status === 'in-progress' && (w1.specClauseTotal ?? 0) > (w1.specClauseCovered ?? 0)) {
+    // 缺陷 DEFECT-PACK-001#12：W1 覆盖口径 = PASSED + WAIVED（读 specMapping 条款状态；
+    // synthesis 通道条款本就不在分母，保持一致）。差值全为已具名豁免条款时不再生成
+    // 永不可消除的 P0 卡片，主行动顺延到 W2/W3 门禁与移交类提示。
+    const w1Waived = s.specMapping?.clauses?.filter((clause) => clause.status === 'WAIVED' && (clause.channel ?? 'simulation') !== 'synthesis').length ?? 0
+    const w1Covered = (w1?.specClauseCovered ?? 0) + w1Waived
+    if (w1 && w1.status === 'in-progress' && (w1.specClauseTotal ?? 0) > w1Covered) {
       actions.push({
         id: 'wave-w1',
         priority: 'P0',
         title: t('verification.actionTexts.continueW1Title'),
-        detail: t('verification.actionTexts.continueW1Detail', { covered: w1.specClauseCovered ?? 0, total: w1.specClauseTotal ?? 0 }),
-        count: (w1.specClauseTotal ?? 0) - (w1.specClauseCovered ?? 0),
+        detail: t('verification.actionTexts.continueW1Detail', { covered: w1Covered, total: w1.specClauseTotal ?? 0 }),
+        count: (w1.specClauseTotal ?? 0) - w1Covered,
         prompt: '继续 W1 基础功能：为规格映射矩阵中尚未覆盖的可验证规格条款补充验证 Intent 与 testcase（每条条款至少一条 happy path），用 register_verification_intents 登记（wave=basic），run_simulation 绑定 scenarioIds 执行。'
       })
     } else if (w2 && w2.status === 'in-progress') {

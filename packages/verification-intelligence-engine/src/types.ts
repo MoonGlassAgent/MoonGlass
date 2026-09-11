@@ -218,6 +218,8 @@ export interface MutationAssessment {
   blockingSurvivors: string[]
   invalidOrStale: string[]
   status: 'MISSING' | 'BELOW_THRESHOLD' | 'BLOCKED_BY_SURVIVOR' | 'PASS'
+  /** 缺陷 DEFECT-PACK-001#15：schema 不符/记录缺字段的显式告警（不再静默 MISSING） */
+  warnings: string[]
 }
 
 export interface ResidualRisk {

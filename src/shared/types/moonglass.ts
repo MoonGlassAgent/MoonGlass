@@ -577,7 +577,7 @@ export interface SpecMapping {
   /** 无映射条款（execution-summary 精简形状） */
   unmappedClause?: Array<{ specId: string; clause: string }>
   /** 全量条款映射（posture/state 完整形状，状态机 UNMAPPED/MAPPED_UNTESTED/PASSED/FAILED/WAIVED） */
-  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[] }>
+  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[]; channel?: string }>
 }
 
 /** Pi 当前会话累计用量；不同 Provider 可能省略费用或上下文估算。 */

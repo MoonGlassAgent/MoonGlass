@@ -12,7 +12,9 @@ const archive = join(outputDir, 'moonglass-aigv-runtime.tgz')
 rmSync(stageRoot, { recursive: true, force: true }); mkdirSync(join(runtime, 'bin'), { recursive: true }); mkdirSync(join(runtime, 'license'), { recursive: true }); mkdirSync(outputDir, { recursive: true })
 
 const copy = (relative) => { const from = join(source, relative); if (!existsSync(from)) throw new Error(`AIGV Runtime 缺少源文件：${from}`); const to = join(runtime, relative); mkdirSync(dirname(to), { recursive: true }); cpSync(from, to, { recursive: true }) }
-for (const name of ['slang.exe', 'yosys.exe', 'boolector.exe', 'bitwuzla.exe', 'sby-script.py', 'yosys-smtbmc.exe-script.py']) copy(join('bin', name))
+// 缺陷 DEFECT-PACK-001/SYNTH-D1：yosys-abc.exe 必须随包发布——yosys 的 abc 技术映射
+// 命令按 <yosys-exe-dir>/yosys-abc 查找 ABC，缺失则 run_logic_synthesis 在 ABC 阶段必败
+for (const name of ['slang.exe', 'yosys.exe', 'yosys-abc.exe', 'boolector.exe', 'bitwuzla.exe', 'sby-script.py', 'yosys-smtbmc.exe-script.py']) copy(join('bin', name))
 // Python 解释器：sby / yosys-smtbmc 是 Python 脚本，目标机器可能没有任何系统 Python，
 // 必须把 OSS CAD Suite 自带解释器打进运行时，wrapper 直接调用它而不是裸 `python`
 for (const name of ['python3.11.exe', 'libpython3.11.dll']) copy(join('lib', name))
@@ -35,7 +37,7 @@ for (const name of ['LICENSE.yosys', 'LICENSE.sby', 'LICENSE.boolector', 'LICENS
 const PY_ENV = 'set "PYTHONPATH=%~dp0..\\lib\\python3.11;%~dp0..\\share\\yosys\\python3;%~dp0..\\lib\\python3.11\\site-packages"'
 writeFileSync(join(runtime, 'bin', 'sby.cmd'), `@echo off\r\n${PY_ENV}\r\n"%~dp0..\\lib\\python3.11.exe" "%~dp0sby-script.py" %*\r\n`, 'ascii')
 writeFileSync(join(runtime, 'bin', 'yosys-smtbmc.cmd'), `@echo off\r\n${PY_ENV}\r\n"%~dp0..\\lib\\python3.11.exe" "%~dp0yosys-smtbmc.exe-script.py" %*\r\n`, 'ascii')
-writeFileSync(join(runtime, 'manifest.json'), JSON.stringify({ id: 'moonglass-aigv-runtime', version: 1, platform: 'win32', arch: 'x64', tools: ['Slang', 'Yosys', 'SymbiYosys', 'Yosys-SMTBMC', 'Boolector', 'Bitwuzla'], source: 'OSS CAD Suite', generatedAt: new Date().toISOString() }, null, 2), 'utf-8')
+writeFileSync(join(runtime, 'manifest.json'), JSON.stringify({ id: 'moonglass-aigv-runtime', version: 1, platform: 'win32', arch: 'x64', tools: ['Slang', 'Yosys', 'ABC (yosys-abc)', 'SymbiYosys', 'Yosys-SMTBMC', 'Boolector', 'Bitwuzla'], source: 'OSS CAD Suite', generatedAt: new Date().toISOString() }, null, 2), 'utf-8')
 rmSync(archive, { force: true })
 // Windows 上用系统自带 bsdtar：GNU tar（Git Bash 环境 PATH 优先）会把 "D:" 盘符当作远程主机语法而失败
 const tarExe = process.platform === 'win32' && existsSync(join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'tar.exe'))

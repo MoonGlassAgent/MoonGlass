@@ -10,7 +10,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
-import { basename, dirname, join, resolve } from 'node:path'
+import { basename, dirname, join, relative, resolve } from 'node:path'
 import { locateTool, run, toolEnv, YOSYS_CANDIDATES } from './tool-runner'
 
 export interface SynthesisIssue {
@@ -333,11 +333,18 @@ export async function runLogicSynthesis(
   const reportPath = join(outputDir, `${outputName}_synthesis.md`)
   const clockPeriodNs = parseClockPeriod(options.sdcFile)
 
+  // 缺陷 DEFECT-PACK-001#6（SYNTH-D2 同源）：Yosys(mingw/ANSI 运行时) 会把 read_verilog 的
+  // 绝对路径按 GBK 内嵌进内部单元名/src 属性（日志可见 $add$D:/$cf$ee... 乱码），非 ASCII
+  // 项目路径下可能导致 synth 内部 pass 无错误信息中断。对策与 Verilator 同口径：RTL/库文件
+  // 与输出产物一律用相对 outputDir 的相对路径（统一正斜杠），并以 outputDir 为 cwd 执行
+  // yosys。Liberty 位于工具链目录（纯 ASCII），保持绝对路径不变。
+  const yosysRelQuote = (value: string): string => `"${relative(outputDir, resolve(value)).replace(/\\/g, '/').replace(/"/g, '\\"')}"`
+
   const commands = [
     ...(options.libraryFiles?.length
-      ? [`read_verilog -sv -lib ${options.libraryFiles.map(yosysQuote).join(' ')}`]
+      ? [`read_verilog -sv -lib ${options.libraryFiles.map(yosysRelQuote).join(' ')}`]
       : []),
-    `read_verilog -sv ${options.rtlFiles.map(yosysQuote).join(' ')}`,
+    `read_verilog -sv ${options.rtlFiles.map(yosysRelQuote).join(' ')}`,
     `hierarchy -check -top ${options.topModule}`,
     'proc',
     'opt',
@@ -355,16 +362,22 @@ export async function runLogicSynthesis(
   } else {
     commands.push('stat')
   }
-  commands.push(`write_verilog -noattr ${yosysQuote(netlistPath)}`)
-  commands.push(`write_json ${yosysQuote(jsonPath)}`)
+  commands.push(`write_verilog -noattr ${yosysRelQuote(netlistPath)}`)
+  commands.push(`write_json ${yosysRelQuote(jsonPath)}`)
 
-  const result = await run(yosysPath, ['-p', commands.join('; ')], toolEnv(yosysPath))
+  const result = await run(yosysPath, ['-p', commands.join('; ')], toolEnv(yosysPath), undefined, outputDir)
   const combinedOutput = `${result.stdout}\n${result.stderr}`
   writeFileSync(logPath, combinedOutput, 'utf-8')
 
   if (result.code !== 0 || !existsSync(netlistPath)) {
     const tail = combinedOutput.trim().split(/\r?\n/).slice(-10).join('\n')
-    throw new Error(`Yosys 综合失败 (code=${result.code})，日志: ${logPath}\n${tail}`)
+    // 缺陷 DEFECT-PACK-001#6（SYNTH-D2）：相对路径改造后仍失败且路径含非 ASCII 时，
+    // 明确指向路径编码残留风险，避免误判为设计缺陷
+    const hasNonAsciiPath = [outputDir, ...options.rtlFiles, ...(options.libraryFiles ?? [])].some((p) => /[^\x00-\x7F]/.test(p))
+    const encodingHint = hasNonAsciiPath
+      ? '\n提示：项目路径包含非 ASCII 字符。Yosys(mingw) 会把源文件路径按 ANSI(GBK) 内嵌进内部单元名/src 属性；若日志出现乱码路径或内部 pass 无错误信息中断，请将工作区迁移到纯 ASCII 路径复测，以区分路径编码问题与设计/规模问题。'
+      : ''
+    throw new Error(`Yosys 综合失败 (code=${result.code})，日志: ${logPath}\n${tail}${encodingHint}`)
   }
 
   const stats = parseSynthesisStats(combinedOutput)
