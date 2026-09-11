@@ -7,7 +7,7 @@
  */
 
 import { spawn } from 'node:child_process'
-import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, extname, join, resolve, sep } from 'node:path'
@@ -279,9 +279,10 @@ export class EdaService implements MoonGlassService {
   }
 
   /**
-   * 安装 Verible：GitHub Release 的 windows-amd64 zip，用系统 bsdtar 解压
-   * （libarchive 直接支持 zip）。zip 内为 verible-v*-windows-amd64/bin 结构，
-   * 解压到 toolchains/verible/ 下，实际 bin 所在目录由 veribleToolchainDir 发现。
+   * 安装 Verible：GitHub Release 的 win64 zip（资产名实际为 verible-v*-win64.zip，
+   * 兼容旧假设 windows-amd64.zip），用系统 bsdtar 解压（libarchive 直接支持 zip）。
+   * zip 内为 verible-v*-win64/bin 结构，解压到 toolchains/verible/ 下，
+   * 实际 bin 所在目录由 veribleToolchainDir 发现。
    */
   private async installVerible(onProgress?: (message: string) => void): Promise<ToolInstallResult> {
     if (process.platform !== 'win32' || process.arch !== 'x64') {
@@ -296,7 +297,7 @@ export class EdaService implements MoonGlassService {
       })
       if (!releaseResponse.ok) throw new Error(`GitHub Release 查询失败: HTTP ${releaseResponse.status}`)
       const release = await releaseResponse.json() as { assets?: Array<{ name: string; browser_download_url: string }> }
-      const asset = release.assets?.find((item) => /^verible-v.*-windows-amd64\.zip$/i.test(item.name))
+      const asset = release.assets?.find((item) => /^verible-v.*-win64\.zip$/i.test(item.name) || /^verible-v.*-windows-amd64\.zip$/i.test(item.name))
       if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
 
       await rm(veribleDir, { recursive: true, force: true })
@@ -311,6 +312,20 @@ export class EdaService implements MoonGlassService {
       this.reportInstallProgress('verible', '下载完成，正在后台解压工具包…', onProgress)
       await this.runProcess(TAR_EXE, ['-xf', archivePath, '-C', veribleDir])
       await rm(archivePath, { force: true })
+      // win64 zip 的 exe 直接在 verible-v*-win64/ 顶层（无 bin/ 子目录）；
+      // 归一化为 bin/ 结构，与 activateToolchains 的 bin/lib 前置约定对齐
+      for (const entry of readdirSync(veribleDir)) {
+        const extracted = join(veribleDir, entry)
+        if (!statSync(extracted).isDirectory()) continue
+        if (existsSync(join(extracted, 'bin'))) continue
+        const lintExe = process.platform === 'win32' ? 'verible-verilog-lint.exe' : 'verible-verilog-lint'
+        if (!existsSync(join(extracted, lintExe))) continue
+        const binDir = join(extracted, 'bin')
+        mkdirSync(binDir, { recursive: true })
+        for (const file of readdirSync(extracted)) {
+          if (file.endsWith('.exe') || file === lintExe) renameSync(join(extracted, file), join(binDir, file))
+        }
+      }
       const root = this.veribleToolchainDir()
       if (!root) throw new Error('工具包解压完成，但未找到 bin 目录')
       this.activateToolchains()
