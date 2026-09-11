@@ -36,7 +36,18 @@ const work = join(bridgeDir, 'work')
 mkdirSync(join(work, '.pi'), { recursive: true })
 writeFileSync(join(work, '.pi', 'APPEND_SYSTEM.md'), 'test', 'utf-8')
 
-const providers = [{ id: 'deepseek', name: 'DeepSeek', protocol: 'openai-compatible', baseUrl: 'https://api.deepseek.com', apiKey: 'sk-dummy', models: ['deepseek-chat'] }]
+// contextWindows（主进程按模型计算的有效上下文窗口）：
+// - deepseek-v4-pro 登记表命中 1M，但 payload 覆盖值优先
+// - my-selfhost-model 登记表查不到，仅靠 payload 覆盖值
+// - deepseek-chat 无 payload 条目且登记表查不到，回退 128K/8192（向后兼容）
+const providers = [{
+  id: 'deepseek', name: 'DeepSeek', protocol: 'openai-compatible', baseUrl: 'https://api.deepseek.com', apiKey: 'sk-dummy',
+  models: ['deepseek-chat', 'deepseek-v4-pro', 'my-selfhost-model'],
+  contextWindows: {
+    'deepseek-v4-pro': { contextWindow: 777_777, maxTokens: 8_888 },
+    'my-selfhost-model': { contextWindow: 333_333, maxTokens: 4_096 }
+  }
+}]
 const providerFile = join(work, 'providers.json')
 writeFileSync(providerFile, JSON.stringify(providers), { mode: 0o600 })
 
@@ -98,6 +109,25 @@ const cmds = await send({ type: 'get_commands' })
 const toolNames = (cmds.data?.commands ?? []).map((c) => c.name)
 console.log('[commands]', JSON.stringify(toolNames))
 console.log('[extension_errors]', extErrors.length ? extErrors : '无')
+
+// 上下文窗口注入断言：payload contextWindows 覆盖值优先，缺失条目回退登记表/兼容值
+const modelsResp = await send({ type: 'get_available_models' })
+const availableModels = modelsResp.data?.models ?? []
+const byId = new Map(availableModels.map((m) => [m.id, m]))
+const expectedContexts = {
+  'deepseek-v4-pro': { contextWindow: 777_777, maxTokens: 8_888 }, // payload 覆盖 > 登记表 1M
+  'my-selfhost-model': { contextWindow: 333_333, maxTokens: 4_096 }, // 仅 payload 覆盖值
+  'deepseek-chat': { contextWindow: 128_000, maxTokens: 8_192 } // 无覆盖且登记表缺失 → 兼容回退
+}
+for (const [id, expected] of Object.entries(expectedContexts)) {
+  const model = byId.get(id)
+  if (!model || model.contextWindow !== expected.contextWindow || model.maxTokens !== expected.maxTokens) {
+    console.error(`[context] 模型 ${id} 上下文窗口不符：期望 ${JSON.stringify(expected)}，实际 ${model ? JSON.stringify({ contextWindow: model.contextWindow, maxTokens: model.maxTokens }) : '(未注册)'}`)
+    child.kill()
+    process.exit(1)
+  }
+}
+console.log('[context] contextWindows 覆盖/回退断言通过')
 
 // 再验证工具是否真的注册进了 Agent 工具集（get_state 不含工具清单，用 prompt 侧面验证成本高，此处以扩展无错误 + 进程就绪为准）
 // WS1/WS2：新工具与参数 schema 以源码标记断言兜底（扩展无错误已证明模块可被 pi 加载）

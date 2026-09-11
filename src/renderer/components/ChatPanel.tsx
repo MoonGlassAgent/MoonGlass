@@ -720,7 +720,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           onChange={(e) => {
             const parsed = JSON.parse(e.target.value) as [string, string]
             if (Array.isArray(parsed) && parsed.length === 2) {
-              void setModel(parsed[0], parsed[1])
+              // 切换成功后立即刷新统计徽标，上下文上限同步到新模型（注册表/覆盖值/回退）
+              void setModel(parsed[0], parsed[1]).then(() => refreshSessionStats())
             }
           }}
           className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700"

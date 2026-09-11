@@ -4,6 +4,7 @@
  * 主进程首次启动时以此为种子写入 userData/moonglass/llm-providers.json，
  * 渲染端仅通过 llm.list() 获取（用户改动优先，预置项只补充不覆盖）。
  * baseUrl / models 均为默认值，用户可在设置页修改。
+ * 模型清单 2026-09-11 按各厂商官方文档刷新（调研记录见 交流/交流_20260908.txt）。
  */
 
 import type { LlmProviderConfig } from './types'
@@ -15,7 +16,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.openai.com/v1',
     apiKey: '',
-    models: ['gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
+    models: ['gpt-6-astra', 'gpt-5.6-terra', 'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini', 'gpt-5.3-codex'],
     enabled: false,
     builtin: true
   },
@@ -25,7 +26,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'anthropic',
     baseUrl: 'https://api.anthropic.com',
     apiKey: '',
-    models: ['claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
+    models: ['claude-opus-5', 'claude-sonnet-5', 'claude-opus-4-7', 'claude-sonnet-4-6', 'claude-haiku-4-5'],
     enabled: false,
     builtin: true
   },
@@ -35,7 +36,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://generativelanguage.googleapis.com/v1beta/openai',
     apiKey: '',
-    models: ['gemini-3.1-pro-preview', 'gemini-3.6-flash', 'gemini-3.5-flash', 'gemini-3.5-flash-lite'],
+    models: ['gemini-3.1-pro-preview', 'gemini-3.8-flash', 'gemini-3.7-flash', 'gemini-3.5-flash-lite'],
     enabled: false,
     builtin: true
   },
@@ -45,7 +46,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.x.ai/v1',
     apiKey: '',
-    models: ['grok-4.5'],
+    models: ['grok-4.6', 'grok-4.5', 'grok-4.3'],
     enabled: false,
     builtin: true
   },
@@ -55,6 +56,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.mistral.ai/v1',
     apiKey: '',
+    // -latest 别名当前指向 Large 3 / Medium 3.5 / Devstral 2（2026-09）
     models: ['mistral-large-latest', 'devstral-latest', 'mistral-medium-latest'],
     enabled: false,
     builtin: true
@@ -95,7 +97,8 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.deepseek.com',
     apiKey: '',
-    models: ['deepseek-v4-pro', 'deepseek-v4-flash'],
+    // 2026-09 官方：chat/reasoner 已退役，v4-pro 路由至 Flash，主力仅 deepseek-flash（1M）
+    models: ['deepseek-flash'],
     enabled: false,
     builtin: true
   },
@@ -105,7 +108,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.moonshot.cn/v1',
     apiKey: '',
-    models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.6'],
+    models: ['kimi-k3', 'kimi-k2.7-code', 'kimi-k2.7-code-highspeed', 'kimi-k2.6'],
     enabled: false,
     builtin: true
   },
@@ -125,7 +128,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://open.bigmodel.cn/api/paas/v4',
     apiKey: '',
-    models: ['glm-5.3-flash', 'glm-5.2', 'glm-5'],
+    models: ['glm-5.3', 'glm-5.3-flash', 'glm-5.2', 'glm-5'],
     enabled: false,
     builtin: true
   },
@@ -135,7 +138,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://api.minimaxi.com/v1',
     apiKey: '',
-    models: ['MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
+    models: ['MiniMax-M3', 'MiniMax-M2.7', 'MiniMax-M2.7-highspeed'],
     enabled: false,
     builtin: true
   },
@@ -145,7 +148,7 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     protocol: 'openai-compatible',
     baseUrl: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
     apiKey: '',
-    models: ['qwen3.7-plus', 'qwen3.7-max', 'qwen3-coder-plus', 'qwen3-coder-next'],
+    models: ['qwen3.8-max', 'qwen3.7-plus', 'qwen3.7-max', 'qwen3-coder-plus', 'qwen3-coder-next'],
     enabled: false,
     builtin: true
   },

@@ -1170,3 +1170,157 @@ button.console-row:hover {
   cursor: wait;
   opacity: 0.55;
 }
+
+/* ---- 深色模式兼容映射（扩展段） ----
+ * 上方 520-579 行已有首批工具类映射，本段补齐审计发现的缺口：
+ * 1. Markdown 预览缺失的语义变量；2. 更多中性/彩色工具类的深色映射；
+ * 3. 硬编码浅色的语义类深色覆盖；4. .project-source 内 Prism 亮色 token 重着色。
+ * 全部限定在 [data-color-mode='dark'] 作用域，不影响亮色模式与代码块亮色卡片。 */
+
+/* Markdown 预览引用的语义变量（亮色值与 .markdown-preview 内联回退一致） */
+:root {
+  --text-strong: #18181b;
+  --text-muted: #71717a;
+  --surface-muted: #f4f4f5;
+}
+
+:root[data-color-mode='dark'] {
+  --text-strong: #f4f4f5;
+  --text-muted: #9ca3af;
+  --surface-muted: #22262c;
+}
+
+/* 中性色缺口 */
+:root[data-color-mode='dark'] .app-shell .text-zinc-300 { color: #6f7681; }
+:root[data-color-mode='dark'] .app-shell .bg-zinc-300 { background-color: #3a4048; }
+:root[data-color-mode='dark'] .app-shell .bg-zinc-400 { background-color: #525963; }
+:root[data-color-mode='dark'] .app-shell .bg-zinc-700 { background-color: #3f4750; }
+:root[data-color-mode='dark'] .app-shell .bg-zinc-900 { background-color: #31373f; }
+:root[data-color-mode='dark'] .app-shell .border-zinc-700 { border-color: #59616d; }
+:root[data-color-mode='dark'] .app-shell .divide-zinc-100 > * + * { border-color: var(--line); }
+:root[data-color-mode='dark'] .app-shell .disabled\:bg-zinc-50:disabled { background-color: #181b20; }
+:root[data-color-mode='dark'] .app-shell .disabled\:text-zinc-600:disabled { color: #b4b8c0; }
+:root[data-color-mode='dark'] .app-shell .hover\:bg-zinc-200:hover,
+:root[data-color-mode='dark'] .app-shell .hover\:bg-zinc-200\/50:hover { background-color: #292e35; }
+:root[data-color-mode='dark'] .app-shell .hover\:bg-zinc-700:hover { background-color: #475060; }
+:root[data-color-mode='dark'] .app-shell .hover\:text-zinc-700:hover { color: #d4d4d8; }
+:root[data-color-mode='dark'] .app-shell .hover\:text-zinc-800:hover { color: #e4e4e7; }
+:root[data-color-mode='dark'] .app-shell .hover\:text-zinc-900:hover { color: #f4f4f5; }
+:root[data-color-mode='dark'] .app-shell .group:hover .group-hover\:bg-white { background-color: var(--surface-raised); }
+
+/* 状态徽章浅底色：加深底 + 浅字，保证深色下对比度 */
+:root[data-color-mode='dark'] .app-shell .bg-red-100,
+:root[data-color-mode='dark'] .app-shell .hover\:bg-red-100:hover { background-color: #452227; }
+:root[data-color-mode='dark'] .app-shell .hover\:bg-red-50:hover { background-color: #351b20; }
+:root[data-color-mode='dark'] .app-shell .text-red-500 { color: #f87171; }
+:root[data-color-mode='dark'] .app-shell .hover\:text-red-600:hover,
+:root[data-color-mode='dark'] .app-shell .hover\:text-red-700:hover { color: #fca5a5; }
+:root[data-color-mode='dark'] .app-shell .border-red-200,
+:root[data-color-mode='dark'] .app-shell .border-red-300 { border-color: #6b3438; }
+
+:root[data-color-mode='dark'] .app-shell .bg-amber-100,
+:root[data-color-mode='dark'] .app-shell .hover\:bg-amber-100:hover { background-color: #3d2f14; }
+:root[data-color-mode='dark'] .app-shell .hover\:bg-amber-50:hover { background-color: #332817; }
+:root[data-color-mode='dark'] .app-shell .text-amber-600,
+:root[data-color-mode='dark'] .app-shell .text-amber-500 { color: #fbbf24; }
+:root[data-color-mode='dark'] .app-shell .border-amber-100 { border-color: #52401f; }
+:root[data-color-mode='dark'] .app-shell .border-amber-200,
+:root[data-color-mode='dark'] .app-shell .border-amber-300 { border-color: #6b5326; }
+
+:root[data-color-mode='dark'] .app-shell .bg-emerald-100,
+:root[data-color-mode='dark'] .app-shell .hover\:bg-emerald-100:hover { background-color: #17352c; }
+:root[data-color-mode='dark'] .app-shell .hover\:bg-emerald-50:hover { background-color: #132c25; }
+:root[data-color-mode='dark'] .app-shell .text-emerald-600 { color: #34d399; }
+:root[data-color-mode='dark'] .app-shell .hover\:text-emerald-700:hover,
+:root[data-color-mode='dark'] .app-shell .hover\:text-emerald-800:hover { color: #6ee7b7; }
+:root[data-color-mode='dark'] .app-shell .border-emerald-200,
+:root[data-color-mode='dark'] .app-shell .border-emerald-300 { border-color: #235644; }
+
+:root[data-color-mode='dark'] .app-shell .bg-blue-100,
+:root[data-color-mode='dark'] .app-shell .hover\:bg-blue-100:hover { background-color: #1c2e4a; }
+:root[data-color-mode='dark'] .app-shell .hover\:bg-blue-50:hover { background-color: var(--accent-soft); }
+:root[data-color-mode='dark'] .app-shell .text-blue-800,
+:root[data-color-mode='dark'] .app-shell .hover\:text-blue-800:hover { color: #93c5fd; }
+:root[data-color-mode='dark'] .app-shell .hover\:text-blue-600:hover,
+:root[data-color-mode='dark'] .app-shell .hover\:text-blue-700:hover { color: var(--accent); }
+:root[data-color-mode='dark'] .app-shell .border-blue-300 { border-color: var(--accent-border); }
+:root[data-color-mode='dark'] .app-shell .focus\:border-blue-400:focus { border-color: var(--accent); }
+
+:root[data-color-mode='dark'] .app-shell .bg-sky-50 { background-color: #132233; }
+:root[data-color-mode='dark'] .app-shell .bg-sky-100 { background-color: #182c40; }
+:root[data-color-mode='dark'] .app-shell .text-sky-600,
+:root[data-color-mode='dark'] .app-shell .text-sky-700 { color: #7dd3fc; }
+:root[data-color-mode='dark'] .app-shell .border-sky-200 { border-color: #2b4a63; }
+
+:root[data-color-mode='dark'] .app-shell .bg-violet-50,
+:root[data-color-mode='dark'] .app-shell .hover\:bg-violet-50:hover { background-color: #251d3a; }
+:root[data-color-mode='dark'] .app-shell .text-violet-600,
+:root[data-color-mode='dark'] .app-shell .text-violet-700 { color: #c4b5fd; }
+:root[data-color-mode='dark'] .app-shell .border-violet-200 { border-color: #453a66; }
+
+/* 硬编码浅色的语义类深色覆盖 */
+:root[data-color-mode='dark'] .environment-list {
+  background-color: rgb(24 27 32 / 72%);
+}
+
+:root[data-color-mode='dark'] .environment-feedback-error {
+  border-color: #6b3438;
+  background-color: #351b20;
+  color: #fca5a5;
+}
+
+:root[data-color-mode='dark'] .importance-required {
+  border-color: #6b3438;
+  background-color: #351b20;
+  color: #fca5a5;
+}
+
+:root[data-color-mode='dark'] .importance-recommended {
+  border-color: #6b5326;
+  background-color: #332817;
+  color: #fcd34d;
+}
+
+:root[data-color-mode='dark'] .console-metric {
+  background-color: rgb(20 23 27 / 72%);
+}
+
+:root[data-color-mode='dark'] .message-assistant {
+  background-color: rgb(30 34 40 / 92%);
+}
+
+:root[data-color-mode='dark'] .message-tool {
+  background-color: rgb(22 25 30 / 92%);
+}
+
+:root[data-color-mode='dark'] .file-tree button:hover {
+  background-color: #262b32 !important;
+}
+
+:root[data-color-mode='dark'] .icon-button.danger:hover {
+  border-color: #6b3438;
+  background-color: #351b20;
+  color: #fca5a5;
+}
+
+/* .project-source 深色底上的 Prism 亮色 token 重着色（与 .rtl-source 深色配色一致） */
+:root[data-color-mode='dark'] .project-source .token.comment { color: #71717a !important; }
+:root[data-color-mode='dark'] .project-source .token.punctuation { color: #a1a1aa !important; }
+:root[data-color-mode='dark'] .project-source .token.keyword,
+:root[data-color-mode='dark'] .project-source .token.tag,
+:root[data-color-mode='dark'] .project-source .token.property { color: #7dd3fc !important; }
+:root[data-color-mode='dark'] .project-source .token.number,
+:root[data-color-mode='dark'] .project-source .token.boolean { color: #86efac !important; }
+:root[data-color-mode='dark'] .project-source .token.string { color: #fcd34d !important; }
+:root[data-color-mode='dark'] .project-source .token.operator { color: #f0abfc !important; }
+:root[data-color-mode='dark'] .project-source .token.function,
+:root[data-color-mode='dark'] .project-source .token.class-name { color: #c4b5fd !important; }
+:root[data-color-mode='dark'] .project-source code.language-verilog .token.important { color: #c4b5fd !important; }
+:root[data-color-mode='dark'] .project-source code.language-verilog .token.constant { color: #fbbf24 !important; }
+:root[data-color-mode='dark'] .project-source code.language-log .token.error,
+:root[data-color-mode='dark'] .project-source code.language-log .token.important { color: #f87171 !important; }
+:root[data-color-mode='dark'] .project-source code.language-log .token.warning { color: #fbbf24 !important; }
+:root[data-color-mode='dark'] .project-source code.language-log .token.info,
+:root[data-color-mode='dark'] .project-source code.language-log .token.keyword { color: #34d399 !important; }
+:root[data-color-mode='dark'] .project-source code.language-log .token.debug,
+:root[data-color-mode='dark'] .project-source code.language-log .token.number { color: #9ca3af !important; }

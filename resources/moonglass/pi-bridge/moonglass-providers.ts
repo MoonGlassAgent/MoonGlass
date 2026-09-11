@@ -15,6 +15,13 @@ interface MoonGlassProvider {
   baseUrl: string
   apiKey: string
   models: string[]
+  /**
+   * 主进程按模型计算的有效上下文窗口（用户自定义覆盖 > 内置登记表 > 兼容回退值）。
+   * 可选字段：旧版 payload 缺失时回退到本扩展自带的登记表解析。
+   * 注意：pi 的模型注册表在进程启动时固定，主进程侧的覆盖值变更只对新 spawn
+   * 的会话生效；显示层（get_session_stats）由主进程即时改写，不受此限制。
+   */
+  contextWindows?: Record<string, { contextWindow: number; maxTokens: number }>
 }
 
 export default function (pi: {
@@ -47,7 +54,8 @@ export default function (pi: {
       models: p.models.map((m) => {
         const isDeepSeekReasoner = p.id === 'deepseek' && m === 'deepseek-reasoner'
         const isVolcengineAgentPlan = /ark\.cn-beijing\.volces\.com\/api\/plan\//i.test(p.baseUrl)
-        const metadata = resolveModelContext(m) ?? FALLBACK_MODEL_CONTEXT
+        // 主进程注入的有效上下文窗口优先（含用户自定义覆盖）；缺失时回退自带登记表
+        const metadata = p.contextWindows?.[m] ?? resolveModelContext(m) ?? FALLBACK_MODEL_CONTEXT
         return {
           id: m,
           name: m,

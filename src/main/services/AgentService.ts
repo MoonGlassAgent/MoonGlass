@@ -26,6 +26,7 @@ import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound
 import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
 import { PHASE_LABELS } from '@shared/types'
 import { FALLBACK_MODEL_CONTEXT, resolveModelContext } from '@shared/model-context'
+import type { ModelContextMetadata } from '@shared/model-context'
 import { humanizeLlmError, isStalled, LLM_STALL_THRESHOLD_MS, switchModelWithProbe } from '@shared/llm-resilience'
 import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
@@ -458,6 +459,37 @@ export class AgentService implements MoonGlassService {
   }
 
   /**
+   * 模型有效上下文元数据统一解析：用户自定义覆盖 > 内置登记表。
+   * 均无命中时返回 null，由调用方决定是否回退到 FALLBACK_MODEL_CONTEXT
+   * （VERIF compaction 阈值对未知模型保持 pi 默认，不套用回退值）。
+   * spawn 注入 pi 的注册表、compaction 阈值、会话统计显示三处共用，避免口径漂移。
+   */
+  private effectiveModelContext(modelId: string): ModelContextMetadata | null {
+    const override = this.modelStore.getContextWindowOverride(modelId)
+    if (override != null) {
+      return { ...(resolveModelContext(modelId) ?? FALLBACK_MODEL_CONTEXT), contextWindow: override, source: '用户自定义', verified: false }
+    }
+    return resolveModelContext(modelId)
+  }
+
+  /**
+   * 注入 pi 的 providers payload：在 Provider 配置基础上附加每个模型的有效上下文窗口
+   * （用户自定义覆盖 > 登记表 > 兼容回退值）。pi 的模型注册表在进程启动时固定，
+   * 覆盖值随下一次 spawn 生效；桥接对缺失的 contextWindows 字段回退到自带登记表。
+   */
+  private providerPayloads() {
+    return this.readyProviders().map((p) => ({
+      ...p,
+      contextWindows: Object.fromEntries(
+        p.models.map((m) => {
+          const metadata = this.effectiveModelContext(m) ?? FALLBACK_MODEL_CONTEXT
+          return [m, { contextWindow: metadata.contextWindow, maxTokens: metadata.maxTokens }]
+        })
+      )
+    }))
+  }
+
+  /**
    * Provider 配置指纹。pi 进程的 Provider 注册表在启动时经环境变量固化，
    * 配置变更（Key 轮换、模型增删）后必须重启进程才能生效。
    */
@@ -642,10 +674,8 @@ argument-hint: "<模块名>"
       return
     }
     if (existing && !managedByUs) return // 尊重用户自定义 compaction 配置
-    // 用户自定义上限优先（自有模型的窗口登记表里查不到）
-    const contextWindow = modelId
-      ? this.modelStore.getContextWindowOverride(modelId) ?? resolveModelContext(modelId)?.contextWindow
-      : undefined
+    // 用户自定义上限优先（自有模型的窗口登记表里查不到）；均无命中时不套用回退值，保持 pi 默认
+    const contextWindow = modelId ? this.effectiveModelContext(modelId)?.contextWindow : undefined
     if (!contextWindow) {
       console.warn(`[agent-service] VERIF 会话模型 ${modelId ?? '(未知)'} 上下文窗口未知，compaction 阈值保持 pi 默认`)
       return
@@ -675,7 +705,7 @@ argument-hint: "<模块名>"
       ?? this.readyProviders()[0]?.models[0]
     this.applyPhaseCompactionSettings(workspace, phase, intendedModel)
 
-    const providers = this.readyProviders()
+    const providers = this.providerPayloads()
     const sessionFile = resolve(targetSessionFile ?? this.sessionFilePath(projectId))
 
     // 隔离 pi 全局配置，并屏蔽所有 provider API key 环境变量，
@@ -1215,7 +1245,7 @@ argument-hint: "<模块名>"
     mkdirSync(analysisDir, { recursive: true })
     const providerFile = join(analysisDir, `providers-${randomUUID()}.json`)
     const sessionFile = join(analysisDir, `session-${randomUUID()}.jsonl`)
-    writeFileSync(providerFile, JSON.stringify(this.readyProviders()), { encoding: 'utf-8', mode: 0o600 })
+    writeFileSync(providerFile, JSON.stringify(this.providerPayloads()), { encoding: 'utf-8', mode: 0o600 })
     let responseText = ''
     let processError = ''
     const client = new PiRpcClient({
@@ -2296,9 +2326,7 @@ argument-hint: "<模块名>"
         ? this.modelStore.getContextWindowOverride(session.selectedModel.modelId)
         : undefined
       const metadata = session.selectedModel
-        ? override
-          ? { ...(resolveModelContext(session.selectedModel.modelId) ?? FALLBACK_MODEL_CONTEXT), contextWindow: override, source: '用户自定义', verified: false }
-          : resolveModelContext(session.selectedModel.modelId) ?? FALLBACK_MODEL_CONTEXT
+        ? this.effectiveModelContext(session.selectedModel.modelId) ?? FALLBACK_MODEL_CONTEXT
         : null
       stats.contextWindowOverride = override
       if (!metadata) {
