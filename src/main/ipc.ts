@@ -143,6 +143,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   // ==================== EDA ====================
   ipcMain.handle(IPC.Eda.DetectTools, (_e, force?: boolean) => eda.detectTools(force === true))
   ipcMain.handle(IPC.Eda.InstallBundle, (_e, id: string) => eda.startInstallBundle(id))
+  ipcMain.handle(IPC.Eda.InstallMissing, () => eda.startInstallMissing())
   ipcMain.handle(IPC.Eda.GetInstallStatus, (_e, id: string) => eda.getInstallStatus(id))
   ipcMain.handle(IPC.Eda.OpenInstallPage, async (_e, url: string) => {
     if (!/^https:\/\//i.test(url)) return false

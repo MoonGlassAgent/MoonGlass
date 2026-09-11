@@ -40,6 +40,7 @@ const api: MoonGlassApi = {
   eda: {
     detectTools: (force?: boolean) => ipcRenderer.invoke(IPC.Eda.DetectTools, force),
     installBundle: (id: string) => ipcRenderer.invoke(IPC.Eda.InstallBundle, id),
+    installMissing: () => ipcRenderer.invoke(IPC.Eda.InstallMissing),
     getInstallStatus: (id: string) => ipcRenderer.invoke(IPC.Eda.GetInstallStatus, id),
     openInstallPage: (url: string) => ipcRenderer.invoke(IPC.Eda.OpenInstallPage, url),
     openWaveform: (projectId: string, relPath: string) =>

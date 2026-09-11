@@ -224,6 +224,16 @@ export interface ToolInstallResult {
   path?: string
 }
 
+/** 一键安装缺失工具（install-missing 任务）的结果汇总 */
+export interface InstallMissingSummary {
+  /** 已成功安装的 bundle 展示名 */
+  installed: string[]
+  /** 安装失败的 bundle（展示名 + 失败原因） */
+  failed: Array<{ id: string; message: string }>
+  /** 不支持自动安装、需用户手动处理的工具 */
+  manualGuidance: Array<{ tool: string; installUrl?: string }>
+}
+
 export interface ToolInstallJob {
   id: string
   status: 'idle' | 'running' | 'completed' | 'failed'
@@ -231,6 +241,8 @@ export interface ToolInstallJob {
   path?: string
   startedAt?: string
   finishedAt?: string
+  /** 仅 install-missing 编排任务在完成时携带 */
+  summary?: InstallMissingSummary
 }
 
 export interface WaveformOpenResult {

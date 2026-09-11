@@ -26,7 +26,7 @@ const TOOL_PROBES: Probe[] = [
   { tool: 'Yosys', candidates: ['yosys.exe', 'yosys'], versionArgs: ['-V'], category: 'eda', importance: 'required', description: 'RTL 综合、结构分析与 Formal 模型生成', builtin: true },
   { tool: 'Verilator', candidates: ['verilator_bin.exe', 'verilator'], versionArgs: ['--version'], category: 'eda', importance: 'recommended', description: 'Lint 与高速仿真', installId: OSS_CAD },
   { tool: 'Icarus Verilog', candidates: ['iverilog'], versionArgs: ['-V'], category: 'verification', importance: 'required', description: 'Windows 默认 Cocotb 仿真器', installId: OSS_CAD },
-  { tool: 'Verible', candidates: ['verible-verilog-lint'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'Verilog/SystemVerilog 语法与风格检查', installUrl: 'https://github.com/chipsalliance/verible/releases' },
+  { tool: 'Verible', candidates: ['verible-verilog-lint'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'Verilog/SystemVerilog 语法与风格检查', installId: 'verible', installUrl: 'https://github.com/chipsalliance/verible/releases' },
   { tool: 'Slang', candidates: ['slang.exe', 'slang'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: 'SystemVerilog 完整解析、展开与验证智能 AST', builtin: true },
   { tool: 'SymbiYosys', candidates: ['sby.cmd', 'sby.exe', 'sby'], versionArgs: ['--version'], category: 'verification', importance: 'recommended', description: '开源 Formal BMC、证明与可达性验证', builtin: true },
   { tool: 'Yosys-SMTBMC', candidates: ['yosys-smtbmc.cmd', 'yosys-smtbmc.exe', 'yosys-smtbmc'], versionArgs: ['--help'], category: 'verification', importance: 'recommended', description: 'SBY 与 SMT Solver 之间的模型检查执行层', builtin: true },

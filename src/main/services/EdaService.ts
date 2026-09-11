@@ -2,18 +2,19 @@
  * EDA 工具服务
  *
  * 对 @moonglass/eda-bridge 的服务化封装。
- * 骨架阶段仅暴露工具探测能力，Lint/仿真/综合待 Phase 4 接入。
+ * 提供工具探测、缺失工具一键安装（OSS CAD Suite / Verible / Cocotb）、
+ * 系统 PATH 刷新与 GTKWave 波形打开能力。
  */
 
 import { spawn } from 'node:child_process'
-import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { closeSync, createWriteStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, extname, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
-import { detectToolchain, locateTool } from '@moonglass/eda-bridge'
-import type { ToolDetection, ToolInstallJob, ToolInstallResult, WaveformOpenResult } from '@shared/types'
+import { computeMissingInstallPlan, detectToolchain, locateTool, mergePathEntries } from '@moonglass/eda-bridge'
+import type { InstallMissingSummary, ToolDetection, ToolInstallJob, ToolInstallResult, WaveformOpenResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
 import type { ProjectService } from './ProjectService'
 
@@ -33,6 +34,8 @@ export class EdaService implements MoonGlassService {
   private readonly installJobs = new Map<string, ToolInstallJob>()
   private static readonly REQUEST_TIMEOUT_MS = 30_000
   private static readonly DOWNLOAD_TIMEOUT_MS = 30 * 60_000
+  /** 一键安装缺失工具的编排任务固定 id（复用 installJobs 轮询） */
+  static readonly INSTALL_MISSING_JOB_ID = 'install-missing'
 
   constructor(userDataDir: string, private readonly projects: ProjectService) {
     this.toolchainRoot = join(userDataDir, 'moonglass', 'toolchains')
@@ -53,6 +56,9 @@ export class EdaService implements MoonGlassService {
 
   async detectTools(force = false): Promise<ToolDetection[]> {
     if (!force && this.detectionCache) return this.detectionCache
+    // 强制重检前先从注册表合并最新系统 PATH：外部安装器修改的 PATH
+    // 对运行中的 Electron 进程不可见，不刷新就只能重启生效。
+    if (force) await this.refreshSystemPath()
     this.activateToolchains()
     const tools = (await detectToolchain()).map((tool) => ({ ...tool, source: this.toolSource(tool.path) }))
     this.detectionCache = tools
@@ -92,13 +98,39 @@ export class EdaService implements MoonGlassService {
     }
   }
 
+  /**
+   * 刷新系统 PATH（仅 Windows）：读取注册表 Machine + User PATH 与当前进程
+   * PATH 合并去重。外部安装器写入的注册表 PATH 对运行中进程不可见，
+   * 合并后重新检测即可生效，无需重启。自管 toolchain 目录由随后的
+   * activateToolchains() 重新前置。读取失败仅告警，不影响检测。
+   */
+  private async refreshSystemPath(): Promise<void> {
+    if (process.platform !== 'win32') return
+    try {
+      const output = await this.runProcess('powershell.exe', [
+        '-NoProfile', '-NonInteractive', '-Command',
+        "$m = [Environment]::GetEnvironmentVariable('Path','Machine'); $u = [Environment]::GetEnvironmentVariable('Path','User'); [Console]::Out.Write($m + [char]0 + $u)"
+      ], true)
+      const [machine = '', user = ''] = output.split('')
+      process.env.PATH = mergePathEntries(process.env.PATH ?? '', [machine, user].filter(Boolean).join(delimiter))
+    } catch (error) {
+      console.warn('[eda-service] 注册表 PATH 刷新失败，沿用当前进程 PATH', error)
+    }
+  }
+
+  private static installBundleStartMessage(id: string): string {
+    if (id === 'python-cocotb') return '正在通过 pip 安装 Cocotb…'
+    if (id === 'verible') return '正在查询 Verible 下载地址…'
+    return '正在查询 OSS CAD Suite 下载地址…'
+  }
+
   startInstallBundle(id: string): ToolInstallJob {
     const current = this.installJobs.get(id)
     if (current?.status === 'running') return current
     const job: ToolInstallJob = {
       id,
       status: 'running',
-      message: id === 'python-cocotb' ? '正在通过 pip 安装 Cocotb…' : '正在查询 OSS CAD Suite 下载地址…',
+      message: EdaService.installBundleStartMessage(id),
       startedAt: new Date().toISOString()
     }
     this.installJobs.set(id, job)
@@ -127,13 +159,87 @@ export class EdaService implements MoonGlassService {
     return this.installJobs.get(id) ?? { id, status: 'idle', message: '尚未开始安装' }
   }
 
+  /** bundle id → 展示名（用于一键安装的进度与结果文案） */
+  private static bundleLabel(id: string): string {
+    if (id === 'python-cocotb') return 'Cocotb'
+    if (id === 'verible') return 'Verible'
+    return 'OSS CAD Suite'
+  }
+
+  /**
+   * 一键安装缺失工具：强制重检后按纯函数计算安装计划，
+   * 串行安装缺失 bundle（每个完成后刷新检测），最终返回汇总。
+   * runtime/build 中无法自动安装的项与 physical 类别不自动安装，
+   * 前者进 manualGuidance 由 UI 展示手动指引，后者不支持。
+   */
+  startInstallMissing(): ToolInstallJob {
+    const id = EdaService.INSTALL_MISSING_JOB_ID
+    const current = this.installJobs.get(id)
+    if (current?.status === 'running') return current
+    const job: ToolInstallJob = {
+      id,
+      status: 'running',
+      message: '正在检测缺失的工具…',
+      startedAt: new Date().toISOString()
+    }
+    this.installJobs.set(id, job)
+    void this.installMissing().then((summary) => {
+      this.installJobs.set(id, {
+        id,
+        status: 'completed',
+        message: summary.failed.length > 0
+          ? `一键安装完成：成功 ${summary.installed.length} 项，失败 ${summary.failed.length} 项，${summary.manualGuidance.length} 项需手动安装`
+          : `一键安装完成：成功 ${summary.installed.length} 项，${summary.manualGuidance.length} 项需手动安装`,
+        summary,
+        startedAt: job.startedAt,
+        finishedAt: new Date().toISOString()
+      })
+    }).catch((error) => {
+      this.installJobs.set(id, {
+        id,
+        status: 'failed',
+        message: error instanceof Error ? error.message : String(error),
+        startedAt: job.startedAt,
+        finishedAt: new Date().toISOString()
+      })
+    })
+    return job
+  }
+
+  private async installMissing(): Promise<InstallMissingSummary> {
+    const id = EdaService.INSTALL_MISSING_JOB_ID
+    const tools = await this.detectTools(true)
+    const plan = computeMissingInstallPlan(tools)
+    const installed: string[] = []
+    const failed: Array<{ id: string; message: string }> = []
+    for (const bundle of plan.bundles) {
+      const label = EdaService.bundleLabel(bundle)
+      this.updateInstallMessage(id, `正在安装 ${label}…`)
+      const result = await this.installBundle(bundle, (message) => this.updateInstallMessage(id, message))
+      if (result.ok) {
+        installed.push(label)
+        await this.detectTools(true)
+      } else {
+        failed.push({ id: label, message: result.message })
+      }
+    }
+    return { installed, failed, manualGuidance: plan.manualGuidance }
+  }
+
   private updateInstallMessage(id: string, message: string): void {
     const current = this.installJobs.get(id)
     if (current?.status === 'running') this.installJobs.set(id, { ...current, message })
   }
 
-  private async installBundle(id: string): Promise<ToolInstallResult> {
-    if (id === 'python-cocotb') return this.installCocotb()
+  /** 进度上报：既更新 bundle 自身任务消息，也透传给一键安装编排任务 */
+  private reportInstallProgress(id: string, message: string, onProgress?: (message: string) => void): void {
+    this.updateInstallMessage(id, message)
+    onProgress?.(message)
+  }
+
+  private async installBundle(id: string, onProgress?: (message: string) => void): Promise<ToolInstallResult> {
+    if (id === 'python-cocotb') return this.installCocotb(onProgress)
+    if (id === 'verible') return this.installVerible(onProgress)
     if (id !== 'oss-cad-suite') return { ok: false, message: `未知工具包: ${id}` }
     if (process.platform !== 'win32' || process.arch !== 'x64') {
       return { ok: false, message: '当前一键安装暂时仅支持 Windows x64' }
@@ -152,14 +258,14 @@ export class EdaService implements MoonGlassService {
       if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
 
       await rm(suiteDir, { recursive: true, force: true })
-      this.updateInstallMessage(id, '正在下载 OSS CAD Suite，请保持网络连接…')
+      this.reportInstallProgress(id, '正在下载 OSS CAD Suite，请保持网络连接…', onProgress)
       const download = await fetch(asset.browser_download_url, {
         headers: { 'User-Agent': 'MoonGlass' },
         signal: AbortSignal.timeout(EdaService.DOWNLOAD_TIMEOUT_MS)
       })
       if (!download.ok || !download.body) throw new Error(`工具包下载失败: HTTP ${download.status}`)
       await pipeline(Readable.fromWeb(download.body as never), createWriteStream(archivePath))
-      this.updateInstallMessage(id, '下载完成，正在后台解压工具包…')
+      this.reportInstallProgress(id, '下载完成，正在后台解压工具包…', onProgress)
       await this.runProcess(TAR_EXE, ['-xzf', archivePath, '-C', this.toolchainRoot])
       await rm(archivePath, { force: true })
       if (!existsSync(join(suiteDir, 'bin'))) throw new Error('工具包解压完成，但未找到 bin 目录')
@@ -172,11 +278,71 @@ export class EdaService implements MoonGlassService {
     }
   }
 
-  private async installCocotb(): Promise<ToolInstallResult> {
+  /**
+   * 安装 Verible：GitHub Release 的 windows-amd64 zip，用系统 bsdtar 解压
+   * （libarchive 直接支持 zip）。zip 内为 verible-v*-windows-amd64/bin 结构，
+   * 解压到 toolchains/verible/ 下，实际 bin 所在目录由 veribleToolchainDir 发现。
+   */
+  private async installVerible(onProgress?: (message: string) => void): Promise<ToolInstallResult> {
+    if (process.platform !== 'win32' || process.arch !== 'x64') {
+      return { ok: false, message: '当前一键安装暂时仅支持 Windows x64' }
+    }
+    const veribleDir = join(this.toolchainRoot, 'verible')
+    const archivePath = join(this.toolchainRoot, 'verible-windows-amd64.zip')
+    try {
+      const releaseResponse = await fetch('https://api.github.com/repos/chipsalliance/verible/releases/latest', {
+        headers: { 'User-Agent': 'MoonGlass' },
+        signal: AbortSignal.timeout(EdaService.REQUEST_TIMEOUT_MS)
+      })
+      if (!releaseResponse.ok) throw new Error(`GitHub Release 查询失败: HTTP ${releaseResponse.status}`)
+      const release = await releaseResponse.json() as { assets?: Array<{ name: string; browser_download_url: string }> }
+      const asset = release.assets?.find((item) => /^verible-v.*-windows-amd64\.zip$/i.test(item.name))
+      if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
+
+      await rm(veribleDir, { recursive: true, force: true })
+      await mkdir(veribleDir, { recursive: true })
+      this.reportInstallProgress('verible', '正在下载 Verible，请保持网络连接…', onProgress)
+      const download = await fetch(asset.browser_download_url, {
+        headers: { 'User-Agent': 'MoonGlass' },
+        signal: AbortSignal.timeout(EdaService.DOWNLOAD_TIMEOUT_MS)
+      })
+      if (!download.ok || !download.body) throw new Error(`工具包下载失败: HTTP ${download.status}`)
+      await pipeline(Readable.fromWeb(download.body as never), createWriteStream(archivePath))
+      this.reportInstallProgress('verible', '下载完成，正在后台解压工具包…', onProgress)
+      await this.runProcess(TAR_EXE, ['-xf', archivePath, '-C', veribleDir])
+      await rm(archivePath, { force: true })
+      const root = this.veribleToolchainDir()
+      if (!root) throw new Error('工具包解压完成，但未找到 bin 目录')
+      this.activateToolchains()
+      return { ok: true, message: 'Verible 安装完成', path: root }
+    } catch (error) {
+      await rm(archivePath, { force: true }).catch(() => {})
+      const message = error instanceof Error ? error.message : String(error)
+      return { ok: false, message: /abort|timeout/i.test(message) ? '工具包下载超时，请检查网络或代理后重试' : message }
+    }
+  }
+
+  /** Verible 解压后 bin 所在的目录（zip 内带 verible-v* 顶层目录，按实际结构适配） */
+  private veribleToolchainDir(): string | undefined {
+    const base = join(this.toolchainRoot, 'verible')
+    if (existsSync(join(base, 'bin'))) return base
+    if (!existsSync(base)) return undefined
+    try {
+      for (const entry of readdirSync(base)) {
+        const candidate = join(base, entry)
+        if (existsSync(join(candidate, 'bin'))) return candidate
+      }
+    } catch {
+      // 目录不可读时视为未安装
+    }
+    return undefined
+  }
+
+  private async installCocotb(onProgress?: (message: string) => void): Promise<ToolInstallResult> {
     const python = await locateTool(process.platform === 'win32' ? ['python.exe', 'python', 'python3.exe'] : ['python3', 'python'])
     if (!python) return { ok: false, message: '未找到可用的 Python，请先安装 Python 3' }
     try {
-      this.updateInstallMessage('python-cocotb', '正在通过 pip 安装或升级 Cocotb 组件…')
+      this.reportInstallProgress('python-cocotb', '正在通过 pip 安装或升级 Cocotb 组件…', onProgress)
       await this.runProcess(python, ['-m', 'pip', 'install', '--user', '--upgrade', 'cocotb', 'cocotb-bus', 'cocotb-coverage'])
       const check = await this.runProcess(python, ['-c', 'import cocotb; print(cocotb.__version__)'], true)
       return { ok: true, message: `Cocotb 安装完成，版本 ${check.trim()}`, path: python }
@@ -294,11 +460,17 @@ export class EdaService implements MoonGlassService {
     const normalized = resolve(path).toLowerCase()
     if (normalized.startsWith(resolve(this.bundledAigvRoot).toLowerCase() + sep)) return 'bundled'
     if (normalized.startsWith(resolve(join(this.toolchainRoot, 'oss-cad-suite')).toLowerCase() + sep)) return 'managed'
+    if (normalized.startsWith(resolve(join(this.toolchainRoot, 'verible')).toLowerCase() + sep)) return 'managed'
     return 'system'
   }
 
   private activateToolchains(): void {
-    const roots = [this.bundledAigvRoot, join(this.toolchainRoot, 'oss-cad-suite')].filter((root) => existsSync(join(root, 'bin')))
+    const candidates: Array<string | undefined> = [
+      this.bundledAigvRoot,
+      join(this.toolchainRoot, 'oss-cad-suite'),
+      this.veribleToolchainDir()
+    ]
+    const roots = candidates.filter((root): root is string => typeof root === 'string' && existsSync(join(root, 'bin')))
     if (roots.length === 0) return
     const priorityDirs = roots.flatMap((root) => [join(root, 'bin'), join(root, 'lib')]).filter(existsSync)
     const selected = new Set(priorityDirs.map((entry) => resolve(entry).toLowerCase()))
@@ -316,7 +488,7 @@ export class EdaService implements MoonGlassService {
       const child = spawn(command, args, { windowsHide: true, env })
       let stdout = ''
       let stderr = ''
-      child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-8000) })
+      child.stdout.on('data', (chunk) => { stdout = (stdout + String(chunk)).slice(-65536) })
       child.stderr.on('data', (chunk) => { stderr = (stderr + String(chunk)).slice(-8000) })
       child.on('error', reject)
       child.on('close', (code) => code === 0

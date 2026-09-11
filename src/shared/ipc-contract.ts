@@ -62,6 +62,8 @@ export const IPC = {
   Eda: {
     DetectTools: 'eda:detect-tools',
     InstallBundle: 'eda:install-bundle',
+    /** 一键安装全部缺失的可自动安装工具（编排任务，固定 id 'install-missing'） */
+    InstallMissing: 'eda:install-missing',
     GetInstallStatus: 'eda:get-install-status',
     OpenInstallPage: 'eda:open-install-page',
     OpenWaveform: 'eda:open-waveform'
@@ -172,6 +174,8 @@ export interface MoonGlassApi {
     /** 默认返回持久缓存；force=true 时重新扫描开发环境和 EDA 工具。 */
     detectTools(force?: boolean): Promise<ToolDetection[]>
     installBundle(id: string): Promise<ToolInstallJob>
+    /** 一键安装缺失工具：立即返回编排任务（固定 id 'install-missing'），用 getInstallStatus 轮询 */
+    installMissing(): Promise<ToolInstallJob>
     getInstallStatus(id: string): Promise<ToolInstallJob>
     openInstallPage(url: string): Promise<boolean>
     /** 使用 GTKWave 打开项目内的 VCD/FST 波形文件 */
