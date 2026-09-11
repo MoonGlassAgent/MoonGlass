@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
   <title>MoonGlass ASIC Design Agent｜傻瓜式使用说明书</title>
-  <meta name="description" content="MoonGlass v0.9.2 中文新手指南：从配置模型、新建或导入项目，到规格、架构、RTL、AIGV 验证、质量检查和综合实现。">
+  <meta name="description" content="MoonGlass v0.9.5 中文新手指南：从配置模型、新建或导入项目，到规格、架构、RTL、AIGV 验证、质量检查和综合实现。">
   <link rel="canonical" href="https://moonglassagent.github.io/MoonGlass/">
   <meta property="og:type" content="website">
   <meta property="og:locale" content="zh_CN">
@@ -22,7 +22,7 @@
   </style>
 </head>
 <body>
-<header><div class="inner"><h1>MoonGlass 傻瓜式使用说明书</h1><div class="subtitle">从第一次启动，到完成 ASIC IP 六阶段开发</div><span class="version">适用版本：MoonGlass v0.9.2 · Windows x64</span></div></header>
+<header><div class="inner"><h1>MoonGlass 傻瓜式使用说明书</h1><div class="subtitle">从第一次启动，到完成 ASIC IP 六阶段开发</div><span class="version">适用版本：MoonGlass v0.9.5 · Windows x64</span></div></header>
 <nav>
 <a href="#fast">5 分钟上手</a>
 <a href="#model">配置模型</a>
@@ -56,5 +56,5 @@ SYNTH 综合实现 ← QA 质量检查 ← VERIF 验证完备</div><table><thead
   <section id="faq"><h2>十、常见问题</h2><details open><summary>429 engine overloaded 是什么？</summary><p>模型服务商当前过载，不是项目损坏。稍后重试，或切换模型/Provider。</p></details><details><summary>点击会话或文件后很久才打开</summary><p>可能是 Agent 流式任务、超大文件或后台解析占用。先等待当前工具调用结束；必要时中止任务，再切换。</p></details><details><summary>GTKWave 提示已打开，但没有窗口</summary><p>先在 PowerShell 测试 <code>gtkwave 完整波形路径.fst</code>，再检查 FST 支持、PATH、文件和路径权限。</p></details><details><summary>工具包装了但仍显示未找到</summary><p>刷新或重新检测工具链，确认可执行文件在 PATH 中；部分工具安装后需重启 MoonGlass。</p></details><details><summary>导入项目阶段判断不准确</summary><p>查看 <code>import_assessment.md</code> 的证据，人工调整阶段，并补充报告、filelist 或目录映射。</p></details><details><summary>换电脑后模型配置不见了</summary><p>模型配置保存在本机，绿色版不包含 API Key。新电脑需要重新配置模型服务。</p></details></section>
   <section><h2>十一、交付前最小检查表</h2><ul><li>需求-规格矩阵能追到设计项、测试项和质量证据。</li><li>RTL 编译、Lint、仿真和回归结果可重复。</li><li>关键场景、异常场景、边界条件和覆盖率已检查。</li><li>黄色变更提醒已响应，遗留问题有豁免和责任人。</li><li>综合约束正确，面积/时序报告与目标一致。</li><li>第三方 IP、模型和工具许可证满足实际用途。</li></ul><figure><img src="images/about-license.png" alt="MoonGlass 授权与说明"><figcaption>软件内“关于”页面可查看授权、隐私和联系方式</figcaption></figure></section>
 </main>
-<footer><b>MoonGlass ASIC Design Agent</b><br>完整绿色版：<a href="https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.2">GitHub Release v0.9.2</a><br>商务授权、定制开发与产品建议：<a href="mailto:moonglassagent@126.com">moonglassagent@126.com</a><br>MoonGlass 为 Source Available 软件，商业使用须取得书面授权。</footer>
+<footer><b>MoonGlass ASIC Design Agent</b><br>完整绿色版：<a href="https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.5">GitHub Release v0.9.5</a><br>商务授权、定制开发与产品建议：<a href="mailto:moonglassagent@126.com">moonglassagent@126.com</a><br>MoonGlass 为 Source Available 软件，商业使用须取得书面授权。</footer>
 </body></html>

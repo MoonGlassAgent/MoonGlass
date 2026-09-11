@@ -224,6 +224,16 @@ export interface ToolInstallResult {
   path?: string
 }
 
+/** 一键安装缺失工具（install-missing 任务）的结果汇总 */
+export interface InstallMissingSummary {
+  /** 已成功安装的 bundle 展示名 */
+  installed: string[]
+  /** 安装失败的 bundle（展示名 + 失败原因） */
+  failed: Array<{ id: string; message: string }>
+  /** 不支持自动安装、需用户手动处理的工具 */
+  manualGuidance: Array<{ tool: string; installUrl?: string }>
+}
+
 export interface ToolInstallJob {
   id: string
   status: 'idle' | 'running' | 'completed' | 'failed'
@@ -231,6 +241,8 @@ export interface ToolInstallJob {
   path?: string
   startedAt?: string
   finishedAt?: string
+  /** 仅 install-missing 编排任务在完成时携带 */
+  summary?: InstallMissingSummary
 }
 
 export interface WaveformOpenResult {
@@ -565,7 +577,7 @@ export interface SpecMapping {
   /** 无映射条款（execution-summary 精简形状） */
   unmappedClause?: Array<{ specId: string; clause: string }>
   /** 全量条款映射（posture/state 完整形状，状态机 UNMAPPED/MAPPED_UNTESTED/PASSED/FAILED/WAIVED） */
-  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[] }>
+  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[]; channel?: string }>
 }
 
 /** Pi 当前会话累计用量；不同 Provider 可能省略费用或上下文估算。 */

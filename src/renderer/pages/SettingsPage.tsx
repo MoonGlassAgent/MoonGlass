@@ -10,6 +10,7 @@
 import { useEffect, useState } from 'react'
 import { CheckCircle2, Download, ExternalLink, RefreshCw, XCircle } from 'lucide-react'
 import type {
+  InstallMissingSummary,
   LlmProviderConfig,
   LlmProviderTestResult,
   ToolDetection
@@ -459,6 +460,7 @@ function EdaDetectSection(): React.JSX.Element {
   const [detectError, setDetectError] = useState('')
   const [installing, setInstalling] = useState<string | null>(null)
   const [installMessage, setInstallMessage] = useState('')
+  const [installMissingSummary, setInstallMissingSummary] = useState<InstallMissingSummary | null>(null)
 
   const detect = async (force = false): Promise<void> => {
     setDetecting(true)
@@ -489,6 +491,7 @@ function EdaDetectSection(): React.JSX.Element {
         if (closed) return
         setInstallMessage(job.message)
         if (job.status === 'completed' || job.status === 'failed') {
+          if (job.id === 'install-missing') setInstallMissingSummary(job.summary ?? null)
           setInstalling(null)
           await detect(true)
         }
@@ -513,12 +516,35 @@ function EdaDetectSection(): React.JSX.Element {
   const installBundle = async (id: string): Promise<void> => {
     const prompt = id === 'python-cocotb'
       ? t('settings.eda.confirmCocotb')
-      : t('settings.eda.confirmOssCad')
+      : id === 'verible'
+        ? t('settings.eda.confirmVerible')
+        : t('settings.eda.confirmOssCad')
     if (!window.confirm(prompt)) return
     setInstalling(id)
-    setInstallMessage(id === 'python-cocotb' ? t('settings.eda.installingCocotb') : t('settings.eda.installingBundle'))
+    setInstallMissingSummary(null)
+    setInstallMessage(
+      id === 'python-cocotb'
+        ? t('settings.eda.installingCocotb')
+        : id === 'verible'
+          ? t('settings.eda.installingVerible')
+          : t('settings.eda.installingBundle')
+    )
     try {
       const job = await window.moonglass.eda.installBundle(id)
+      setInstallMessage(job.message)
+    } catch (error) {
+      setInstallMessage(t('settings.eda.installStartFailed', { message: error instanceof Error ? error.message : String(error) }))
+      setInstalling(null)
+    }
+  }
+
+  const installMissing = async (): Promise<void> => {
+    if (!window.confirm(t('settings.eda.confirmInstallMissing'))) return
+    setInstalling('install-missing')
+    setInstallMissingSummary(null)
+    setInstallMessage(t('settings.eda.installingMissing'))
+    try {
+      const job = await window.moonglass.eda.installMissing()
       setInstallMessage(job.message)
     } catch (error) {
       setInstallMessage(t('settings.eda.installStartFailed', { message: error instanceof Error ? error.message : String(error) }))
@@ -549,6 +575,9 @@ function EdaDetectSection(): React.JSX.Element {
     description: tool.description ?? t('settings.eda.legacyDescription')
   }))
 
+  // 可一键安装/指引的缺失项（physical 类别不支持一键安装，不计入）
+  const missingCount = normalizedTools.filter((tool) => !tool.found && !tool.builtin && tool.category !== 'physical').length
+
   return (
     <section className="surface-panel mb-8 rounded-lg border border-zinc-200 bg-white p-4">
       <div className="mb-3 flex items-center justify-between">
@@ -558,18 +587,64 @@ function EdaDetectSection(): React.JSX.Element {
             {t('settings.eda.description')}
           </p>
         </div>
-        <button
-          onClick={() => void detect(true)}
-          disabled={detecting}
-          className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
-        >
-          <RefreshCw size={14} className={detecting ? 'animate-spin' : ''} />
-          {detecting ? t('settings.eda.detecting') : t('settings.eda.redetect')}
-        </button>
+        <div className="flex shrink-0 items-center gap-2">
+          <button
+            onClick={() => void installMissing()}
+            disabled={detecting || installing !== null || missingCount === 0}
+            className="flex items-center gap-2 rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500 disabled:opacity-50"
+          >
+            <Download size={14} />
+            {installing === 'install-missing'
+              ? t('settings.eda.installing')
+              : missingCount === 0
+                ? t('settings.eda.envReady')
+                : t('settings.eda.installMissing')}
+          </button>
+          <button
+            onClick={() => void detect(true)}
+            disabled={detecting}
+            className="flex items-center gap-2 rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={detecting ? 'animate-spin' : ''} />
+            {detecting ? t('settings.eda.detecting') : t('settings.eda.redetect')}
+          </button>
+        </div>
       </div>
 
       {installMessage && (
         <div className="mb-3 rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs text-blue-700">{installMessage}</div>
+      )}
+
+      {installMissingSummary && (
+        <div className="mb-3 rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs text-zinc-600">
+          <strong className="text-zinc-700">{t('settings.eda.installMissingResult')}</strong>
+          {installMissingSummary.installed.length > 0 && (
+            <p className="mt-1 text-emerald-700">
+              {t('settings.eda.installMissingInstalled', { items: installMissingSummary.installed.join('、') })}
+            </p>
+          )}
+          {installMissingSummary.failed.map((item) => (
+            <p key={item.id} className="mt-1 text-red-600">
+              {t('settings.eda.installMissingFailed', { items: `${item.id}（${item.message}）` })}
+            </p>
+          ))}
+          {installMissingSummary.manualGuidance.length > 0 && (
+            <div className="mt-1">
+              <p>{t('settings.eda.installMissingManual')}</p>
+              {installMissingSummary.manualGuidance.map((item) => (
+                <button
+                  key={item.tool}
+                  onClick={() => item.installUrl && void window.moonglass.eda.openInstallPage(item.installUrl)}
+                  disabled={!item.installUrl}
+                  className="mt-0.5 flex items-center gap-1 text-blue-600 hover:underline disabled:text-zinc-500 disabled:no-underline"
+                >
+                  <ExternalLink size={12} />
+                  {item.tool}
+                </button>
+              ))}
+            </div>
+          )}
+        </div>
       )}
 
       {detecting && tools === null && (
@@ -593,6 +668,7 @@ function EdaDetectSection(): React.JSX.Element {
             <div className="environment-group-title">
               <strong>{t(category.labelKey)}</strong>
               <span>{t(category.detailKey)}</span>
+              {category.id === 'physical' && <span className="text-amber-600">{t('settings.eda.physicalNoInstall')}</span>}
               <span className="ml-auto">{t('settings.eda.ready', { ready: readyCount, total: entries.length })}</span>
             </div>
             <div className="environment-list">
@@ -625,7 +701,7 @@ function EdaDetectSection(): React.JSX.Element {
                   {!tool.found && !tool.builtin && tool.installId && (
                     <button onClick={() => void installBundle(tool.installId!)} disabled={installing !== null} className="environment-install-button">
                       <Download size={13} />
-                      {installing === tool.installId ? t('settings.eda.installing') : tool.installId === 'python-cocotb' ? t('settings.eda.installCocotb') : t('settings.eda.installBundle')}
+                      {installing === tool.installId ? t('settings.eda.installing') : tool.installId === 'python-cocotb' ? t('settings.eda.installCocotb') : tool.installId === 'verible' ? t('settings.eda.installVerible') : t('settings.eda.installBundle')}
                     </button>
                   )}
                   {!tool.found && !tool.builtin && !tool.installId && tool.installUrl && (
