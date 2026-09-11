@@ -28,6 +28,8 @@ DOCS = {
 IGNORES = ("templates/**", "**/.gitkeep", "**/__pycache__/**", "**/*.pyc")
 ALLOWED = {".md", ".png", ".jpg", ".jpeg", ".svg", ".pdf", ".csv", ".json", ".yaml", ".yml"}
 STATES = {"草稿", "冻结", "验证", "已验证", "已验收", "开放", "关闭", "draft", "frozen", "verified", "accepted", "open", "closed"}
+# 粗筛“形如 ID”的 token，用于发现追溯矩阵单元格中缺失或写错命名空间前缀的写法
+COARSE_ID = re.compile(r"[A-Za-z][A-Za-z0-9]*-[A-Za-z0-9-]*\d+")
 
 @dataclass
 class Result:
@@ -141,27 +143,47 @@ class Validator:
             for path in design.rglob("*.md"):
                 if not self.ignored(path): specs |= definitions(path.read_text("utf-8", errors="replace"), "SPEC")
         if not matrix.exists(): self.add("error", "traceability", "需求-规格追溯矩阵", "文件不存在"); return
+        rel = matrix.relative_to(self.root).as_posix()
         selected = []
-        for heads, rows in tables(matrix.read_text("utf-8", errors="replace")):
+        for k, (heads, rows) in enumerate(tables(matrix.read_text("utf-8", errors="replace")), 1):
             norm = [re.sub(r"\s+", "", h).lower() for h in heads]
             rc = next((i for i, h in enumerate(norm) if h.startswith(("需求id", "关联需求id", "requirementid", "reqid"))), None)
             sc = next((i for i, h in enumerate(norm) if h.startswith(("规格id", "specificationid", "specid"))), None)
-            if rc is not None and sc is not None: selected.append((heads, rows, rc, sc))
+            if rc is not None and sc is not None: selected.append((k, heads, rows, rc, sc))
         if not selected: self.add("error", "traceability", "矩阵格式", "未找到同时包含“需求 ID”和“规格 ID”的表格"); return
-        mapped_req, mapped_spec = set(), set()
-        for heads, rows, rc, sc in selected:
+        # mapped_*：ID -> [(表序号, 数据行)]，供缺失/未知诊断携带命中位置
+        mapped_req, mapped_spec = {}, {}
+        for k, heads, rows, rc, sc in selected:
             state_col = next((i for i, h in enumerate(heads) if re.sub(r"\s+", "", h).lower() in {"状态", "state", "status"}), None)
             for n, row in enumerate(rows, 1):
-                mapped_req |= ids(row[rc], "REQ"); mapped_spec |= ids(row[sc], "SPEC")
+                for column, namespace, name, mapped in ((rc, "REQ", "需求", mapped_req), (sc, "SPEC", "规格", mapped_spec)):
+                    cell = row[column]
+                    recognized = ids(cell, namespace)
+                    for found in recognized:
+                        if (k, n) not in mapped.setdefault(found, []): mapped[found].append((k, n))
+                    # 前缀错/无前缀的 ID 笔误与编号不存在一样显式报错，避免被静默丢弃（MG-DOC-001/002）
+                    normalized = {value.upper() for value in recognized}
+                    for token in sorted({t for t in COARSE_ID.findall(cell) if t.upper() not in normalized}):
+                        self.add("error", "traceability", "矩阵 ID 格式",
+                                 f"{rel} 表{k} 数据行{n} 列「{heads[column]}」：疑似 ID 格式错误：{token}（未识别为{name} ID）；请补全或修正命名空间前缀，如 {namespace}-{token}")
                 if state_col is not None and row[state_col].strip().lower() not in STATES:
                     self.add("error", "traceability", f"矩阵状态（数据行 {n}）", "不受支持的状态：" + row[state_col])
         self.compare("需求", reqs, mapped_req); self.compare("规格", specs, mapped_spec)
 
     def compare(self, name, defined, mapped):
-        if not defined: self.add("warning", "traceability", name + " ID 定义", "未从标题或 ID 定义列识别到 ID"); return
-        missing, unknown = sorted(defined - mapped), sorted(mapped - defined)
-        self.add("error" if missing else "info", "traceability", name + "双向覆盖", "缺少映射：" + ", ".join(missing) if missing else f"{len(defined)} 个已定义 ID 均有映射")
-        if unknown: self.add("error", "traceability", "未知" + name + " ID", "矩阵引用了未定义 ID：" + ", ".join(unknown))
+        if not defined:
+            self.add("warning", "traceability", name + " ID 定义",
+                     "未从标题或 ID 定义列识别到 ID；规范定义应写在 product_requirements.md / module_specification.md 的 ID 定义列或 ## <ID> 标题，仅写在追溯矩阵中的 ID 不被视为定义")
+            return
+        missing, unknown = sorted(defined - mapped.keys()), sorted(set(mapped) - defined)
+        if missing:
+            self.add("error", "traceability", name + "双向覆盖",
+                     "缺少映射：" + ", ".join(missing) + "；以上 ID 在矩阵中未出现（若矩阵中已列，请检查命名空间前缀是否完整）")
+        else:
+            self.add("info", "traceability", name + "双向覆盖", f"{len(defined)} 个已定义 ID 均有映射")
+        if unknown:
+            locations = ", ".join(f"{u}（{'、'.join(f'表{k} 数据行{n}' for k, n in mapped[u])}）" for u in unknown)
+            self.add("error", "traceability", "未知" + name + " ID", "矩阵引用了未定义 ID：" + locations)
 
     def version_control(self):
         git = (self.root / ".git").exists()

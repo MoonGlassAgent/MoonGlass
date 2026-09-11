@@ -36,6 +36,7 @@ docs/
 - Prefer one complete ID per reference. Legacy range and slash forms such as `SPEC-AXI-001~005` and `SPEC-AXI-001/002` are accepted and expanded by the checker, but new content should spell out complete IDs when review clarity matters.
 - Keep `requirements_traceability.md` bidirectional and current across requirement, specification, design, and verification IDs.
 - Use explicit `需求 ID` and `规格 ID` table headers so the validator recognizes definitions without repair passes.
+- Write complete IDs (`REQ-` / `SPEC-` prefixes) in the traceability matrix. Bare or misspelled prefixes such as `PERF-001` or `RXE-IF-001` are rejected as `矩阵 ID 格式` errors with file/table/row/column locations; IDs written only in the matrix are not treated as definitions.
 - Run the stage validator after the initial batch write. Fix only reported failures in one batch, rerun immediately, and stop when it passes; warnings do not justify open-ended polishing.
 - After repeated exact-edit failures, reread the target section once and replace it by stable heading/ID anchors. Never repair Markdown by deleting a drifting fixed line number.
 - Keep traceability states within `草稿 / 冻结 / 验证 / 已验证 / 已验收 / 开放 / 关闭`.
@@ -52,6 +53,6 @@ docs/
 python -X utf8 <skill-dir>/scripts/check_doc_repo.py --path . --stage arch --json --output reports/doc_check_arch.json
 ```
 
-Supported stages are `req_spec`, `arch`, `rtl`, `verif`, `qa`, and `synth`. Future-stage files are informational rather than errors. The checker ignores templates and `.gitkeep`, supports `.check_doc_repo_ignore`, expands range/slash IDs, validates bidirectional REQ/SPEC coverage and state values, and writes UTF-8-safe JSON.
+Supported stages are `req_spec`, `arch`, `rtl`, `verif`, `qa`, and `synth`. Future-stage files are informational rather than errors. The checker ignores templates and `.gitkeep`, supports `.check_doc_repo_ignore`, expands range/slash IDs, validates bidirectional REQ/SPEC coverage and state values, flags malformed matrix IDs with table/row/column locations and the correct prefix form, and writes UTF-8-safe JSON.
 
 Fix current-stage structural errors, undefined IDs, missing reverse mappings, and placeholder sections before declaring a stage complete.
