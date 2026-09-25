@@ -74,6 +74,7 @@ export const verification = {
     WAIVED: '豁免'
   },
   space: {
+    title: '验证空间快照与探索历史',
     round: '本轮 {round} · 选择 {selected} 项 · 预计 {cost}s',
     exploration: '探索：{status} · {explanation}',
     statusNone: '尚未记录',
@@ -203,6 +204,36 @@ export const verification = {
     C4_OBSERVATION_MISSING: '观察缺失',
     C5_SPEC_UNDEFINED: '规格未定义',
     C6_TOOL_INSTRUMENTATION: '工具/插桩'
+  },
+  holeExplanations: {
+    C1_UNREACHABLE: '到不了这个状态',
+    C2_CONSTRAINT_BLOCKED: '激励被约束挡住',
+    C3_STIMULUS_MISSING: '还没写测试触发它',
+    C4_OBSERVATION_MISSING: '跑了但没法判断对错',
+    C5_SPEC_UNDEFINED: '规格没说清，需要澄清',
+    C6_TOOL_INSTRUMENTATION: '工具或环境限制'
+  },
+  terms: {
+    blockedBySpec: '规格没说清，需要你澄清',
+    mutationSurvived: '故意注入的缺陷测试没抓住',
+    residualPending: '已知没验透的点，等你决定接不接受',
+    explorationSaturated: '再跑也挖不出新问题',
+    impactUnknown: 'RTL 变了，旧证据可能失效'
+  },
+  l0: {
+    headline: '{wave}进行中：{total} 条规格条款已验证 {covered} 条',
+    needYou: '需要你做的事',
+    nothingForYou: '当前没有等你处理的事',
+    clarifySpec: '澄清规格（{count} 项）',
+    clarifySpecHint: '规格没说清的地方，需要你拍板',
+    approveResidual: '审批残余风险豁免（{count} 项）',
+    machineDoing: '机器正在做：',
+    machineIdle: '机器当前没有进行中的任务'
+  },
+  collapsible: {
+    technicalDetails: '技术细节',
+    expand: '展开',
+    collapse: '收起'
   },
   coverageDetail: {
     title: '覆盖率明细',

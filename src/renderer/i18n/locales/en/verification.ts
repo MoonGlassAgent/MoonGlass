@@ -74,6 +74,7 @@ export const verification: VerificationMessages = {
     WAIVED: 'Waived'
   },
   space: {
+    title: 'Verification Space Snapshot & Exploration History',
     round: 'Round {round} · {selected} selected · ~{cost}s',
     exploration: 'Exploration: {status} · {explanation}',
     statusNone: 'not recorded',
@@ -203,6 +204,36 @@ export const verification: VerificationMessages = {
     C4_OBSERVATION_MISSING: 'Observation Missing',
     C5_SPEC_UNDEFINED: 'Spec Undefined',
     C6_TOOL_INSTRUMENTATION: 'Tool/Instrumentation'
+  },
+  holeExplanations: {
+    C1_UNREACHABLE: 'This state cannot be reached',
+    C2_CONSTRAINT_BLOCKED: 'Stimulus is blocked by constraints',
+    C3_STIMULUS_MISSING: 'No test written to trigger it yet',
+    C4_OBSERVATION_MISSING: 'Ran, but there is no way to judge pass/fail',
+    C5_SPEC_UNDEFINED: 'Spec is unclear and needs clarification',
+    C6_TOOL_INSTRUMENTATION: 'Tool or environment limitation'
+  },
+  terms: {
+    blockedBySpec: 'Spec is unclear — needs your clarification',
+    mutationSurvived: 'A deliberately injected defect was not caught by tests',
+    residualPending: 'Known under-verified points waiting for your accept/reject decision',
+    explorationSaturated: 'More runs will not uncover new issues',
+    impactUnknown: 'RTL changed; old evidence may be stale'
+  },
+  l0: {
+    headline: '{wave} in progress: {covered} of {total} spec clauses verified',
+    needYou: 'Needs You',
+    nothingForYou: 'Nothing is waiting on you right now',
+    clarifySpec: 'Clarify spec ({count})',
+    clarifySpecHint: 'Points where the spec is unclear and needs your decision',
+    approveResidual: 'Approve residual risk waivers ({count})',
+    machineDoing: 'Machine is working on: ',
+    machineIdle: 'The machine has no task in progress'
+  },
+  collapsible: {
+    technicalDetails: 'Technical details',
+    expand: 'Expand',
+    collapse: 'Collapse'
   },
   coverageDetail: {
     title: 'Coverage Detail',
