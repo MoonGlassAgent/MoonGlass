@@ -9,7 +9,9 @@ import { CoverageDetailPanel } from '../components/CoverageDetailPanel'
 
 interface RiskMarker { id: string; taxonomyId?: string; title: string; riskStatement?: string; rationale?: string; failureModes?: string[]; observableEffects?: string[]; object: string; features: string[]; structuralComplexity: number; interaction: number; riskScore: number; confidence: string; source: { file: string; line?: number } }
 interface SpecGap { id: string; category: string; title: string; description?: string; impact: string; action: string; confidence: string; requirementIds: string[]; rtlObjects: string[]; sources?: Array<{ file: string; line?: number }> }
-interface Intent { id: string; scenarioId: string; objective: string; rationale?: string; failureMode?: string; sourceIds?: string[]; status: string; priority: number; recommendedMethods: string[]; preconditions?: string[]; stimulusProcedure?: string[]; observationPoints?: string[]; expectedResults?: string[]; passCriteria?: string[]; boundaries: Array<{ object: string; values: string[] }>; evidence: string[] }
+interface Intent { id: string; scenarioId: string; objective: string; rationale?: string; failureMode?: string; sourceIds?: string[]; status: string; priority: number; recommendedMethods: string[]; preconditions?: string[]; stimulusProcedure?: string[]; observationPoints?: string[]; expectedResults?: string[]; passCriteria?: string[]; boundaries: Array<{ object: string; values: string[] }>; evidence: string[]; wave?: string; topic?: string }
+/** 用例全景行数据源：scenario-registry.json 的场景条目（posture 精简快照不含 scenarios，单独读取） */
+interface PanoramaScenario { id: string; title?: string; wave?: string; topic?: string; status?: string; state?: { closure?: string } }
 interface CoverageHole { id: string; scenarioId: string; scenarioTitle?: string; classification: string; confidence: string; reason: string; missingTarget?: string; requiredStimulus?: string[]; requiredObservation?: string[]; closureEvidence?: string[]; recommendedAction: string; blocking: boolean }
 interface VerificationState {
   generatedAt: string
@@ -40,6 +42,10 @@ interface VerificationState {
   structuralSummary?: { fsm: number; cfgNodes: number; dependencies: number; cones: number; protocols: Array<{ protocol: string; module: string }> }
   analyzer?: { engine: string; version?: string; limitations: string[] }
   waveProgress?: WaveProgressEntry[]
+  /** 执行批分组（posture 快照含；批次顺序用于“什么时候执行”推导） */
+  executionClusters?: Array<{ clusterId: string; wave?: string; topic?: string; scenarioIds: string[]; executionBatches: string[][] }>
+  /** 全量执行计划（仅 verification-state.json 含；无 clusters 时按顺序 3 个一批粗推） */
+  executionPlan?: Array<{ scenarioId: string }>
   /** blockedBySpecCount 由引擎写入 specMapping（共享类型未声明，页面本地扩展） */
   specMapping?: SpecMapping & { blockedBySpecCount?: number }
 }
@@ -91,6 +97,153 @@ const RISK_LEVEL_LABELS: Record<ExplainedRisk['level'], MessageKey> = {
   accepted: 'verification.riskLevels.accepted'
 }
 const HEAT_LEVEL_KEYS: MessageKey[] = ['verification.heatLevels.low', 'verification.heatLevels.lower', 'verification.heatLevels.mid', 'verification.heatLevels.higher', 'verification.heatLevels.high']
+
+/** 用例全景：波段标签（数据里的 smoke/basic/corner/signoff → 用户惯用的 W0-W3） */
+const PANORAMA_WAVE_LABELS: Record<string, string> = { smoke: 'W0', basic: 'W1', corner: 'W2', signoff: 'W3' }
+type PanoramaCategory = 'failed' | 'specBlocked' | 'planned' | 'unplanned' | 'verified' | 'waived'
+type PanoramaFilter = 'all' | 'failing' | 'pending' | 'unplanned'
+interface PanoramaRow { id: string; what: string; waveLabel: string; topic?: string; tests: Array<{ label: string; status?: string }>; category: PanoramaCategory; why: string; whyTitle?: string; when: string; planOrder: number }
+const PANORAMA_STATUS_META: Record<PanoramaCategory, { labelKey: MessageKey; cls: string }> = {
+  failed: { labelKey: 'verification.panorama.statusFailed', cls: 'bg-red-100 text-red-700' },
+  specBlocked: { labelKey: 'verification.panorama.statusSpecBlocked', cls: 'bg-orange-100 text-orange-700' },
+  planned: { labelKey: 'verification.panorama.statusPlanned', cls: 'bg-amber-100 text-amber-700' },
+  unplanned: { labelKey: 'verification.panorama.statusUnplanned', cls: 'bg-zinc-100 text-zinc-600' },
+  verified: { labelKey: 'verification.panorama.statusVerified', cls: 'bg-emerald-100 text-emerald-700' },
+  waived: { labelKey: 'verification.panorama.statusWaived', cls: 'bg-zinc-100 text-zinc-600' }
+}
+/** 默认排序：失败 → 规格未澄清 → 已规划未执行（按计划批次顺序）→ 未规划 → 已验证 → 豁免 */
+const PANORAMA_CATEGORY_RANK: Record<PanoramaCategory, number> = { failed: 0, specBlocked: 1, planned: 2, unplanned: 3, verified: 4, waived: 5 }
+const PANORAMA_FILTERS: Array<{ id: PanoramaFilter; labelKey: MessageKey; match: (row: PanoramaRow) => boolean }> = [
+  { id: 'all', labelKey: 'verification.panorama.filterAll', match: () => true },
+  { id: 'failing', labelKey: 'verification.panorama.filterFailing', match: (row) => row.category === 'failed' || row.category === 'specBlocked' },
+  { id: 'pending', labelKey: 'verification.panorama.filterPending', match: (row) => row.category === 'planned' },
+  { id: 'unplanned', labelKey: 'verification.panorama.filterUnplanned', match: (row) => row.category === 'unplanned' }
+]
+const PANORAMA_COLLAPSE_LIMIT = 30
+
+type PanoramaTranslate = (key: MessageKey, params?: Record<string, string | number>) => string
+
+/** 行模型：全部 scenarios + specMapping 中 UNMAPPED 条款（无场景的验证点）。 */
+function buildPanoramaRows(state: VerificationState, scenarios: PanoramaScenario[], runStatus: VerificationRunStatus | null, t: PanoramaTranslate): PanoramaRow[] {
+  const intentByScenario = new Map<string, Intent>()
+  for (const intent of state.verificationIntents) if (!intentByScenario.has(intent.scenarioId)) intentByScenario.set(intent.scenarioId, intent)
+  // posture 精简快照不含 scenarios 且 registry 不可读时，由 Intent 退化合成行集合
+  const scenarioList: PanoramaScenario[] = scenarios.length > 0 ? scenarios
+    : state.verificationIntents.map((intent) => ({ id: intent.scenarioId, title: intent.objective, wave: intent.wave, topic: intent.topic, status: intent.status }))
+  // 执行批顺序：executionClusters 批次扁平化；仅有 executionPlan 时按顺序 3 个一批粗推
+  const batchOf = new Map<string, number>()
+  if (state.executionClusters?.length) {
+    let batch = 0
+    for (const cluster of state.executionClusters) for (const group of cluster.executionBatches ?? []) {
+      for (const id of group) if (!batchOf.has(id)) batchOf.set(id, batch)
+      batch += 1
+    }
+  } else if (state.executionPlan?.length) {
+    state.executionPlan.forEach((plan, index) => { if (!batchOf.has(plan.scenarioId)) batchOf.set(plan.scenarioId, Math.floor(index / 3)) })
+  }
+  // 波段门：W1 基础功能未闭环时，corner/signoff 波段的未执行场景要等 W1
+  const w1 = state.waveProgress?.find((wave) => wave.id === 'W1')
+  const isOpen = (item: PanoramaScenario): boolean => item.state ? item.state.closure === 'OPEN' : !CLOSED.has(item.status ?? '')
+  const basicDone = w1 ? w1.status === 'done' : !scenarioList.some((item) => (item.wave ?? 'basic') === 'basic' && isOpen(item))
+  const holesByScenario = new Map<string, CoverageHole[]>()
+  for (const hole of state.coverageHoles) {
+    const list = holesByScenario.get(hole.scenarioId) ?? []
+    list.push(hole)
+    holesByScenario.set(hole.scenarioId, list)
+  }
+  // 场景↔用例绑定：cocotb 测试函数名内嵌 scn_<8hex> 对应 SCN-XXXXXXXX
+  const boundTests = (scenarioId: string): Array<{ label: string; status?: string }> => {
+    const hex = scenarioId.replace(/^SCN-/i, '').toLowerCase()
+    if (!hex) return []
+    const token = `scn_${hex}`
+    const byLabel = new Map<string, { label: string; status?: string }>()
+    for (const plannedCase of runStatus?.planned ?? []) if (plannedCase.name?.toLowerCase().includes(token)) byLabel.set(plannedCase.testId || plannedCase.name, { label: plannedCase.testId || plannedCase.name })
+    for (const executedCase of runStatus?.executed ?? []) if (executedCase.testName?.toLowerCase().includes(token)) byLabel.set(executedCase.testId || executedCase.testName, { label: executedCase.testId || executedCase.testName, status: executedCase.status })
+    return [...byLabel.values()]
+  }
+  const categoryOf = (status: string): PanoramaCategory =>
+    status === 'VERIFIED' || status === 'FORMAL_PROVED' ? 'verified'
+      : status === 'FAILED' ? 'failed'
+        : status === 'WAIVED' || status === 'FORMAL_UNREACHABLE' ? 'waived'
+          : status === 'BLOCKED_BY_SPEC' ? 'specBlocked'
+            : 'planned'
+  const rows: PanoramaRow[] = scenarioList.map((scenario) => {
+    const intent = intentByScenario.get(scenario.id)
+    const category = categoryOf(scenario.status ?? intent?.status ?? '')
+    const waveKey = scenario.wave ?? intent?.wave ?? ''
+    const batchIndex = batchOf.get(scenario.id)
+    const waveGated = category === 'planned' && batchIndex === undefined && (waveKey === 'corner' || waveKey === 'signoff') && !basicDone
+    let why = t('verification.panorama.whyNone')
+    let whyTitle: string | undefined
+    if (category === 'specBlocked') why = t('verification.panorama.whySpecBlocked')
+    else if (category === 'planned') {
+      const hole = (holesByScenario.get(scenario.id) ?? []).sort((a, b) => Number(b.blocking) - Number(a.blocking))[0]
+      if (hole && HOLE_EXPLANATIONS[hole.classification]) { why = t(HOLE_EXPLANATIONS[hole.classification]); whyTitle = hole.reason }
+      else if (waveGated) why = t('verification.panorama.whyWaveGate')
+      else if (batchIndex !== undefined) why = t('verification.panorama.whyInPlan')
+      else why = t('verification.panorama.whyOutOfPlan')
+    }
+    const when = category !== 'planned' ? t('verification.panorama.whenNone')
+      : batchIndex !== undefined ? (batchIndex === 0 ? t('verification.panorama.whenNextBatch') : t('verification.panorama.whenBatchN', { n: batchIndex + 1 }))
+        : waveGated ? t('verification.panorama.whenWaveGate')
+          : t('verification.panorama.whenNone')
+    return { id: scenario.id, what: intent?.objective || scenario.title || scenario.id, waveLabel: PANORAMA_WAVE_LABELS[waveKey] ?? '—', topic: scenario.topic ?? intent?.topic, tests: boundTests(scenario.id), category, why, whyTitle, when, planOrder: batchIndex ?? Number.MAX_SAFE_INTEGER }
+  })
+  // 无场景的验证点：UNMAPPED 规格条款
+  const unmappedClauses = state.specMapping?.clauses?.length
+    ? state.specMapping.clauses.filter((clause) => clause.status === 'UNMAPPED').map((clause) => ({ id: clause.clauseId, text: clause.text }))
+    : (state.specMapping?.unmappedClause ?? []).map((clause) => ({ id: clause.specId, text: clause.clause }))
+  for (const clause of unmappedClauses) {
+    rows.push({ id: clause.id, what: clause.text, waveLabel: '—', tests: [], category: 'unplanned', why: t('verification.panorama.whyUnplanned'), when: t('verification.panorama.whenNeedRegister'), planOrder: Number.MAX_SAFE_INTEGER })
+  }
+  return rows.sort((a, b) => PANORAMA_CATEGORY_RANK[a.category] - PANORAMA_CATEGORY_RANK[b.category] || a.planOrder - b.planOrder || a.id.localeCompare(b.id))
+}
+
+/** 用例全景区块：每个验证点一行，回答“验什么、用哪些用例、状态、为什么没执行、什么时候执行”。 */
+function CasePanoramaSection({ state, scenarios, runStatus }: { state: VerificationState; scenarios: PanoramaScenario[]; runStatus: VerificationRunStatus | null }): React.JSX.Element {
+  const { t, locale } = useTranslation()
+  const [filter, setFilter] = useState<PanoramaFilter>('all')
+  const [expanded, setExpanded] = useState(false)
+  // locale 变化时行内文案需重新推导（t 读取当前语言）
+  const rows = useMemo(() => buildPanoramaRows(state, scenarios, runStatus, t), [state, scenarios, runStatus, locale])
+  const activeFilter = PANORAMA_FILTERS.find((item) => item.id === filter) ?? PANORAMA_FILTERS[0]
+  const filtered = rows.filter(activeFilter.match)
+  const collapsed = !expanded && filtered.length > PANORAMA_COLLAPSE_LIMIT
+  const visible = collapsed ? filtered.slice(0, PANORAMA_COLLAPSE_LIMIT) : filtered
+  return <section className="border-b border-zinc-200 bg-white p-5">
+    <div className="mb-3 flex items-end justify-between gap-3">
+      <div><h2 className="text-sm font-semibold">{t('verification.panorama.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.panorama.subtitle')}</p></div>
+      <span className="shrink-0 text-xs text-zinc-400">{t('verification.panorama.count', { count: rows.length })}</span>
+    </div>
+    <div className="mb-3 flex flex-wrap gap-2">
+      {PANORAMA_FILTERS.map((item) => <button key={item.id} type="button" onClick={() => { setFilter(item.id); setExpanded(false) }} className={`rounded-full border px-3 py-1 text-xs ${filter === item.id ? 'border-zinc-900 bg-zinc-900 text-white' : 'border-zinc-300 bg-white text-zinc-600 hover:border-zinc-500'}`}>{t(item.labelKey)} {rows.filter(item.match).length}</button>)}
+    </div>
+    <div className="max-h-[32rem] overflow-auto border-y border-zinc-200">
+      <table className="w-full table-fixed text-left text-[11px]">
+        <thead className="sticky top-0 bg-zinc-50 text-zinc-500"><tr>
+          <th className="px-2 py-2 font-medium">{t('verification.panorama.colWhat')}</th>
+          <th className="w-24 px-2 py-2 font-medium">{t('verification.panorama.colWave')}</th>
+          <th className="w-44 px-2 py-2 font-medium">{t('verification.panorama.colTests')}</th>
+          <th className="w-32 px-2 py-2 font-medium">{t('verification.panorama.colStatus')}</th>
+          <th className="w-48 px-2 py-2 font-medium">{t('verification.panorama.colWhy')}</th>
+          <th className="w-28 px-2 py-2 font-medium">{t('verification.panorama.colWhen')}</th>
+        </tr></thead>
+        <tbody>
+          {visible.map((row) => { const meta = PANORAMA_STATUS_META[row.category]; return <tr key={row.id} className="border-t border-zinc-100 align-top">
+            <td className="px-2 py-2"><div className="truncate text-zinc-800" title={row.what}>{row.what}</div><div className="mt-0.5 truncate font-mono text-[10px] text-zinc-400">{row.id}</div></td>
+            <td className="px-2 py-2 text-zinc-600" title={row.topic}>{row.waveLabel}{row.topic ? ` · ${row.topic}` : ''}</td>
+            <td className="px-2 py-2">{row.tests.length > 0 ? <div className="flex flex-wrap gap-1">{row.tests.map((test) => <span key={test.label} className={`inline-block max-w-full truncate px-1 py-0.5 font-mono text-[10px] ${test.status === 'PASS' ? 'bg-emerald-50 text-emerald-700' : test.status === 'FAIL' || test.status === 'ERROR' ? 'bg-red-50 text-red-700' : 'bg-zinc-100 text-zinc-600'}`} title={test.label}>{test.label}</span>)}</div> : <span className="text-zinc-400">{t('verification.panorama.noTests')}</span>}</td>
+            <td className="px-2 py-2"><span className={`inline-block px-1.5 py-0.5 text-[10px] font-semibold ${meta.cls}`}>{t(meta.labelKey)}</span></td>
+            <td className="px-2 py-2 text-zinc-600" title={row.whyTitle}>{row.why === '—' ? <span className="text-zinc-300">—</span> : row.why}</td>
+            <td className="px-2 py-2 text-zinc-600">{row.when === '—' ? <span className="text-zinc-300">—</span> : row.when}</td>
+          </tr> })}
+          {visible.length === 0 && <tr><td colSpan={6} className="px-2 py-6 text-center text-zinc-400">{t('verification.panorama.empty')}</td></tr>}
+        </tbody>
+      </table>
+    </div>
+    {filtered.length > PANORAMA_COLLAPSE_LIMIT && <button type="button" onClick={() => setExpanded((value) => !value)} className="mt-2 text-xs text-emerald-700 hover:underline">{collapsed ? t('verification.panorama.expandAll', { count: filtered.length }) : t('verification.panorama.collapse')}</button>}
+  </section>
+}
 
 function Metric({ label, value, detail, tone = 'neutral', hint }: { label: string; value: string | number; detail: string; tone?: 'neutral' | 'good' | 'warn' | 'bad'; hint?: string }): React.JSX.Element {
   const color = tone === 'good' ? 'text-emerald-600' : tone === 'warn' ? 'text-amber-600' : tone === 'bad' ? 'text-red-600' : 'text-zinc-900'
@@ -212,6 +365,7 @@ export function VerificationPosturePage(): React.JSX.Element {
   const [risks, setRisks] = useState<RiskMarker[]>([])
   const [diagnostic, setDiagnostic] = useState<DiagnosticControl | null>(null)
   const [runStatus, setRunStatus] = useState<VerificationRunStatus | null>(null)
+  const [scenarioRows, setScenarioRows] = useState<PanoramaScenario[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState('')
   const [runningAction, setRunningAction] = useState<string | null>(null)
@@ -225,6 +379,11 @@ export function VerificationPosturePage(): React.JSX.Element {
     try {
       setRunStatus(await window.moonglass.fs.verificationStatus(projectId))
     } catch { setRunStatus(null) }
+    // 用例全景的场景数据源：posture 精简快照不含 scenarios，单独读 scenario-registry.json
+    try {
+      const registry = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/scenario-registry.json') as { scenarios?: PanoramaScenario[] } | null
+      setScenarioRows(Array.isArray(registry?.scenarios) ? registry.scenarios : [])
+    } catch { setScenarioRows([]) }
     try {
       const current = await window.moonglass.project.get(projectId)
       setProject(current)
@@ -247,7 +406,7 @@ export function VerificationPosturePage(): React.JSX.Element {
       setState({
         generatedAt: parsed.generatedAt ?? new Date(0).toISOString(), rtlHash: parsed.rtlHash ?? '', scenarioCount: parsed.scenarioCount ?? 0,
         criticalOpen: parsed.criticalOpen ?? [], verificationIntents: parsed.verificationIntents ?? [], specGaps: parsed.specGaps ?? [], coverageHoles: parsed.coverageHoles ?? [],
-        regressions: parsed.regressions ?? [], formalResults: parsed.formalResults ?? [], closureAssessment: parsed.closureAssessment, verificationSpace: parsed.verificationSpace, explorationRound: parsed.explorationRound, explorationHistory: parsed.explorationHistory, multiOracle: parsed.multiOracle, mutationAssessment: parsed.mutationAssessment, residualRiskRegister: parsed.residualRiskRegister, signoffPackage: parsed.signoffPackage, moduleVerificationStrategy: parsed.moduleVerificationStrategy, structuralSummary: parsed.structuralSummary, analyzer: parsed.analyzer, waveProgress: parsed.waveProgress, specMapping: parsed.specMapping
+        regressions: parsed.regressions ?? [], formalResults: parsed.formalResults ?? [], closureAssessment: parsed.closureAssessment, verificationSpace: parsed.verificationSpace, explorationRound: parsed.explorationRound, explorationHistory: parsed.explorationHistory, multiOracle: parsed.multiOracle, mutationAssessment: parsed.mutationAssessment, residualRiskRegister: parsed.residualRiskRegister, signoffPackage: parsed.signoffPackage, moduleVerificationStrategy: parsed.moduleVerificationStrategy, structuralSummary: parsed.structuralSummary, analyzer: parsed.analyzer, waveProgress: parsed.waveProgress, executionClusters: parsed.executionClusters, executionPlan: parsed.executionPlan, specMapping: parsed.specMapping
       })
       try {
         const riskFile = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/risk-register.json') as { risks?: RiskMarker[] } | null
@@ -257,7 +416,7 @@ export function VerificationPosturePage(): React.JSX.Element {
         setDiagnostic(await window.moonglass.fs.readJson(projectId, 'verification/results/diagnostic-control.json') as DiagnosticControl)
       } catch { setDiagnostic(null) }
     } catch (caught) {
-      setState(null); setRisks([]); setDiagnostic(null)
+      setState(null); setRisks([]); setDiagnostic(null); setScenarioRows([])
       setError(caught instanceof Error ? caught.message : String(caught))
     } finally { setLoading(false) }
   }, [projectId])
@@ -387,6 +546,7 @@ export function VerificationPosturePage(): React.JSX.Element {
           <p className="text-xs text-zinc-600"><b className="text-zinc-700">{t('verification.l0.machineDoing')}</b>{primaryAction ? `${primaryAction.title} —— ${primaryAction.detail}` : t('verification.l0.machineIdle')}</p>
         </div>
       </section>}
+    {state && <CasePanoramaSection state={state} scenarios={scenarioRows} runStatus={runStatus} />}
     <VerificationRunSection status={runStatus} />
     {!state ? <div className="flex min-h-64 items-center justify-center p-8"><div className="max-w-lg border border-dashed border-zinc-300 bg-white p-8 text-center">
       <FileSearch className="mx-auto text-zinc-400" size={30} /><h2 className="mt-3 text-base font-semibold">{t('verification.emptyTitle')}</h2>
