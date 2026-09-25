@@ -377,11 +377,12 @@ export interface AgentIntentInput {
   topic?: string
 }
 
-/** 波段（v0.8.6 波段化契约 §四）：W0 冒烟 / W1 基础功能 / W2 增补 / W3 签核。 */
+/** 波段（v0.8.6 波段化契约 §四）：W1 基础功能 / W2 增补 / W3 签核。'smoke'（W0）已废弃，保留仅为向后兼容，派生/聚合处一律归一为 basic。 */
 export type VerificationWave = 'smoke' | 'basic' | 'corner' | 'signoff'
 
 /** 波段进度条目（展示层契约 B.1，execution-summary / posture 按此生产）。 */
 export interface WaveProgressItem {
+  /** W0 已不再产出（冒烟波段废弃，归一进 W1），保留在联合类型中以兼容旧快照 */
   id: 'W0' | 'W1' | 'W2' | 'W3'
   wave: VerificationWave
   label: string
@@ -577,7 +578,7 @@ export interface VerificationStateModel {
   executionClusters: ScenarioCluster[]
   /** 首轮失败后按失败指纹的再聚类建议（建议性质，不自动执行） */
   reclusterSuggestions: ReclusterSuggestion[]
-  /** 波段进度（W0-W3，展示层契约 B.1） */
+  /** 波段进度（W1-W3，展示层契约 B.1；W0 已删除） */
   waveProgress: WaveProgressItem[]
   /** 规格映射矩阵（闭集完备性视图，展示层契约 B.2） */
   specMapping: SpecMappingMatrix

@@ -314,7 +314,7 @@ export class FileService implements MoonGlassService {
         }
       }
       if (!columns && planLines.some((line) => line.includes('TEST-'))) {
-        status.headerWarning = 'test_plan.md 缺少标准表头（期望首列 TEST ID），已按固定列序兼容解析；建议补齐表头以避免列错位'
+        status.headerWarning = 'test_plan.md 缺少标准表头（期望首列 TEST ID），已按固定列序兼容解析；建议补齐表头以避免列错位。未映射 = 用例已在计划文档登记，但还没绑定到任何验证点（SCN/VI）；可在 test_plan.md 中补充 SCN 绑定，或让 Agent 补绑'
       }
     }
     // 回退：无 test_plan.md 时，以测试文件中的函数清单作为规划用例

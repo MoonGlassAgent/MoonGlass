@@ -52,7 +52,7 @@ export const verification: VerificationMessages = {
   steps: {
     titleWaves: 'Verification Waves',
     titleLegacy: 'VERIF Delivery Path',
-    subtitleWaves: 'W0 Smoke → W1 Basic → W2 Supplemental → W3 Sign-off; completeness is judged by the spec mapping matrix, not risk queue depth',
+    subtitleWaves: 'W1 Basic → W2 Supplemental → W3 Sign-off; smoke checks are covered by environment bring-up and basic functionality; completeness is judged by the spec mapping matrix, not risk queue depth',
     subtitleLegacy: 'Current status and blocking points from planning to sign-off',
     keepEvidence: 'Preserve evidence and complete sign-off'
   },
@@ -90,6 +90,8 @@ export const verification: VerificationMessages = {
     impact: 'Potential Impact:',
     recommendation: 'How:',
     handoff: 'Hand off to the main agent',
+    acceptedTitle: 'Accepted Risks ({count})',
+    allAccepted: 'All top risks are accepted; see the collapsed section below.',
     empty: 'No rankable risk data. Regenerate the AIGV posture.'
   },
   riskLevels: {
@@ -222,6 +224,8 @@ export const verification: VerificationMessages = {
   },
   l0: {
     headline: '{wave} in progress: {covered} of {total} spec clauses verified',
+    headlineW1: '{wave} in progress: {covered}/{total} verified, {remaining} remaining in batches{batch}',
+    headlineW1Batch: ' (batch {current} of {total})',
     needYou: 'Needs You',
     nothingForYou: 'Nothing is waiting on you right now',
     clarifySpec: 'Clarify spec ({count})',
@@ -323,6 +327,7 @@ export const verification: VerificationMessages = {
     envNotReady: '⚠ Not Ready',
     envPending: 'Cocotb verification environment not set up yet',
     bindingHint: 'Register in test_manifest.json or annotate the TEST ID on the first docstring line, then rerun',
+    unmappedHint: 'Unmapped = the case is registered in the plan document but not yet bound to any verification point (SCN/VI); add the SCN binding in test_plan.md, or ask the Agent to bind it',
     planned: 'Planned',
     executed: 'Executed',
     passed: 'Passed',
@@ -407,6 +412,26 @@ export const verification: VerificationMessages = {
     error: 'May conflict error paths with normal completion paths, affecting externally visible results.',
     default: 'May affect externally visible behavior, boundary conditions, or error recovery; adjudicate against raw evidence.'
   },
+  /** W2 supplemental topic → "why verify this" explanation (display-layer mapping; unknown topics use the default generic wording) */
+  topicExplanations: {
+    errorInjection: 'Whether illegal input can cause data loss, lock-up, or erroneous output',
+    concurrencyCollision: 'Whether priority and results match the spec when two events arrive in the same cycle',
+    priorityArbitration: 'Whether arbitration is deterministic and spec-compliant when multiple requests compete for one resource',
+    inflightConsistency: 'Whether in-flight transactions are corrupted or lost when configuration or state changes',
+    counterBoundary: 'Whether behavior matches the spec at full, empty, or wrap-around counter boundaries',
+    resetCollision: 'Whether state stays consistent and recoverable when reset collides with a normal transaction',
+    swHwConcurrency: 'Whether software accesses and hardware state updates corrupt each other when concurrent',
+    cdc: 'Whether clock-domain crossings are reliably synchronized without metastability or data loss',
+    timeout: 'Whether timeout detection, recovery, and resource release match the spec when the peer stops responding',
+    backpressure: 'Whether data is neither lost nor duplicated and flow control follows the protocol under backpressure',
+    resourceExhaustion: 'Whether full buffers or slots are rejected or queued gracefully without deadlock',
+    errorRecovery: 'Whether normal transaction flow resumes after the error is cleared',
+    busyConfigChange: 'Whether configuration changes during busy are deferred or rejected per spec without corrupting in-flight transactions',
+    interruptConcurrency: 'Whether pending state and outputs stay consistent when interrupt set collides with mask/clear in the same cycle',
+    boundary: 'Whether behavior matches the spec at boundary values of inputs, counters, and addresses',
+    performance: 'Whether throughput and latency meet spec targets under stress',
+    default: 'Verify boundary and exceptional conditions under this topic'
+  },
   stepLabels: {
     planning: 'Verification Planning',
     environment: 'Environment Ready',
@@ -435,7 +460,7 @@ export const verification: VerificationMessages = {
     formalRun: 'Run per candidate scenarios',
     waitReview: 'Waiting for independent evidence review',
     waitClosure: 'Waiting for prior closure',
-    clausesPassed: '{covered}/{total} clauses passed',
+    clausesPassed: '{covered}/{total} verified, {remaining} remaining',
     waves: '{count} waves: {topics}',
     passed: '{passed}/{total} passed'
   }

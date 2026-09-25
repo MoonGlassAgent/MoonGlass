@@ -98,8 +98,8 @@ const RISK_RULES: RiskRule[] = [
 
 // ==================== v0.8.6 波段化 + 规格映射完备性 + 聚类批次（契约 交流_20260901.txt §二 Q1-Q4） ====================
 
-/** 波段执行顺序：smoke → basic → corner → signoff。 */
-const WAVE_ORDER: VerificationWave[] = ['smoke', 'basic', 'corner', 'signoff']
+/** 波段执行顺序：basic → corner → signoff（W0 冒烟波段已废弃：声明/存量 smoke 一律归一为 basic）。 */
+const WAVE_ORDER: VerificationWave[] = ['basic', 'corner', 'signoff']
 
 /** R01~R19 taxonomyId → 预定义 W2 主题名（契约 Q3 确定性底座；LLM 可补分类法未覆盖主题）。 */
 const TAXONOMY_TOPICS: Record<string, string> = {
@@ -119,9 +119,9 @@ function deriveWaveForEngineCandidate(method: VerificationScenario['method']): V
   return 'corner'
 }
 
-/** 场景波段解析（旧数据兼容）：无 wave 字段时 AGENT_INTENT / CLAUSE_DERIVED 默认 basic，ENGINE_CANDIDATE 按方法推导。 */
+/** 场景波段解析（旧数据兼容）：存量 wave='smoke' 归一为 basic（W0 冒烟已废弃，保持旧 registry 数据可读）；无 wave 字段时 AGENT_INTENT / CLAUSE_DERIVED 默认 basic，ENGINE_CANDIDATE 按方法推导。 */
 function resolveWave(scenario: Pick<VerificationScenario, 'wave' | 'origin' | 'method'>): VerificationWave {
-  if (scenario.wave) return scenario.wave
+  if (scenario.wave) return scenario.wave === 'smoke' ? 'basic' : scenario.wave
   const origin = scenario.origin ?? 'ENGINE_CANDIDATE'
   return origin === 'AGENT_INTENT' || origin === 'CLAUSE_DERIVED' ? 'basic' : deriveWaveForEngineCandidate(scenario.method)
 }
@@ -147,12 +147,11 @@ function ruleMethodOf(taxonomyId: string): RiskRule['method'] | undefined {
 
 /**
  * 波段声明一致性校验规则表（契约 Q1：声明 + 引擎校验，防游离标签；可扩展）。
- * 命中即拒绝登记。注意 anchors.riskIds 为必填，故 smoke 波段实际上不可经 Intent 登记
- * （冒烟属环境验收，由环境检查工具承担）——这正是契约"声明 smoke 但锚定了任何风险 → 拒绝"的落点。
+ * 命中即拒绝登记。W0 冒烟波段已废弃：登记入口把 smoke 声明归一为 basic 后再走本表
+ * （冒烟验证由环境搭建与基础功能附带完成，不再单独成波），故本表只需约束 basic。
  */
 const WAVE_ANCHOR_RULES: Array<{ waves: VerificationWave[]; matches: (taxonomyId: string) => boolean; reason: string }> = [
-  { waves: ['smoke'], matches: () => true, reason: 'smoke 波段为环境验收（reset/接口连通/单个正常事务），不得锚定任何风险；如需登记请声明 basic' },
-  { waves: ['smoke', 'basic'], matches: (taxonomyId) => ruleMethodOf(taxonomyId) === 'formal-candidate', reason: '锚定 formal-candidate 类风险（如 R02/R05/R19）不得声明 smoke/basic 波段' }
+  { waves: ['basic'], matches: (taxonomyId) => ruleMethodOf(taxonomyId) === 'formal-candidate', reason: '锚定 formal-candidate 类风险（如 R02/R05/R19）不得声明 basic 波段' }
 ]
 
 /**
@@ -675,7 +674,7 @@ function attachConfirmedRootCauses(scenarios: VerificationScenario[], rootCauses
 }
 
 /**
- * 执行计划（v0.8.6 契约 §4）：排序键 = 波段序（smoke→basic→corner→signoff）→ 聚类组 → 组内优先级。
+ * 执行计划（v0.8.6 契约 §4）：排序键 = 波段序（basic→corner→signoff）→ 聚类组 → 组内优先级。
  * 波段执行门（"W1 不满不进 W2"，约束执行不约束登记）：最早存在未闭环场景的波段圈住全部更晚
  * 波段，只有该波段的 OPEN 场景进入执行计划；更晚波段允许登记、不进计划。
  * 聚类（规划期，两段式第一段）：键 = 模块 × 方法 × Oracle 域（+ corner 波段同主题），
@@ -802,8 +801,8 @@ function buildSpecMapping(requirements: RequirementModel, scenarios: Verificatio
 }
 
 /**
- * 波段进度（展示层契约 B.1）：W0-W3 四段；W1 进度挂规格映射矩阵（闭集），
- * W2 按归一化主题聚合，W3.status 映射 closureAssessment.status。
+ * 波段进度（展示层契约 B.1）：W1-W3 三段（W0 冒烟波段已删除，存量 smoke 场景经 resolveWave
+ * 归一进 W1 基础功能）；W1 进度挂规格映射矩阵（闭集），W2 按归一化主题聚合，W3.status 映射 closureAssessment.status。
  */
 function buildWaveProgress(scenarios: VerificationScenario[], specMapping: SpecMappingMatrix, closure: ClosureAssessment['status']): WaveProgressItem[] {
   const byWave = new Map<VerificationWave, VerificationScenario[]>()
@@ -838,9 +837,7 @@ function buildWaveProgress(scenarios: VerificationScenario[], specMapping: SpecM
     topicMap.set(name, entry)
   }
   const signoff = byWave.get('signoff') ?? []
-  const smoke = byWave.get('smoke') ?? []
   return [
-    { id: 'W0', wave: 'smoke', label: '冒烟', status: statusOf(smoke), scenarioCount: smoke.length, passedCount: smoke.filter(passed).length },
     { id: 'W1', wave: 'basic', label: '基础功能', status: w1Status, scenarioCount: basic.length, passedCount: basic.filter(passed).length, specClauseTotal: specMapping.clauseTotal, specClauseCovered: specMapping.coveredClause },
     { id: 'W2', wave: 'corner', label: '增补', status: statusOf(corner), scenarioCount: corner.length, passedCount: corner.filter(passed).length, topics: [...topicMap.values()] },
     { id: 'W3', wave: 'signoff', label: '签核', status: closure === 'READY_FOR_HUMAN_SIGNOFF' ? 'done' : closure === 'CONDITIONALLY_READY' ? 'in-progress' : signoff.length ? 'in-progress' : 'pending', scenarioCount: signoff.length, passedCount: signoff.filter(passed).length }
@@ -2020,8 +2017,10 @@ export function registerVerificationIntents(workspaceDir: string, inputs: AgentI
     if (!input.anchors?.rtlSignals?.length) reasons.push('必须点名至少一个真实 RTL 信号（rtlSignals）')
     else if (input.anchors.rtlSignals.some((signal) => !signalNames.has(signal))) reasons.push(`rtlSignals 在结构模型中不存在（疑似幻觉信号，必须核对 structural-model.json 后修正）：${input.anchors.rtlSignals.filter((signal) => !signalNames.has(signal)).join('、')}`)
     // 波段声明 + 一致性校验（契约 Q1：防游离标签；规则表 WAVE_ANCHOR_RULES 可扩展）
-    const wave: VerificationWave = input.wave ?? 'basic'
-    if (input.wave && !WAVE_ORDER.includes(input.wave)) reasons.push(`wave 取值非法：${input.wave}（允许 ${WAVE_ORDER.join('/')}）`)
+    // W0 冒烟已废弃：声明 smoke 归一为 basic 后再校验（向后兼容仍声明 smoke 的 Agent/旧提示词）
+    const declaredWave = input.wave === 'smoke' ? 'basic' : input.wave
+    const wave: VerificationWave = declaredWave ?? 'basic'
+    if (declaredWave && !WAVE_ORDER.includes(declaredWave)) reasons.push(`wave 取值非法：${input.wave}（允许 ${WAVE_ORDER.join('/')}；smoke 已废弃，按 basic 处理）`)
     else if (input.anchors?.riskIds?.length) {
       const taxonomyIds = input.anchors.riskIds.map((id) => riskById.get(id)?.taxonomyId).filter((id): id is string => Boolean(id))
       for (const rule of WAVE_ANCHOR_RULES) {

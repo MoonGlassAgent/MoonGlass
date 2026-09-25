@@ -159,21 +159,20 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'VERIF',
     injectMode: 'prepend',
-    version: '2.3.3',
-    updatedAt: '2026-09-11',
+    version: '2.4.0',
+    updatedAt: '2026-09-25',
     content: `当前处于【验证完备】阶段。
 
 ## 执行范围规则
 
-- 用户或 MoonGlass 操作消息若明确指定“规划与环境”（W0）、“基础功能”（W1）、“增补验证”（W2）或“签核”（W3）及停止边界，只执行该波段任务，报告结果后停止。不得因为处于 VERIF 阶段而自动扩展到后续波段。
+- 用户或 MoonGlass 操作消息若明确指定“规划与环境”、“基础功能”（W1）、“增补验证”（W2）或“签核”（W3）及停止边界，只执行该波段任务，报告结果后停止。不得因为处于 VERIF 阶段而自动扩展到后续波段。
 - 只有用户明确要求“完整验证”“完整闭环”或未限定范围地要求完成整个 VERIF 阶段时，才执行下面的端到端任务。
 - 已存在且通过校验的规划、环境和证据应增量复用，不得每次从头重建九份文档或全部 Testbench。
 
 完整验证闭环任务是：
 
 完整验证闭环按波段推进（完备性看规格映射表，不是风险队列深度）：
-- W0 冒烟：reset、接口连通、一个正常事务（环境验收）。
-- W1 基础功能：每条可验证规格条款的 happy path——规格映射表填满的过程。
+- W1 基础功能：每条可验证规格条款的 happy path——规格映射表填满的过程（冒烟验证包含在环境搭建与基础功能中：reset、接口连通、一个正常事务随环境验收与首批基础用例一并完成，不再单独成波）。
 - W2 增补批：按主题分波（错误注入波、边界波、并发碰撞波、性能波），同组聚类场景一次 authoring 多条 testcase。
 - W3 签核：覆盖率闭合、Formal、Mutation、全量回归、残余风险审批。
 “验证完了吗”由 W1 的规格映射矩阵（可验证规格条款 → Intent → PASS 证据）回答；“先验证什么”由风险寄存器排序回答；“风险挖掘何时收手”由探索饱和回答。
@@ -183,7 +182,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
 3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb", simulator="icarus") 完成功能回归
 4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成风险候选、结构事实、Spec Gap、Verification Intent、时间交互、边界条件、Coverage Hole 分类和排序后的 Scenario Registry；每个 Intent 必须是包含前置状态、定向激励、观察点、通过标准和证据要求的可证伪工程目标，不能用 taxonomy 或 feature 组合代替；引擎穷举的 Scenario 只是候选池，不是必须逐条执行的任务清单；风险标记与 Spec Gap 不是 Bug 结论
-4.1 build 完成后，读取规格、risk-register.json 与 structural-model.json，自己圈定 5~10 个最高价值的真实验证点：每个必须点名具体 RTL 信号（rtlSignals，必须能在结构模型中查到，支持 module.signal 或裸信号名）、具体失效反例（failureMode）、具体判定标准（passCriteria）、波段标签 wave（smoke/basic/corner/signoff；W2 增补必须带主题 topic，如错误注入/边界/并发碰撞/性能，引擎归一化防裂波），并锚定现有 riskIds 与 requirementIds——synthesis（PPA）通道条款（面积/时序/功耗等数值目标）不得以 simulation/formal 方法锚定，其验收义务在 SYNTH 阶段闭环（以 recommendedMethod="static" 登记综合报告审查）；然后调用 register_verification_intents 登记（origin=AGENT_INTENT，同分排序优先于引擎穷举候选）。被拒绝的锚点必须核对注册表/结构模型修正后重新登记，不得绕过或手写注册表。引擎穷举的 ENGINE_CANDIDATE 场景保留为候选池，可用 refine_verification_intents 精炼其 objective/failureMode/passCriteria 表述
+4.1 build 完成后，读取规格、risk-register.json 与 structural-model.json，自己圈定 5~10 个最高价值的真实验证点：每个必须点名具体 RTL 信号（rtlSignals，必须能在结构模型中查到，支持 module.signal 或裸信号名）、具体失效反例（failureMode）、具体判定标准（passCriteria）、波段标签 wave（basic/corner/signoff；smoke 已废弃、声明后按 basic 处理；W2 增补必须带主题 topic，如错误注入/边界/并发碰撞/性能，引擎归一化防裂波），并锚定现有 riskIds 与 requirementIds——synthesis（PPA）通道条款（面积/时序/功耗等数值目标）不得以 simulation/formal 方法锚定，其验收义务在 SYNTH 阶段闭环（以 recommendedMethod="static" 登记综合报告审查）；然后调用 register_verification_intents 登记（origin=AGENT_INTENT，同分排序优先于引擎穷举候选）。被拒绝的锚点必须核对注册表/结构模型修正后重新登记，不得绕过或手写注册表。引擎穷举的 ENGINE_CANDIDATE 场景保留为候选池，可用 refine_verification_intents 精炼其 objective/failureMode/passCriteria 表述
 5. 读取 feature-interaction-graph.json；需要语义补充时调用 register_verification_hypotheses，每个推理必须引用 Risk/RTL Object/Interaction Edge，并区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN
 6. 调用 select_next_verification_batch，按“模块 × Oracle 域 × 方法”聚类选批（一组 5~8 个同组场景）；同组场景一次 authoring 写 N 条 testcase（如一个 test_regif_errors.py 写 5 个 @cocotb.test），一次 run_simulation 绑定这 N 个 scenarioIds 登记；执行后按失败指纹再聚类建议下一轮。优先复用现有执行计划，禁止无结构依据的任意笛卡尔积
 7. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification：先用 Yosys 兼容的过程式 immediate assert/assume/cover，不得使用 property/endproperty、assert property、default clocking、disable iff、|->、|=> 或 ##；Liveness 必须有规格依据的环境响应 assumption。标明 required/supplemental，先 BMC/cover，再对适合的不变量 prove；BMC PASS 只能算有限深度检查，不能宣称已证明

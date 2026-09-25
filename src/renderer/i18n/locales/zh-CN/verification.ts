@@ -52,7 +52,7 @@ export const verification = {
   steps: {
     titleWaves: '验证波段',
     titleLegacy: 'VERIF 交付路径',
-    subtitleWaves: 'W0 冒烟 → W1 基础功能 → W2 增补 → W3 签核；完备性看规格映射表，不是风险队列深度',
+    subtitleWaves: 'W1 基础功能 → W2 增补 → W3 签核；冒烟验证包含在环境搭建与基础功能中；完备性看规格映射表，不是风险队列深度',
     subtitleLegacy: '从规划到签核的当前状态与阻断位置',
     keepEvidence: '保持证据并完成签核'
   },
@@ -90,6 +90,8 @@ export const verification = {
     impact: '可能影响：',
     recommendation: '怎么做：',
     handoff: '交给主 Agent 处理',
+    acceptedTitle: '已接受风险（{count}）',
+    allAccepted: '当前 Top 风险均已接受，见下方折叠区',
     empty: '暂无可排序的风险数据，请重新生成 AIGV 态势。'
   },
   riskLevels: {
@@ -222,6 +224,8 @@ export const verification = {
   },
   l0: {
     headline: '{wave}进行中：{total} 条规格条款已验证 {covered} 条',
+    headlineW1: '{wave}进行中：已验证 {covered}/{total}，剩余 {remaining} 条分批推进{batch}',
+    headlineW1Batch: '（当前第 {current} 批/共 {total} 批）',
     needYou: '需要你做的事',
     nothingForYou: '当前没有等你处理的事',
     clarifySpec: '澄清规格（{count} 项）',
@@ -323,6 +327,7 @@ export const verification = {
     envNotReady: '⚠ 未搭建',
     envPending: '待搭建 Cocotb 验证环境',
     bindingHint: '在 test_manifest.json 登记或 docstring 首行标注 TEST ID 后重新运行',
+    unmappedHint: '未映射 = 用例已在计划文档登记，但还没绑定到任何验证点（SCN/VI）；可在 test_plan.md 中补充 SCN 绑定，或让 Agent 补绑',
     planned: '规划用例',
     executed: '已执行',
     passed: '通过',
@@ -407,6 +412,26 @@ export const verification = {
     error: '可能使错误路径与正常完成路径产生冲突，影响外部可见结果。',
     default: '可能影响外部可见行为、边界条件或异常恢复，需要以原始证据裁决。'
   },
+  /** W2 增补主题 → “为什么验这个”说明（展示层映射表；未知主题用 default 通用句式） */
+  topicExplanations: {
+    errorInjection: '非法输入时会不会丢数据、锁死或产生错误输出',
+    concurrencyCollision: '两个事件同周期到达时优先级与结果是否符合规格',
+    priorityArbitration: '多请求竞争同一资源时仲裁结果是否确定且符合规格',
+    inflightConsistency: '配置或状态变化时在途事务是否被破坏或丢失',
+    counterBoundary: '计数到满、空或回绕边界时行为是否符合规格',
+    resetCollision: '复位与正常事务同周期到达时状态是否一致且可恢复',
+    swHwConcurrency: '软件读写与硬件状态更新并发时是否互相破坏',
+    cdc: '信号跨时钟域时是否同步可靠、无亚稳态传播与数据丢失',
+    timeout: '对端不响应时超时检测、恢复与资源释放是否符合规格',
+    backpressure: '下游反压时数据是否不丢不重、流控符合协议',
+    resourceExhaustion: '缓冲或槽位耗尽时是否优雅拒绝或排队而不死锁',
+    errorRecovery: '错误清除后能否恢复到正常事务流程',
+    busyConfigChange: '模块 busy 时配置变更是否按规格延迟或拒绝且不破坏在途事务',
+    interruptConcurrency: '中断置位与 mask/clear 同周期变化时 pending 与输出是否一致',
+    boundary: '输入、计数、地址等取边界值时行为是否符合规格',
+    performance: '吞吐与延迟在压力场景下是否满足规格目标',
+    default: '验证该主题下的边界与异常情况'
+  },
   stepLabels: {
     planning: '验证规划',
     environment: '环境就绪',
@@ -435,7 +460,7 @@ export const verification = {
     formalRun: '按候选场景执行',
     waitReview: '等待独立证据审查',
     waitClosure: '等待前序闭环',
-    clausesPassed: '{covered}/{total} 条款通过',
+    clausesPassed: '已验证 {covered}/{total}，剩余 {remaining} 条',
     waves: '{count} 波：{topics}',
     passed: '{passed}/{total} 通过'
   }

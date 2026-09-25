@@ -601,7 +601,7 @@ export interface VerifBatchLoopResult {
   message: string
 }
 
-/** 波段进度条目（W0-W3，展示层契约，引擎侧生产） */
+/** 波段进度条目（W1-W3，展示层契约，引擎侧生产；W0 冒烟已废弃，旧快照可能仍含 W0 条目，渲染端需容错） */
 export interface WaveProgressEntry {
   id: 'W0' | 'W1' | 'W2' | 'W3'
   label: string

@@ -124,9 +124,10 @@ const lowPriorityBlocked = blockedScenarios.filter((scenario) => scenario.priori
 if (firstMapping.blockedBySpecCount !== blockedScenarios.length) throw new Error(`blockedBySpecCount 计数错误：${firstMapping.blockedBySpecCount} ≠ ${blockedScenarios.length}`)
 if (lowPriorityBlocked.length === 0) throw new Error('fixture 应包含低优先级 BLOCKED_BY_SPEC 场景')
 if (!first.verificationState.closureAssessment.warnings.some((item) => item.includes(`低优先级规格缺口 ${lowPriorityBlocked.length} 项`))) throw new Error('低优先级规格缺口未进入 closure warnings')
-if (!Array.isArray(first.verificationState.waveProgress) || first.verificationState.waveProgress.length !== 4) throw new Error('波段进度未生成 W0-W3 四段')
+if (!Array.isArray(first.verificationState.waveProgress) || first.verificationState.waveProgress.length !== 3) throw new Error('波段进度未生成 W1-W3 三段（W0 冒烟已删除）')
 // W1 进度挂 specMapping：clauseTotal>0 且未全覆盖 → in-progress；scenarioCount 展示实际 basic 场景数
-const w1First = first.verificationState.waveProgress[1]
+const w1First = first.verificationState.waveProgress.find((item) => item.id === 'W1')
+if (!w1First) throw new Error('波段进度缺少 W1 条目')
 if (w1First.specClauseTotal !== 5 || w1First.specClauseCovered !== 0) throw new Error('W1 未挂规格映射矩阵计数（VERIF 通道口径）')
 if (w1First.status !== 'in-progress' || w1First.scenarioCount !== 5 || w1First.passedCount !== 0) throw new Error(`W1 状态/计数错误：${JSON.stringify(w1First)}`)
 if (first.structuralModel.facts.length === 0) throw new Error('Structural Model 为空')
@@ -218,7 +219,7 @@ const review = reviewScenarioClosure(root)
 if (!review.passed) throw new Error(`Scenario Closure 应通过：${review.blockers.join('; ')}`)
 // clause 派生后：VERIF 通道全部条款经派生候选的 hit 证据 PASSED（UNMAPPED 仅剩 synthesis 通道），不再有 Q2 warning 降档
 if (saturated.verificationState.specMapping.statusCounts.PASSED !== 5 || saturated.verificationState.specMapping.coveredClause !== 5) throw new Error(`派生候选闭环后 VERIF 通道全部条款应 PASSED：${JSON.stringify(saturated.verificationState.specMapping.statusCounts)}`)
-if (saturated.verificationState.waveProgress[1].status !== 'done') throw new Error('coveredClause=clauseTotal 时 W1 应为 done')
+if (saturated.verificationState.waveProgress.find((item) => item.id === 'W1')?.status !== 'done') throw new Error('coveredClause=clauseTotal 时 W1 应为 done')
 if (saturated.verificationState.closureAssessment.status !== 'READY_FOR_HUMAN_SIGNOFF') throw new Error(`条款全覆盖且无其余 warning 时应恢复 READY_FOR_HUMAN_SIGNOFF：${saturated.verificationState.closureAssessment.status}`)
 if (saturated.verificationState.closureAssessment.warnings.some((item) => item.includes('UNMAPPED'))) throw new Error('条款全覆盖后不应再有 UNMAPPED warning')
 if (saturated.verificationState.signoffPackage.status !== 'READY_FOR_HUMAN_SIGNOFF' || !saturated.verificationState.signoffPackage.packageId.startsWith('SIGNOFF-')) throw new Error('最终 Sign-off Package 未生成')
@@ -364,15 +365,18 @@ const latest = buildVerificationIntelligence(root)
 // 条款状态机 WAIVED：REQ-DMA-001 被已具名审批豁免的 Intent 锚定
 const waivedClause = latest.verificationState.specMapping.clauses.find((item) => item.clauseId === 'REQ-DMA-001')
 if (waivedClause?.status !== 'WAIVED') throw new Error(`已豁免 Intent 锚定的条款应为 WAIVED：${waivedClause?.status}`)
-// Q1：声明 smoke 锚定任何风险 → 拒绝；声明 basic 锚定 formal-candidate 类风险（R05）→ 拒绝
+// Q1：W0 冒烟波段已废弃——声明 smoke 归一为 basic 正常登记；声明 basic 锚定 formal-candidate 类风险（R05）→ 拒绝
 const formalRisk = latest.risks.find((risk) => risk.taxonomyId === 'R05')
 if (!formalRisk) throw new Error('fixture 缺少 R05 计数器边界风险（formal-candidate）')
 const waveRejected = registerVerificationIntents(root, [
-  { title: '冒烟伪登记', objective: 'x', failureMode: 'x', passCriteria: ['x'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['REQ-DMA-002'], rtlSignals: [bareSignal] }, recommendedMethod: 'simulation', wave: 'smoke' },
+  { title: '冒烟归一登记', objective: 'x', failureMode: 'x', passCriteria: ['x'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['REQ-DMA-002'], rtlSignals: [bareSignal] }, recommendedMethod: 'simulation', wave: 'smoke' },
   { title: '基础伪登记', objective: 'x', failureMode: 'x', passCriteria: ['x'], anchors: { riskIds: [formalRisk.id], requirementIds: ['REQ-DMA-002'], rtlSignals: [bareSignal] }, recommendedMethod: 'simulation', wave: 'basic' }
 ])
-if (waveRejected.accepted.length !== 0 || waveRejected.rejected.length !== 2) throw new Error(`wave 一致性校验未拒绝非法声明：${JSON.stringify(waveRejected)}`)
+if (waveRejected.accepted.length !== 1 || waveRejected.rejected.length !== 1) throw new Error(`wave 校验结果错误（smoke 应归一为 basic 登记、basic+formal-candidate 应拒绝）：${JSON.stringify(waveRejected)}`)
 if (!waveRejected.rejected.every((item) => item.reasons.some((reason) => reason.includes('冲突') && reason.includes('不得')))) throw new Error('wave 拒绝缺少冲突原因说明')
+// smoke 声明落库即归一：场景 wave 为 basic，不再是 smoke
+const afterSmokeNormalized = buildVerificationIntelligence(root)
+if (afterSmokeNormalized.verificationState.scenarios.find((scenario) => scenario.title === '冒烟归一登记')?.wave !== 'basic') throw new Error('声明 smoke 的场景应归一登记为 basic')
 // Q3：topic 归一并（trim/大小写/空白归一后按归一键聚合，防"错误注入"裂成两波）
 const cornerReg = registerVerificationIntents(root, [
   { title: '错误路径定向验证', objective: '验证 abort 路径错误处理', failureMode: '反例：错误状态未锁存', passCriteria: ['错误状态锁存直到软件清除'], anchors: { riskIds: [anchorRisk.id], requirementIds: ['SPEC-ERR-001#a'], rtlSignals: [qualifiedSignal] }, recommendedMethod: 'simulation', wave: 'corner', topic: '错误注入' },
@@ -446,18 +450,24 @@ if (planNow.clusters.length >= 2) {
 // execution-summary 新增区块（展示层契约 B）：waveProgress + specMapping，仍 ≤10KB
 const summary2Path = join(root, 'verification', 'intelligence', 'execution-summary.json')
 const summary2 = JSON.parse(readFileSync(summary2Path, 'utf-8'))
-if (!Array.isArray(summary2.waveProgress) || summary2.waveProgress.length !== 4) throw new Error('execution-summary 缺少 waveProgress 四段')
+if (!Array.isArray(summary2.waveProgress) || summary2.waveProgress.length !== 3) throw new Error('execution-summary 缺少 waveProgress 三段（W1-W3）')
 if (typeof summary2.specMapping?.clauseTotal !== 'number' || typeof summary2.specMapping?.coveredClause !== 'number' || typeof summary2.specMapping?.blockedBySpecCount !== 'number' || !Array.isArray(summary2.specMapping?.unmappedClause)) throw new Error('execution-summary 缺少 specMapping 区块（含 blockedBySpecCount）')
 if (!summary2.specMapping.unmappedClause.every((item) => item.specId && item.clause)) throw new Error('unmappedClause 形状不符展示层契约 B.2')
 if (statSync(summary2Path).size > 10 * 1024) throw new Error('execution-summary 超过 10KB 硬指标')
-// 旧数据兼容：registry 中无 wave/topic 字段的场景不崩，波段由来源/方法推导
+// 旧数据兼容：registry 中无 wave/topic 字段的场景不崩，波段由来源/方法推导；存量 wave='smoke' 归一为 basic
 const legacyRegistryPath = join(root, 'verification', 'intelligence', 'scenario-registry.json')
 const legacyRegistry = JSON.parse(readFileSync(legacyRegistryPath, 'utf-8'))
-for (const scenario of legacyRegistry.scenarios) { delete scenario.wave; delete scenario.topic }
+legacyRegistry.scenarios.forEach((scenario, index) => { if (index === 0) { scenario.wave = 'smoke'; delete scenario.topic } else { delete scenario.wave; delete scenario.topic } })
 writeFileSync(legacyRegistryPath, JSON.stringify(legacyRegistry, null, 2), 'utf-8')
 const legacy = buildVerificationIntelligence(root)
-if (!Array.isArray(legacy.verificationState.waveProgress) || legacy.verificationState.waveProgress.length !== 4) throw new Error('旧数据（无 wave 字段）重建后波段进度缺失')
-if (!legacy.verificationState.executionPlan.every((plan) => plan.wave)) throw new Error('旧数据场景波段推导失败')
+if (!Array.isArray(legacy.verificationState.waveProgress) || legacy.verificationState.waveProgress.length !== 3) throw new Error('旧数据（无 wave 字段）重建后波段进度缺失（应为 W1-W3 三段）')
+if (legacy.verificationState.waveProgress.some((item) => item.id === 'W0')) throw new Error('W0 冒烟波段已删除，不应再产出 W0 条目')
+if (!legacy.verificationState.executionPlan.every((plan) => plan.wave && plan.wave !== 'smoke')) throw new Error('旧数据场景波段推导失败（存量 smoke 应归一为 basic）')
+// 存量 smoke 场景应计入 W1（registry 保留原值，派生侧归一）
+const legacyResolve = (scenario) => scenario.wave === 'smoke' ? 'basic' : scenario.wave ?? ((scenario.origin === 'AGENT_INTENT' || scenario.origin === 'CLAUSE_DERIVED') ? 'basic' : scenario.method === 'formal-candidate' ? 'signoff' : 'corner')
+const expectedBasic = legacy.verificationState.scenarios.filter((scenario) => legacyResolve(scenario) === 'basic').length
+const w1Legacy = legacy.verificationState.waveProgress.find((item) => item.id === 'W1')
+if (w1Legacy?.scenarioCount !== expectedBasic || expectedBasic === 0) throw new Error(`存量 smoke 场景未归一进 W1：W1.scenarioCount=${w1Legacy?.scenarioCount}，期望 ${expectedBasic}`)
 if (!legacy.verificationState.specMapping || legacy.verificationState.executionClusters === undefined) throw new Error('旧数据重建缺少 v0.8.6 区块')
 
 // ===== SYNTH 门禁接 PPA（2026-09-02 契约 §二）：reviewSynthesisClauses 阻断/放行 =====
@@ -491,8 +501,8 @@ mkdirSync(join(emptyRoot, 'rtl'), { recursive: true })
 writeFileSync(join(emptyRoot, 'rtl', 'passthrough.v'), 'module passthrough(input a, output b); assign b = a; endmodule\n', 'utf-8')
 const emptyBuild = buildVerificationIntelligence(emptyRoot)
 if (emptyBuild.verificationState.specMapping.clauseTotal !== 0) throw new Error('空规格 fixture 条款数应为 0')
-if (emptyBuild.verificationState.waveProgress[1].status !== 'pending') throw new Error(`无可验证条款时 W1 应 pending：${emptyBuild.verificationState.waveProgress[1].status}`)
-if (emptyBuild.verificationState.waveProgress[1].scenarioCount !== 0) throw new Error('无可验证条款时不应派生 basic 候选')
+if (emptyBuild.verificationState.waveProgress.find((item) => item.id === 'W1')?.status !== 'pending') throw new Error(`无可验证条款时 W1 应 pending：${emptyBuild.verificationState.waveProgress.find((item) => item.id === 'W1')?.status}`)
+if (emptyBuild.verificationState.waveProgress.find((item) => item.id === 'W1')?.scenarioCount !== 0) throw new Error('无可验证条款时不应派生 basic 候选')
 
 // ===== W1 done：派生候选经 scenario_hits 闭环 → 条款 PASSED → coveredClause=clauseTotal =====
 const doneRoot = mkdtempSync(join(tmpdir(), 'moonglass-vi-done-'))
@@ -515,7 +525,7 @@ endmodule
 const doneFirst = buildVerificationIntelligence(doneRoot)
 const doneDerived = doneFirst.verificationState.scenarios.filter((scenario) => scenario.origin === 'CLAUSE_DERIVED')
 if (doneDerived.length !== 1 || doneDerived[0].requirementIds[0] !== 'REQ-BASE-001') throw new Error(`单条款项目应派生恰好一个 basic 候选：${doneDerived.length}`)
-if (doneFirst.verificationState.waveProgress[1].status !== 'in-progress') throw new Error('条款未覆盖时 W1 应 in-progress')
+if (doneFirst.verificationState.waveProgress.find((item) => item.id === 'W1')?.status !== 'in-progress') throw new Error('条款未覆盖时 W1 应 in-progress')
 // 派生候选进 W1 执行门：basic 未闭环时 corner/signoff（如 R05 formal 候选）不进执行计划
 if (doneFirst.verificationState.executionPlan.length === 0 || !doneFirst.verificationState.executionPlan.every((plan) => plan.wave === 'basic')) throw new Error('派生候选未进入 W1 执行门（corner/signoff 应被挡）')
 writeFileSync(join(doneRoot, 'verification', 'results', 'mini', 'results_icarus.xml'), '<testsuite tests="2" failures="0"/>', 'utf-8')
@@ -527,7 +537,7 @@ writeFileSync(join(doneRoot, 'verification', 'results', 'mini', 'scenario_hits.j
 const doneSecond = buildVerificationIntelligence(doneRoot)
 if (doneSecond.verificationState.scenarios.find((scenario) => scenario.id === doneDerived[0].id)?.status !== 'VERIFIED') throw new Error('派生候选 scenario_hits 证据未闭环')
 if (doneSecond.verificationState.specMapping.statusCounts.PASSED !== 1 || doneSecond.verificationState.specMapping.coveredClause !== 1) throw new Error('派生候选闭环后条款应 PASSED')
-if (doneSecond.verificationState.waveProgress[1].status !== 'done') throw new Error(`coveredClause=clauseTotal 时 W1 应 done：${doneSecond.verificationState.waveProgress[1].status}`)
+if (doneSecond.verificationState.waveProgress.find((item) => item.id === 'W1')?.status !== 'done') throw new Error(`coveredClause=clauseTotal 时 W1 应 done：${doneSecond.verificationState.waveProgress.find((item) => item.id === 'W1')?.status}`)
 
 // 单一哈希空间契约（2026-09-08 修复）：computeRtlHash 是证据登记与新鲜度判定的唯一口径
 if (computeRtlHash(doneRoot) !== doneSecond.structuralModel.rtlHash) throw new Error('computeRtlHash 与 structuralModel.rtlHash 口径不一致')
