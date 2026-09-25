@@ -4,7 +4,7 @@ MoonGlass 是面向 ASIC/SoC 工程师的芯片开发全流程 AI 工作台。�
 
 当前版本：**v0.9.0** ｜ Windows x64
 
-[下载绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.0) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
+[下载绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.0) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MoonGlass-AIGV-2.0白皮书.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
 
 ## MoonGlass 能做什么
 
@@ -42,7 +42,7 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 - **W0-W3 验证波段**：从环境与基础功能，到增补验证、签核和残余风险审查。
 - **验证态势**：集中展示 Spec Gap、Intent 闭环率、风险热区、覆盖缺口、失败诊断和下一步行动。
 
-详细说明：[MoonGlass AIGV 2.0 白皮书](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html) ｜ [AIGV 方法学论文](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)
+详细说明：[MoonGlass AIGV 2.0 白皮书](./docs/MoonGlass-AIGV-2.0白皮书.html) ｜ [AIGV 方法学论文](./docs/MoonGlass-AIGV验证方法学.html)
 
 ## 主要能力
 
@@ -79,7 +79,7 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 4. 从需求-规格定义阶段开始推进，或进入识别出的既有阶段。
 5. 在每个阶段检查 Agent 输出、文件变化、工具结果和门禁，再决定是否推进。
 
-完整说明：[MoonGlass 用户手册](./docs/USER-MANUAL-ZH-CN.md) ｜ [HTML 快速手册](./docs/QUICK-START-ZH-CN.html)
+完整说明：[MoonGlass 用户手册](./docs/USER-MANUAL-ZH-CN.md) ｜ [HTML 快速手册](./docs/MoonGlass快速使用手册.html)
 
 ## 从源码运行
 
@@ -111,11 +111,11 @@ MoonGlass 遵循几个基本原则：
 
 MoonGlass 同时作为一个工程实验平台，持续整理 ASIC Agent、证据驱动开发、AIGV、长时 Agent 上下文治理和人机协同签核方面的实践材料。相关文档用于工程讨论、方法学比较和后续实验设计，不代表同行评审结论，也不替代商业 EDA 签核认证。
 
-- [从证据驱动流程到任务级验证协同：MoonGlass v0.6.0-v0.9.0 工程演进](./docs/MOONGLASS-v0.6.0-TO-v0.9.0-EVOLUTION-ZH-CN.html)
-- [证据驱动型 ASIC Agent 工作流](./docs/EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html)
-- [MoonGlass AIGV 方法学](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)
-- [MoonGlass AIGV 2.0 白皮书](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html)
-- [长时 Agent 芯片开发工程学](./docs/MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html)
+- [从证据驱动流程到任务级验证协同：MoonGlass v0.6.0-v0.9.0 工程演进](./docs/MoonGlass-v0.6.0至v0.9.0工程演进.html)
+- [证据驱动型 ASIC Agent 工作流](./docs/证据驱动型ASIC-Agent工作流.html)
+- [MoonGlass AIGV 方法学](./docs/MoonGlass-AIGV验证方法学.html)
+- [MoonGlass AIGV 2.0 白皮书](./docs/MoonGlass-AIGV-2.0白皮书.html)
+- [长时 Agent 芯片开发工程学](./docs/MoonGlass长时Agent芯片开发工程学.html)
 - [总体工程报告](./reports/overall-report.md)
 
 欢迎通过 GitHub Issues 讨论复现问题、验证策略、工具链适配、AIGV 语义和工程改进建议。

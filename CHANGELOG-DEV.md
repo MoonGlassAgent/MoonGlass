@@ -2,6 +2,90 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-15：已完成批次会话标签可关闭
+
+- 问题：会话标签栏中已完成的 VERIF 批次会话（"查看"徽标）无关闭按钮，完成记录不断堆积无法清理。
+- 修复：SessionTabs 对未运行中的批次会话渲染 × 关闭按钮（复用既有 closeSession 链路：删除 JSONL + 清理模型登记，运行中批次仍不显示）；主进程 closeSession 增加保护——正在运行的 VERIF 批次会话（activeVerifBatches 命中）拒绝关闭并提示先停止托管，防止编排循环的 settle 等待悬空。
+- 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke` 通过。
+
+## 2026-09-15：lint 规则扩展（Verilator 警告升级 + 4 条结构规则）
+
+- 背景：对 verible 官方规则目录、svlint 规则集（ruleset-designintent）、lowRISC Verilog 风格指南与 Verilator 警告清单调研后挑选高价值项落地。
+- Verilator 警告升级：runLint/runDesignLint 加 `-Wall` 打开 SYNCASYNCNET/MULTIDRIVEN 等 -Wall 专属类别；精选升级集（LATCH 非预期锁存器、MULTIDRIVEN 多驱动、SYNCASYNCNET 复位同步/异步混用、UNOPTFLAT 组合环路、CASEOVERLAP、CMPCONST、SELRANGE）由 warning 升级为门禁阻塞 Error；WIDTH 家族与 CASEINCOMPLETE 刻意保留 warning（存量命中率高、多为良性）。
+- 新增 4 条 moonglass-* 结构规则：`comb-nonblocking`（组合块禁非阻塞，error）、`seq-nonblocking`（时序块禁对 reg 阻塞赋值，for 循环变量/function 豁免，error）、`no-case-equality`（RTL 禁 ===/!==，initial/task 仿真语境屏蔽，error）、`self-assign`（自赋值提醒，warning 级不阻塞）。
+- 统一入口 `moonglassCustomIssues()` 挂进两个执行器；提示词 RTL 强制检查段同步补齐同义约束。
+- 真实回归：用户缺陷文件 LITE_DMA/lite_dma_axi_master.v 精确命中 228/276/287 行 i_rst_n 组合逻辑且新规则零误报；IP 库与 demo-seed 存量 RTL 扫描零误报（pmu.v 一处保持态自赋值按设计为良性 warning）。
+- 验证：新建 `lint-rules-smoke`（9 断言全过，注册进 core 套件）；`eda-gate-smoke`/`clk-rst-comb-lint-smoke`/`axi-lite-timer-smoke`/`pi-tools-smoke` 回归通过；`pnpm typecheck`、`pnpm build` 通过。
+
+## 2026-09-15：lint 新规则 moonglass-no-clk-rst-in-comb（时钟/复位禁入组合逻辑）
+
+- 背景：第三方 review 发现生成的 RTL 中复位/时钟信号参与组合逻辑，lint 门禁查不出。根因四重叠加：规则资产与提示词均无此约束；Verilator 5.x 已移除 CLKDATA/CDCRSTLOGIC、verible 无此类语义规则；门禁只数 Error 且 `-Wno-fatal` 吞 Warning；另发现 `verible_default_rules.txt`（15 条风格规则）是死资产（rulesFile 从未传递）。
+- 实现：`eda-bridge` 新增 `clkRstInCombIssues`（候选信号 = 命名约定词干 clk/clock/rst/reset（含 i_/o_、_n 变体）∪ 时序敏感表信号；违规位置 = assign 右值 + 组合 always 块体；豁免时序块复位判断、注释/字符串、词干误伤（clkdiv/rst_cnt）、整标识符直通转发），以 Error 级挂进 `runLint`/`runDesignLint`——PhaseEngine 门禁（RTL→VERIF、QA→SYNTH）与 Agent `run_verible_lint` 工具自动同时生效，无需改门禁代码。
+- 提示词：RTL 阶段强制检查段新增同义约束，从源头减少生成。
+- 意外收获：新规则抓到内置 IP 模板 `axi_lite_timer.sv` 用 `aresetn` 组合门控 AXI ready 的真实缺陷，已改为时序复位释放寄存器（行为等价，TB 通过）。
+- 验证：新建 `clk-rst-comb-lint-smoke`（9 项断言全过，已注册进 core 套件）；IP 库与 demo-seed 存量 RTL 扫描 0 违规；`eda-gate-smoke`/`axi-lite-timer-smoke`/`pi-tools-smoke` 回归通过；`pnpm typecheck`、`pnpm build` 通过。
+
+## 2026-09-15：Agent 启动竞态与 Markdown 链接白屏修复
+
+- **Agent 启动竞态（进新阶段慢 + 启动期切模型导致会话永久损坏）**：根因是并发 ensure 返回半成品快照 + 启动期无 ready 门禁 + 初始化失败不清理。
+  - `AgentService.ensureSession` 加 per-project 在飞去重（pendingEnsures），并发 ensure 共享同一 Promise，消灭"selectedModel=null 空快照赢"路径；
+  - 所有 spawn 后初始化段（waitReady + 初始 set_model）统一 try/catch，失败时先从 sessions map 摘除再 dispose，下次 ensure 自动重 spawn——补上此前缺失的重启机制；
+  - `PiSession` 新增 `ready` 标记，`prompt`/`setModel`/`compactSession` 在启动完成前直接拒绝，不再向半 boot 的 pi 挤命令；
+  - 渲染端 chatStore.ensure 同做在飞共享；模型下拉在 selectedModel 未回填前禁用；WorkspacePage 去掉阶段推进后的重复 ensure。
+- **Markdown 预览点击不存在文件链接白屏**：根因是 `MarkdownPreview` 的裸 `<a href>` 触发 Electron 整窗导航到不存在文件（ERR_FILE_NOT_FOUND），React 应用被卸载。双层修复：
+  - 渲染端 `MarkdownPreview` 拦截相对路径链接，dispatch `moonglass-open-project-file` 复用 openFile 安全链路（不存在 → unreadable tab）；http(s)/锚点放行；
+  - 主进程新增 `will-navigate` 兜底：非 app 自身导航一律 preventDefault，http(s) 转系统浏览器打开——覆盖任何来源的整窗跳转。
+- 验证：`pnpm typecheck`、`pnpm build` 通过；`agent-interaction-smoke`/`session-transcript-smoke`/`pi-rpc-smoke`/`agent-run-watchdog-smoke`/`agent-event-routing-smoke` 全过。
+
+## 2026-09-15：v0.9.7 基线
+
+- **覆盖率详细报告视图**：Verilator 覆盖率从聚合百分比升级为可下钻明细——验证态势页新增「代码覆盖率明细」面板，按场景 → 类型（行/条件/表达式/翻转/FSM）→ 文件 → 逐检测点（行号、cond_then/else 语义、命中次数、层级路径）四层查看，支持只看未覆盖与 RTL 源码逐行 gutter 标注；历史 coverage.dat 经主进程 CoverageService 追溯解析并缓存 coverage-detail.json，无需重新仿真。
+- **Pi Coding Agent 内核升级**：0.84.1 → 0.85.1（详见同日专项条目）。
+- 自 v0.9.5 基线以来的其余变更：AIGV 方法学论文 2.1、docs HTML 中文化、验证态势页工程使用指南、运行中主会话切换模型。
+- 验证：`pnpm typecheck`、核心测试套件（22 脚本）、`pi-rpc-smoke`/`pi-tools-smoke`/`pi-rpc-event-smoke`、`verilator-coverage-smoke`（20 项）、`pnpm build`、版本一致性检查全部通过。
+
+## 2026-09-15：代码覆盖率详细报告视图
+
+- 解析层：`eda-bridge` 新增 `parseVerilatorCoverageDetail`，捕获 coverage.dat 中此前丢弃的文件/行列/语义/层级字段；仿真落盘时同步写 `coverage-detail.json` 缓存；`parseVerilatorCoverage` 签名与行为不变。
+- 服务层：新增主进程 `CoverageService`（`coverage:detail` IPC，`verification/results/` 前缀防穿越），缓存缺失时回退解析 coverage.dat 并回写——demo-seed 历史结果实测可解析（10 文件，汇总口径与旧解析器一致）。
+- UI 层：验证态势页新增 `CoverageDetailPanel`（场景选择 / 六类概览 / 类型 tab / 只看未覆盖 / 按文件聚合 / 逐点列表 / 源码 gutter 标注）；dat 绝对路径经 `workspaces/<uuid>/` 截取 + basename 文件树匹配双路映射；文案全量走 i18n（zh-CN 源 + en 镜像）。
+- 诚实性口径：本机 Verilator 5.x 无独立 branch 插桩类型，条件覆盖为表达式求值口径，报告与 coverage_report.md 均标注"非 MC/DC"。
+- 验证：`pnpm typecheck`、`pnpm build`、`verilator-coverage-smoke`（真实运行 + 合成 dat 双路径断言）通过。
+
+## 2026-09-15：Pi Coding Agent 内核升级 0.84.1 → 0.85.1
+
+- 版本：`@earendil-works/pi-coding-agent` 精确锁定到 `0.85.1`（跳过 0.85.0——该版本误发布内部实验代码导致 SDK import 失败，0.85.1 已修复）。
+- 兼容性核验：对照官方 CHANGELOG 与 dist 类型定义逐层比对——RPC 协议纯增量（`message_update` 新增 cumulative `usage`、`toolcall_start` 带 `id`/`toolName`、新增 `clear_queue`）；扩展 API 纯增量（`session_compact_failed`、`ui_prompt_start/end`），`registerProvider`/`ProviderConfig` 形状不变，`moonglass-providers.ts` / `moonglass-tools.ts` / `PiRpcClient.ts` 零改动编译通过。
+- 依赖变化：pi 本体不再依赖 `pi-client`/`pi-protocol`，新增 `@earendil-works/chord`；`stage-pi-runtime.mjs` 通用递归物化逻辑直接覆盖（128 个依赖包，版本冲突照常嵌套处理）。
+- 行为变化确认：`setModel`/`setThinkingLevel` 自 0.85.0 起只作用于当前会话、不再改写新会话默认（MoonGlass 每个聊天即一个 pi 会话，恰好匹配该语义）。
+- 顺带受益的 upstream 修复：Windows 下 taskkill 缺失导致 shell abort 崩溃（0.84.4）、扩展 `triggerTurn:false` 消息插入乱序（0.84.4）、恢复缺换行 JSONL 会话损坏下一条（0.84.4）、RPC `abort` 不取消手动 compaction（0.85.0）。
+- 验证：`pnpm typecheck`、核心测试套件（22 个脚本）、`pi-rpc-smoke`（Provider 注册 + 模型注册/切换 + 流式收尾）、`pi-tools-smoke`（桥接扩展加载零错误、技能/命令齐全）、`pi-rpc-event-smoke`、`pnpm build`、`stage-pi-runtime`（物化 0.85.1 + chord）全部通过；`typecheck:root` 的 11 条报错为工作区既有问题（升级前干净树逐字一致，均与 pi 无关）。
+
+## 2026-09-14：AIGV 方法学论文刷新至 2.1
+
+- 刷新 `docs/MoonGlass-AIGV验证方法学.html`，补入 MoonGlass v0.9.x 已落地的 W0-W3 验证波段、任务级会话、每批最多 3 个 Scenario、完成屏障和增量执行策略。
+- 增加渐进式诊断、证据 RTL/Scope Hash、运行用途隔离、原子快照、Formal 能力预检与义务分级，以及验证态势到工程行动的映射。
+- 新增“已实现 / 项目适配 / 研究方向”边界，避免把方法主张、当前产品能力和未来研究混为一谈。
+
+## 2026-09-14：docs HTML 文件中文化
+
+- 将 `docs` 下除 GitHub Pages 固定入口 `index.html` 外的 12 个 HTML 文档统一改为中文可读文件名。
+- 同步更新 README、Release Notes、开发摘要、网页互链、canonical URL 和分享元数据中的旧文件名，避免重命名后产生失效链接。
+
+## 2026-09-14：验证态势页工程使用指南
+
+- 新增单文件 HTML《MoonGlass 验证态势页详解与工程使用指南》。
+- 逐项解释总体签核、W0-W3、实际用例执行、规格映射、Verification Space、风险、行动、九项指标、模块策略、Intent、Spec Gap、Coverage Hole、诊断控制和证据文件。
+- 增加六大核心区域专门读图法，分别说明模块分层、风险热区、签核阻断、Intent 闭环、规格缺口和 Coverage Hole 应先看什么、如何判断及如何处置，并加入 DMA/FIFO 工程示例。
+- 增加三分钟快速读法、日常收敛流程、常见问题处置与人工签核检查表。
+
+## 2026-09-14：运行中主会话支持切换模型
+
+- 修复 Agent 执行中选择新模型时被主进程直接拒绝、界面看似无法操作的问题。
+- 运行中切换会先提示用户；确认后可靠中止当前轮次，再切换模型并刷新上下文统计。已写入工作区的文件保持不变。
+- 模型切换失败不再被状态层静默吞掉，会保留原模型并显示真实错误。
+- 验证：`pnpm typecheck` 与 Agent 结构化交互冒烟测试通过。
+
 ## 2026-09-11：v0.9.5 基线
 
 - **DEFECT-PACK-001（Flow_Cross 用户提交包，16 项缺陷）全部受理**：Formal 证据哈希统一进工作区口径（scopeHash 溯源）、关键场景与影响未知排除已豁免场景、run_simulation 运行用途隔离（purpose 参数 + 证据旁路归档）、Cocotb 编译日志与退出码语义修正、Verilator/Yosys 非 ASCII 路径修复、TBD 消解语义、W1 卡片口径、mutation schema 告警、yosys-abc.exe 补入打包清单。
@@ -342,7 +426,7 @@
 
 ## 2026-08-20：新增傻瓜式 HTML 使用说明
 
-- 新增 `docs/QUICK-START-ZH-CN.html`，覆盖启动、模型配置、新建/导入项目、六阶段开发、Agent 会话、一键托管、变更、IP 库、波形和常见问题。
+- 新增 `docs/MoonGlass快速使用手册.html`，覆盖启动、模型配置、新建/导入项目、六阶段开发、Agent 会话、一键托管、变更、IP 库、波形和常见问题。
 - HTML 可离线打开、浏览器阅读和打印为 PDF，使用仓库内现有截图，不依赖外部脚本或样式。
 - 生成可直接分享的单文件版 `D:\Projects\ASIC_Flow\MoonGlass-使用说明书-v0.5.0.html`，将三张界面截图以 Data URI 内嵌，不依赖外部图片目录。
 - 为在线说明书增加 Open Graph、Twitter Card、摘要和 canonical 元数据，并以 GitHub Pages 形式发布，分享链接可展示标题、说明和界面封面。
@@ -575,7 +659,7 @@
 
 # 2026-08-28：AIGV 方法学白皮书
 
-- 新增 `docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html`，系统说明 AIGV 的理论原则、数据模型、风险推导、Verification Intent、Scenario、Coverage Hole、Formal、证据闭环、文档治理、签核准则、工程示例与研究议程。
+- 新增 `docs/MoonGlass-AIGV验证方法学.html`，系统说明 AIGV 的理论原则、数据模型、风险推导、Verification Intent、Scenario、Coverage Hole、Formal、证据闭环、文档治理、签核准则、工程示例与研究议程。
 - 文档采用响应式、可打印的学术论文版式，可直接离线阅读和分享。
 
 # 2026-08-28：渐进式验证诊断控制
@@ -597,3 +681,7 @@
 - 默认归档到 `.moonglass/phase-archives/<PHASE>/<timestamp>/`，并写入操作清单；彻底清除要求二次确认。
 - 重做仅处理阶段白名单产物，保留上游成果；已完成的后续阶段按既有规则显示黄色变更提醒。
 - 重置阶段状态、门禁与评审信息，并以空白 Agent session 重新开始，同时保留原模型选择。
+# 2026-09-14 - 新增 MoonGlass 新手使用介绍
+
+- 新增 `docs/MoonGlass新手使用介绍.html`，以大纲、真实界面截图和流程图系统介绍首次配置、项目管理、六阶段工作流、Agent 协作、AIGV、验证态势、一键托管、变更重做与交付签核。
+- 增加 30 分钟新手演练、常见问题、工具用途表与首次使用检查表，并提供桌面、移动端和打印排版。

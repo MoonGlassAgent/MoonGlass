@@ -121,9 +121,9 @@ pnpm lint:rtl -- --project <RTL项目目录> --top <顶层模块>
 ## 10. 相关文档
 
 - [`dev-summary-v0.3.md`](./dev-summary-v0.3.md)：上一份开发交接报告。
-- [`MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html`](./MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)：AIGV 方法学。
-- [`MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html`](./MOONGLASS-LONG-RUN-AGENT-ENGINEERING-ZH-CN.html)：长时 Agent 工程学。
-- [`EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html`](./EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html)：证据驱动 ASIC Agent 工作流。
+- [`MoonGlass-AIGV验证方法学.html`](./MoonGlass-AIGV验证方法学.html)：AIGV 方法学。
+- [`MoonGlass长时Agent芯片开发工程学.html`](./MoonGlass长时Agent芯片开发工程学.html)：长时 Agent 工程学。
+- [`证据驱动型ASIC-Agent工作流.html`](./证据驱动型ASIC-Agent工作流.html)：证据驱动 ASIC Agent 工作流。
 
 ---
 

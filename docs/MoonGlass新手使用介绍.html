@@ -1,0 +1,118 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="description" content="MoonGlass ASIC Design Agent 新手使用介绍：从环境配置、项目创建到 RTL、验证、质量检查和综合交付。">
+  <title>MoonGlass ASIC Design Agent 新手使用介绍</title>
+  <style>
+    :root{--ink:#172033;--muted:#637083;--line:#dfe4ea;--paper:#fff;--wash:#f4f7f8;--nav:#111923;--green:#008f70;--green2:#dff7ef;--blue:#2469b2;--amber:#a76500;--red:#b42318;--code:#101720}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--wash);color:var(--ink);font:16px/1.75 system-ui,-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;letter-spacing:0}a{color:var(--blue)}code{font-family:Consolas,monospace;background:#eef1f4;padding:.1em .35em;border-radius:3px}header{background:var(--nav);color:#fff;padding:58px 24px 48px;border-bottom:5px solid var(--green)}header .wrap{max-width:1180px;margin:auto}header h1{font-size:42px;line-height:1.18;margin:0 0 12px}header p{max-width:820px;color:#cbd5df;font-size:19px;margin:0}.badge{display:inline-block;margin-bottom:16px;padding:4px 10px;border:1px solid #3f5265;color:#8fe2cb;font-size:13px;border-radius:4px}
+    .layout{display:grid;grid-template-columns:260px minmax(0,900px);gap:34px;max-width:1220px;margin:30px auto;padding:0 22px}.toc{position:sticky;top:18px;align-self:start;background:#fff;border:1px solid var(--line);padding:18px}.toc b{display:block;margin-bottom:8px}.toc a{display:block;color:#445064;text-decoration:none;padding:4px 0;font-size:14px}.toc a:hover{color:var(--green)}main{min-width:0;background:#fff;border:1px solid var(--line);padding:38px 44px}section{scroll-margin-top:18px;margin:0 0 54px}h2{font-size:28px;line-height:1.3;margin:0 0 18px;padding-bottom:10px;border-bottom:2px solid var(--ink)}h3{font-size:20px;margin:28px 0 8px}p{margin:8px 0 14px}ul,ol{padding-left:24px}li{margin:5px 0}.lead{font-size:19px;color:#354255}.callout{border-left:4px solid var(--green);background:var(--green2);padding:14px 18px;margin:18px 0}.warn{border-left-color:var(--amber);background:#fff6df}.danger{border-left-color:var(--red);background:#fff0ee}.grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}.card{border:1px solid var(--line);padding:16px;border-radius:6px;background:#fff}.card h3{margin:0 0 5px;font-size:18px}.num{display:inline-grid;place-items:center;width:28px;height:28px;border-radius:50%;background:var(--nav);color:#fff;font-weight:700;margin-right:8px}
+    .pipeline{display:flex;align-items:stretch;gap:7px;margin:22px 0;overflow-x:auto;padding-bottom:8px}.phase{min-width:126px;border:1px solid #9fb2c1;background:#f8fafb;padding:12px 10px}.phase strong{display:block;color:var(--green)}.arrow{align-self:center;color:#738092;font-size:22px}.architecture{display:grid;grid-template-columns:140px 1fr 170px;gap:10px;align-items:stretch;margin:20px 0}.arch-box{border:1px solid var(--line);padding:14px;background:#f8fafb}.arch-main{display:grid;gap:8px}.arch-main span{display:block;background:#fff;border:1px solid var(--line);padding:9px}.flow{display:flex;flex-wrap:wrap;align-items:center;gap:8px;margin:18px 0}.flow span{border:1px solid var(--line);background:#fff;padding:9px 12px}.flow i{font-style:normal;color:var(--green);font-weight:700}.metric{border-top:4px solid var(--green)}
+    figure{margin:24px 0;background:#f8fafb;border:1px solid var(--line);padding:10px}figure img{display:block;width:100%;height:auto}figcaption{font-size:13px;color:var(--muted);padding:8px 4px 2px}table{width:100%;border-collapse:collapse;margin:16px 0;font-size:14px}th,td{border:1px solid var(--line);padding:10px;vertical-align:top;text-align:left}th{background:#eef2f4}kbd{border:1px solid #aab2bd;border-bottom-width:2px;background:#fff;padding:1px 6px;border-radius:3px;font:13px Consolas,monospace}.checklist{list-style:none;padding:0}.checklist li{padding:8px 10px 8px 34px;border-bottom:1px solid var(--line);position:relative}.checklist li:before{content:"✓";position:absolute;left:10px;color:var(--green);font-weight:700}.footer{color:var(--muted);font-size:13px;border-top:1px solid var(--line);padding-top:22px}
+    @media(max-width:900px){header{padding:38px 20px}header h1{font-size:32px}.layout{display:block;margin:16px auto;padding:0 10px}.toc{position:static;margin-bottom:14px}.toc a{display:inline-block;margin-right:12px}main{padding:25px 18px}.grid{grid-template-columns:1fr}.architecture{grid-template-columns:1fr}table{display:block;overflow-x:auto;white-space:nowrap}h2{font-size:24px}}
+    @media print{body{background:#fff}.toc{display:none}.layout{display:block;max-width:none;margin:0}.layout main{border:0;padding:0}header{background:#fff;color:#000;border-bottom:3px solid #000;padding:20px 0}header p{color:#333}section{break-inside:auto}.card,figure,table{break-inside:avoid}}
+  </style>
+</head>
+<body>
+<header><div class="wrap"><span class="badge">BEGINNER GUIDE · MoonGlass v0.9.x</span><h1>MoonGlass ASIC Design Agent<br>新手使用介绍</h1><p>从一句 IP 需求开始，理解如何让 Agent 协助完成需求规格、架构、RTL、验证、质量检查和综合实现，并用工程证据判断“是否真的完成”。</p></div></header>
+<div class="layout">
+  <nav class="toc" aria-label="文档大纲"><b>大纲</b>
+    <a href="#about">1. MoonGlass 是什么</a><a href="#map">2. 产品全景</a><a href="#start">3. 首次启动</a><a href="#project">4. 创建或导入项目</a><a href="#workspace">5. 工作区怎么用</a><a href="#stages">6. 六阶段流程</a><a href="#agent">7. 与 Agent 协作</a><a href="#files">8. 文件与设计浏览</a><a href="#ip">9. IP 模板库</a><a href="#aigv">10. AIGV 验证</a><a href="#posture">11. 验证态势</a><a href="#managed">12. 一键托管</a><a href="#change">13. 变更与重做</a><a href="#delivery">14. 交付与签核</a><a href="#tutorial">15. 新手演练</a><a href="#faq">16. 常见问题</a><a href="#practice">17. 推荐实践</a>
+  </nav>
+  <main>
+    <section id="about"><h2>1. MoonGlass 是什么</h2><p class="lead">MoonGlass 是面向 ASIC/IP 工程的 Agent 工作区。它把大模型的编码能力放进可追踪的芯片开发流程中，让 Agent 负责大量文档、RTL、测试、日志整理与回归执行，让工程师把注意力放在规格取舍、架构选择、Corner Case 和签核判断上。</p>
+      <div class="grid"><div class="card"><h3>IP 设计工程师</h3><p>把接口、性能和约束逐步转为架构、RTL、Lint、CDC、回归与综合证据。</p></div><div class="card"><h3>验证工程师</h3><p>从规格提取 Verification Intent，组织场景、Checker、Golden Model、覆盖率、Formal 与失败诊断。</p></div><div class="card"><h3>架构师</h3><p>快速形成可运行的设计 Demo，比较方案，并通过综合结果评估面积、频率与实现风险。</p></div><div class="card"><h3>项目负责人</h3><p>查看阶段状态、变更影响、风险热区、门禁结论和可审计交付报告。</p></div></div>
+      <div class="callout warn"><b>正确预期：</b>MoonGlass 不是“输入一句话便保证零缺陷 IP”的机器。它提高工程吞吐与证据完整性，但规格批准、架构决策、风险接受、商业 EDA 签核和流片责任仍属于工程团队。</div>
+    </section>
+
+    <section id="map"><h2>2. 产品全景</h2><div class="pipeline" aria-label="六阶段流程"><div class="phase"><strong>REQ_SPEC</strong>需求与规格</div><div class="arrow">→</div><div class="phase"><strong>ARCH</strong>架构设计</div><div class="arrow">→</div><div class="phase"><strong>RTL</strong>RTL 开发</div><div class="arrow">→</div><div class="phase"><strong>VERIF</strong>验证完备</div><div class="arrow">→</div><div class="phase"><strong>QA</strong>质量检查</div><div class="arrow">→</div><div class="phase"><strong>SYNTH</strong>综合实现</div></div>
+      <p>每个阶段都有目标、建议操作、输出物与推进门禁。门禁不是替你宣布“设计正确”，而是防止在关键证据缺失时无意识地继续推进。</p>
+      <div class="architecture"><div class="arch-box"><b>输入</b><br>需求描述<br>既有工程<br>IP/VIP 库<br>约束与工具</div><div class="arch-box arch-main"><b>MoonGlass 工作区</b><span>Agent 会话：规划、编码、验证、修复</span><span>工程流程：阶段、门禁、变更响应</span><span>工具链：Lint / CDC / Sim / Coverage / Formal / Synth</span><span>证据系统：日志、矩阵、结果、风险和报告</span></div><div class="arch-box"><b>输出</b><br>规格与架构<br>RTL 与测试<br>覆盖/Formal 证据<br>质量与综合报告</div></div>
+    </section>
+
+    <section id="start"><h2>3. 首次启动：先完成两类配置</h2><h3><span class="num">1</span>解压并启动</h3><ol><li>完整解压 Windows x64 绿色版 ZIP，不要直接在压缩包预览器中运行。</li><li>双击 <code>MoonGlass.exe</code>；项目与配置数据保存在用户数据目录或你指定的项目目录中。</li><li>首次启动后先进入左侧“设置”，不要急着新建复杂项目。</li></ol>
+      <h3><span class="num">2</span>配置模型服务</h3><ol><li>新增或启用 Provider，填写名称、Base URL 和 API Key。</li><li>填写该 Provider 实际可调用的模型 ID。模型列表接口不可用时，MoonGlass 会逐个用最小推理请求测试模型。</li><li>点击“测试连接”，确认 Provider 和目标模型均为 PASS，再保存。</li><li>API Key 只保存在本机；发布工程或绿色版前仍应做密钥扫描。</li></ol>
+      <h3><span class="num">3</span>检测开发环境与 EDA 工具链</h3><p>设置页会检测 Node.js、Python 和可用 EDA 工具。内置工具优先直接使用，系统已有安装也可以被识别。环境结果会缓存，只有环境指纹变化、用户刷新或缓存失效时才重新完整检测。</p>
+      <table><thead><tr><th>工具</th><th>主要用途</th><th>新手如何理解</th></tr></thead><tbody><tr><td>Verible / Slang</td><td>语法、风格、SystemVerilog 前端检查</td><td>先发现“代码读不通”与常见结构问题</td></tr><tr><td>Yosys</td><td>可综合性检查、开源综合</td><td>判断 RTL 是否能进入逻辑实现</td></tr><tr><td>Verilator</td><td>高速仿真、Lint、覆盖率</td><td>适合大回归和行/分支/条件等结构覆盖</td></tr><tr><td>Icarus Verilog + Cocotb</td><td>事件仿真与 Python 测试</td><td>快速搭建功能用例、驱动和 Checker</td></tr><tr><td>SymbiYosys + SMT Solver</td><td>开源 Formal/BMC</td><td>对适配语法的性质做有界证明或反例搜索</td></tr><tr><td>GTKWave</td><td>查看 VCD/FST 波形</td><td>从失败周期定位信号行为</td></tr></tbody></table>
+      <figure><img src="images/v086/07-toolchain.png" alt="MoonGlass 工具链设置页"><figcaption>工具链状态示意。界面布局可能随版本微调，以当前软件为准。</figcaption></figure>
+    </section>
+
+    <section id="project"><h2>4. 创建、导入与迁移项目</h2><h3>新建项目</h3><ol><li>点击“新建项目”，填写项目名和项目描述。描述应包含功能、接口、关键性能、时钟复位、异常行为与交付目标。</li><li>选择项目目录；留空则使用 MoonGlass 默认目录。</li><li>创建后进入 <b>REQ_SPEC</b>，先让 Agent 澄清需求，不要直接要求一次性写完全部 RTL。</li></ol>
+      <h3>导入已有项目</h3><p>选择已有工程目录后，MoonGlass 会识别 RTL、文档、验证结果与综合产物，并推断实际阶段。文件树不必预先改造成 MoonGlass 标准结构；导入过程应优先补齐缺失的规范目录，不覆盖已有文件。</p>
+      <h3>迁移项目</h3><p>使用项目迁移将工程复制或移动到新路径，并同步 MoonGlass 的项目引用。迁移前应停止正在写文件的 Agent/EDA 任务，并保留一次版本控制提交或独立备份。</p>
+      <figure><img src="images/v086/01-projects.png" alt="MoonGlass 项目管理页"><figcaption>项目管理页：查看目录、项目阶段、进度和更新时间。</figcaption></figure>
+    </section>
+
+    <section id="workspace"><h2>5. 工作区怎么用</h2><div class="architecture"><div class="arch-box"><b>左侧</b><br>全局导航<br>项目文件树<br>设置/IP库</div><div class="arch-box arch-main"><b>中央主区域</b><span>顶部：项目名、当前阶段、六阶段导航</span><span>页签：主会话、任务会话、代码与文档</span><span>内容：Agent 流式过程、工具调用、文件查看器</span><span>底部：问题、运行、验证、综合与产物</span></div><div class="arch-box"><b>右上/专页</b><br>模型选择<br>总体报告<br>设计浏览器<br>验证态势</div></div>
+      <p>阶段按钮显示状态：未开始、当前、已完成，以及由前置变更引发的黄色感叹号。双击已完成阶段可回看，不会立即丢弃后续结果；只有真正修改前置阶段产物后，后续已完成阶段才进入“待响应变更”。</p>
+      <figure><img src="images/v086/02-workspace-verif.png" alt="MoonGlass 验证阶段工作区"><figcaption>验证阶段工作区示意：阶段导航、项目文件、会话与工程控制台在同一上下文中协作。</figcaption></figure>
+    </section>
+
+    <section id="stages"><h2>6. 六阶段流程：每一步在做什么</h2><table><thead><tr><th>阶段</th><th>核心问题</th><th>典型输出</th><th>推进前重点检查</th></tr></thead><tbody>
+      <tr><td><b>REQ_SPEC</b><br>需求-规格定义</td><td>要做什么、边界是什么、怎样算满足？</td><td>项目章程、产品需求、模块规格、接口规格、需求-规格矩阵</td><td>稳定 ID、接口/时序/异常语义、可验证验收条件</td></tr>
+      <tr><td><b>ARCH</b><br>架构设计</td><td>怎样分解，数据/控制如何流动，风险在哪里？</td><td>架构说明、模块分解、寄存器图、时钟复位、关键决策</td><td>每项规格有落点；简单模块可按适用性省略微架构或独立时钟复位文档</td></tr>
+      <tr><td><b>RTL</b><br>RTL 开发</td><td>架构如何变成可读、可综合、可验证的实现？</td><td>Verilog/SystemVerilog、文件清单、Lint/CDC/综合冒烟结果</td><td>RTL 文件真实存在；顶层可展开；无关键语法、Lint 和 CDC 阻断</td></tr>
+      <tr><td><b>VERIF</b><br>验证完备</td><td>如何用独立证据证明主要功能与风险已经闭环？</td><td>Intent、验证计划、场景、测试、Checker、Golden Model、覆盖、Formal、回归证据</td><td>失败可诊断；高风险 Intent 有证据；缺口有责任人与下一步</td></tr>
+      <tr><td><b>QA</b><br>质量检查</td><td>证据是否一致、可追踪，变更是否被完整响应？</td><td>独立审查、追踪审计、变更审查、签核阻断项</td><td>不只接受 Agent 的“完成”描述，读取 RTL、测试、日志与覆盖原始证据</td></tr>
+      <tr><td><b>SYNTH</b><br>综合实现</td><td>设计在目标约束下是否可实现，代价如何？</td><td>SDC、综合日志、面积/时序报告、实现说明、最终报告</td><td>工艺与约束前提明确；开源估算不冒充商业 sign-off</td></tr></tbody></table>
+      <div class="callout"><b>新手原则：</b>先让本阶段产物达到“可评审”，再推进。门禁失败时先看缺的是文件、格式、证据还是产品缺陷，不要不分原因地反复让 Agent 重试同一个命令。</div>
+    </section>
+
+    <section id="agent"><h2>7. 与 Agent 协作</h2><h3>主会话与任务会话</h3><p><b>主会话</b>负责阶段端到端交付；<b>任务/平行会话</b>适合独立 Review、局部调查、替代方案或补充验证。两者可独立选择模型，切换页签不会取消另一会话的后台执行。</p>
+      <h3>怎样下达一个好任务</h3><div class="callout"><b>推荐结构：</b>目标 + 作用范围 + 不可改变项 + 验收证据。<br>示例：“修复 APB 读响应在 wait-state 下重复出队的问题；只修改 <code>rtl/apb_bridge.v</code> 及对应测试；不得改变寄存器地址；完成后运行 Lint、目标用例和相关回归，并给出失败前后证据。”</div>
+      <h3>理解会话里的过程</h3><ul><li>思考过程与工具调用会流式显示；工具“成功”只表示调用完成，不等于工程目标完成。</li><li>写文件输出应能点击打开；若只在思考中列出文件而目录中不存在，说明尚未形成实际产物。</li><li>一轮结束后切换模型，下一轮使用新选择的模型；会话模型与历史消息均会持久化。</li><li>上下文过长或方向明显偏离时，可“压缩上下文”保留摘要，或“重启会话”建立不带旧 session 的新任务。</li><li>“中止”会取消当前 Agent 运行；外部 EDA 子进程的退出可能有短暂延迟，应观察运行状态和进程结果。</li></ul>
+      <h3>多个确认项</h3><p>当 Agent 提出多个选择时，应完成全部选择后再继续，而不是点任意一项就进入下一轮。对大规格影响、接口破坏或交付风险进行人工确认；局部 RTL 修复可在边界明确时自动执行。</p>
+    </section>
+
+    <section id="files"><h2>8. 文件、代码、波形与设计浏览</h2><ul><li>双击项目树中的文本文件，在页签中打开；查看器支持行号、语法高亮、自动换行、字号调整、复制和 <kbd>Ctrl</kbd>+<kbd>F</kbd> 查找。</li><li>会话里的绝对 Windows 路径应包含盘符，例如 <code>D:\Projects\demo\rtl\top.v</code>，点击后直接定位文件。</li><li>双击 <code>.vcd</code>/<code>.fst</code> 可调用 GTKWave；若 GUI 未弹出，先在 PowerShell 中用同一完整路径验证工具与文件兼容性。</li><li>RTL Design Browser 展示 Top、模块层次、实例、端口和连接追踪；大型阵列层次可展开/收起，首次解析会比普通文本打开更慢。</li></ul>
+      <figure><img src="images/v086/04-design-browser.png" alt="RTL Design Browser"><figcaption>RTL Design Browser：用结构化层次理解复杂多文件 IP，而不是只逐个阅读源文件。</figcaption></figure>
+    </section>
+
+    <section id="ip"><h2>9. IP 模板库：从“目录”变成可检索资产</h2><ol><li>在“IP 库”中选择一个目标路径，MoonGlass 递归发现其中一个或多个 RTL IP、VIP、BFM、宏单元与文档。</li><li>先建立确定性索引：文件、顶层、端口、协议线索、语言与依赖。</li><li>再由 Pi 做语义增强，形成用途、接口角色、参数、适用条件、风险和置信度说明。语义增强失败不应破坏基础索引。</li><li>ARCH、RTL 与 VERIF Agent 可优先检索库内候选；候选不满足当前规格、许可、工艺或质量要求时必须拒用。</li></ol>
+      <div class="callout warn"><b>注意：</b>“在 IP 库中被发现”不等于“已被当前项目验证”。复用前仍要核对接口、参数、CDC、时序、许可、工艺模型和回归证据。</div>
+    </section>
+
+    <section id="aigv"><h2>10. AIGV：MoonGlass 怎样组织验证</h2><p>AIGV 的核心不是生成更多测试文件，而是把规格语义变成可审计的验证闭环：</p><div class="flow"><span>REQ / SPEC</span><i>→</i><span>Verification Intent</span><i>→</i><span>Scenario</span><i>→</i><span>TEST / COVER / PROPERTY</span><i>→</i><span>EVIDENCE</span><i>→</i><span>SIGNOFF</span></div>
+      <div class="grid"><div class="card metric"><h3>Verification Intent</h3><p>用自然语言说明“在什么前提下，DUT 必须表现出什么行为，怎样观察结果”。不是只有 Error/Normal 之类分类标签。</p></div><div class="card metric"><h3>Checker / Golden Model</h3><p>Checker 判断协议与不变量；Golden Model 给出期望功能结果。是否用于子模块取决于其角色、算法复杂度和风险。</p></div><div class="card metric"><h3>Coverage</h3><p>结构覆盖回答“代码走过哪里”，功能覆盖回答“规格空间走过哪里”。二者都不能单独证明正确。</p></div><div class="card metric"><h3>Formal</h3><p>对适合的性质做证明或反例搜索。工具解析失败属于工具限制，不能登记为 PASS，也不能误判为 RTL 缺陷。</p></div></div>
+      <h3>模块分层策略</h3><table><thead><tr><th>层级</th><th>默认验证深度</th><th>何时增强</th></tr></thead><tbody><tr><td>叶子/低风险子模块</td><td>Lint + 定向冒烟 + 顶层间接覆盖</td><td>高扇出、复杂状态、曾发生缺陷或难以从顶层观测</td></tr><tr><td>关键功能子模块</td><td>定向测试 + Checker；按需 Golden Model/Property</td><td>算法、仲裁、协议、缓存、一致性、安全相关逻辑</td></tr><tr><td>顶层/集成层</td><td>完整 Intent、场景、回归、覆盖、错误注入和端到端证据</td><td>始终作为主要签核面</td></tr></tbody></table>
+    </section>
+
+    <section id="posture"><h2>11. 验证态势：先看什么，再做什么</h2><p>验证态势把分散在文档、JSON、日志和覆盖报告中的信息整理为工程决策页。推荐阅读顺序：</p><ol><li><b>总体签核状态：</b>先判断 PASS、条件通过还是被阻断。</li><li><b>最高风险与阻断项：</b>看具体对象、证据、影响和建议动作，不只看数量。</li><li><b>Spec Gap：</b>哪些规格缺少可验证语义，或没有落到 Intent。</li><li><b>Intent 闭环：</b>哪些验证目标已有测试、Checker/Property、执行结果和证据。</li><li><b>风险热区：</b>高影响、低覆盖、复杂或历史失败集中的模块/场景。</li><li><b>Coverage Hole：</b>哪些语义场景未被有效激励或观察，而非只看“覆盖率低”。</li><li><b>下一步行动：</b>按优先级返回工作区，补规格、补激励、修 Checker、定位 RTL 或重跑回归。</li></ol>
+      <figure><img src="images/v086/03-verification-posture.png" alt="MoonGlass 验证态势页"><figcaption>验证态势页示意。完整字段解释与操作方法见专门的《验证态势用户指南》。</figcaption></figure>
+      <p><a href="MoonGlass验证态势用户指南.html">打开：MoonGlass 验证态势用户指南</a></p>
+    </section>
+
+    <section id="managed"><h2>12. 一键托管：让流程自动跑，但不跳过完成</h2><p>一键托管可选择后续若干阶段，自动下达任务、等待 Agent 真正结束、检查产物和门禁、进行可恢复修复，再推进到下一阶段。正常流程不要求用户逐项点确认。</p><h3>适合</h3><ul><li>规格边界清楚的小型/中型 IP；</li><li>已有稳定模板、测试基础和工具链；</li><li>夜间回归、文档补齐和重复性工程任务。</li></ul><h3>不适合完全无人值守</h3><ul><li>接口或微架构仍有重大分歧；</li><li>第三方 IP 许可、工艺库、时序目标尚未确定；</li><li>连续失败但错误证据不足，需要工程判断。</li></ul><div class="callout danger"><b>关键语义：</b>“消息已经发给 Agent”不等于“任务完成”。托管必须等待会话达到终态，并确认要求的文件和证据真实落盘后才能推进。</div>
+    </section>
+
+    <section id="change"><h2>13. 变更、回退与彻底重做</h2><h3>前置阶段发生修改</h3><p>回到早期阶段查看不会影响后续结果；当需求、规格或架构产物真实变更后，后续已完成阶段显示黄色感叹号。用户可以逐阶段响应变更，也可以从变更点重新托管到最终阶段。</p><h3>清理某一阶段输出</h3><p>“重置阶段”用于回到初始状态。MoonGlass 应先生成清理清单与备份/归档，再删除该阶段管理的输出，重置状态并标记下游待响应。不要把用户自建目录、共享 IP 或未经识别的资产一并删除。</p><h3>Bug 修复流程</h3><div class="flow"><span>登记问题与复现</span><i>→</i><span>定位影响规格/模块</span><i>→</i><span>补强 Checker/断言</span><i>→</i><span>修改 RTL</span><i>→</i><span>目标用例</span><i>→</i><span>相关回归</span><i>→</i><span>变更审查</span></div><p>多轮修复仍无进展时，不要继续盲改 RTL。先把“最终输出错误”收敛为带周期、事务、状态和首次偏离点的证据，再决定修设计、测试还是环境。</p>
+    </section>
+
+    <section id="delivery"><h2>14. 总体报告与最终签核</h2><p>“生成总体报告”应汇总项目背景、规格基线、架构、RTL 清单、验证方法、覆盖、Formal、Lint/CDC、缺陷与豁免、综合约束和结果、变更历史、残余风险以及证据链接。</p><ul class="checklist"><li>每个结论能追溯到原始文件、日志或结构化结果</li><li>工具错误、环境限制、产品缺陷明确分级</li><li>PASS、FAIL、OPEN、WAIVED 不混用</li><li>开源工具预检查与商业 EDA 最终签核边界清楚</li><li>报告写清“尚未证明什么”，而不只写“完成了什么”</li></ul>
+    </section>
+
+    <section id="tutorial"><h2>15. 一个适合新手的 30 分钟演练</h2><p>建议先做一个小型 APB 定时器或同步 FIFO，不要用复杂 NPU/DMA 作为第一次体验。</p><ol><li><b>0–3 分钟：</b>确认模型和工具链状态均正常。</li><li><b>3–6 分钟：</b>新建 <code>APB_TIMER_DEMO</code>，写清 APB 接口、计数位宽、中断和复位行为。</li><li><b>6–10 分钟：</b>让主 Agent 生成需求、模块/接口规格和追踪矩阵；人工检查歧义。</li><li><b>10–14 分钟：</b>推进 ARCH，确认寄存器表、计数状态、时钟复位与异常访问。</li><li><b>14–19 分钟：</b>推进 RTL，要求实际写入源文件并运行 Lint/可综合检查。</li><li><b>19–25 分钟：</b>在 VERIF 建立正常计数、使能关闭、溢出、中断清除、非法访问等 Intent 和测试。</li><li><b>25–28 分钟：</b>打开验证态势，选择一个未闭环 Intent，按下一步指引补齐证据。</li><li><b>28–30 分钟：</b>查看 RTL Design Browser、总体报告和阶段产物。</li></ol>
+      <div class="callout"><b>演练成功标准：</b>不是“Agent 回复得像完成了”，而是项目目录中存在可打开的规格、RTL、测试与报告，并且关键用例、Lint 和证据状态能被复查。</div>
+    </section>
+
+    <section id="faq"><h2>16. 常见问题</h2><h3>为什么一项任务会运行很久，但 Token 消耗不高？</h3><p>可能卡在仿真、工具等待或同一失败的重复调试；缓存命中也会降低计费 Token。查看工具时间线、同类错误重复次数和最近一次有效产物，而不是只看 Token。</p>
+      <h3>为什么门禁总提示追踪矩阵缺失？</h3><p>常见原因是 Markdown 表格的版本历史、优先级统计或 TBD 表被误识别为追踪行。应使用结构化 ID 列、规范表头，并让解析器只检查正式矩阵区域。自动托管可修复格式类缺口，但不能伪造规格映射。</p>
+      <h3>为什么 Formal 连续 ERROR？</h3><p>先区分性质失败与前端解析失败。Yosys 开源前端并不支持全部 SVA 语法；解析错误应记录为工具限制并改用支持的等价 harness/语法，不能写成 BMC PASS。</p>
+      <h3>出现 429 engine overloaded 是什么？</h3><p>模型服务当前过载或限流。等待后重试、切换同 Provider 的可用模型，或在任务会话中选择另一个 Provider；它通常不是项目文件错误。</p>
+      <h3>可以只用主会话吗？</h3><p>可以。主会话应具备端到端交付能力；平行会话是补充性的独立 Review 和探索手段，不是完成项目的强制条件。</p>
+      <h3>切换模型后究竟用哪个模型？</h3><p>已完成的一轮保留原模型记录；在下拉框切换并保存后，下一轮使用新模型。重启软件后应恢复每个会话最后选择的模型。</p>
+    </section>
+
+    <section id="practice"><h2>17. 给新手的推荐实践</h2><div class="grid"><div class="card"><h3>规格先可验证</h3><p>少写“高性能、稳定”这类口号，多写条件、时序、范围、异常和可观察结果。</p></div><div class="card"><h3>任务保持边界</h3><p>一次只解决一个可验收目标，避免把连续六阶段无条件塞进同一个超长 Pi session。</p></div><div class="card"><h3>先证据，后修复</h3><p>连续失败时先改进 Checker、断言和可观测性，找到首次偏离点。</p></div><div class="card"><h3>顶层为主，分层加深</h3><p>完整流程集中在顶层与高风险路径；普通叶子模块做与风险匹配的轻量验证。</p></div><div class="card"><h3>版本控制常提交</h3><p>阶段推进、批量 Agent 修改、项目迁移和阶段清理前都保留可回退基线。</p></div><div class="card"><h3>报告不等于真相</h3><p>重要结论回到 RTL、测试、日志、波形、覆盖数据库和综合报告核验。</p></div></div>
+      <h3>第一次使用检查表</h3><ul class="checklist"><li>绿色版已完整解压</li><li>Provider 与目标模型测试 PASS</li><li>EDA 工具状态已检查</li><li>项目目录可写且已纳入版本控制</li><li>项目描述包含接口、时钟复位、异常与交付目标</li><li>推进前人工抽查本阶段关键产物</li><li>验证结论包含语义 Intent 和原始证据</li><li>最终报告列出阻断项、豁免和残余风险</li></ul>
+    </section>
+
+    <section><h2>进一步阅读</h2><ul><li><a href="index.html">MoonGlass HTML 快速手册</a></li><li><a href="MoonGlass验证态势用户指南.html">验证态势用户指南</a></li><li><a href="MoonGlass-AIGV-2.0白皮书.html">MoonGlass AIGV 2.0 方法学白皮书</a></li><li><a href="证据驱动型ASIC-Agent工作流.html">证据驱动的 ASIC Agent 工作流</a></li></ul>
+      <div class="footer"><b>MoonGlass ASIC Design Agent</b><br>本文面向 MoonGlass v0.9.x，新版本界面与能力可能继续演进。MoonGlass 为 Source Available 软件；授权、商业合作、定制开发与产品建议：<a href="mailto:moonglassagent@126.com">moonglassagent@126.com</a>。</div>
+    </section>
+  </main>
+</div>
+</body>
+</html>

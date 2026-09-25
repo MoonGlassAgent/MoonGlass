@@ -68,8 +68,8 @@ Release 附件提供完整可用的 Windows x64 绿色版：
 
 ## 使用与授权
 
-- 快速入门：[中文 HTML 使用说明](./docs/QUICK-START-ZH-CN.html)
+- 快速入门：[中文 HTML 使用说明](./docs/MoonGlass快速使用手册.html)
 - 工程手册：[中文实用手册](./docs/USER-MANUAL-ZH-CN.md)
-- AIGV 方法学：[MoonGlass AIGV 方法学](./docs/MOONGLASS-AIGV-METHODOLOGY-ZH-CN.html)
+- AIGV 方法学：[MoonGlass AIGV 方法学](./docs/MoonGlass-AIGV验证方法学.html)
 - 非商业使用遵循 PolyForm Noncommercial License 1.0.0；商业使用须取得书面授权。
 - 联系：moonglassagent@126.com

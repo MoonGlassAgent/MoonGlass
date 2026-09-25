@@ -1,0 +1,326 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MoonGlass 验证态势页详解与工程使用指南</title>
+  <meta name="description" content="逐项解释 MoonGlass 验证态势页的签核状态、验证波段、风险、Verification Intent、Spec Gap、Coverage Hole、Multi-Oracle、Mutation、Formal、回归与下一步行动。">
+  <style>
+    :root{--ink:#17202a;--muted:#5c6878;--line:#d7dde5;--paper:#fff;--soft:#f4f6f8;--nav:#101820;--blue:#1769aa;--green:#08775a;--amber:#9a5a00;--red:#b4232c;--violet:#6547a8;--code:#17212b}*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:#e9edf1;color:var(--ink);font:16px/1.75 "Microsoft YaHei","Noto Sans SC",system-ui,sans-serif;letter-spacing:0}.paper{width:min(1240px,calc(100% - 28px));margin:24px auto;background:var(--paper);box-shadow:0 6px 30px #17202a1c}.masthead{padding:48px 64px 38px;border-top:8px solid var(--green);border-bottom:1px solid var(--line)}.kicker{color:var(--green);font-size:13px;font-weight:700;text-transform:uppercase}.masthead h1{max-width:980px;margin:12px 0 14px;font-size:38px;line-height:1.28}.subtitle{max-width:980px;color:#3e4a59;font-size:19px}.meta{display:flex;flex-wrap:wrap;gap:8px 22px;margin-top:24px;color:var(--muted);font-size:13px}.layout{display:grid;grid-template-columns:260px minmax(0,1fr)}.toc{position:sticky;top:0;align-self:start;max-height:100vh;overflow:auto;padding:26px 18px;border-right:1px solid var(--line);background:#fbfcfd;font-size:13px}.toc b{display:block;margin:0 7px 9px}.toc a{display:block;padding:5px 7px;border-left:2px solid transparent;color:#4a5665;text-decoration:none}.toc a:hover{border-color:var(--green);background:#edf7f3;color:var(--green)}article{min-width:0;padding:36px 58px 72px}h2{margin:48px 0 16px;padding-bottom:8px;border-bottom:2px solid #293540;font-size:26px;line-height:1.35}h2:first-child{margin-top:0}h3{margin:30px 0 10px;font-size:19px}h4{margin:22px 0 8px;font-size:16px}p{margin:8px 0 14px}.lead{font-size:18px;color:#344150}.callout{margin:18px 0;padding:14px 17px;border-left:4px solid var(--blue);background:#edf6fc}.callout.good{border-color:var(--green);background:#edf8f4}.callout.warn{border-color:var(--amber);background:#fff7e8}.callout.bad{border-color:var(--red);background:#fff0f1}.callout.violet{border-color:var(--violet);background:#f5f1ff}.flow{margin:18px 0;padding:18px;overflow:auto;background:var(--code);color:#eef3f7;font:14px/1.75 Consolas,monospace;white-space:pre}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:18px 0}.card{padding:14px;border:1px solid var(--line);background:#fff}.card b{display:block;margin-bottom:5px;color:var(--green)}table{width:100%;margin:15px 0 24px;border-collapse:collapse;font-size:14px;line-height:1.6}th,td{padding:9px 11px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#edf1f4}tr:nth-child(even) td{background:#fafbfc}.tag{display:inline-block;margin:2px 3px 2px 0;padding:1px 6px;border:1px solid #cbd3dc;background:#f6f8fa;font-size:12px}.status{font-weight:700}.green{color:var(--green)}.amber{color:var(--amber)}.red{color:var(--red)}.violet{color:var(--violet)}code{padding:1px 5px;border:1px solid #d6dce3;background:#f3f5f7;font:13px Consolas,monospace}.steps{counter-reset:step;margin:18px 0}.steps>div{position:relative;margin:0 0 10px;padding:13px 15px 13px 52px;border:1px solid var(--line);background:#fff}.steps>div:before{counter-increment:step;content:counter(step);position:absolute;left:14px;top:13px;width:26px;height:26px;background:var(--green);color:#fff;text-align:center;font-weight:700;line-height:26px}.decision{margin:16px 0;border:1px solid var(--line)}.decision div{display:grid;grid-template-columns:170px 1fr;padding:9px 12px;border-top:1px solid var(--line)}.decision div:first-child{border-top:0}.decision b{color:#344150}.small{color:var(--muted);font-size:13px}.footer{padding:22px 58px 34px;border-top:1px solid var(--line);color:var(--muted);font-size:13px}@media(max-width:900px){.paper{width:100%;margin:0;box-shadow:none}.masthead{padding:32px 22px}.masthead h1{font-size:29px}.layout{display:block}.toc{position:relative;max-height:none;border-right:0;border-bottom:1px solid var(--line)}article{padding:28px 20px}.cards{grid-template-columns:1fr}.decision div{grid-template-columns:1fr}table{display:block;max-width:100%;overflow-x:auto;white-space:normal}.footer{padding:20px}}@media print{body{background:#fff}.paper{width:100%;margin:0;box-shadow:none}.toc{display:none}.layout{display:block}.masthead,article{padding-left:16mm;padding-right:16mm}.callout,.card,table,.decision{break-inside:avoid}h2,h3{break-after:avoid}a{color:inherit;text-decoration:none}}
+  </style>
+</head>
+<body>
+<main class="paper">
+  <header class="masthead">
+    <div class="kicker">MoonGlass Engineering Guide · AIGV Verification Posture</div>
+    <h1>验证态势页详解与工程使用指南</h1>
+    <div class="subtitle">看懂“验证到哪里、主要风险是什么、证据是否可信、下一步该做什么”，并把页面从结果看板真正用成验证收敛控制台。</div>
+    <div class="meta"><span>适用产品：MoonGlass ASIC Design Agent</span><span>适用版本：v0.9.5+</span><span>日期：2026-09-14</span><span>联系：moonglassagent@126.com</span></div>
+  </header>
+
+  <div class="layout">
+    <nav class="toc" aria-label="目录"><b>目录</b>
+      <a href="#quick">1. 三分钟快速使用</a><a href="#sixviews">1.1 六大区域怎么看</a><a href="#meaning">2. 验证态势是什么</a><a href="#access">3. 如何生成与进入</a><a href="#signoff">4. 总体签核状态</a><a href="#waves">5. W0-W3 验证波段</a><a href="#runs">6. 验证环境与用例执行</a><a href="#mapping">7. 规格条款映射</a><a href="#space">8. Verification Space</a><a href="#risk">9. 最高优先级风险</a><a href="#actions">10. 下一步行动</a><a href="#metrics">11. 九项核心指标</a><a href="#module">12. 模块验证策略</a><a href="#heat">13. 风险热区</a><a href="#blockers">14. 签核阻断项</a><a href="#intent">15. Verification Intent</a><a href="#gaps">16. Spec Gap</a><a href="#holes">17. Coverage Hole</a><a href="#diagnostic">18. 诊断控制</a><a href="#workflow">19. 推荐操作流程</a><a href="#scenarios">20. 常见场景</a><a href="#misread">21. 常见误读</a><a href="#files">22. 数据与证据文件</a><a href="#checklist">23. 签核前检查表</a>
+    </nav>
+
+    <article>
+      <section id="quick"><h2>1. 三分钟快速使用</h2>
+        <p class="lead">第一次打开验证态势页，不要从底部逐表阅读。按下面五步判断，通常一分钟内就能知道项目卡在哪里。</p>
+        <div class="steps">
+          <div><b>先看顶部总体签核。</b>红色“尚未就绪”表示存在机器阻断项；黄色“有条件就绪”表示仍有警告或残余风险；绿色“等待人工签核”表示机器证据链已达到要求，但仍需工程责任人批准。</div>
+          <div><b>看“机器阻断项”和“最高优先级风险”。</b>这里回答“为什么不能签核”和“最值得先处理什么”，不要先追逐一个孤立覆盖率百分比。</div>
+          <div><b>看“下一步行动”。</b>按 P0、P1、P2 顺序执行。点击某项会把带有具体对象、缺口和证据要求的任务交给项目主会话。</div>
+          <div><b>核对 Verification Intent。</b>检查关键目标是否写清前置状态、激励步骤、观察点和通过标准；如果只剩分类名或泛泛描述，应先补语义，不要急着跑回归。</div>
+          <div><b>最后看 Coverage Hole、Multi-Oracle、Mutation 与残余风险。</b>决定是补激励、补 Checker、换工具、澄清规格，还是由责任人接受风险。</div>
+        </div>
+        <div class="callout good"><b>一句话原则：</b>先处理红色证据缺口，再处理黄色风险；先让失败“可定位、可裁决”，再修改 RTL；最后才讨论是否可以签核。</div>
+      </section>
+
+      <section id="sixviews"><h2>1.1 六大核心区域到底怎么看</h2>
+        <p>这六个区域不是六份彼此独立的报表，而是一条因果链。建议始终按下面顺序阅读：</p>
+        <div class="flow">总体签核阻断项：为什么现在不能交付？
+        ↓
+风险热区：最可能藏有高影响问题的结构在哪里？
+        ↓
+模块分层策略：这些模块分别要验证到什么深度？
+        ↓
+Verification Intent：具体要证明什么行为？
+        ↓
+Spec Gap：是否连正确预期都没有定义清楚？
+        ↓
+Coverage Hole：预期明确后，还缺激励、观察、工具还是证据？</div>
+        <table><thead><tr><th>区域</th><th>第一眼看什么</th><th>出现什么必须行动</th><th>通常交给谁</th></tr></thead><tbody>
+          <tr><td><b>总体签核阻断项</b></td><td>红色 blocker 数量及第一条原因</td><td>任何未关闭 blocker</td><td>验证负责人协调；按问题分给规格、RTL、验证或工具链负责人</td></tr>
+          <tr><td><b>风险热区</b></td><td>右上/最热区域中的模块和对象</td><td>高热对象没有对应 Intent，或只有普通冒烟</td><td>架构师确认风险，验证工程师补策略</td></tr>
+          <tr><td><b>模块分层验证策略</b></td><td>顶层是否为 IP_SIGNOFF；高风险子模块是否为 UNIT_FOCUSED</td><td>核心仲裁器/FIFO/协议模块被降为 STATIC_ONLY，或简单 glue 被过度验证</td><td>验证负责人调整层级与 Oracle</td></tr>
+          <tr><td><b>Verification Intent 闭环</b></td><td>关键 Intent 的状态、目标、激励、观察和通过标准</td><td>FAILED、OPEN，或文字只有分类而没有可执行语义</td><td>验证工程师实现，设计工程师协助裁决</td></tr>
+          <tr><td><b>规格缺口</b></td><td>缺口类型、影响和源码/文档来源</td><td>SPEC_UNDEFINED、TEMPORAL_UNDEFINED 或高影响 RTL_WITHOUT_SPEC</td><td>规格/架构责任人先裁决</td></tr>
+          <tr><td><b>Coverage Hole</b></td><td>分类、具体缺失目标、所需激励和关闭证据</td><td>blocking=true，尤其 C3/C4/C5/C6</td><td>验证环境、Checker、规格或工具链负责人</td></tr>
+        </tbody></table>
+        <div class="callout warn"><b>不要倒着处理：</b>如果问题属于 C5 规格未定义，就不能先让验证 Agent 猜一个期望值；如果属于 C4 缺少观察，就不应连续修改 RTL。先识别问题层级，才能避免无效回归。</div>
+      </section>
+
+      <section id="meaning"><h2>2. 验证态势是什么</h2>
+        <p>验证态势不是普通测试报告，也不是覆盖率仪表盘。它把规格、RTL 结构、验证计划、测试执行、Formal、覆盖率、Checker、Golden Model、独立 Oracle、Mutation 和残余风险汇总成一份与当前 RTL Hash 绑定的工程快照。</p>
+        <div class="flow">REQ / SPEC
+   ↓ 条款映射与 Spec Gap
+RTL Structure → Risk → Verification Intent → Scenario
+                                      ↓
+                     Test / Assertion / Formal / Coverage
+                                      ↓
+                     Evidence / Multi-Oracle / Mutation
+                                      ↓
+                  Closure Assessment → Human Sign-off</div>
+        <p>页面要回答四个问题：</p>
+        <div class="cards"><div class="card"><b>验证了什么？</b>通过规格条款、Intent 和 Scenario 描述验证目标。</div><div class="card"><b>怎么验证的？</b>通过激励、观察点、Checker、Formal 与覆盖率说明方法。</div><div class="card"><b>证据可靠吗？</b>通过 RTL Hash、原始日志、Multi-Oracle 和 Mutation 检查证据质量。</div><div class="card"><b>还差什么？</b>通过 Spec Gap、Coverage Hole、阻断项和下一步行动指导收敛。</div><div class="card"><b>风险在哪里？</b>通过风险排序、热区和影响说明最值得投入的区域。</div><div class="card"><b>能否签核？</b>机器给出建议，工程责任人审查并作最终决定。</div></div>
+      </section>
+
+      <section id="access"><h2>3. 如何生成与进入验证态势</h2>
+        <h3>3.1 正常入口</h3>
+        <ol><li>进入项目工作区并切换到 <b>VERIF 验证完备</b>阶段。</li><li>先执行“规划与搭建”，建立 Verification Intelligence、验证环境、Intent、Scenario 与执行计划。</li><li>执行“AIGV 验证闭环”，产生回归、覆盖率、Formal、场景命中和证据审查结果。</li><li>点击工作区顶部的“验证态势”进入全屏页。</li></ol>
+        <h3>3.2 页面提示“尚未生成”</h3>
+        <p>这表示项目中尚无完整的机器可读态势快照，或快照仍在生成。返回工作区，在项目主会话调用 <code>build_verification_intelligence</code>，或执行 VERIF 快捷操作后再点击“重新读取”。</p>
+        <h3>3.3 页面解析失败</h3>
+        <p>MoonGlass 会优先读取 <code>verification-posture.json</code>，不完整时回退到 <code>verification-state.json</code>，并对并发写入造成的瞬时错误进行退避重试。若持续失败，应检查文件是否被 Agent 手工写成 Markdown、是否被截断，以及 JSON 是否存在尾逗号或未闭合字符串。</p>
+        <div class="callout warn"><b>刷新不等于重新验证：</b>“重新读取”只重新加载已落盘状态。RTL 已变化、证据过期或结构模型不完整时，需要重新生成 Intelligence 并重跑受影响验证。</div>
+      </section>
+
+      <section id="signoff"><h2>4. 顶部总体签核状态</h2>
+        <table><thead><tr><th>状态</th><th>工程含义</th><th>你应该做什么</th></tr></thead><tbody>
+          <tr><td class="status red">NOT_READY<br>尚未就绪</td><td>存在明确阻断项，例如关键 Intent 未闭环、回归失败、阻断型 Coverage Hole、Oracle 冲突、Mutation 未达标、Formal 工具错误或影响未知。</td><td>先处理页面列出的 P0 行动和机器阻断项，不应推进 QA 或宣称验证完成。</td></tr>
+          <tr><td class="status amber">CONDITIONALLY_READY<br>有条件就绪</td><td>核心证据大体成立，但仍有警告、非阻断缺口或待审批残余风险。</td><td>审查每项风险是否有责任人、影响、依据和批准记录；能关闭则关闭，不能关闭则正式接受。</td></tr>
+          <tr><td class="status green">READY_FOR_HUMAN_SIGNOFF<br>等待人工签核</td><td>机器规则未发现剩余阻断项，关键闭环指标达到要求。</td><td>由验证负责人审阅签核包、原始证据与适用边界后签字。它不是“自动宣布零缺陷”。</td></tr>
+          <tr><td class="status amber">LEGACY / 模型待更新</td><td>项目只有旧版验证状态，缺少当前 AIGV 字段或完整 Verification Intent。</td><td>重新生成 Verification Intelligence，不要把空字段误解为零风险。</td></tr>
+        </tbody></table>
+        <p><b>机器阻断项</b>直接来自 closure assessment；<b>AIGV 下一步</b>是引擎根据当前缺口给出的动作建议。两者应同时阅读：前者解释“为什么不能签”，后者解释“下一步做什么”。</p>
+      </section>
+
+      <section id="waves"><h2>5. W0-W3 验证波段</h2>
+        <table><thead><tr><th>波段</th><th>目标</th><th>典型完成证据</th><th>常见阻断</th></tr></thead><tbody>
+          <tr><td><b>W0 基线与环境</b></td><td>确认 RTL、文件清单、顶层、工具和 Testbench 可运行。</td><td>编译成功、冒烟用例可执行、环境清单完整、RTL Hash 已建立。</td><td>缺文件、顶层错误、工具不可用、环境未搭建。</td></tr>
+          <tr><td><b>W1 规格映射与基础回归</b></td><td>让规格条款有测试/属性映射，并完成基础功能裁决。</td><td>条款 PASSED 或经批准 WAIVED；关键测试有结构化结果。</td><td>UNMAPPED、MAPPED_UNTESTED、测试失败、结果未绑定 TEST ID。</td></tr>
+          <tr><td><b>W2 风险驱动闭环</b></td><td>针对关键交互、边界、异常和时间关系补充验证。</td><td>关键 Intent 闭环、Coverage Hole 关闭、独立 Oracle 充分。</td><td>缺激励、缺观察、Oracle 冲突、影响未知。</td></tr>
+          <tr><td><b>W3 签核补强</b></td><td>以 Mutation、Formal、残余风险和证据审查验证体系质量。</td><td>Mutation 达标、Formal 结论诚实、残余风险获批、签核包完整。</td><td>存活 Mutant、陈旧证据、工具错误被误报 PASS、风险未审批。</td></tr>
+        </tbody></table>
+        <p>波段状态有 <span class="green">完成</span>、<span class="amber">执行中</span>、<span class="red">阻断</span>和待开始。应按 W0→W3 收敛，但允许高风险问题触发回到前一波段补环境或补 Checker。</p>
+      </section>
+
+      <section id="runs"><h2>6. 验证环境与用例执行</h2>
+        <p>该区域独立于 AIGV 态势，即使尚未生成完整 Intelligence，也能展示实际验证环境和测试执行情况。</p>
+        <table><thead><tr><th>字段</th><th>含义</th><th>使用方法</th></tr></thead><tbody>
+          <tr><td>环境就绪/未就绪</td><td>是否发现 Testbench、运行入口和必要资产。</td><td>未就绪时先补环境，继续分析覆盖率没有意义。</td></tr>
+          <tr><td>计划 / 已执行 / PASS / Bug / 未运行</td><td>测试计划与真实结果的汇总。</td><td>关注“未运行”和 Bug，而不只看 PASS 数。</td></tr>
+          <tr><td>TEST ID</td><td>计划中的稳定测试标识。</td><td>每个执行结果应绑定 TEST ID，才能回溯规格和 Intent。</td></tr>
+          <tr><td>未映射执行结果</td><td>发现了日志或结果，但无法对应计划用例。</td><td>修正测试命名或结果元数据，避免“跑了很多却无法证明覆盖了什么”。</td></tr>
+          <tr><td>失败原因 / blocker</td><td>编译、环境、Checker、RTL 或工具等失败分类。</td><td>先确认失败属于哪一层，再决定修改测试、RTL 还是工具链。</td></tr>
+        </tbody></table>
+      </section>
+
+      <section id="mapping"><h2>7. 规格条款映射</h2>
+        <table><thead><tr><th>状态</th><th>含义</th><th>动作</th></tr></thead><tbody>
+          <tr><td class="amber">UNMAPPED</td><td>规格条款没有对应验证目标或资产。</td><td>创建 VI/SCN/TEST/COVER/PROPERTY，或确认该行只是文档信息而非可验证条款。</td></tr>
+          <tr><td>MAPPED_UNTESTED</td><td>已有映射，但尚无有效执行证据。</td><td>执行对应场景并生成结构化结果。</td></tr>
+          <tr><td class="green">PASSED</td><td>条款具备有效通过证据。</td><td>检查证据是否与当前 RTL Hash 一致。</td></tr>
+          <tr><td class="red">FAILED</td><td>条款相关验证出现明确失败。</td><td>定位反例并进行 RTL/环境裁决。</td></tr>
+          <tr><td>WAIVED</td><td>经批准不在本轮闭环。</td><td>确认豁免理由、责任人、适用版本和到期条件。</td></tr>
+        </tbody></table>
+        <p><b>文档性条款</b>不应被强制当作功能需求，例如版本历史表、作者信息和说明文字。页面单独统计 documentary count，避免用无意义条目稀释真实覆盖率。</p>
+      </section>
+
+      <section id="space"><h2>8. Verification Space Snapshot</h2>
+        <p>Verification Space 是当前验证候选空间的机器快照。Snapshot ID 用于确认本轮场景选择、结果和签核是否来自同一空间版本。</p>
+        <table><thead><tr><th>字段</th><th>说明</th></tr></thead><tbody>
+          <tr><td>Candidate</td><td>基于特性、边界、交互、时间关系和系统状态生成的候选场景数量。</td></tr>
+          <tr><td>Positive / Negative</td><td>正常功能场景与非法输入、错误响应、恢复、超时等负向场景。</td></tr>
+          <tr><td>Feature</td><td>被建模的主要功能维度。</td></tr><tr><td>Boundary</td><td>0/1/MAX、空/满、首拍/末拍、对齐/非对齐等边界。</td></tr>
+          <tr><td>Interaction</td><td>多个功能、状态、通道或控制条件同时发生的交互。</td></tr><tr><td>State</td><td>复位、空闲、忙、错误、恢复等系统状态。</td></tr>
+          <tr><td>Exploration Round</td><td>当前探索轮次、选中场景数和预计执行成本。</td></tr>
+          <tr><td>Saturation</td><td><code>PROGRESSING</code> 表示仍发现新覆盖；<code>STALLED</code> 表示多轮无进展；<code>EMPIRICALLY_SATURATED</code> 表示在当前模型和预算下经验性饱和，不等于穷尽所有可能。</td></tr>
+        </tbody></table>
+      </section>
+
+      <section id="risk"><h2>9. 最高优先级风险</h2>
+        <p>风险来自规格语义、RTL 结构和验证缺口的综合推导。页面展示风险陈述、对象、源码位置、当前缺口、外部影响与建议，而不是只给一个 taxonomy 标签。</p>
+        <table><thead><tr><th>风险级别</th><th>含义</th><th>不能误解为</th></tr></thead><tbody>
+          <tr><td class="red">Confirmed</td><td>已有失败证据支持真实问题。</td><td>仍需确认根因属于 RTL、环境还是规格。</td></tr>
+          <tr><td>High Risk</td><td>结构或交互复杂，且验证证据不足。</td><td>它不是已经确认的 Bug。</td></tr>
+          <tr><td>Infrastructure Gap</td><td>工具、Checker、观察点或 Testbench 能力不足。</td><td>不能因此宣布 RTL 错误。</td></tr>
+          <tr><td class="amber">Spec Gap</td><td>预期行为缺失、矛盾或时间语义不清。</td><td>不能让 Agent 自行猜测产品行为。</td></tr>
+          <tr><td class="green">Accepted</td><td>风险已由具名责任人接受。</td><td>不表示风险消失，只表示已作工程决策。</td></tr>
+        </tbody></table>
+        <p>右侧扳手按钮会把该风险转换为带上下文的主会话任务。执行前仍应读清建议：有些风险需要补 Checker，有些需要补场景，有些必须先澄清规格。</p>
+      </section>
+
+      <section id="actions"><h2>10. 下一步行动</h2>
+        <p>行动由当前状态确定性派生并按优先级排序：</p>
+        <div class="decision"><div><b>P0 立即处理</b><span>回归失败、关键 Intent 未闭环、Oracle 冲突、阻断型 Hole、Formal 工具错误、影响未知等直接阻断签核的问题。</span></div><div><b>P1 重要补强</b><span>非关键缺口、探索停滞、Mutation 不足、规格或观察点需要增强。</span></div><div><b>P2 完善</b><span>证据归档、说明补充、低风险覆盖增强和签核包整理。</span></div></div>
+        <p>点击行动后，MoonGlass 会确保项目主会话存在，并将结构化任务交给 Agent，等待其真正完成，而不是只发送消息后立即推进。一次只执行一个高优先级行动，完成后重新生成/读取态势，避免多个任务基于同一个旧快照并发修改。</p>
+      </section>
+
+      <section id="metrics"><h2>11. 九项核心指标怎么读</h2>
+        <table><thead><tr><th>指标</th><th>工程解释</th><th>健康判断</th></tr></thead><tbody>
+          <tr><td>Intent 闭环</td><td>状态属于 VERIFIED、FORMAL_PROVED、FORMAL_UNREACHABLE 或 WAIVED 的 Intent 比例。</td><td>关键 Intent 必须全部闭环；总比例高不应掩盖一个关键未闭环。</td></tr>
+          <tr><td>关键闭环</td><td>高优先级目标关闭数/总数。</td><td>签核前应为 100%。</td></tr>
+          <tr><td>Spec Gap</td><td>规格与 RTL/验证模型之间的未知或矛盾。</td><td>阻断型应为 0；其余需有处理决定。</td></tr>
+          <tr><td>Coverage Hole</td><td>场景没有被有效到达、观察或裁决的数量。</td><td>阻断型为 0；非阻断项应有关闭计划或豁免。</td></tr>
+          <tr><td>回归</td><td>纳入态势的结构化回归是否全部通过。</td><td>不仅看 passed，还要看测试总数、绑定和 RTL Hash。</td></tr>
+          <tr><td>Formal</td><td>Formal 结果与工具错误情况。</td><td>PROVED/COUNTEREXAMPLE/UNREACHABLE/TOOL_ERROR 必须严格区分；有限深度无反例不等于完整证明。</td></tr>
+          <tr><td>Multi-Oracle</td><td>关键场景获得足够独立裁决域的数量。</td><td>冲突为 0，关键 insufficient 为 0。</td></tr>
+          <tr><td>Mutation</td><td>验证体系对主动注入缺陷的检出能力。</td><td>加权分数达到阈值，且无阻断型存活 Mutant。</td></tr>
+          <tr><td>残余风险</td><td>无法完全关闭但被记录的工程风险。</td><td>要求审批的项目必须有具名批准、理由和时间。</td></tr>
+        </tbody></table>
+      </section>
+
+      <section id="module"><h2>12. 模块验证策略</h2>
+        <p>复杂 IP 不应对每个子模块机械执行同等重量的全流程。MoonGlass 根据模块角色、风险、是否顶层和可观察性分层：</p>
+        <table><thead><tr><th>级别</th><th>适用对象</th><th>典型要求</th></tr></thead><tbody>
+          <tr><td>STATIC_ONLY</td><td>简单 glue、纯组合映射或已被顶层充分覆盖的低风险模块。</td><td>Lint、结构检查、顶层证据；通常不单建 Testbench。</td></tr>
+          <tr><td>UNIT_SMOKE</td><td>独立边界有限、主要在顶层体现功能的子模块。</td><td>基础冒烟、关键复位/握手，再由顶层完成完整闭环。</td></tr>
+          <tr><td>UNIT_FOCUSED</td><td>协议、状态机、算术、缓存、仲裁等高风险子模块。</td><td>定向场景、Checker/Assertion，必要时采用 Golden Model。</td></tr>
+          <tr><td>IP_SIGNOFF</td><td>顶层和最终外部行为。</td><td>完整 Intent、Scenario、Coverage、Multi-Oracle、Mutation 与签核证据。</td></tr>
+        </tbody></table>
+        <p><b>Golden Model 推荐</b>不是固定规则：RECOMMENDED 表示该模块有可独立计算的参考语义；OPTIONAL 表示收益取决于风险；NOT_NEEDED 表示静态规则或顶层 Oracle 已足够。</p>
+        <h3>12.1 在页面上按什么顺序看</h3>
+        <ol><li><b>先找 Top Modules。</b>最终对外行为所在顶层通常应为 <code>IP_SIGNOFF</code>，否则先确认是否识别错顶层。</li><li><b>再按 Risk Score 从高到低看子模块。</b>仲裁、FIFO、跨边界计数、协议状态机、错误恢复等高风险模块通常不能只有 STATIC_ONLY。</li><li><b>看 Role 和 Reasons。</b>确认分层理由符合真实架构，而不是只由文件大小决定。</li><li><b>看 Standalone Testbench。</b>需要独立精确裁决的模块应有独立环境；主要功能只在顶层显现的模块可以复用顶层 Testbench。</li><li><b>最后看 Oracle 与 Golden Model。</b>判断当前 Checker 是否足以裁决，而不是机械要求每个模块都建 Golden Model。</li></ol>
+        <h3>12.2 怎样识别分层不合理</h3>
+        <table><thead><tr><th>页面现象</th><th>可能问题</th><th>建议调整</th></tr></thead><tbody>
+          <tr><td>DMA 顶层是 UNIT_SMOKE</td><td>只验证了能启动，未覆盖完整外部行为</td><td>升为 IP_SIGNOFF，绑定所有关键规格与场景</td></tr>
+          <tr><td>round-robin arbiter 是 STATIC_ONLY</td><td>公平性、同拍请求和饥饿风险没有动态裁决</td><td>升为 UNIT_FOCUSED，增加并发序列与公平性 Assertion</td></tr>
+          <tr><td>纯复位同步器执行完整 Golden Model 回归</td><td>验证投入与风险不匹配</td><td>采用静态检查、Assertion 或短冒烟即可</td></tr>
+          <tr><td>FIFO 标记 Golden Model OPTIONAL，但存在丢数/乱序风险</td><td>参考队列可显著提高定位能力</td><td>人工调整为 RECOMMENDED，并增加队列模型/scoreboard</td></tr>
+        </tbody></table>
+      </section>
+
+      <section id="heat"><h2>13. 风险热区</h2>
+        <p>热区通常以“结构复杂度 × 交互强度”定位值得优先验证的 RTL 对象。颜色越热表示验证优先级越高，并不等于缺陷概率的精确统计值。</p>
+        <ul><li><b>结构复杂度高：</b>状态机多、控制流分支多、依赖锥大或多写者。</li><li><b>交互强度高：</b>多个功能、通道、状态、时序条件或协议相互作用。</li><li><b>高热区使用：</b>检查是否有对应 Intent、边界、异常激励和独立 Oracle。</li><li><b>低热区使用：</b>通常可采用静态检查或冒烟，但仍受规格关键性约束。</li></ul>
+        <h3>13.1 四个象限怎么读</h3>
+        <table><thead><tr><th>位置</th><th>含义</th><th>验证策略</th></tr></thead><tbody>
+          <tr><td><b>右上：高复杂 + 高交互</b></td><td>最优先区域，如共享总线仲裁、并发 DMA 通道、错误恢复状态机。</td><td>UNIT_FOCUSED/IP_SIGNOFF；定向交互场景、Assertion、独立 Oracle，必要时 Formal。</td></tr>
+          <tr><td><b>左上：低复杂 + 高交互</b></td><td>模块自身简单，但连接很多，例如 ready/valid glue、复位传播。</td><td>重点做集成层场景和接口 Assertion，不一定单建重型环境。</td></tr>
+          <tr><td><b>右下：高复杂 + 低交互</b></td><td>内部算法复杂但外部耦合较少，例如 CRC、编码器、地址计算。</td><td>独立 Golden Model、边界向量、Mutation 往往有效。</td></tr>
+          <tr><td><b>左下：低复杂 + 低交互</b></td><td>通常是低风险结构。</td><td>Lint、静态规则和冒烟为主，但关键安全/复位要求不能仅凭热度降级。</td></tr>
+        </tbody></table>
+        <p><b>读图后的动作：</b>点击或记录最热对象，转到“最高优先级风险”和 Intent 列表，确认它是否已有可执行验证目标。如果热区很高但没有 Intent，这本身就是验证计划缺口。</p>
+      </section>
+
+      <section id="blockers"><h2>14. 签核阻断项</h2>
+        <p>阻断项是不能被总体 PASS 数量抵消的硬问题，可能来自：</p>
+        <ul><li>closure assessment 的明确 blocker；</li><li>关键 Multi-Oracle 不足或冲突；</li><li>Mutation 未执行、低于阈值或存在阻断型 survivor；</li><li>需要批准但尚未批准的残余风险；</li><li>Formal 工具错误、陈旧证据或 impact unknown；</li><li>阻断型 Coverage Hole 与关键 Intent 未闭环。</li></ul>
+        <div class="callout bad"><b>禁止“用更多 PASS 淹没一个 blocker”。</b>例如 1000 个普通用例通过，也不能抵消一个会导致数据丢失的关键场景没有 Checker。</div>
+        <h3>14.1 每条阻断项怎么看</h3>
+        <div class="decision"><div><b>先看对象</b><span>它指向哪个 SPEC、Intent、Scenario、模块、测试或工具？如果没有对象，说明诊断信息还不够具体。</span></div><div><b>再看阻断原因</b><span>是功能失败、证据缺失、工具失败、Oracle 冲突、Mutation 存活，还是风险未审批？</span></div><div><b>再看证据新鲜度</b><span>结果是否绑定当前 RTL Hash？陈旧 PASS 仍然是 blocker，而不是可复用结论。</span></div><div><b>最后看责任边界</b><span>规格问题找架构/产品，RTL 反例找设计，C3/C4 找验证，C6 找工具链，残余风险找签核责任人。</span></div></div>
+        <h3>14.2 阻断项处理优先级</h3>
+        <ol><li>明确 FAIL 和 Oracle CONFLICT；</li><li>关键 Intent 未闭环与 blocking Coverage Hole；</li><li>规格未定义和影响未知；</li><li>Formal/仿真工具错误及陈旧证据；</li><li>Mutation survivor；</li><li>待审批残余风险。</li></ol>
+        <p>处理后必须重新读取或生成态势，确认 blocker 真正从结构化状态中消失。只在聊天中说“已经修复”不算关闭。</p>
+      </section>
+
+      <section id="intent"><h2>15. Verification Intent 明细</h2>
+        <p>Intent 是可证伪的工程验证目标，不应只是 “Error × Response” 这样的分类组合。每项应包含：</p>
+        <table><thead><tr><th>字段</th><th>应该回答的问题</th></tr></thead><tbody>
+          <tr><td>Objective</td><td>具体要证明或反驳什么行为？</td></tr><tr><td>Failure Mode</td><td>如果设计错误，会以什么方式失效？</td></tr>
+          <tr><td>Preconditions</td><td>执行前模块应处于什么状态？</td></tr><tr><td>Stimulus Procedure</td><td>按什么步骤施加事务、错误和时间关系？</td></tr>
+          <tr><td>Observation Points</td><td>观察哪些接口、状态、计数器、Checker 或 Assertion？</td></tr><tr><td>Pass Criteria</td><td>什么可观测条件构成通过？允许多长延迟？禁止发生什么？</td></tr>
+          <tr><td>Boundaries</td><td>需要覆盖哪些 0/1/MAX、首尾、空满、并发和复位边界？</td></tr><tr><td>Evidence</td><td>哪些结果、日志、波形、覆盖点或 Formal trace 支撑结论？</td></tr>
+        </tbody></table>
+        <p><b>优先级 P 值</b>用于排序，不是通过概率。状态为 VERIFIED 表示仿真/证据闭环；FORMAL_PROVED 表示符合所用 Formal 语义的证明；FORMAL_UNREACHABLE 表示目标不可达且有 Formal 依据；WAIVED 必须有审批；FAILED 表示已有反例；其余状态都不能算关闭。</p>
+        <h3>15.1 判断一条 Intent 是否真的“闭环”</h3>
+        <p>不要只看绿色状态。逐项做下面的五问：</p>
+        <ol><li><b>目标可证伪吗？</b>“验证 DMA 正常工作”不合格；“两个通道同拍请求时，仲裁在有限事务内服务双方且不重复授权”才可裁决。</li><li><b>场景真的到达了吗？</b>需要 cover、monitor 或事务记录证明前置状态与激励序列发生。</li><li><b>结果真的被判断了吗？</b>必须有 scoreboard、Assertion、Golden Model 或其他 Oracle，而不是只生成波形。</li><li><b>证据落盘了吗？</b>至少能定位结果文件、日志、覆盖点或 Formal trace。</li><li><b>证据是当前 RTL 的吗？</b>Hash 不一致时，即使历史状态为 VERIFIED 也应降为陈旧。</li></ol>
+        <h3>15.2 DMA 示例</h3>
+        <div class="callout"><b>弱 Intent：</b>Error / Normal Collision: error × response。<br><b>可执行 Intent：</b>当 CH0 正在接收最后一个 R beat、同周期返回 SLVERR 且 CH1 发起请求时，CH0 必须只上报一次错误并停止写入 FIFO；CH1 不得继承 CH0 的错误状态，并应在仲裁释放后获得服务。通过标准由错误计数、FIFO 写使能、通道状态和后续 CH1 握手共同裁决。</div>
+      </section>
+
+      <section id="gaps"><h2>16. Spec Gap</h2>
+        <table><thead><tr><th>类别</th><th>含义</th><th>正确动作</th></tr></thead><tbody>
+          <tr><td>SPEC_WITHOUT_RTL</td><td>规格要求在 RTL 中找不到实现对象。</td><td>确认遗漏实现、命名映射错误或本版本不适用。</td></tr>
+          <tr><td>RTL_WITHOUT_SPEC</td><td>RTL 存在外部可见行为，但没有规格来源。</td><td>补规格/设计依据，或确认是内部实现细节。</td></tr>
+          <tr><td>SPEC_UNDEFINED</td><td>行为、异常或边界没有定义。</td><td>由架构/产品责任人裁决，不允许 Agent 猜测。</td></tr>
+          <tr><td>TEMPORAL_UNDEFINED</td><td>先后关系、延迟窗口、复位恢复或并发优先级不明确。</td><td>补时序语义和可检查的窗口。</td></tr>
+        </tbody></table>
+        <p>每项 Gap 都应有来源位置、影响和行动建议。低置信度条目先人工确认是否为解析噪声；版本历史、Markdown 表头等不应进入真实 Gap。</p>
+        <h3>16.1 一条规格缺口怎样判定和关闭</h3>
+        <ol><li>先打开来源文件和行号，确认不是表头、版本历史或解析噪声。</li><li>判断它是否影响外部可见行为、验证预期或集成约束。</li><li>若行为未定义，记录候选方案与影响，交由有权限的规格/架构责任人裁决。</li><li>更新规格、追溯矩阵和受影响 Intent/Scenario，而不是只在态势 JSON 中删除条目。</li><li>重新生成 Intelligence，确认 Gap 消失且新增行为获得验证映射。</li></ol>
+        <div class="callout warn"><b>例：</b>规格只说 abort 可停止 DMA，却没定义已经发出的 AXI transaction 如何收尾。这是 TEMPORAL_UNDEFINED，不应由验证环境随意期待“立即撤销”或“完成后停止”。必须先冻结 abort 的时间语义，再写 Checker。</div>
+      </section>
+
+      <section id="holes"><h2>17. Coverage Hole</h2>
+        <table><thead><tr><th>分类</th><th>具体含义</th><th>关闭方式</th></tr></thead><tbody>
+          <tr><td>C1_UNREACHABLE</td><td>目标在当前约束与设计下不可达。</td><td>用 Formal、结构证明或规格依据确认不可达；不能仅凭“没跑到”。</td></tr>
+          <tr><td>C2_CONSTRAINT_BLOCKED</td><td>约束或 Testbench 阻止合法场景到达。</td><td>修正 constraint、driver 或环境配置。</td></tr>
+          <tr><td>C3_STIMULUS_MISSING</td><td>缺少触发场景所需的事务、顺序、错误或边界激励。</td><td>按 required stimulus 新增定向 sequence/test。</td></tr>
+          <tr><td>C4_OBSERVATION_MISSING</td><td>场景可能到达，但没有足够观察点或 Checker。</td><td>增加 monitor、scoreboard、assertion、事务追踪或波形探针。</td></tr>
+          <tr><td>C5_SPEC_UNDEFINED</td><td>没有明确预期，无法判断对错。</td><td>回到规格裁决，不应修改 Checker 迎合 RTL。</td></tr>
+          <tr><td>C6_TOOL_INSTRUMENTATION</td><td>工具语法、插桩、版本或采集能力不足。</td><td>换兼容语法/工具、补仪器，或诚实登记工具限制。</td></tr>
+        </tbody></table>
+        <p>页面应显示具体缺失目标、所需激励、所需观察和关闭证据。只有写清这些内容，Hole 才能成为可执行任务，而不是一句“激励不足”。</p>
+        <h3>17.1 看见 Hole 后不要统一“补用例”</h3>
+        <table><thead><tr><th>页面信息</th><th>你应追问</th><th>典型动作</th></tr></thead><tbody>
+          <tr><td>Missing Target</td><td>究竟缺的是哪个状态、边界、交互或错误路径？</td><td>把抽象描述改成可观察的场景目标。</td></tr>
+          <tr><td>Required Stimulus</td><td>现有 sequence 为什么到不了？缺顺序、并发、错误注入还是边界值？</td><td>C3 补激励；C2 修约束或 driver。</td></tr>
+          <tr><td>Required Observation</td><td>到达后靠什么判断？内部信号是否稳定、是否应改为接口不变量？</td><td>C4 补 monitor、scoreboard、assertion 或事务追踪。</td></tr>
+          <tr><td>Closure Evidence</td><td>什么文件和条件能证明关闭？</td><td>明确 TEST ID、cover bin、assertion 名称、result JSON 或 Formal trace。</td></tr>
+          <tr><td>Blocking</td><td>它是否关联关键规格或高影响失效？</td><td>阻断项优先处理；非阻断项仍需计划或豁免。</td></tr>
+        </tbody></table>
+        <h3>17.2 DMA 示例</h3>
+        <div class="callout"><b>Hole：</b>“双通道竞争时未覆盖低优先级通道最终获授”。<br><b>分类：</b>若没有并发请求序列，是 C3；若序列发生但没有公平性检查，是 C4；若规格根本没定义公平性，是 C5；若属性因工具不支持无法解析，是 C6。四种分类对应四种完全不同的动作，不能都归结为继续随机回归。</div>
+      </section>
+
+      <section id="diagnostic"><h2>18. 渐进式诊断控制</h2>
+        <p>当同一个失败多轮修改仍不收敛时，MoonGlass 不应继续盲目改 RTL，而会提升诊断等级。</p>
+        <table><thead><tr><th>模式</th><th>含义</th><th>建议</th></tr></thead><tbody>
+          <tr><td>NORMAL_DEBUG</td><td>失败尚在正常定位和修复范围。</td><td>依据首个可复现证据做最小修改并回归。</td></tr>
+          <tr><td class="violet">DIAGNOSTIC_ENHANCEMENT</td><td>错误指纹重复、诊断没有提升或修复无效。</td><td>先增强 Checker、Assertion、事务日志和波形，把“最终输出错误”收敛成周期、事务、状态和不变量级证据。</td></tr>
+          <tr><td class="green">CLOSED</td><td>该 case 已有通过证据或完成裁决。</td><td>归档证据并检查是否需要关联回归保护。</td></tr>
+        </tbody></table>
+        <p>L0-L5 表示证据逐步精化，而不是模型“思考深度”：从最终结果，到首次偏差周期、事务、状态转移、不变量和根因边界。目标不是强求每个项目都达到周期级完美定位，而是确保每次重试带来新的诊断信息。</p>
+      </section>
+
+      <section id="workflow"><h2>19. 推荐的日常操作流程</h2>
+        <div class="steps"><div><b>建立基线。</b>确认当前 RTL Hash、工具版本、Testbench 和基础回归可运行。</div><div><b>修复规格映射。</b>优先清理 UNMAPPED 和阻断型 Spec Gap。</div><div><b>闭环关键 Intent。</b>先 P0/P1，检查激励、观察、通过准则和证据是否完整。</div><div><b>处理 Coverage Hole。</b>按 C1-C6 分类选择补激励、补 Checker、澄清规格或修工具。</div><div><b>审查失败。</b>失败重复时进入诊断增强，不让 Agent 无限循环修改。</div><div><b>补强独立性。</b>关键行为至少用不同裁决域交叉验证，例如 scoreboard + assertion、simulation + formal。</div><div><b>检验验证体系。</b>运行 Mutation，确认 Checker 真能抓住代表性错误。</div><div><b>登记残余风险。</b>无法关闭的限制必须写明影响、责任人和批准理由。</div><div><b>重新生成态势。</b>确保所有结论绑定最新 RTL Hash 和 Verification Space Snapshot。</div><div><b>人工签核。</b>阅读签核包和原始证据，而不是只看绿色标题。</div></div>
+      </section>
+
+      <section id="scenarios"><h2>20. 常见场景下怎么用</h2>
+        <h3>20.1 回归全绿，但仍显示 NOT_READY</h3><p>查看关键 Intent、Coverage Hole、Multi-Oracle 和 Mutation。全绿回归只说明已运行用例没有失败，不代表所有关键场景已到达并被有效裁决。</p>
+        <h3>20.2 覆盖率很高，但 Coverage Hole 很多</h3><p>代码被执行不等于语义被检查。重点看 C3/C4：是否缺少特定交互激励，或只有波形没有 Checker。</p>
+        <h3>20.3 Formal 显示工具错误</h3><p>这是 C6 工具限制，不是 RTL PASS/FAIL。保留原始日志，换受支持属性语法或工具；在重跑成功前不能宣称证明完成。</p>
+        <h3>20.4 一个 case 调试很久</h3><p>查看诊断控制。若重复失败且证据没有变细，停止继续猜 RTL，先增加断言、事务追踪和首次偏差定位。</p>
+        <h3>20.5 RTL 修改后页面仍是绿色</h3><p>核对页面显示的 RTL Hash 和生成时间。若证据属于旧 Hash，应重新运行受影响场景并生成新态势；旧证据不能继续签核新 RTL。</p>
+        <h3>20.6 只能做到部分验证</h3><p>不要伪造闭环。把缺口归入 Coverage Hole 或 Residual Risk，写明影响、工具限制和后续计划，由具名责任人决定是否接受。</p>
+      </section>
+
+      <section id="misread"><h2>21. 常见误读</h2>
+        <table><thead><tr><th>错误理解</th><th>正确理解</th></tr></thead><tbody>
+          <tr><td>风险热区就是 Bug 热力图</td><td>它是验证优先级提示，只有失败证据才能确认缺陷。</td></tr>
+          <tr><td>Intent Closure 100% 就一定可靠</td><td>还要检查 Oracle 独立性、Mutation、证据新鲜度和豁免质量。</td></tr>
+          <tr><td>Formal PASS 等于数学证明全部功能</td><td>必须看属性、约束、深度、引擎和结果类型；有限 BMC 无反例不能扩大解释。</td></tr>
+          <tr><td>WAIVED 等于已验证</td><td>WAIVED 是经批准不验证或延期，风险仍存在。</td></tr>
+          <tr><td>Agent 说完成就可以推进</td><td>验证态势只采信结构化结果和原始证据，不采信自述。</td></tr>
+          <tr><td>绿色“等待人工签核”就是自动签核</td><td>它只是机器建议，最终责任仍属于具名工程人员。</td></tr>
+        </tbody></table>
+      </section>
+
+      <section id="files"><h2>22. 页面背后的数据与证据文件</h2>
+        <table><thead><tr><th>路径</th><th>用途</th></tr></thead><tbody>
+          <tr><td><code>verification/intelligence/verification-posture.json</code></td><td>面向页面的态势快照。</td></tr>
+          <tr><td><code>verification/intelligence/verification-state.json</code></td><td>完整 Verification Intelligence 状态，页面必要时回退读取。</td></tr>
+          <tr><td><code>verification/intelligence/risk-register.json</code></td><td>风险陈述、结构依据、失效模式和源码位置。</td></tr>
+          <tr><td><code>verification/results/diagnostic-control.json</code></td><td>失败指纹、诊断等级、尝试历史与建议。</td></tr>
+          <tr><td><code>verification/results/**/result.json</code></td><td>测试、覆盖率和执行结果的结构化证据。</td></tr>
+          <tr><td><code>verification/results/**/simulation.log</code></td><td>仿真原始日志。</td></tr>
+          <tr><td><code>verification/formal/**</code></td><td>Formal 配置、日志、结果与反例 trace。</td></tr>
+          <tr><td><code>docs/04_verification/</code></td><td>verification plan、test plan、coverage plan 与 AIGV 方法文档。</td></tr>
+        </tbody></table>
+        <p class="small">实际项目可能因版本和模块布局增加其他文件。以页面列出的 evidenceFiles、resultFile 和 traces 为准。</p>
+      </section>
+
+      <section id="checklist"><h2>23. 人工签核前检查表</h2>
+        <ul><li>当前态势的 RTL Hash 与待交付 RTL 一致。</li><li>所有关键规格条款已 PASSED 或具有合规 WAIVER。</li><li>关键 Verification Intent 已闭环，且激励、观察点和通过准则可理解。</li><li>回归结果可复现，失败、跳过和未映射用例均已解释。</li><li>阻断型 Coverage Hole 为 0，非阻断项有明确处置。</li><li>关键场景不存在 Multi-Oracle 冲突或独立性不足。</li><li>Mutation 达到项目阈值，存活 Mutant 已分析。</li><li>Formal 结果没有把工具错误、解析失败或有限深度无反例误写为证明。</li><li>所有残余风险有影响说明、责任人、理由和批准时间。</li><li>签核包引用的日志、波形、覆盖率和报告真实存在且可打开。</li><li>变更后的受影响范围已完成回归，没有继续使用陈旧证据。</li><li>最终签核由具备职责和授权的工程人员完成。</li></ul>
+        <div class="callout violet"><b>验证态势的最佳用法：</b>把它作为每日验证评审的共同事实面。会议先看阻断项和最高风险，再决定今天关闭哪几个 Intent/Hole；任务完成后重新生成快照，用证据变化评价进展，而不是用 Agent 工作时长或消息数量评价进展。</div>
+      </section>
+    </article>
+  </div>
+  <footer class="footer">MoonGlass ASIC Design Agent · Verification Posture User Guide<br>本文是工程使用说明，不构成商业 EDA 签核认证或零缺陷承诺。商业合作与技术交流：moonglassagent@126.com</footer>
+</main>
+</body>
+</html>
