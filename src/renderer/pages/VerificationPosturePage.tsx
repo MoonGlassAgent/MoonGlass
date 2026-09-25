@@ -307,7 +307,12 @@ export function VerificationPosturePage(): React.JSX.Element {
   }, [state])
 
   // L0 头条答案卡：一句话状态 + 等用户处理的事（规格澄清 / 残余风险审批）
-  const currentWave = state?.waveProgress?.find((wave) => wave.status !== 'done')
+  // 0 场景的波段视为"不适用"：后续波段已推进时，不能报"冒烟进行中"之类的误导 headline
+  const waves = state?.waveProgress
+  const wavesWithScenarios = waves?.some((wave) => (wave.scenarioCount ?? 0) > 0) ?? false
+  const currentWave = wavesWithScenarios
+    ? waves?.find((wave) => (wave.scenarioCount ?? 0) > 0 && wave.status !== 'done') ?? waves?.find((wave) => wave.status !== 'done')
+    : waves?.find((wave) => wave.status !== 'done')
   const l0Headline = currentWave && state?.specMapping
     ? t('verification.l0.headline', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal })
     : `${signoff.label}：${signoff.detail}`
@@ -370,13 +375,7 @@ export function VerificationPosturePage(): React.JSX.Element {
     </header>
 
     <main className="min-h-0 flex-1 overflow-auto">
-    <VerificationRunSection status={runStatus} />
-    {!state ? <div className="flex min-h-64 items-center justify-center p-8"><div className="max-w-lg border border-dashed border-zinc-300 bg-white p-8 text-center">
-      <FileSearch className="mx-auto text-zinc-400" size={30} /><h2 className="mt-3 text-base font-semibold">{t('verification.emptyTitle')}</h2>
-      <p className="mt-2 text-sm text-zinc-500">{error || t('verification.emptyHint')}</p>
-      <div className="mt-4 flex justify-center gap-2"><button onClick={() => void load()} className="rounded border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700 hover:border-emerald-500">{t('verification.reload')}</button><Link to="/workspace/$projectId" params={{ projectId }} className="inline-flex rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500">{t('verification.backToWorkspace')}</Link></div>
-    </div></div> : <>
-      <section className="border-b border-zinc-200 bg-white p-5">
+    {state && <section className="border-b border-zinc-200 bg-white p-5">
         <div className="space-y-3 rounded border border-zinc-200 bg-zinc-50/60 p-4">
           <p className="text-base font-semibold text-zinc-900">{l0Headline}</p>
           <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2">
@@ -387,7 +386,13 @@ export function VerificationPosturePage(): React.JSX.Element {
           </div>
           <p className="text-xs text-zinc-600"><b className="text-zinc-700">{t('verification.l0.machineDoing')}</b>{primaryAction ? `${primaryAction.title} —— ${primaryAction.detail}` : t('verification.l0.machineIdle')}</p>
         </div>
-      </section>
+      </section>}
+    <VerificationRunSection status={runStatus} />
+    {!state ? <div className="flex min-h-64 items-center justify-center p-8"><div className="max-w-lg border border-dashed border-zinc-300 bg-white p-8 text-center">
+      <FileSearch className="mx-auto text-zinc-400" size={30} /><h2 className="mt-3 text-base font-semibold">{t('verification.emptyTitle')}</h2>
+      <p className="mt-2 text-sm text-zinc-500">{error || t('verification.emptyHint')}</p>
+      <div className="mt-4 flex justify-center gap-2"><button onClick={() => void load()} className="rounded border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700 hover:border-emerald-500">{t('verification.reload')}</button><Link to="/workspace/$projectId" params={{ projectId }} className="inline-flex rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500">{t('verification.backToWorkspace')}</Link></div>
+    </div></div> : <>
       {diagnostic && <section className={`border-b px-5 py-3 ${diagnostic.mode === 'DIAGNOSTIC_ENHANCEMENT' ? 'border-violet-200 bg-violet-50' : diagnostic.mode === 'CLOSED' ? 'border-emerald-200 bg-emerald-50' : 'border-sky-200 bg-sky-50'}`}><div className="flex items-start gap-4"><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="text-sm">{t('verification.diagnostic.title')}</strong><span className="bg-white px-2 py-0.5 font-mono text-[10px] text-zinc-600">{diagnostic.mode}</span><span className="font-mono text-[10px] text-zinc-500">{diagnostic.activeCase}</span></div><p className="mt-1 text-xs text-zinc-600">{diagnostic.recommendation}</p></div><div className="shrink-0 text-right"><div className="text-lg font-semibold text-violet-700">{diagnostic.attempts.at(-1)?.diagnosticLevel ?? 'L0'}</div><div className="text-[10px] text-zinc-500">{t('verification.diagnostic.records', { count: diagnostic.attempts.length })}</div></div></div></section>}
       <section className={`border-b px-5 py-4 ${signoff.tone === 'good' ? 'border-emerald-200 bg-emerald-50' : signoff.tone === 'bad' ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}>
         <div className="flex items-start gap-4">
