@@ -23,7 +23,9 @@ const suites = {
     'scripts/waveform-guard-smoke.mjs',
     'scripts/llm-error-smoke.mjs',
     'scripts/eda-install-plan-smoke.mjs',
-    'scripts/download-mirror-smoke.mjs'
+    'scripts/download-mirror-smoke.mjs',
+    'scripts/clk-rst-comb-lint-smoke.mjs',
+    'scripts/lint-rules-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

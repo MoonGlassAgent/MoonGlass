@@ -51,9 +51,21 @@ module axi_lite_timer (
   wire [31:0] prescale_write_data = apply_wstrb(prescale_q, s_axi_wdata, s_axi_wstrb);
   wire [31:0] load_write_data = apply_wstrb(load_value_q, s_axi_wdata, s_axi_wstrb);
 
-  assign s_axi_awready = aresetn && !s_axi_bvalid && s_axi_awvalid && s_axi_wvalid;
+  // 复位释放指示（同步释放）：复位期间/释放后首拍为低，用于替代组合复位门控。
+  // 时钟/复位信号不得参与组合逻辑（moonglass-no-clk-rst-in-comb），
+  // AXI ready 以寄存后的释放标志限定，行为等价且消除复位期间的组合毛刺风险。
+  reg reset_released_q;
+  always @(posedge aclk or negedge aresetn) begin
+    if (!aresetn) begin
+      reset_released_q <= 1'b0;
+    end else begin
+      reset_released_q <= 1'b1;
+    end
+  end
+
+  assign s_axi_awready = reset_released_q && !s_axi_bvalid && s_axi_awvalid && s_axi_wvalid;
   assign s_axi_wready = s_axi_awready;
-  assign s_axi_arready = aresetn && !s_axi_rvalid;
+  assign s_axi_arready = reset_released_q && !s_axi_rvalid;
   assign timer_irq = expired_q && irq_enable_q;
 
   function [31:0] apply_wstrb;
