@@ -11,7 +11,7 @@ import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { runLint, runDesignLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
-import { buildVerificationIntelligence, reviewScenarioClosure, reviewSynthesisClauses } from '@moonglass/verification-intelligence-engine'
+import { buildVerificationIntelligence, reviewScenarioClosure, reviewSynthesisClauses, computeRtlHash } from '@moonglass/verification-intelligence-engine'
 import {
   PHASE_ORDER,
   type ChipProject,
@@ -31,7 +31,7 @@ export const GATE_RULES: readonly GateRule[] = [
   { from: 'ARCH', to: 'RTL', precondition: '总体架构和接口可用；独立微架构与时钟复位文档按设计复杂度选配', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
   { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
   { from: 'VERIF', to: 'QA', precondition: '覆盖率、Scenario 闭环与独立证据审查报告', autoChecks: ['line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'sim-passed', 'verification-scenario-closure', 'verification-evidence-review'] },
-  { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed'] }
+  { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过，覆盖率无退化', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed', 'line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80'] }
 ] as const
 
 /** checkId → check_type 映射 */
@@ -56,7 +56,7 @@ const CHECK_NAMES: Record<string, string> = {
   'verible-lint-zero-error': 'Lint 零 Error',
   'port-consistency': '端口一致性检查',
   'line-coverage-gte-90': '行覆盖率 ≥90%',
-  'branch-coverage-gte-85': '条件/分支覆盖率 ≥85%',
+  'branch-coverage-gte-85': '条件覆盖率 ≥85%（表达式求值口径，非 MC/DC）',
   'func-coverage-gte-80': '功能覆盖率 ≥80%',
   'verification-evidence-review': '验证原始证据独立审查',
   'verification-scenario-closure': '关键风险 Scenario 闭环',
@@ -398,20 +398,37 @@ async function simPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
 
 function coverageAtLeast(keys: string[], threshold: number) {
   return async (ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> => {
+    // 新鲜度过滤：只采信与当前 RTL 版本（rtlHash，run_simulation 回归时自动登记）
+    // 一致的覆盖率结果；无 rtlHash 或 rtlHash 不匹配的历史数据一律视为过期，
+    // 防止门禁拿早期冒烟/旧 RTL 的残留 coverage 数据判定（与 scenario_hits 同一哈希空间）
+    let currentRtlHash: string | null = null
+    try { currentRtlHash = computeRtlHash(ctx.workspaceDir) } catch { currentRtlHash = null }
     const values: number[] = []
+    let staleCount = 0
     for (const file of collectJsonFiles(join(ctx.workspaceDir, 'verification', 'results'))) {
       // 缺陷 DEFECT-PACK-001#14：隔离运行目录内的覆盖率数据不拉低门禁最低值
       if (isIsolatedRunEvidence(file)) continue
       try {
         const data = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>
+        if (currentRtlHash && data.rtlHash !== currentRtlHash) { staleCount += 1; continue }
         for (const key of keys) if (typeof data[key] === 'number') values.push(data[key] as number)
         const coverage = data.coverage as Record<string, unknown> | undefined
         if (coverage) for (const key of keys) if (typeof coverage[key] === 'number') values.push(coverage[key] as number)
       } catch { /* 其他 JSON 不影响覆盖率扫描 */ }
     }
-    if (values.length === 0) return makeResult(checkId, false, 'error', `未找到覆盖率字段：${keys.join('/')}`)
+    if (values.length === 0) {
+      return makeResult(
+        checkId,
+        false,
+        'error',
+        staleCount > 0
+          ? `覆盖率数据已过期（${staleCount} 份结果属于旧 RTL 版本，与当前 rtlHash 不匹配）：请先运行 run_simulation（rtlCoverage 缺省开启）重新采集，再补测试`
+          : `未找到覆盖率字段：${keys.join('/')}`
+      )
+    }
     const minimum = Math.min(...values)
-    return makeResult(checkId, minimum >= threshold, 'error', `最低覆盖率 ${minimum}%（要求 ≥${threshold}%）`)
+    const staleNote = staleCount > 0 ? `；已忽略 ${staleCount} 份旧 RTL 版本的过期数据` : ''
+    return makeResult(checkId, minimum >= threshold, 'error', `最低覆盖率 ${minimum}%（要求 ≥${threshold}%）${staleNote}`)
   }
 }
 
@@ -735,7 +752,20 @@ export class PhaseEngine implements MoonGlassService {
   async runGateChecks(project: ChipProject, to: Phase, ctx: GateCheckContext): Promise<GateCheckResult[]> {
     const rule = this.getGateRule(project.currentPhase, to)
     if (!rule) return []
+    return this.runChecksAndPersist(project, project.currentPhase, rule, ctx)
+  }
 
+  /**
+   * 显式指定 from→to 的门禁检查（供 enterPhase 双击跨越带门禁跳转时使用，
+   * 与 runGateChecks 同一执行与落库口径）。
+   */
+  async runGateChecksForTransition(project: ChipProject, from: Phase, to: Phase, ctx: GateCheckContext): Promise<GateCheckResult[]> {
+    const rule = this.getGateRule(from, to)
+    if (!rule) return []
+    return this.runChecksAndPersist(project, from, rule, ctx)
+  }
+
+  private async runChecksAndPersist(project: ChipProject, fromPhase: Phase, rule: GateRule, ctx: GateCheckContext): Promise<GateCheckResult[]> {
     const results = await Promise.all(
       rule.autoChecks.map(async (checkId) => {
         const checker = CHECKERS[checkId]
@@ -758,13 +788,13 @@ export class PhaseEngine implements MoonGlassService {
         // UI 和推进逻辑只消费最近一次结果；同项目同阶段旧记录直接替换，避免无限增长。
         database.delete(gateChecks).where(and(
           eq(gateChecks.projectId, project.id),
-          eq(gateChecks.phase, project.currentPhase)
+          eq(gateChecks.phase, fromPhase)
         )).run()
         for (const r of results) {
           database.insert(gateChecks).values({
             id: randomUUID(),
             projectId: project.id,
-            phase: project.currentPhase,
+            phase: fromPhase,
             checkId: r.checkId,
             checkName: r.checkName,
             checkType: inferCheckType(r.checkId),

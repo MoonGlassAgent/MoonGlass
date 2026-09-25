@@ -5,7 +5,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, type MoonGlassApi } from '@shared/ipc-contract'
-import type { AgentEventPayload, IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest } from '@shared/types'
+import type { AgentEventPayload, ImageAttachment, IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest } from '@shared/types'
 
 const api: MoonGlassApi = {
   ui: {
@@ -75,8 +75,8 @@ const api: MoonGlassApi = {
   },
   agent: {
     ensureSession: (projectId: string) => ipcRenderer.invoke(IPC.Agent.EnsureSession, projectId),
-    prompt: (projectId: string, text: string) =>
-      ipcRenderer.invoke(IPC.Agent.Prompt, projectId, text),
+    prompt: (projectId: string, text: string, images?: ImageAttachment[]) =>
+      ipcRenderer.invoke(IPC.Agent.Prompt, projectId, text, images),
     abort: (projectId: string) => ipcRenderer.invoke(IPC.Agent.Abort, projectId),
     setModel: (projectId: string, providerId: string, modelId: string) =>
       ipcRenderer.invoke(IPC.Agent.SetModel, projectId, providerId, modelId),
@@ -116,6 +116,9 @@ const api: MoonGlassApi = {
       ipcRenderer.invoke(IPC.Fs.WriteText, projectId, relPath, content),
     verificationStatus: (projectId: string) => ipcRenderer.invoke(IPC.Fs.VerificationStatus, projectId),
     openExternal: (projectId: string, relPath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, projectId, relPath)
+  },
+  coverage: {
+    detail: (projectId: string, relResultDir: string) => ipcRenderer.invoke(IPC.Coverage.Detail, projectId, relResultDir)
   },
   designBrowser: {
     listTops: (projectId: string) => ipcRenderer.invoke(IPC.DesignBrowser.ListTops, projectId),

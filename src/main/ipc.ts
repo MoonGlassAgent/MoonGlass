@@ -6,13 +6,15 @@
 
 import { BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { IPC } from '@shared/ipc-contract'
-import type { IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest } from '@shared/types'
+import { PHASE_ORDER } from '@shared/types'
+import type { ImageAttachment, IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest } from '@shared/types'
 import type { ApplicationServices } from './core/application'
 import { pathToFileURL } from 'node:url'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
+import { GATE_RULES } from './services/PhaseEngine'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
-  const { projects, phaseEngine, python, eda, llm, agent, files, designBrowser, processLibraries, ipLibraries } = services
+  const { projects, phaseEngine, python, eda, llm, agent, files, coverage, designBrowser, processLibraries, ipLibraries } = services
   const ipEnhancementJobs = new Map<string, Promise<Awaited<ReturnType<typeof ipLibraries.applySemanticAnalysis>>>>()
 
   ipcMain.handle(IPC.Ui.SetColorMode, (event, mode: 'light' | 'dark' | 'system') => {
@@ -102,9 +104,31 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     return projects.save(phaseEngine.rollback(project, to))
   })
 
-  ipcMain.handle(IPC.Phase.Enter, (_e, projectId: string, to: Phase) => {
+  ipcMain.handle(IPC.Phase.Enter, async (_e, projectId: string, to: Phase) => {
     const project = projects.get(projectId)
     if (!project) return null
+    // 双击阶段节点不再绕过门禁：向前跨越带门禁的相邻跳转时，先逐跳执行门禁检查，
+    // Error 级失败抛错阻断（与 Advance 同一口径）；回退/平移不受影响
+    const fromIndex = PHASE_ORDER.indexOf(project.currentPhase)
+    const toIndex = PHASE_ORDER.indexOf(to)
+    if (fromIndex >= 0 && toIndex > fromIndex) {
+      const ctx = { workspaceDir: projects.workspaceDir(projectId) }
+      for (let i = fromIndex; i < toIndex; i += 1) {
+        const stepFrom = PHASE_ORDER[i]
+        const stepTo = PHASE_ORDER[i + 1]
+        if (!GATE_RULES.some((r) => r.from === stepFrom && r.to === stepTo)) continue
+        const results = await phaseEngine.runGateChecksForTransition(project, stepFrom, stepTo, ctx)
+        project.phases[stepFrom].gateCheckResults = results
+        if (phaseEngine.isBlocked(results)) {
+          projects.save(project)
+          const failed = results.filter((r) => r.severity === 'error' && !r.passed)
+          throw new Error(
+            `门禁未通过，无法进入 ${to}（${stepFrom} → ${stepTo} 检查失败 ${failed.length} 项）：` +
+            failed.map((r) => `${r.checkName}：${r.message}`).join('；')
+          )
+        }
+      }
+    }
     return projects.save(phaseEngine.enterPhase(project, to))
   })
 
@@ -242,8 +266,8 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   // ==================== Agent 对话 ====================
   ipcMain.handle(IPC.Agent.EnsureSession, (_e, projectId: string) => agent.ensureSession(projectId))
 
-  ipcMain.handle(IPC.Agent.Prompt, (_e, projectId: string, text: string) =>
-    agent.prompt(projectId, text)
+  ipcMain.handle(IPC.Agent.Prompt, (_e, projectId: string, text: string, images?: ImageAttachment[]) =>
+    agent.prompt(projectId, text, images)
   )
 
   ipcMain.handle(IPC.Agent.Abort, (_e, projectId: string) => agent.abort(projectId))
@@ -327,6 +351,11 @@ export function registerIpcHandlers(services: ApplicationServices): void {
       return false
     }
   })
+
+  // ==================== 覆盖率明细 ====================
+  ipcMain.handle(IPC.Coverage.Detail, (_e, projectId: string, relResultDir: string) =>
+    coverage.detail(projectId, relResultDir)
+  )
 
   // ==================== RTL Design Browser ====================
   ipcMain.handle(IPC.DesignBrowser.ListTops, (_e, projectId: string) =>

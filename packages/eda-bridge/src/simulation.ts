@@ -13,6 +13,7 @@ import {
   toolEnv,
   VERILATOR_CANDIDATES
 } from './tool-runner'
+import type { CoverageDetailResult, CoveragePointDetail } from '@shared/types'
 
 export type SimulatorKind = 'verilator' | 'icarus' | 'vcs' | 'xcelium'
 
@@ -180,7 +181,11 @@ function percentage(count?: CoveragePointCount): number | undefined {
   return count && count.total > 0 ? Number(((count.covered / count.total) * 100).toFixed(2)) : undefined
 }
 
-/** 直接解析 Verilator coverage.dat，避免依赖平台相关的 Perl wrapper。 */
+/** 直接解析 Verilator coverage.dat，避免依赖平台相关的 Perl wrapper。
+ * 口径声明：Verilator（含 5.x）无独立 branch/condition 插桩类型，if/else 条件以
+ * expr 检测点（条件求值点）记录，VerilatedCov 也不记录真假双向取值。因此
+ * branchCoverage 取 branch ?? expression 时是【表达式求值口径】——最接近条件覆盖的
+ * 可用度量，但不是 MC/DC 级操作数覆盖；签核文档不得宣称 MC/DC。 */
 export function parseVerilatorCoverage(path: string): CoverageSummary {
   if (!existsSync(path)) return {}
   const counts = new Map<string, CoveragePointCount>()
@@ -207,6 +212,62 @@ export function parseVerilatorCoverage(path: string): CoverageSummary {
     expressionCoverage: percentage(expression),
     toggleCoverage: percentage(counts.get('toggle')),
     fsmCoverage: percentage(fsm)
+  }
+}
+
+/** 参与明细解析的检测点类型（coverage.dat 的 \x01t 取值白名单） */
+const COVERAGE_DETAIL_KINDS = new Set<CoveragePointDetail['kind']>(['line', 'branch', 'expr', 'toggle', 'fsm_state', 'fsm_arc'])
+
+/**
+ * 解析 Verilator coverage.dat 的逐检测点明细：额外捕获文件、行列、语义、层级与命中次数字段，
+ * 按源码文件分组；summary 与 parseVerilatorCoverage 同口径聚合（branch 缺失时由 expr 顶替，
+ * fsm 为 fsm_state 与 fsm_arc 之和）。文件不存在或无记录时返回 null，不抛异常。
+ */
+export function parseVerilatorCoverageDetail(path: string): CoverageDetailResult | null {
+  if (!existsSync(path)) return null
+  const byFile = new Map<string, CoveragePointDetail[]>()
+  const counts = new Map<string, CoveragePointCount>()
+  for (const line of readFileSync(path, 'utf-8').split(/\r?\n/)) {
+    const type = /\x01t\x02([^\x01']+)/.exec(line)?.[1]
+    const hitsText = /'\s+(\d+)\s*$/.exec(line)?.[1]
+    if (!type || hitsText === undefined || !COVERAGE_DETAIL_KINDS.has(type as CoveragePointDetail['kind'])) continue
+    const file = /\x01f\x02([^\x01']+)/.exec(line)?.[1]
+    const lineNo = /\x01l\x02(\d+)/.exec(line)?.[1]
+    if (!file || lineNo === undefined) continue
+    const point: CoveragePointDetail = { line: Number(lineNo), kind: type as CoveragePointDetail['kind'], hits: Number(hitsText) }
+    const column = /\x01n\x02(\d+)/.exec(line)?.[1]
+    if (column !== undefined) point.column = Number(column)
+    const origin = /\x01o\x02([^\x01']+)/.exec(line)?.[1]
+    if (origin !== undefined) point.origin = origin
+    const hierarchy = /\x01h\x02([^\x01']+)/.exec(line)?.[1]
+    if (hierarchy !== undefined) point.hierarchy = hierarchy
+    const points = byFile.get(file) ?? []
+    points.push(point)
+    byFile.set(file, points)
+    const count = counts.get(type) ?? { total: 0, covered: 0 }
+    count.total += 1
+    if (point.hits > 0) count.covered += 1
+    counts.set(type, count)
+  }
+  if (byFile.size === 0) return null
+  const branch = counts.get('branch')
+  const expression = counts.get('expr')
+  const fsmState = counts.get('fsm_state')
+  const fsmArc = counts.get('fsm_arc')
+  const fsm = fsmState || fsmArc ? {
+    total: (fsmState?.total ?? 0) + (fsmArc?.total ?? 0),
+    covered: (fsmState?.covered ?? 0) + (fsmArc?.covered ?? 0)
+  } : undefined
+  return {
+    generatedAt: new Date().toISOString(),
+    files: [...byFile.entries()].map(([file, points]) => ({ file, points })),
+    summary: {
+      line: percentage(counts.get('line')),
+      branch: percentage(branch ?? expression),
+      expression: percentage(expression),
+      toggle: percentage(counts.get('toggle')),
+      fsm: percentage(fsm)
+    }
   }
 }
 
@@ -246,8 +307,13 @@ function writeCoverageReport(resultDir: string, coverage: CoverageSummary, dataP
   const reportPath = join(resultDir, 'coverage_report.md')
   const jsonPath = join(resultDir, 'coverage.json')
   writeFileSync(jsonPath, JSON.stringify({ ...coverage, coverageDataPath: dataPath ?? null, generatedAt: new Date().toISOString() }, null, 2), 'utf-8')
+  // 同步落盘逐检测点明细，供验证态势页「覆盖率明细」视图直接消费（含 generatedAt）
+  if (dataPath) {
+    const detail = parseVerilatorCoverageDetail(dataPath)
+    if (detail) writeFileSync(join(resultDir, 'coverage-detail.json'), JSON.stringify(detail, null, 2), 'utf-8')
+  }
   const rows = [
-    ['行/基本块', coverage.lineCoverage], ['条件/分支', coverage.branchCoverage],
+    ['行/基本块', coverage.lineCoverage], ['条件（表达式求值口径，非 MC/DC）', coverage.branchCoverage],
     ['表达式', coverage.expressionCoverage], ['翻转', coverage.toggleCoverage],
     ['FSM', coverage.fsmCoverage], ['功能', coverage.functionalCoverage]
   ]
@@ -305,8 +371,39 @@ async function checkIcarusToolchain(
   }
 }
 
-/** 使用 cocotb 2.x Python Runner 运行测试，并统一归档日志、JUnit、结果和波形。 */
+/** 使用 cocotb 2.x Python Runner 运行测试，并统一归档日志、JUnit、结果和波形。
+ *
+ * RTL 覆盖率仅 verilator 后端可采集（icarus 无插桩）。rtlCoverage 缺省开启且指定 icarus
+ * 时，先尝试升级到 verilator；若本机 cocotb+verilator 构建阶段失败（工具链不可用），
+ * 自动回退 icarus 完成功能回归——覆盖率升级不得打断功能验证，回痕写入返回日志。
+ */
 export async function runCocotbSimulation(options: CocotbSimOptions): Promise<VerilatorSimResult> {
+  if ((options.simulator ?? 'icarus') === 'icarus' && options.rtlCoverage !== false && (await locateTool(VERILATOR_CANDIDATES))) {
+    let upgraded: VerilatorSimResult & { buildStageFailed?: boolean }
+    try {
+      upgraded = await runCocotbSimulationOnce({ ...options, simulator: 'verilator', coverageUpgradeNote: true })
+    } catch (error) {
+      // verilator 工具链前置校验失败（缺 g++/make）：同样走 icarus 回退
+      const message = error instanceof Error ? error.message : String(error)
+      if (!message.includes('Verilator Windows 仿真需要')) throw error
+      upgraded = { buildStageFailed: true } as VerilatorSimResult & { buildStageFailed?: boolean }
+    }
+    if (!upgraded.buildStageFailed) {
+      const { buildStageFailed: _ignored, ...result } = upgraded
+      return result
+    }
+    const fallback = await runCocotbSimulationOnce({ ...options, simulator: 'icarus', rtlCoverage: false })
+    return {
+      ...fallback,
+      log: `[note] RTL 覆盖率需 verilator 后端，但本机 cocotb+verilator 构建失败，已回退 icarus 完成功能回归（本次无 RTL 覆盖率）\n${fallback.log}`
+    }
+  }
+  return runCocotbSimulationOnce(options)
+}
+
+/** cocotb 单次运行实现。coverageUpgradeNote=true 时在编译日志留痕"icarus 升级 verilator"；
+ *  返回附 buildStageFailed（runner.build 阶段失败），供上层决定是否回退后端。 */
+async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpgradeNote?: boolean }): Promise<VerilatorSimResult & { buildStageFailed?: boolean }> {
   const simulator = options.simulator ?? 'icarus'
   const rtlCoverage = simulator === 'verilator' && options.rtlCoverage !== false
   const python = options.pythonExecutable ?? await locateTool(process.platform === 'win32' ? ['python.exe', 'python'] : ['python3', 'python'])
@@ -412,6 +509,9 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
     compileLogPath,
     [
       `[compile] cocotb runner.build(simulator=${simulator}, sources=${options.rtlFiles.length} 个 RTL 文件, build_dir=${options.buildDir})`,
+      ...(options.coverageUpgradeNote
+        ? [`[note] 请求 icarus 但 RTL 覆盖率需 verilator 后端：已自动升级 simulator=verilator（icarus 无覆盖率插桩）`]
+        : []),
       buildSegment.trim()
         ? buildSegment.trimEnd()
         : `编译由 cocotb runner.build 统一执行且未产生独立编译输出，详见 ${basename(simulationLogPath)}`
@@ -495,6 +595,7 @@ export async function runCocotbSimulation(options: CocotbSimOptions): Promise<Ve
     coverageDataPath: rtlCoverage && existsSync(coverageDataPath) ? coverageDataPath : undefined,
     coverageReportPath,
     resultsXmlPath: existsSync(resultsXml) ? resultsXml : null,
+    buildStageFailed: marker < 0,
     ...(archivedResultPath ? { archivedResultPath } : {})
   }
 }

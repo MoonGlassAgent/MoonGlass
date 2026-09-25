@@ -148,6 +148,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 强制检查：
 - 每次修改 RTL 后先对相关文件做局部 Lint；阶段完成前必须按 rtl/design.json 与 rtl/filelist.f 对全部设计文件执行一次联合 Lint/elaboration（零 Error），不得用单个子模块编译代替顶层编译
 - Verilog-2001 模块内的 parameter/localparam、integer/genvar、wire/reg 声明必须集中放在连续赋值、always/initial、实例化等行为语句之前；禁止先使用信号再补声明
+- 时钟/复位信号（clk/clock/rst/reset 词干命名，含 i_/o_ 前缀与 _n/n 低有效后缀）不得参与组合逻辑表达式，仅允许出现在时序 always 敏感表与复位条件中；跨时钟域信号必须经过同步器，禁止在 assign 右值或 always @(*) 块体内直接引用
+- 时序 always 一律使用非阻塞赋值 <=（for 循环变量除外），组合 always 一律使用阻塞赋值 =；可综合 RTL 禁用 ===/!==（case equality，X 语义仿真/综合不一致）；组合逻辑必须完整赋值避免推断锁存器（LATCH）；同一信号不得同时作同步与异步复位；自赋值（q <= q 保持态除外）需确认意图
 - 普通 part-select 的左右边界必须是常量表达式；动态选择使用 Verilog-2001 合法的 indexed part-select（base +: WIDTH 或 base -: WIDTH），其中 WIDTH 必须为常量
 - 必须通过可综合性检查`
   },
@@ -157,7 +159,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'VERIF',
     injectMode: 'prepend',
-    version: '2.3.2',
+    version: '2.3.3',
     updatedAt: '2026-09-11',
     content: `当前处于【验证完备】阶段。
 
@@ -185,7 +187,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 5. 读取 feature-interaction-graph.json；需要语义补充时调用 register_verification_hypotheses，每个推理必须引用 Risk/RTL Object/Interaction Edge，并区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN
 6. 调用 select_next_verification_batch，按“模块 × Oracle 域 × 方法”聚类选批（一组 5~8 个同组场景）；同组场景一次 authoring 写 N 条 testcase（如一个 test_regif_errors.py 写 5 个 @cocotb.test），一次 run_simulation 绑定这 N 个 scenarioIds 登记；执行后按失败指纹再聚类建议下一轮。优先复用现有执行计划，禁止无结构依据的任意笛卡尔积
 7. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification：先用 Yosys 兼容的过程式 immediate assert/assume/cover，不得使用 property/endproperty、assert property、default clocking、disable iff、|->、|=> 或 ##；Liveness 必须有规格依据的环境响应 assumption。标明 required/supplemental，先 BMC/cover，再对适合的不变量 prove；BMC PASS 只能算有限深度检查，不能宣称已证明
-8. Windows 使用 run_simulation(mode="cpp", rtlCoverage=true) 运行 Verilator 覆盖率签核回归；Linux 可使用 Cocotb + Verilator。昂贵的全量 Coverage、广泛 Formal 和全量回归只在基础稳定、受影响批次稳定及签核前执行，不得在每次局部修复后重复；不得另写临时 runner 绕过工具
+8. 覆盖率采集前移到每个选批波次结束：每波 run_simulation 回归（rtlCoverage 缺省开启，icarus 请求会自动升级到 verilator 后端）后立即读取返回的未覆盖点定位与 coverage-detail.json，把未覆盖的行/分支分类为 C1-C6 并在下一轮选批优先安排定向激励，禁止只靠增加随机 seed；签核前用 run_simulation(mode="cpp", rtlCoverage=true)（Windows）或 Cocotb + Verilator（Linux）执行全量覆盖率回归。RTL 变更后必须重新采集覆盖率再进签核，旧 rtlHash 的覆盖率数据门禁不再采信。昂贵的全量 Coverage、广泛 Formal 和全量回归只在基础稳定、受影响批次稳定及签核前执行，不得在每次局部修复后重复；不得另写临时 runner 绕过工具
 9. 将仿真日志、result.json、oracle_verdicts.json、coverage 数据、Formal result/log/property/trace 和 VCD/FST 写入固定证据目录；scenario_hits.json 由 run_simulation(scenarioIds=...) 在执行后自动登记（FAIL 同样登记为证据），禁止手写或修改该文件；oracle_verdicts 必须绑定当前 rtlHash，Scoreboard、Assertion、Protocol、Formal 等分别写 verdict，禁止用单个 passed 冒充多个独立 Oracle
 10. 执行派生状态（VERIFIED/FAILED/REACHED/NOT_REACHED/PARTIAL/FORMAL_PROVED/FORMAL_UNREACHABLE）只能由仿真/Formal 证据自动派生，不得宣布；record_scenario_adjudication 仅限 PLANNED/IMPLEMENTED/BLOCKED_BY_SPEC/WAIVED 四类判断类裁决，WAIVED 需 signoff-approvals.json 中已有具名审批。把未覆盖项分类为 C1 不可达、C2 约束阻断、C3 激励缺失、C4 观察缺失、C5 规格未定义或 C6 工具/插桩问题，再次构建智能模型并重排任务，直至关键 Verification Intent 闭环
 11. 读取 oracle-registry.json 与 oracle-evaluation.json；关键 Scenario 至少需要两个 independenceDomain 不同且 Level >= 2 的有效 PASS。任何 Oracle 冲突均进入 CONFLICT，必须检查命题范围、共享 assumptions、Checker 与 RTL 原始证据，不得设置固定赢家
@@ -199,7 +201,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 - 必须基于 RTL 阶段的端口定义
 - 禁止整读 verification/intelligence/ 下的 slang-ast.json、verification-state.json、feature-interaction-graph.json（引擎中间产物/全量模型，体积过大）；日常状态读取唯一入口是 execution-summary.json（≤10KB 摘要），需要场景细节时以 select_next_verification_batch 的返回与按需定向读取为准，不得把整份 JSON 读入上下文
 - 行覆盖率目标 ≥90%
-- 分支覆盖率目标 ≥85%
+- 条件覆盖率目标 ≥85%（Verilator 表达式求值口径：if/else 条件求值点，非 MC/DC 级操作数覆盖）
+- 每个波次结束必须采集轻量覆盖率并处理未覆盖点（见执行规则 8）
 - 必须包含边界条件测试
 - 必须包含错误注入测试`
   },

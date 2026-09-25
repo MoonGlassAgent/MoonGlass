@@ -23,7 +23,7 @@ import {
   VERILATOR_CANDIDATES,
   YOSYS_CANDIDATES
 } from './eda-bridge/tool-runner'
-import { runCocotbSimulation, runVerilatorSimulation, resolveMaxWaveformGB } from './eda-bridge/simulation'
+import { runCocotbSimulation, runVerilatorSimulation, resolveMaxWaveformGB, parseVerilatorCoverageDetail } from './eda-bridge/simulation'
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { runFormalVerification } from './eda-bridge/formal'
 import { runDesignLint } from './eda-bridge/lint'
@@ -1037,6 +1037,21 @@ export default function (pi: ExtensionAPI): void {
           join('verification', `${baseName}_tb`, 'sim', 'sim_main.cpp')
       )
 
+      // [MOONGLASS_AUTO_STIMULUS] 激励端口：除时钟/复位外的全部输入。
+      // 生成 TB 缺省带 xorshift32 伪随机激励，避免"空转 TB"导致 if/case 分支、
+      // 条件表达式与翻转天然不可达、行/条件覆盖率虚低；定向测试可由 Agent 替换为具体激励。
+      const stimulusPorts = info.ports.filter(
+        (p) => p.direction === 'input' && p.name !== clockName && p.name !== resetName
+      )
+      const stimulusMask = (width: number): string => {
+        const clamped = Math.min(Math.max(width, 1), 32)
+        return clamped >= 32 ? '0xFFFFFFFFu' : `0x${((1 << clamped) - 1).toString(16).toUpperCase()}u`
+      }
+      const stimulusInitLines = stimulusPorts.map((p) => `  top->${p.name} = 0;`).join('\n')
+      const stimulusDriveLines = stimulusPorts
+        .map((p) => `    mg_lfsr = mg_xorshift32(mg_lfsr);\n    top->${p.name} = mg_lfsr & ${stimulusMask(p.width)};`)
+        .join('\n')
+
       const tbCode = `// ============================================================
 // ${baseName} Verilator Testbench
 // 自动生成时间: ${new Date().toISOString()}
@@ -1044,12 +1059,19 @@ export default function (pi: ExtensionAPI): void {
 // ============================================================
 
 #include <verilated.h>
+#include <cstdint>
+#include <cstdlib>
 #include "${vBase}.h"
 
-${trace ? '#include <verilated_vcd_c.h>\n#include <cstdio>\n#include <cstdlib>\n#include <fstream>' : ''}
+${trace ? '#include <verilated_vcd_c.h>\n#include <cstdio>\n#include <fstream>' : ''}
 
 vluint64_t main_time = 0;
 double sc_time_stamp() { return main_time; }
+
+// [MOONGLASS_AUTO_STIMULUS] xorshift32 伪随机激励源；可用环境变量 MOONGLASS_STIM_SEED 固定种子复现
+static inline uint32_t mg_xorshift32(uint32_t s) {
+  s ^= s << 13; s ^= s >> 17; s ^= s << 5; return s;
+}
 
 int main(int argc, char** argv) {
   Verilated::commandArgs(argc, argv);
@@ -1076,7 +1098,7 @@ ${trace ? `  // 波形追踪
   // 初始化信号
   top->${clockName} = 0;
   top->${resetName} = ${resetActiveLow ? '1' : '0'};
-
+${stimulusInitLines ? `\n  // 输入初始化为 0（复位期间不驱动随机激励）\n${stimulusInitLines}\n` : ''}
   // 释放复位
   top->${resetName} = ${resetActiveLow ? '0' : '1'};
   for (int i = 0; i < 5; i++) {
@@ -1084,6 +1106,10 @@ ${trace ? `  // 波形追踪
     top->eval();
   }
   top->${resetName} = ${resetActiveLow ? '1' : '0'};
+
+  // [MOONGLASS_AUTO_STIMULUS] 伪随机种子（环境变量可复现）
+  const char* mg_seed_env = getenv("MOONGLASS_STIM_SEED");
+  uint32_t mg_lfsr = mg_seed_env ? static_cast<uint32_t>(strtoul(mg_seed_env, nullptr, 0)) : 0xACE1u;
 
   // 主仿真循环
   for (int cycle = 0; cycle < ${numCycles}; cycle++) {
@@ -1107,7 +1133,12 @@ ${trace ? `    if (tfp) tfp->dump(main_time);\n    main_time++;` : ''}
     top->${clockName} = 0;
     top->eval();
 ${trace ? `    if (tfp) tfp->dump(main_time);\n    main_time++;` : ''}
-
+${stimulusDriveLines ? `
+    // [MOONGLASS_AUTO_STIMULUS] 伪随机激励：每周期驱动所有输入（时钟/复位除外），
+    // 让 if/case 分支、条件表达式与信号翻转得到基本遍历；写定向测试时替换为具体激励。
+${stimulusDriveLines}
+    top->eval();
+` : ''}
     if (Verilated::gotFinish()) break;
   }
 
@@ -1146,6 +1177,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         `**仿真周期**: ${numCycles}`,
         `**波形输出**: ${trace ? '✅ VCD 已启用' : '❌ 关闭'}`,
         ...(trace ? [`**波形熔断**: 体积超过 MOONGLASS_MAX_WAVEFORM_GB（缺省 10 GB）时只停止波形记录，仿真继续；检查周期 MOONGLASS_WAVEFORM_CHECK_CYCLES（缺省 100 万周期）`] : []),
+        ...(stimulusPorts.length > 0
+          ? [`**自动激励**: ${stimulusPorts.length} 个输入端口已接入 xorshift32 伪随机激励（MOONGLASS_AUTO_STIMULUS，种子可用 MOONGLASS_STIM_SEED 固定）；写定向测试时请替换为具体激励`]
+          : []),
         '',
         '### 端口映射',
         ...portTable,
@@ -1281,6 +1315,16 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
               resultDir
             })
 
+        // 回归证据绑定当前 RTL 版本（rtlHash 与 scenario_hits / 阶段门禁同一哈希空间），
+        // 供覆盖率门禁做新鲜度过滤——RTL 变更后旧覆盖率数据不再被采信，必须先重采
+        if (purpose === 'regression') {
+          try {
+            const rtlHash = computeRtlHash(resolve(ctx.cwd))
+            const data = JSON.parse(readFileSync(result.resultPath, 'utf-8'))
+            writeJsonAtomic(result.resultPath, { ...data, rtlHash })
+          } catch { /* 哈希计算失败不阻断仿真结果本身 */ }
+        }
+
         const report = [
           `## 仿真结果 — ${topModule}`,
           '',
@@ -1294,6 +1338,28 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           `**RTL 覆盖率**: ${result.coverage?.lineCoverage === undefined ? '未采集' : `行 ${result.coverage.lineCoverage}% / 条件 ${result.coverage.branchCoverage ?? '暂无'}%`}`,
           `**功能覆盖率**: ${result.coverage?.functionalCoverage === undefined ? '未提供' : `${result.coverage.functionalCoverage}%`}`,
         ]
+
+        // 未覆盖点定位（回归证据）：从 coverage.dat 明细中提取 hits=0 的检测点（含文件/行/列/语义），
+        // 让 Agent 直接看到"哪一行哪个分支没被激励到"，作为下一轮定向测试的输入
+        if (purpose === 'regression' && result.coverageDataPath) {
+          try {
+            const detail = parseVerilatorCoverageDetail(result.coverageDataPath)
+            if (detail) {
+              const uncovered = detail.files.flatMap((f) =>
+                f.points.filter((p) => p.hits === 0).map((p) => ({ file: f.file, ...p }))
+              )
+              const kindLabel: Record<string, string> = { branch: '分支', line: '行', expr: '表达式', toggle: '翻转', fsm_state: 'FSM 状态', fsm_arc: 'FSM 转移' }
+              const keyUncovered = uncovered.filter((p) => p.kind === 'branch' || p.kind === 'line')
+              if (keyUncovered.length > 0) {
+                report.push('', '### 未覆盖点定位（前 20 个行/分支；全量见 coverage-detail.json）', '')
+                report.push(...keyUncovered.slice(0, 20).map((p) =>
+                  `- ${kindLabel[p.kind] ?? p.kind}: ${p.file}:${p.line}${p.column !== undefined ? `:${p.column}` : ''}${p.origin ? `（${p.origin}）` : ''}`
+                ))
+              }
+              report.push(`未覆盖检测点合计 ${uncovered.length} 个（含表达式/翻转/FSM 全类型，文件/行/列/层级见 coverage-detail.json）`)
+            }
+          } catch { /* 明细解析失败不影响仿真结果本身 */ }
+        }
 
         // 波形体积熔断留痕（C6 工具/插桩类）：诚实区分三种行为，不假装外部 TB 也能熔断
         let waveformGuard: WaveformGuardRecord | undefined

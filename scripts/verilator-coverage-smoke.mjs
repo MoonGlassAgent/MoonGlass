@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
-const { runCocotbSimulation, runVerilatorSimulation } = await import('../packages/eda-bridge/src/simulation.ts')
+const { runCocotbSimulation, runVerilatorSimulation, parseVerilatorCoverageDetail } = await import('../packages/eda-bridge/src/simulation.ts')
 const root = mkdtempSync(join(tmpdir(), 'moonglass-verilator-coverage-'))
 const testDir = join(root, 'verification', 'counter_tb')
 const buildDir = join(testDir, 'sim', 'sim_build')
@@ -81,5 +81,44 @@ check('Icarus 与 Verilator 日志独立归档',
   String(rtlMetadata.rtlCompileLogPath).endsWith('compile_verilator.log') &&
   String(rtlMetadata.functionalCompileLogPath).endsWith('compile_icarus.log') &&
   existsSync(rtlMetadata.rtlCompileLogPath) && existsSync(rtlMetadata.functionalCompileLogPath))
+
+// ---- 覆盖率明细（逐检测点）闭环 ----
+const detail = parseVerilatorCoverageDetail(rtlResult.coverageDataPath ?? join(resultDir, 'coverage.dat'))
+check('覆盖率明细解析成功', detail !== null && detail.files.some((f) => f.file.endsWith('counter.v')))
+const counterDetail = detail?.files.find((f) => f.file.endsWith('counter.v'))
+check('counter.v 检测点含行号与命中次数字段', Boolean(counterDetail?.points.every((p) => typeof p.line === 'number' && typeof p.hits === 'number')))
+const detailJsonPath = join(resultDir, 'coverage-detail.json')
+check('coverage-detail.json 已落盘', existsSync(detailJsonPath))
+if (existsSync(detailJsonPath)) {
+  const cachedDetail = JSON.parse(readFileSync(detailJsonPath, 'utf-8'))
+  check('明细缓存含 files', Array.isArray(cachedDetail.files) && cachedDetail.files.length > 0)
+}
+const coverageJson = JSON.parse(readFileSync(join(resultDir, 'coverage.json'), 'utf-8'))
+check('明细汇总与 coverage.json 聚合值一致',
+  detail?.summary.line === coverageJson.lineCoverage &&
+  detail?.summary.branch === coverageJson.branchCoverage &&
+  detail?.summary.expression === coverageJson.expressionCoverage &&
+  detail?.summary.toggle === coverageJson.toggleCoverage &&
+  detail?.summary.fsm === coverageJson.fsmCoverage,
+  `detail=${JSON.stringify(detail?.summary)} coverage=${JSON.stringify(coverageJson)}`)
+
+// 本机 Verilator 5.051 在现有覆盖率开关下不产出 branch 类型点，且冒烟 TB 行覆盖率达 100%，
+// 因此用合成 coverage.dat 确定性验证逐点字段捕获（含未覆盖 line 点、已命中 branch 点与可缺失字段）。
+const syntheticDat = join(root, 'synthetic-coverage.dat')
+writeFileSync(syntheticDat, [
+  '# SystemC::Coverage-3',
+  "C '\x01f\x02/rtl/counter.v\x01l\x028\x01n\x023\x01t\x02line\x01o\x02block\x01h\x02TOP.counter' 0",
+  "C '\x01f\x02/rtl/counter.v\x01l\x029\x01n\x024\x01t\x02branch\x01o\x02if\x01h\x02TOP.counter' 42",
+  "C '\x01f\x02/rtl/counter.v\x01l\x0211\x01t\x02expr\x01h\x02TOP.counter' 7",
+  "C '\x01f\x02/rtl/counter.v\x01l\x0212\x01n\x021\x01t\x02fsm_state\x01o\x02state\x01h\x02TOP.counter' 0"
+].join('\n'), 'utf-8')
+const syntheticDetail = parseVerilatorCoverageDetail(syntheticDat)
+const syntheticCounter = syntheticDetail?.files.find((f) => f.file === '/rtl/counter.v')
+check('合成样例含未覆盖 line 点', Boolean(syntheticCounter?.points.some((p) => p.kind === 'line' && p.hits === 0 && p.line === 8)))
+check('合成样例含已命中 branch 点', Boolean(syntheticCounter?.points.some((p) => p.kind === 'branch' && p.hits > 0 && p.origin === 'if')))
+check('合成样例可缺失字段正确省略', Boolean(syntheticCounter?.points.find((p) => p.kind === 'expr' && p.column === undefined && p.origin === undefined)))
+check('合成样例 fsm 点计入明细', Boolean(syntheticCounter?.points.some((p) => p.kind === 'fsm_state')))
+
+
 console.log(failures === 0 ? '\n✅ Verilator 覆盖率闭环冒烟通过' : `\n❌ ${failures} 项失败`)
 process.exit(failures === 0 ? 0 : 1)
