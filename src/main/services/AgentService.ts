@@ -23,7 +23,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync,
 import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound } from '@moonglass/verification-intelligence-engine'
-import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, IpLibraryRecord, Phase, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
+import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, ImageAttachment, IpLibraryRecord, Phase, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
 import { PHASE_LABELS } from '@shared/types'
 import { FALLBACK_MODEL_CONTEXT, resolveModelContext } from '@shared/model-context'
 import type { ModelContextMetadata } from '@shared/model-context'
@@ -191,6 +191,8 @@ interface PiSession {
   activeSessionName: string
   /** 由 Pi agent_start/agent_settled 事件维护，避免运行中查询 RPC 队列。 */
   isStreaming: boolean
+  /** pi waitReady + 初始 set_model 完成后置 true；ready 前拒绝 prompt/setModel/compact，避免命令挤进半启动的 pi */
+  ready: boolean
   /** 每轮重建的工具活动守护器，避免 Agent 陷入重复读写循环。 */
   watchdog: AgentRunWatchdog
   watchdogActionPending: boolean
@@ -225,6 +227,8 @@ export class AgentService implements MoonGlassService {
   readonly name = 'agent-service'
 
   private sessions = new Map<string, PiSession>()
+  /** 每项目正在执行的 ensureSession：并发 ensure 共享同一 Promise，避免复用半成品会话、重复 spawn */
+  private pendingEnsures = new Map<string, Promise<AgentSessionInfo>>()
   /** 切走后仍在执行的会话进程，按项目和会话文件保存。 */
   private backgroundSessions = new Map<string, Map<string, PiSession>>()
   private piBinPath = ''
@@ -838,6 +842,7 @@ argument-hint: "<模块名>"
       currentSessionFile: sessionFile,
       activeSessionName: sessionName,
       isStreaming: false,
+      ready: false,
       watchdog: new AgentRunWatchdog(phase),
       watchdogActionPending: false,
       contextWarned: false,
@@ -851,6 +856,20 @@ argument-hint: "<模块名>"
   }
 
   async ensureSession(projectId: string): Promise<AgentSessionInfo> {
+    // 阶段推进会并发触发多个 ensure（面板 effect、托管流程、发送前对齐）：
+    // 共享同一在飞 Promise，后来的调用等待首次初始化完成，拿不到半成品快照。
+    const pending = this.pendingEnsures.get(projectId)
+    if (pending) return pending
+    const task = this.ensureSessionInternal(projectId)
+    this.pendingEnsures.set(projectId, task)
+    try {
+      return await task
+    } finally {
+      if (this.pendingEnsures.get(projectId) === task) this.pendingEnsures.delete(projectId)
+    }
+  }
+
+  private async ensureSessionInternal(projectId: string): Promise<AgentSessionInfo> {
     const project = this.projects.get(projectId)
     if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
 
@@ -917,21 +936,30 @@ argument-hint: "<模块名>"
         this.modelStore.setActiveSession(projectId, session.activeSessionName)
       } else {
         session = this.spawnSession(projectId, project.currentPhase, project.name, targetSessionFile)
-        await session.client.waitReady()
+        try {
+          await session.client.waitReady()
 
-        // 阶段会话优先恢复自己的模型；首次进入阶段时继承上一活动会话的模型选择，但不继承历史。
-        const previousSelection = rememberedSessionName
-          ? this.modelStore.get(projectId, rememberedSessionName)
-          : undefined
-        const selection = this.modelStore.get(projectId, session.activeSessionName) ?? previousSelection
-        const initial =
-          selection && providers.some((p) => p.id === selection.providerId && p.models.includes(selection.modelId))
-            ? selection
-            : { providerId: providers[0].id, modelId: providers[0].models[0] }
+          // 阶段会话优先恢复自己的模型；首次进入阶段时继承上一活动会话的模型选择，但不继承历史。
+          const previousSelection = rememberedSessionName
+            ? this.modelStore.get(projectId, rememberedSessionName)
+            : undefined
+          const selection = this.modelStore.get(projectId, session.activeSessionName) ?? previousSelection
+          const initial =
+            selection && providers.some((p) => p.id === selection.providerId && p.models.includes(selection.modelId))
+              ? selection
+              : { providerId: providers[0].id, modelId: providers[0].models[0] }
 
-        await this.setModelInternal(session, initial.providerId, initial.modelId)
-        this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
-        this.modelStore.setActiveSession(projectId, session.activeSessionName)
+          await this.setModelInternal(session, initial.providerId, initial.modelId)
+          this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
+          this.modelStore.setActiveSession(projectId, session.activeSessionName)
+          session.ready = true
+        } catch (error) {
+          // 初始化失败：先从会话表摘除（dispose 触发的 onExit 据此不再误报错误事件），
+          // 再销毁进程；下次 ensureSession 会重新 spawn，会话不会永久卡死在半启动状态。
+          if (this.sessions.get(projectId) === session) this.sessions.delete(projectId)
+          session.client.dispose()
+          throw error
+        }
       }
       // M2 §3.4 兜底触发：项目打开/阶段切换等新建前台会话时顺带做任务会话留存扫描
       this.archiveTaskSessions(projectId)
@@ -949,13 +977,16 @@ argument-hint: "<模块名>"
     }
   }
 
-  async prompt(projectId: string, text: string): Promise<void> {
+  async prompt(projectId: string, text: string, images?: ImageAttachment[]): Promise<void> {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
+    if (!session.ready) throw new Error('会话正在启动，请稍候')
     // 兜底校验：即使渲染层 streaming 标志与真实状态漂移，也不能把第二条 prompt 发给正在运行的 Agent。
     if (session.isStreaming) {
       throw new Error('Agent 仍在处理上一轮任务，请等待完成后再发送新消息')
     }
+    // pi RPC 的 prompt.images 为 ImageContent：裸 base64 data + mimeType（rpc.md 协议）
+    const imageBlocks = images?.map((image) => ({ type: 'image' as const, data: image.data, mimeType: image.mimeType }))
     let message = text
     for (let attempt = 1; attempt <= 3; attempt += 1) {
       // Pi 的 prompt response 仅表示命令已接收；文件和工具工作要到 agent_settled 才完成。
@@ -967,7 +998,8 @@ argument-hint: "<模块名>"
         return delta.type === 'error'
       }, 60 * 60_000)
       const [, terminalEvent] = await Promise.all([
-        session.client.command({ type: 'prompt', message }, 15 * 60_000),
+        // 图片仅随首条原始 prompt 发出；截断恢复轮是纯文本引导，不带图片
+        session.client.command(attempt === 1 && imageBlocks ? { type: 'prompt', message, images: imageBlocks } : { type: 'prompt', message }, 15 * 60_000),
         completion
       ])
       if (terminalEvent.type === 'message_update') {
@@ -1128,6 +1160,7 @@ argument-hint: "<模块名>"
   async compactSession(projectId: string): Promise<AgentSessionInfo> {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立')
+    if (!session.ready) throw new Error('会话正在启动，请稍候')
     if (session.isStreaming) throw new Error('Agent 正在运行，请先等待完成或中止任务')
     await session.client.command({ type: 'compact' }, 15 * 60_000)
     return this.ensureSession(projectId)
@@ -1162,10 +1195,18 @@ argument-hint: "<模块名>"
     ].join('\n') + '\n', 'utf-8')
 
     const replacement = this.spawnSession(projectId, session.phase, project.name, sessionFile)
-    await replacement.client.waitReady()
-    if (selectedModel) {
-      await this.setModelInternal(replacement, selectedModel.providerId, selectedModel.modelId)
-      this.modelStore.set(projectId, sessionName, selectedModel.providerId, selectedModel.modelId)
+    try {
+      await replacement.client.waitReady()
+      if (selectedModel) {
+        await this.setModelInternal(replacement, selectedModel.providerId, selectedModel.modelId)
+        this.modelStore.set(projectId, sessionName, selectedModel.providerId, selectedModel.modelId)
+      }
+      replacement.ready = true
+    } catch (error) {
+      // 重启失败：摘除并销毁半成品会话，下次 ensureSession 重新 spawn
+      if (this.sessions.get(projectId) === replacement) this.sessions.delete(projectId)
+      replacement.client.dispose()
+      throw error
     }
     this.modelStore.setActiveSession(projectId, sessionName)
     return {
@@ -1446,20 +1487,28 @@ argument-hint: "<模块名>"
     } else {
       const storedLabel = this.storedSessionLabel(targetFile)
       session = this.spawnSession(projectId, project.currentPhase, project.name, targetFile)
-      await session.client.waitReady()
+      try {
+        await session.client.waitReady()
 
-      const providers = this.readyProviders()
-      const targetSessionName = sessionNameFromFile(targetFile)
-      const preferred = this.modelStore.get(projectId, targetSessionName)
-      const initial = preferred && providers.some(
-        (provider) => provider.id === preferred.providerId && provider.models.includes(preferred.modelId)
-      )
-        ? preferred
-        : { providerId: providers[0].id, modelId: providers[0].models[0] }
-      await this.setModelInternal(session, initial.providerId, initial.modelId)
-      this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
-      if (storedLabel) {
-        await session.client.command({ type: 'set_session_name', name: storedLabel })
+        const providers = this.readyProviders()
+        const targetSessionName = sessionNameFromFile(targetFile)
+        const preferred = this.modelStore.get(projectId, targetSessionName)
+        const initial = preferred && providers.some(
+          (provider) => provider.id === preferred.providerId && provider.models.includes(preferred.modelId)
+        )
+          ? preferred
+          : { providerId: providers[0].id, modelId: providers[0].models[0] }
+        await this.setModelInternal(session, initial.providerId, initial.modelId)
+        this.modelStore.set(projectId, session.activeSessionName, initial.providerId, initial.modelId)
+        if (storedLabel) {
+          await session.client.command({ type: 'set_session_name', name: storedLabel })
+        }
+        session.ready = true
+      } catch (error) {
+        // 初始化失败：摘除并销毁半成品会话，下次切换/ensure 重新 spawn
+        if (this.sessions.get(projectId) === session) this.sessions.delete(projectId)
+        session.client.dispose()
+        throw error
       }
     }
 
@@ -1489,6 +1538,11 @@ argument-hint: "<模块名>"
     const targetFile = resolve(dir, `session-${sessionName}.jsonl`)
     if (dirname(targetFile) !== dir) throw new Error('会话路径越界')
     if (!existsSync(targetFile)) throw new Error(`会话文件不存在: ${targetFile}`)
+    // 正在运行的 VERIF 批次会话由编排循环托管：直接删除会让批次 settle 等待悬空，必须先停止托管
+    const activeBatch = this.activeVerifBatches.get(projectId)
+    if (activeBatch && resolve(activeBatch.currentSessionFile) === targetFile) {
+      throw new Error('批次会话正在运行中，请先停止托管再关闭')
+    }
 
     let info: AgentSessionInfo
     if (resolve(session.currentSessionFile) === targetFile) {
@@ -1610,6 +1664,7 @@ argument-hint: "<模块名>"
         : { providerId: providers[0]!.id, modelId: providers[0]!.models[0]! }
       await this.setModelInternal(session, selection.providerId, selection.modelId)
       this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
+      session.ready = true
 
       this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 已派发到平行会话 ${sessionName}：${ids.join('、')}` }, sessionName)
       const run = await this.runBatchToSettled(session, promptText, options?.timeoutMs ?? 60 * 60_000, batchIndex)
@@ -1963,6 +2018,7 @@ argument-hint: "<模块名>"
         : { providerId: providers[0]!.id, modelId: providers[0]!.models[0]! }
       await this.setModelInternal(session, selection.providerId, selection.modelId)
       this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
+      session.ready = true
 
       // M4 §5.1 修复中标志（prompt 发送前落盘，写保护守卫据此生效）+ §5.4 审计基线快照
       writeRtlFixFlag(workspace, { rootCauseId: fix.rootCauseId, scenarioId: fix.scenarioId, fixSessionName: sessionName, startedAt: fixStartedAt })
@@ -2065,7 +2121,7 @@ argument-hint: "<模块名>"
       || this.backgroundSessions.get(projectId)?.get(resolve(source.currentSessionFile)) === source
     const foreground = this.sessions.get(projectId)
     const target = sourceAlive ? source : (foreground?.phase === 'VERIF' ? foreground : null)
-    if (target && !target.isStreaming) {
+    if (target && target.ready && !target.isStreaming) {
       void target.client.command({ type: 'prompt', message }, 15 * 60_000)
         .catch((error) => console.warn('[agent-service] 修复判定 follow-up 发送失败', error))
       this.emit(projectId, {
@@ -2074,7 +2130,7 @@ argument-hint: "<模块名>"
       }, target.activeSessionName)
       return
     }
-    // 来源与前台均不可投递（已 dispose / 正在流式 / 非 VERIF 阶段）：仅 UI 通知
+    // 来源与前台均不可投递（已 dispose / 未就绪 / 正在流式 / 非 VERIF 阶段）：仅 UI 通知
     this.emit(projectId, {
       type: 'status',
       message: `RTL 修复会话 ${sessionName} 判定 ${outcomeLabel}（${fix.scenarioId}）：${judgment.reason}。${judgment.outcome === 'FIXED' ? '可继续选批或安排回归。' : '请回验证会话继续诊断（在 root-causes.json 开新假设链）。'}`
@@ -2184,9 +2240,17 @@ argument-hint: "<模块名>"
     session.client.dispose()
 
     const replacement = this.spawnSession(projectId, session.phase, project.name, sessionFile)
-    await replacement.client.waitReady()
-    if (selectedModel) {
-      await this.setModelInternal(replacement, selectedModel.providerId, selectedModel.modelId)
+    try {
+      await replacement.client.waitReady()
+      if (selectedModel) {
+        await this.setModelInternal(replacement, selectedModel.providerId, selectedModel.modelId)
+      }
+      replacement.ready = true
+    } catch (error) {
+      // 重启失败：摘除并销毁半成品会话，下次 ensureSession 重新 spawn
+      if (this.sessions.get(projectId) === replacement) this.sessions.delete(projectId)
+      replacement.client.dispose()
+      throw error
     }
     replacement.isStreaming = false
   }
@@ -2216,6 +2280,8 @@ argument-hint: "<模块名>"
   async setModel(projectId: string, providerId: string, modelId: string): Promise<AgentSessionInfo> {
     const session = this.sessions.get(projectId)
     if (!session) throw new Error('[agent-service] 会话未建立，请先 ensureSession')
+    // 半启动的 pi 上 set_model + 探活会与初始化交错失败，直接拒绝
+    if (!session.ready) throw new Error('会话正在启动，请稍候')
     // 执行中切模型有死锁嫌疑（pi set_model 在流式期间行为未定义），直接拒绝
     if (session.isStreaming) throw new Error('Agent 正在执行中，请等待完成或先停止再切换模型')
     const previous = session.selectedModel
@@ -2542,17 +2608,24 @@ argument-hint: "<模块名>"
     const id = `${ts}-${index}`
 
     if (m.role === 'user') {
-      const text =
-        typeof m.content === 'string'
-          ? m.content
-          : ((m.content as Array<{ type: string; text?: string }> | undefined) ?? [])
-              .filter((b) => b.type === 'text')
-              .map((b) => b.text ?? '')
-              .join('\n')
-      return text ? [{
+      const blocks = (m.content as Array<Record<string, unknown>> | undefined) ?? []
+      const text = typeof m.content === 'string'
+        ? m.content
+        : blocks
+            .filter((b) => b.type === 'text')
+            .map((b) => String(b.text ?? ''))
+            .join('\n')
+      // pi 图片内容块（ImageContent）：{ type: 'image', data, mimeType }，纯图消息也要保留
+      const images: ImageAttachment[] = typeof m.content === 'string'
+        ? []
+        : blocks
+            .filter((b) => b.type === 'image' && typeof b.data === 'string')
+            .map((b) => ({ mimeType: String(b.mimeType ?? 'image/png'), data: b.data as string }))
+      return text || images.length > 0 ? [{
         id,
         role: 'user',
         text,
+        images: images.length > 0 ? images : undefined,
         timestamp: ts,
         decisionResponse: parseDecisionResponse(text),
         decisionResponses: parseDecisionResponses(text)

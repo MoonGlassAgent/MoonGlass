@@ -8,6 +8,7 @@
 import { app, shell, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { pathToFileURL } from 'node:url'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { IPC } from '@shared/ipc-contract'
 import { createApplication } from './core/application'
@@ -90,6 +91,25 @@ function createMainWindow(): BrowserWindow {
       // 非法或非网络 URL 一律拒绝。
     }
     return { action: 'deny' }
+  })
+
+  // 整窗导航兜底：渲染进程内任何会替换当前页面的跳转都先过这一关。
+  // 仅放行应用自身页面（dev server 同源 / 打包后的 index.html）；
+  // http(s) 交给系统浏览器，其余（如 md 报告里的相对路径链接漏网时）一律拦截，防止整窗白屏。
+  const indexPagePathname = new URL(pathToFileURL(join(__dirname, '../renderer/index.html')).toString()).pathname
+  wc.on('will-navigate', (event, url) => {
+    try {
+      const target = new URL(url)
+      if (is.dev && process.env['ELECTRON_RENDERER_URL']) {
+        if (target.origin === new URL(process.env['ELECTRON_RENDERER_URL']).origin) return
+      } else if (target.protocol === 'file:' && target.pathname.toLowerCase() === indexPagePathname.toLowerCase()) {
+        return
+      }
+      event.preventDefault()
+      if (target.protocol === 'http:' || target.protocol === 'https:') void shell.openExternal(url)
+    } catch {
+      event.preventDefault()
+    }
   })
 
   if (is.dev && process.env['ELECTRON_RENDERER_URL']) {

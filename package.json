@@ -1,6 +1,6 @@
 {
   "name": "moonglass",
-  "version": "0.9.5",
+  "version": "0.9.7",
   "description": "MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
@@ -46,7 +46,7 @@
     "vite": "^7.0.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "0.84.1",
+    "@earendil-works/pi-coding-agent": "0.85.1",
     "@electron-toolkit/utils": "^4.0.0",
     "@monaco-editor/react": "^4.7.0",
     "@moonglass/design-browser-engine": "workspace:*",

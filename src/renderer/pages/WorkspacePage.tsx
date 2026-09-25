@@ -807,7 +807,6 @@ export function WorkspacePage(): React.JSX.Element {
         if (active.currentPhase !== phase) {
           active = await window.moonglass.phase.enter(projectId, phase)
           if (!active) throw new Error(`无法进入 ${PHASE_LABELS[phase]}`)
-          await ensureAgent(projectId)
         }
         await ensureAgent(projectId)
         // M1 托管自动切换（设计文档 §3.1 托管模式）：每个阶段的托管运行在独立
