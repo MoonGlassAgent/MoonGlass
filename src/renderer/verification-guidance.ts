@@ -205,7 +205,7 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
         title: t('verification.actionTexts.continueW1Title'),
         detail: t('verification.actionTexts.continueW1Detail', { covered: w1Covered, total: w1.specClauseTotal ?? 0 }),
         count: (w1.specClauseTotal ?? 0) - w1Covered,
-        prompt: '继续 W1 基础功能：为规格映射矩阵中尚未覆盖的可验证规格条款补充验证 Intent 与 testcase（每条条款至少一条 happy path），用 register_verification_intents 登记（wave=basic），run_simulation 绑定 scenarioIds 执行。'
+        prompt: '继续 W1 基础功能：为规格映射矩阵中尚未覆盖的可验证规格条款补充验证 Intent 与 testcase（每条条款至少一条 happy path），用 register_verification_intents 登记（wave=basic），run_simulation 绑定 scenarioIds 执行；本波结束后读取返回的未覆盖点定位与 coverage-detail.json，把未覆盖行/分支作为 W2 定向激励输入。'
       })
     } else if (w2 && w2.status === 'in-progress') {
       actions.push({
@@ -214,7 +214,7 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
         title: t('verification.actionTexts.continueW2Title'),
         detail: w2.topics?.length ? t('verification.actionTexts.continueW2Topics', { topics: w2.topics.map((topic) => topic.name).join(t('verification.guidance.listJoin')) }) : t('verification.actionTexts.continueW2Default'),
         count: Math.max(0, (w2.scenarioCount ?? 0) - (w2.passedCount ?? 0)),
-        prompt: '继续 W2 增补：按主题波执行剩余场景（wave=corner + topic），同组聚类一次 authoring 多条 testcase，run_simulation 绑定多个 scenarioIds。'
+        prompt: '继续 W2 增补：按主题波执行剩余场景（wave=corner + topic），同组聚类一次 authoring 多条 testcase，run_simulation 绑定多个 scenarioIds；每波结束采集轻量覆盖率（rtlCoverage 缺省开启），按未覆盖点定位分类 C1-C6 并优先安排定向激励，禁止只靠增加随机 seed。'
       })
     } else if (w3 && w3.status === 'in-progress') {
       actions.push({
@@ -223,7 +223,7 @@ export function deriveVerificationActions(state: GuidanceState): VerificationAct
         title: t('verification.actionTexts.w3Title'),
         detail: t('verification.actionTexts.w3Detail'),
         count: 1,
-        prompt: '推进 W3 签核：执行覆盖率闭合、Formal、Mutation、全量回归，处理残余风险审批，完成后 review_verification_evidence。'
+        prompt: '推进 W3 签核：RTL 变更后先重新采集覆盖率（旧 rtlHash 数据门禁不采信），再执行覆盖率闭合、Formal、Mutation、全量回归，处理残余风险审批，完成后 review_verification_evidence。'
       })
     }
   }

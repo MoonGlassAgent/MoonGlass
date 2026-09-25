@@ -1,0 +1,286 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>MoonGlass v0.8.6 功能全景｜ASIC 设计验证协同平台</title>
+  <meta name="description" content="MoonGlass v0.8.6 能做什么：六阶段 ASIC 开发引擎、AIGV 2.0 验证方法学、W0-W3 验证波段、证据闭环 EDA 工具链、类 Verdi 的 RTL Design Browser、长时 Agent 工程体验。">
+  <link rel="canonical" href="https://moonglassagent.github.io/MoonGlass/MoonGlass-v0.8.6功能全景.html">
+  <meta property="og:type" content="website">
+  <meta property="og:locale" content="zh_CN">
+  <meta property="og:site_name" content="MoonGlass ASIC Design Agent">
+  <meta property="og:title" content="MoonGlass v0.8.6 功能全景">
+  <meta property="og:description" content="从六阶段开发引擎到 AIGV 2.0 证据闭环验证：一张图看懂 MoonGlass v0.8.6。">
+  <meta property="og:url" content="https://moonglassagent.github.io/MoonGlass/MoonGlass-v0.8.6功能全景.html">
+  <meta property="og:image" content="https://raw.githubusercontent.com/MoonGlassAgent/MoonGlass/main/docs/images/workspace-flow.png">
+  <meta name="twitter:card" content="summary_large_image">
+  <style>
+    :root{--ink:#20242c;--muted:#667085;--line:#d9dee7;--panel:#f7f8fa;--blue:#1769d2;--blue-soft:#eef5ff;--green:#16835b;--green-soft:#edf9f4;--orange:#b85c00;--orange-soft:#fff6e8;--red:#c93636;--red-soft:#fff0f0;--violet:#6d4fc2;--violet-soft:#f2eefc}
+    *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;color:var(--ink);background:#fff;font:16px/1.75 system-ui,"Microsoft YaHei",sans-serif}
+    header{background:linear-gradient(135deg,#0b1220 0%,#13233f 55%,#173a63 100%);color:#fff;padding:56px 24px 44px}
+    header .inner,main,footer{width:min(1100px,calc(100% - 32px));margin:auto}
+    h1{margin:0 0 10px;font-size:38px;letter-spacing:.5px}h2{margin:54px 0 18px;padding-bottom:8px;border-bottom:2px solid var(--ink);font-size:27px}h3{margin:28px 0 10px;font-size:19px}p{margin:8px 0 14px}a{color:var(--blue)}
+    .subtitle{color:#c9d6e8;font-size:18px;max-width:820px}
+    .badges{margin-top:18px;display:flex;flex-wrap:wrap;gap:8px}
+    .pill{display:inline-block;padding:3px 12px;border:1px solid #4c6a94;border-radius:999px;color:#dbe7f5;font-size:13px}
+    .pill.hot{border-color:#6ee7b7;color:#a7f3d0}
+    nav{position:sticky;top:0;z-index:5;overflow:auto;white-space:nowrap;padding:9px 16px;border-bottom:1px solid var(--line);background:#ffffffee;backdrop-filter:blur(4px)}
+    nav a{display:inline-block;padding:5px 10px;color:#394150;text-decoration:none;font-size:14px}
+    nav a:hover{color:var(--blue)}
+    main{padding:18px 0 70px}
+    .lead{margin:20px 0;padding:18px 20px;border-left:4px solid var(--blue);background:var(--blue-soft)}
+    .tag{display:inline-block;margin-left:8px;padding:1px 8px;border-radius:4px;font-size:11px;font-weight:700;vertical-align:2px}
+    .tag.new{background:var(--green-soft);color:var(--green);border:1px solid #9fd8bf}
+    .tag.re{background:var(--violet-soft);color:var(--violet);border:1px solid #cabcf0}
+    figure{margin:22px 0 30px}figure img{display:block;width:100%;border:1px solid var(--line);border-radius:8px;box-shadow:0 2px 14px #1b2a4112}
+    figcaption{margin-top:8px;color:var(--muted);font-size:14px;text-align:center}
+    table{width:100%;border-collapse:collapse;margin:16px 0}th,td{padding:10px 12px;border:1px solid var(--line);text-align:left;vertical-align:top}th{background:#eef1f5}
+    .grid{display:grid;gap:12px;margin:16px 0}.grid.c2{grid-template-columns:repeat(2,1fr)}.grid.c3{grid-template-columns:repeat(3,1fr)}
+    .card{border:1px solid var(--line);border-radius:8px;padding:16px;background:#fff}
+    .card h4{margin:0 0 6px;font-size:15.5px}.card p{margin:0;font-size:14px;color:#48505e}
+    .card .ico{display:inline-flex;width:26px;height:26px;border-radius:6px;align-items:center;justify-content:center;margin-bottom:8px;font-size:14px;color:#fff;background:var(--blue)}
+    .note{margin:14px 0;padding:14px 16px;border-radius:6px;font-size:14.5px}
+    .note.do{border-left:4px solid var(--green);background:var(--green-soft)}
+    .note.warn{border-left:4px solid var(--orange);background:var(--orange-soft)}
+    /* 六阶段流水线 */
+    .phaseflow{display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin:18px 0}
+    .phaseflow .ph{padding:8px 14px;border-radius:8px;border:1.5px solid var(--blue);background:var(--blue-soft);color:#0f4ea3;font-weight:700;font-size:14.5px;white-space:nowrap}
+    .phaseflow .ph small{display:block;font-weight:400;color:#5b6b82;font-size:11.5px}
+    .phaseflow .arr{color:#9aa5b5;font-size:18px}
+    /* AIGV 证据链 */
+    .chain{display:flex;flex-wrap:wrap;gap:8px;align-items:stretch;margin:18px 0}
+    .chain .node{flex:1 1 140px;min-width:130px;border:1.5px solid var(--violet);border-radius:8px;background:var(--violet-soft);padding:10px 12px}
+    .chain .node b{display:block;color:#4a3494;font-size:14.5px}.chain .node span{font-size:12.5px;color:#6b6486}
+    .chain .carr{align-self:center;color:#9aa5b5;font-size:17px}
+    /* W0-W3 波段 */
+    .wave{display:grid;grid-template-columns:86px 1fr;gap:0;border:1px solid var(--line);border-radius:8px;overflow:hidden;margin:10px 0}
+    .wave .wl{padding:14px 10px;text-align:center;font-weight:800;color:#fff;font-size:17px;display:flex;align-items:center;justify-content:center}
+    .wave .wr{padding:10px 16px;background:#fff}
+    .wave .wr b{font-size:14.5px}.wave .wr p{margin:2px 0 0;font-size:13.5px;color:#57606e}
+    .w0 .wl{background:#64748b}.w1 .wl{background:var(--blue)}.w2 .wl{background:var(--orange)}.w3 .wl{background:var(--green)}
+    /* Design Browser 三栏示意 */
+    .mock{display:grid;grid-template-columns:1fr 1.5fr 1fr;gap:0;border:1px solid #3a4354;border-radius:8px;overflow:hidden;background:#20242c;color:#d7dce5;font-size:12px;margin:18px 0}
+    .mock .col{padding:10px 12px;min-height:210px}
+    .mock .col.mid{background:#18181b;border-left:1px solid #3a4354;border-right:1px solid #3a4354}
+    .mock .col h5{margin:0 0 8px;font-size:11px;color:#8b93a5;letter-spacing:1px}
+    .mock .tree div{padding:2px 6px;border-radius:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .mock .tree .sel{background:#1d3a5f;color:#9ec8ff}
+    .mock .src div{padding:1px 6px;font-family:Consolas,monospace;white-space:nowrap}
+    .mock .src .hl{background:#3a2f14;color:#f5c451;border-left:2px solid #f5c451}
+    .mock .src .kw{color:#7dd3fc}.mock .src .cm{color:#6b7280}
+    .mock .tr div{padding:2px 6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .mock .tr .sub{color:#8b93a5;padding-left:22px}
+    .stats{display:flex;flex-wrap:wrap;gap:12px;margin:18px 0}
+    .stat{flex:1 1 150px;border:1px solid var(--line);border-radius:8px;padding:14px 16px;background:var(--panel)}
+    .stat b{display:block;font-size:26px;color:var(--blue)}.stat span{font-size:13px;color:var(--muted)}
+    footer{padding:26px 0 45px;border-top:1px solid var(--line);color:var(--muted);font-size:14px}
+    code{padding:2px 6px;border:1px solid #d5dae3;border-radius:3px;background:#f3f4f6;font-family:Consolas,monospace;font-size:13px}
+    @media(max-width:820px){.grid.c2,.grid.c3{grid-template-columns:1fr}h1{font-size:29px}.mock{grid-template-columns:1fr}.mock .col.mid{border:0;border-top:1px solid #3a4354;border-bottom:1px solid #3a4354}}
+    @media print{nav{display:none}header{padding:24px 0}.card,.wave,.mock,figure{break-inside:avoid}a{color:inherit;text-decoration:none}}
+  </style>
+</head>
+<body>
+<header><div class="inner">
+  <h1>MoonGlass v0.8.6 功能全景</h1>
+  <div class="subtitle">面向 ASIC/SoC 工程师的 AI 工作台：以六阶段流程引擎为骨架，以规格、RTL 结构、风险、验证意图、场景与原始证据为核心，把 LLM Agent、提示词分层约束与开源 EDA 工具链整合进同一个桌面应用。</div>
+  <div class="badges">
+    <span class="pill hot">当前版本 v0.8.6</span>
+    <span class="pill">Windows x64 绿色版</span>
+    <span class="pill">内置 MIC_NPU 演示项目</span>
+    <span class="pill">Pi Coding Agent 0.84.1</span>
+    <span class="pill">自 v0.6.0 的重大升级</span>
+  </div>
+</div></header>
+<nav>
+  <a href="#position">版本定位</a><a href="#engine">六阶段引擎</a><a href="#aigv">AIGV 2.0</a><a href="#waves">W0-W3 验证波段</a><a href="#exec">验证执行与上下文治理</a><a href="#eda">EDA 与证据闭环</a><a href="#browser">RTL Design Browser</a><a href="#agent">Agent 工程体验</a><a href="#project">项目与变更管理</a><a href="#run">开箱与验证</a>
+</nav>
+<main>
+
+  <section id="position">
+    <div class="lead"><b>一句话：</b>v0.6.0 的 MoonGlass 是"六阶段 ASIC Agent 工作台"；v0.8.6 进一步演进为<b>设计验证协同平台</b>——围绕 AIGV 2.0 方法学建立从规格条款到签核包的完整证据链，并用验证波段、批次隔离和上下文治理支撑长时验证工程。</div>
+    <table>
+      <thead><tr><th style="width:24%">维度</th><th>v0.6.0 及以前</th><th>v0.8.6</th></tr></thead>
+      <tbody>
+        <tr><td><b>验证方法学</b></td><td>验证计划 + 测试用例 + 覆盖计划文档</td><td><b>AIGV 2.0</b>：Spec Gap / Intent / Scenario / Coverage Hole / Residual Risk / 签核包全证据链 <span class="tag new">新增</span></td></tr>
+        <tr><td><b>验证组织</b></td><td>按阶段推进</td><td><b>W0-W3 验证波段</b> + 全屏验证态势视图，推荐动作直达风险与批次 <span class="tag new">新增</span></td></tr>
+        <tr><td><b>验证执行</b></td><td>单会话长对话</td><td>场景聚类<b>批次隔离执行</b>、批次里程碑、读取纪律与根因工具 <span class="tag new">新增</span></td></tr>
+        <tr><td><b>EDA 闭环</b></td><td>Lint / 综合 / 简单 CDC</td><td>Cocotb 回归、Icarus、Verilator 覆盖率、Yosys Formal + Boolector BMC，结构化证据归档 <span class="tag new">增强</span></td></tr>
+        <tr><td><b>RTL 浏览</b></td><td>基础层次树 + 信号列表</td><td><b>类 Verdi 重构</b>：三栏布局、源码主视图、跨层次 Driver/Load 逐层追踪 <span class="tag re">重构</span></td></tr>
+        <tr><td><b>模型体验</b></td><td>单模型对话</td><td>平行会话独立选模、上下文压缩/无上下文重启、停滞提示、错误语义化、切模型探活 <span class="tag new">新增</span></td></tr>
+        <tr><td><b>长任务治理</b></td><td>—</td><td>一键托管等待 Agent 真正结束、阶段切换不打断后台任务、事件按会话路由 <span class="tag new">新增</span></td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="engine">
+    <h2>一、六阶段开发引擎</h2>
+    <p>每个芯片项目沿六阶段状态机推进，阶段产物、门禁检查和 Agent 会话按阶段隔离；前序变更自动向已完成阶段传播影响标记。</p>
+    <div class="phaseflow">
+      <span class="ph">REQ_SPEC<small>需求-规格定义</small></span><span class="arr">→</span>
+      <span class="ph">ARCH<small>架构设计</small></span><span class="arr">→</span>
+      <span class="ph">RTL<small>RTL 开发</small></span><span class="arr">→</span>
+      <span class="ph">VERIF<small>验证完备</small></span><span class="arr">→</span>
+      <span class="ph">QA<small>质量检查</small></span><span class="arr">→</span>
+      <span class="ph">SYNTH<small>综合实现</small></span>
+    </div>
+    <div class="grid c3">
+      <div class="card"><span class="ico">🚪</span><h4>阶段门禁</h4><p>每阶段有确定性门禁检查（产物存在性、规范校验、可追溯性），未通过不得推进；门禁失败可一键"交给 Agent 修复"。</p></div>
+      <div class="card"><span class="ico">🔁</span><h4>变更影响传播</h4><p>后期改需求/修 Bug 时，从最早受影响阶段重走流程，已完成阶段自动加黄色提醒，保留全部前后证据。</p></div>
+      <div class="card"><span class="ico">🤖</span><h4>一键托管</h4><p>自动调用 Agent、处理推荐选择、执行门禁与有限次数修复重试；门禁持续失败即停止，绝不强行标绿。</p></div>
+    </div>
+    <figure><img src="images/v086/02-workspace-verif.png" alt="MoonGlass v0.8.6 VERIF 阶段工作区"><figcaption>v0.8.6 项目工作区：阶段流水线、W0-W3 波段进度、文件树、平行会话与工程控制台同屏</figcaption></figure>
+  </section>
+
+  <section id="aigv">
+    <h2>二、AIGV 2.0 验证方法学 <span class="tag new">v0.8 系列核心</span></h2>
+    <p>AIGV（AI-Guided Verification）把"验证是否做完"从感觉变成证据链：以规格条款为起点，以签核包为终点，每个环节都可追溯、可裁决。</p>
+    <div class="chain">
+      <div class="node"><b>规格条款</b><span>Spec Gap 缺口识别，按功能验证 / PPA 综合通道分类</span></div><span class="carr">→</span>
+      <div class="node"><b>验证意图</b><span>Verification Intent 锚定真实 riskIds / requirementIds / rtlSignals</span></div><span class="carr">→</span>
+      <div class="node"><b>场景</b><span>Scenario 聚类成批次，Multi-Oracle 交叉裁决</span></div><span class="carr">→</span>
+      <div class="node"><b>覆盖空洞</b><span>Coverage Hole 与风险加权 Mutation 定位盲区</span></div><span class="carr">→</span>
+      <div class="node"><b>残余风险</b><span>Residual Risk 显式登记，不做隐性豁免</span></div><span class="carr">→</span>
+      <div class="node"><b>签核包</b><span>原始证据 + 独立 Review + 机器签核建议</span></div>
+    </div>
+    <div class="grid c2">
+      <div class="card"><span class="ico">🧬</span><h4>RTL 结构分析驱动</h4><p>对 RTL 做 FSM、CFG、COI、共享状态交互分析，生成 807+ 结构事实与 38+ 风险标记，按风险产出验证候选，而不是拍脑袋列用例。</p></div>
+      <div class="card"><span class="ico">⚖️</span><h4>经验性饱和判定</h4><p>Novelty Saturation 判断新增场景是否还在发现新行为；配合场景裁决与独立证据 Review，避免"跑了很多但没验到点子上"。</p></div>
+    </div>
+    <div class="note do"><b>为什么按通道分类？</b>规格条款区分功能验证通道与 PPA 综合通道验收，覆盖率空洞不会错误折算进验证闭环率——签核状态永远诚实。</div>
+  </section>
+
+  <section id="waves">
+    <h2>三、W0-W3 验证波段与验证态势 <span class="tag new">v0.8.6</span></h2>
+    <p>验证操作按四个波段组织，全屏"验证态势"视图展示最高风险、Intent 闭环、规格缺口、覆盖空洞、测试执行与签核状态，推荐动作直接关联到具体风险和批次。</p>
+    <div class="wave w0"><div class="wl">W0</div><div class="wr"><b>规划</b><p>验证计划、覆盖率计划、环境搭建与基础回归；产出风险候选并登记验证意图。</p></div></div>
+    <div class="wave w1"><div class="wl">W1</div><div class="wr"><b>基础闭环</b><p>每条可验证规格条款至少一条 happy path，规格映射矩阵逐条关闭。</p></div></div>
+    <div class="wave w2"><div class="wl">W2</div><div class="wr"><b>风险驱动</b><p>按风险优先级执行并发碰撞、错误注入、恢复路径等 corner 场景。</p></div></div>
+    <div class="wave w3"><div class="wl">W3</div><div class="wr"><b>收敛签核</b><p>覆盖率收敛、残余风险评估、证据包整理与签核建议。</p></div></div>
+    <figure><img src="images/v086/03-verification-posture.png" alt="验证态势全屏视图"><figcaption>验证态势（真实项目）：用例执行、诊断控制、场景闭环、机器签核阻断与 AIGV 2.0 下一步建议</figcaption></figure>
+  </section>
+
+  <section id="exec">
+    <h2>四、验证执行与上下文治理 <span class="tag new">v0.8.5-0.8.6</span></h2>
+    <div class="grid c2">
+      <div class="card"><span class="ico">📦</span><h4>批次隔离执行</h4><p>场景按聚类形成批次，派发到独立平行会话执行，记录批次里程碑；批次熔断（证据缺失 / watchdog / 诊断无进展）即停止后续批次。</p></div>
+      <div class="card"><span class="ico">🧹</span><h4>上下文治理</h4><p>验证摘要入口、读取纪律、根因工具与批次裁决，把长会话的上下文膨胀压到最低；阶段会话相互隔离，压缩与无上下文重启随时可用。</p></div>
+      <div class="card"><span class="ico">⏳</span><h4>托管真正等待结束</h4><p>一键托管等待 Agent 真正 settled 后才检查门禁与推进，不再提前推进造成误判。</p></div>
+      <div class="card"><span class="ico">🔀</span><h4>后台任务不中断</h4><p>阶段切换不再强制中断后台验证；事件按会话路由，后台批次完成/失败主动通知。</p></div>
+    </div>
+  </section>
+
+  <section id="eda">
+    <h2>五、EDA 工具链与证据闭环</h2>
+    <table>
+      <thead><tr><th>能力</th><th>工具</th><th>产出证据</th></tr></thead>
+      <tbody>
+        <tr><td>RTL Lint</td><td>Verible / Verilator</td><td>结构化诊断，可一键交 Agent 修复</td></tr>
+        <tr><td>仿真回归</td><td>Cocotb + Icarus Verilog</td><td>JUnit 结果、日志、FST 波形</td></tr>
+        <tr><td>覆盖率</td><td>Verilator Coverage</td><td>覆盖报告与 Coverage Hole 分析</td></tr>
+        <tr><td>Formal</td><td>Yosys + Boolector BMC</td><td>证明结果；兼容性预检区分 RTL 缺陷与工具限制，不虚报</td></tr>
+        <tr><td>逻辑综合</td><td>Yosys（支持目标 Liberty）</td><td>网表、面积/时序报告、SDC</td></tr>
+        <tr><td>波形查看</td><td>GTKWave（双击 .fst/.vcd）</td><td>信号波形</td></tr>
+      </tbody>
+    </table>
+    <p>仿真、JUnit、覆盖率、Formal、Lint、综合结果统一结构化归档到 <code>verification/results/</code> 与 <code>imp/</code>，成为 AIGV 签核的原始证据。</p>
+  </section>
+
+  <section id="browser">
+    <h2>六、RTL Design Browser <span class="tag re">v0.8.6 重构</span></h2>
+    <p>参考 Verdi 使用范式重构：源码浏览器成为主角，支持跨层次 Driver/Load 逐层展开追踪、多文件 Tab、导航历史与全局搜索。三栏均可拖拽调整、不可关闭。</p>
+    <div class="mock" role="img" aria-label="RTL Design Browser 三栏界面结构示意">
+      <div class="col tree">
+        <h5>DESIGN HIERARCHY</h5>
+        <div>▾ earbuds_npu_top <span style="color:#8b93a5">npu_top</span></div>
+        <div style="padding-left:14px">▸ u_apb_regs</div>
+        <div style="padding-left:14px">▸ u_ctrl</div>
+        <div style="padding-left:14px">▸ u_dma</div>
+        <div style="padding-left:14px">▾ u_pe</div>
+        <div style="padding-left:28px" class="sel">gen_row[0].gen_col[0].u_mac</div>
+        <div style="padding-left:28px">gen_row[0].gen_col[1].u_mac</div>
+        <div style="padding-left:28px">…</div>
+      </div>
+      <div class="col mid src">
+        <h5>SOURCE · rtl/npu_mac.v</h5>
+        <div class="cm">// 16 输出通道并行 MAC</div>
+        <div><span class="kw">module</span> pe_mac (</div>
+        <div>&nbsp;&nbsp;<span class="kw">input</span> wire i_clk,</div>
+        <div class="hl">&nbsp;&nbsp;<span class="kw">input</span> wire i_rst_n, <span class="cm">// ← 双击标识符追踪</span></div>
+        <div>&nbsp;&nbsp;<span class="kw">input</span> wire [7:0] i_act,</div>
+        <div>&nbsp;&nbsp;…</div>
+      </div>
+      <div class="col tr">
+        <h5>INSPECTOR</h5>
+        <div><b style="color:#9ec8ff">i_rst_n</b> · 110K/1M</div>
+        <div>▾ DRIVERS (1)</div>
+        <div class="sub">[PORT] u_rst_sync.o_rst_n</div>
+        <div class="sub" style="padding-left:34px">⇢ rst_sync_n @ top.u_rst_sync</div>
+        <div class="sub" style="padding-left:34px">▾ [INST] u_sync_reg.Q …</div>
+        <div>▸ LOADS / FANOUT (12)</div>
+      </div>
+    </div>
+    <figcaption style="color:var(--muted);font-size:13.5px;text-align:center;margin-top:-8px">界面结构示意：层次树 ｜ 源码主视图 + 信号列表 ｜ Inspector 跨层次追踪树</figcaption>
+    <div class="grid c3">
+      <div class="card"><span class="ico">🔍</span><h4>类 Verdi 追踪</h4><p>选中信号后 Driver/Load 沿层次边界逐层展开，跨模块一路追到源头或全部负载。</p></div>
+      <div class="card"><span class="ico">🧭</span><h4>交叉定位</h4><p>层次树、信号列表、源码标识符三方互通；单击选中、双击跳定义、双击实例名下钻。</p></div>
+      <div class="card"><span class="ico">🧩</span><h4>复杂工程解析</h4><p>基于 Yosys elaboration，支持 design.json 语义结构、filelist、宏 blackbox 视图与中文路径。</p></div>
+    </div>
+    <figure><img src="images/v086/04-design-browser.png" alt="RTL Design Browser 三栏界面"><figcaption>真实工程：npu_top 层次树 ｜ npu_top.v 语法高亮源码 ｜ 118 条信号列表——中文注释与中文路径正常显示</figcaption></figure>
+    <figure><img src="images/v086/05-design-browser-trace.png" alt="跨层次信号追踪"><figcaption>选中 i_hs_haddr 后 Inspector 逐层展开 Driver/Load，并跨层次边界下钻到 npu_top.u_regif 内部继续追踪</figcaption></figure>
+  </section>
+
+  <section id="agent">
+    <h2>七、Agent 工程体验</h2>
+    <p>内嵌 Pi Coding Agent（RPC 模式），主会话与平行会话可独立选择并恢复模型；工具调用、思考过程与结果流式呈现，失败项默认展开。</p>
+    <figure><img src="images/v086/06-settings.png" alt="设置页模型服务配置"><figcaption>设置页：外观主题与多 Provider/模型集中管理、连接测试（截图中的密钥已遮罩）</figcaption></figure>
+    <figure><img src="images/v086/07-toolchain.png" alt="开发环境与 EDA 工具链检测"><figcaption>开发环境与 EDA 工具链：集中显示运行时、构建、仿真、验证、综合、时序与形式验证工具状态</figcaption></figure>
+    <div class="grid c3">
+      <div class="card"><span class="ico">🧠</span><h4>上下文生命周期</h4><p>上下文压缩、无上下文重启、Token/缓存/上下文占用统计，长会话不再失控。</p></div>
+      <div class="card"><span class="ico">🛡️</span><h4>模型服务韧性 <span class="tag new">v0.8.6</span></h4><p>停滞 120 秒提示、裸错误语义化（402→余额不足、429→限流…）、切换模型先探活失败自动回滚、执行中禁止切模型。</p></div>
+      <div class="card"><span class="ico">🐕</span><h4>执行看门狗</h4><p>检测重复读写循环并自动熔断或要求收敛；批次会话同语义。</p></div>
+    </div>
+    <div class="note warn"><b>多模型协同：</b>主会话推进设计，平行会话用另一个模型做架构 Review、RTL Review 或独立定位 Bug——同一项目内交叉验证。</div>
+  </section>
+
+  <section id="project">
+    <h2>八、项目与变更管理</h2>
+    <div class="grid c2">
+      <div class="card"><span class="ico">📥</span><h4>已有项目导入</h4><p>扫描现有工程目录的文档、RTL、验证与综合证据，给出建议恢复阶段与识别依据，写入 <code>import_assessment.md</code>，不强制改造原文件树。</p></div>
+      <div class="card"><span class="ico">♻️</span><h4>阶段产物治理</h4><p>阶段产物支持归档重做、彻底清除与项目迁移；重做不丢历史，审计链完整。</p></div>
+      <div class="card"><span class="ico">📚</span><h4>IP 智能库</h4><p>递归发现 RTL IP / VIP / BFM，Pi 语义增强补充协议与接口角色，设计阶段可被 Agent 检索复用。</p></div>
+      <div class="card"><span class="ico">🔐</span><h4>本地优先</h4><p>项目数据存本机 SQLite + JSON；绿色版用户数据在 <code>userdata/</code> 内，API Key 不随包分发。</p></div>
+    </div>
+    <figure><img src="images/v086/01-projects.png" alt="芯片项目总览"><figcaption>项目总览（真实数据）：六个阶段徽章、进度条与最近更新时间一目了然</figcaption></figure>
+  </section>
+
+  <section id="about">
+    <h2>九、授权与支持</h2>
+    <figure><img src="images/v086/08-about.png" alt="MoonGlass 关于与授权页面"><figcaption>软件内置授权边界、快速使用手册、作者联系方式与商务授权入口</figcaption></figure>
+  </section>
+
+  <section id="run">
+    <h2>九、开箱与验证结果</h2>
+    <p>Release 提供 Windows x64 完整绿色版：解压后运行 <code>MoonGlass.exe</code> 或 <code>Start-MoonGlass.bat</code>，无需安装；内置 MIC_NPU 演示项目、Pi Coding Agent 0.84.1 与 AIGV 开源工具链。</p>
+    <div class="stats">
+      <div class="stat"><b>6</b><span>阶段状态机与门禁</span></div>
+      <div class="stat"><b>7+</b><span>Agent 芯片专用工具</span></div>
+      <div class="stat"><b>18</b><span>核心冒烟测试全过</span></div>
+      <div class="stat"><b>469</b><span>绿色版展开文件数</span></div>
+      <div class="stat"><b>271 MB</b><span>绿色版 ZIP 体积</span></div>
+    </div>
+    <div class="note do"><b>验证结论：</b>Workspace TypeScript 类型检查通过 · 核心冒烟测试通过 · Electron 生产构建通过 · 打包 EXE 主进程真实启动自检通过。</div>
+    <h3>相关链接</h3>
+    <ul>
+      <li>下载：<a href="https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.8.6">GitHub Release v0.8.6（含绿色版与 SHA-256）</a></li>
+      <li>上手：<a href="MoonGlass快速使用手册.html">傻瓜式使用说明书</a> · <a href="USER-MANUAL-ZH-CN.md">工程实用手册</a></li>
+      <li>方法学：<a href="MoonGlass-AIGV验证方法学.html">AIGV 验证方法学</a> · <a href="MoonGlass长时Agent芯片开发工程学.html">长时 Agent 工程学</a></li>
+    </ul>
+  </section>
+
+</main>
+<footer>
+  <b>MoonGlass ASIC Design Agent · v0.8.6</b><br>
+  商务授权、定制开发与产品建议：<a href="mailto:moonglassagent@126.com">moonglassagent@126.com</a><br>
+  MoonGlass 为 Source Available 软件：非商业使用遵循 PolyForm Noncommercial 1.0.0，商业使用须取得书面授权。
+</footer>
+</body>
+</html>

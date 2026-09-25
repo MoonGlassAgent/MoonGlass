@@ -6,7 +6,7 @@
  */
 
 import { create } from 'zustand'
-import type { AgentEventPayload, AgentSessionInfo, AgentStreamEvent, AgentUiMessage } from '@shared/types'
+import type { AgentEventPayload, AgentSessionInfo, AgentStreamEvent, AgentUiMessage, ImageAttachment } from '@shared/types'
 import { parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import { isBackgroundSessionNotice, shouldApplyAgentEvent } from '@shared/agent-event-routing'
 
@@ -20,9 +20,9 @@ interface ChatState {
   streamTargetId: string | null
 
   ensure: (projectId: string) => Promise<void>
-  send: (text: string) => Promise<void>
+  send: (text: string, images?: ImageAttachment[]) => Promise<void>
   /** 发送并等待该轮 Agent settled；失败向调用方抛出，供托管执行屏障使用。 */
-  sendAndWait: (text: string) => Promise<void>
+  sendAndWait: (text: string, images?: ImageAttachment[]) => Promise<void>
   abort: () => Promise<void>
   setModel: (providerId: string, modelId: string) => Promise<void>
   createParallel: (name?: string) => Promise<void>
@@ -41,6 +41,19 @@ interface ChatState {
 let eventSubscribed = false
 let msgSeq = 0
 let ensureSeq = 0
+/** ensureSession IPC 的在飞去重：并发 ensure 共享同一 Promise，后到的调用等同一个初始化结果 */
+const pendingAgentEnsures = new Map<string, Promise<AgentSessionInfo>>()
+const ensureAgentSession = (projectId: string): Promise<AgentSessionInfo> => {
+  const pending = pendingAgentEnsures.get(projectId)
+  if (pending) return pending
+  const task = window.moonglass.agent.ensureSession(projectId)
+  pendingAgentEnsures.set(projectId, task)
+  const clear = (): void => {
+    if (pendingAgentEnsures.get(projectId) === task) pendingAgentEnsures.delete(projectId)
+  }
+  task.then(clear, clear)
+  return task
+}
 const nextId = (): string => `ui-${Date.now()}-${++msgSeq}`
 const MAX_LIVE_MESSAGES = 320
 const MAX_STREAM_CHARS = 120_000
@@ -65,19 +78,19 @@ export const useChatStore = create<ChatState>((set, get) => {
     // 后台会话的 status 通知（如"XX 阶段的后台任务已完成"）：
     // 顺带刷新会话信息，让阶段栏的后台运行标记及时消失
     if (isBackgroundSessionNotice(payload, sessionInfo?.sessionName)) {
-      window.moonglass.agent.ensureSession(projectId)
+      ensureAgentSession(projectId)
         .then((info) => { if (get().projectId === projectId) set({ sessionInfo: info }) })
         .catch(() => undefined)
     }
   }
 
-  const dispatchPrompt = async (text: string, propagateError: boolean): Promise<void> => {
+  const dispatchPrompt = async (text: string, images: ImageAttachment[] | undefined, propagateError: boolean): Promise<void> => {
     let { projectId, streaming, sessionInfo } = get()
     if (!projectId) throw new Error('Agent 会话尚未关联项目')
     if (streaming) throw new Error('Agent 仍在处理上一轮任务')
-    if (!text.trim()) return
+    if (!text.trim() && !images?.length) return
     if (!sessionInfo) {
-      sessionInfo = await window.moonglass.agent.ensureSession(projectId)
+      sessionInfo = await ensureAgentSession(projectId)
       if (sessionInfo.providersReady) {
         const history = await window.moonglass.agent.getMessages(projectId)
         set({ sessionInfo, messages: history, streaming: false, streamTargetId: null })
@@ -85,7 +98,7 @@ export const useChatStore = create<ChatState>((set, get) => {
     } else {
       // 发送前强制对齐会话阶段指纹：阶段可能刚被一键托管等流程推进，
       // ensureSession 幂等——阶段未变是廉价校验，阶段已变会切换到目标阶段会话
-      const aligned = await window.moonglass.agent.ensureSession(projectId)
+      const aligned = await ensureAgentSession(projectId)
       if (aligned.sessionName !== sessionInfo.sessionName || aligned.phase !== sessionInfo.phase) {
         const history = aligned.providersReady ? await window.moonglass.agent.getMessages(projectId) : []
         set({ sessionInfo: aligned, messages: history, streaming: false, streamTargetId: null })
@@ -95,11 +108,12 @@ export const useChatStore = create<ChatState>((set, get) => {
     if (!sessionInfo?.providersReady) throw new Error('会话尚未就绪，请稍候（若持续无响应请重新进入工作区）')
     const userMsg: AgentUiMessage = {
       id: nextId(), role: 'user', text: text.trim(), timestamp: Date.now(),
+      images: images?.length ? images : undefined,
       decisionResponse: parseDecisionResponse(text), decisionResponses: parseDecisionResponses(text)
     }
     set((s) => ({ messages: trimMessages([...s.messages, userMsg]), streaming: true, streamTargetId: null }))
     try {
-      await window.moonglass.agent.prompt(projectId, text.trim())
+      await window.moonglass.agent.prompt(projectId, text.trim(), images)
     } catch (err) {
       // 主进程的 error 事件通常已写入消息；仅在事件尚未到达时补充一次。
       if (!get().aborting && get().streaming) pushError(set, err)
@@ -129,7 +143,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       }
       let info: AgentSessionInfo
       try {
-        info = await window.moonglass.agent.ensureSession(projectId)
+        info = await ensureAgentSession(projectId)
       } catch (err) {
         if (requestSeq !== ensureSeq) return
         // 会话启动失败（如 pi 进程异常）：以错误气泡展示原因
@@ -161,12 +175,12 @@ export const useChatStore = create<ChatState>((set, get) => {
       })
     },
 
-    send: async (text) => {
-      try { await dispatchPrompt(text, false) } catch (error) {
+    send: async (text, images) => {
+      try { await dispatchPrompt(text, images, false) } catch (error) {
         if (!get().aborting) pushError(set, error)
       }
     },
-    sendAndWait: async (text) => dispatchPrompt(text, true),
+    sendAndWait: async (text, images) => dispatchPrompt(text, images, true),
 
     abort: async () => {
       const { projectId, aborting } = get()
@@ -190,6 +204,7 @@ export const useChatStore = create<ChatState>((set, get) => {
       } catch (err) {
         // 切换失败（如进程内 Provider 注册表过期）：显示原因，下拉框回弹到原模型
         pushError(set, err)
+        throw err
       }
     },
 

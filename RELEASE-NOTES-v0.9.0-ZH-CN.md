@@ -37,9 +37,9 @@ MoonGlass v0.9.0 聚焦 ASIC Agent 的任务级协同、验证闭环和长时运
 
 ## 学术与工程文章
 
-- [从证据驱动流程到任务级验证协同：MoonGlass v0.6.0-v0.9.0 工程演进](./docs/MOONGLASS-v0.6.0-TO-v0.9.0-EVOLUTION-ZH-CN.html)
-- [MoonGlass AIGV 2.0 白皮书](./docs/MOONGLASS-AIGV-2.0-WHITEPAPER.html)
-- [证据驱动型 ASIC Agent 工作流](./docs/EVIDENCE-DRIVEN-ASIC-AGENT-WORKFLOW-ZH-CN.html)
+- [从证据驱动流程到任务级验证协同：MoonGlass v0.6.0-v0.9.0 工程演进](./docs/MoonGlass-v0.6.0至v0.9.0工程演进.html)
+- [MoonGlass AIGV 2.0 白皮书](./docs/MoonGlass-AIGV-2.0白皮书.html)
+- [证据驱动型 ASIC Agent 工作流](./docs/证据驱动型ASIC-Agent工作流.html)
 
 ## Windows 绿色版
 

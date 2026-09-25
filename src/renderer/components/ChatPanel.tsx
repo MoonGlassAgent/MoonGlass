@@ -5,11 +5,11 @@
  * 模型选择 + 输入区。会话由主进程 AgentService（Pi RPC 子进程）承载。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { type ClipboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
-import { Minimize2, MoreVertical, RotateCcw, Ruler } from 'lucide-react'
-import { type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type LlmProviderConfig, type Phase } from '@shared/types'
+import { ImagePlus, Minimize2, MoreVertical, RotateCcw, Ruler } from 'lucide-react'
+import { type AgentDecisionRequest, type AgentDecisionResponse, type AgentSessionStats, type AgentUiMessage, type ImageAttachment, type LlmProviderConfig, type Phase } from '@shared/types'
 import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/agent-interaction'
 import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
 import { useChatStore } from '../store/chatStore'
@@ -50,6 +50,41 @@ function parseTokenCountInput(raw: string): number | null {
   const value = Number(match[1]) * (match[2] === 'm' ? 1_000_000 : match[2] === 'k' ? 1_000 : 1)
   if (!Number.isFinite(value) || value < 1024 || value > 10_000_000) return null
   return Math.round(value)
+}
+
+const MAX_IMAGE_EDGE = 2000
+const MAX_RAW_IMAGE_BYTES = 15 * 1024 * 1024
+
+/** 画布是否含非不透明像素（决定输出保留 PNG alpha 还是转 JPEG 控体积） */
+function canvasHasAlpha(canvas: HTMLCanvasElement): boolean {
+  const ctx = canvas.getContext('2d')
+  if (!ctx) return false
+  const { data } = ctx.getImageData(0, 0, canvas.width, canvas.height)
+  for (let i = 3; i < data.length; i += 4) {
+    if (data[i] < 255) return true
+  }
+  return false
+}
+
+/** 预处理图片文件：最长边缩到 2000px（pi @file 通道上限），无 alpha 转 JPEG q0.9，有 alpha 保留 PNG；返回裸 base64 */
+async function fileToImageAttachment(file: File): Promise<ImageAttachment> {
+  const bitmap = await createImageBitmap(file)
+  try {
+    const scale = Math.min(1, MAX_IMAGE_EDGE / Math.max(bitmap.width, bitmap.height))
+    const width = Math.max(1, Math.round(bitmap.width * scale))
+    const height = Math.max(1, Math.round(bitmap.height * scale))
+    const canvas = document.createElement('canvas')
+    canvas.width = width
+    canvas.height = height
+    const ctx = canvas.getContext('2d')
+    if (!ctx) throw new Error('canvas 2d context unavailable')
+    ctx.drawImage(bitmap, 0, 0, width, height)
+    const mimeType = canvasHasAlpha(canvas) ? 'image/png' : 'image/jpeg'
+    const dataUrl = canvas.toDataURL(mimeType, 0.9)
+    return { mimeType, data: dataUrl.slice(dataUrl.indexOf(',') + 1) }
+  } finally {
+    bitmap.close()
+  }
 }
 
 function statsTitle(stats: AgentSessionStats): string {
@@ -172,7 +207,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
               {session.modelLabel || t('chat.tabs.noModel')}
             </span>
           </button>
-          {session.name !== 'main' && !isBatchSession(session.name) && (
+          {session.name !== 'main' && (!isBatchSession(session.name) || !session.isRunning) && (
             <button
               type="button"
               disabled={busy}
@@ -331,7 +366,7 @@ function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; 
                 key={m.id}
                 msg={m}
                 decisionDisabled
-                onDecision={() => { /* 只读面板不响应决策 */ }}
+                onDecision={noopDecision}
               />
             ))}
           </div>
@@ -358,6 +393,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     restartSessionFresh
   } = useChatStore()
   const [input, setInput] = useState('')
+  /** 待发送图片（预处理后的裸 base64）；发送成功清空 */
+  const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([])
+  /** 图片附件错误（过大 / 解码失败），展示在输入框上方 */
+  const [imageError, setImageError] = useState('')
+  const fileInputRef = useRef<HTMLInputElement>(null)
   const [providers, setProviders] = useState<LlmProviderConfig[]>([])
   const [providerHint, setProviderHint] = useState('')
   const [ensuring, setEnsuring] = useState(false)
@@ -366,6 +406,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [sessionStats, setSessionStats] = useState<AgentSessionStats | null>(null)
   const [sessionMenuOpen, setSessionMenuOpen] = useState(false)
   const [sessionActionBusy, setSessionActionBusy] = useState(false)
+  const [modelSwitchBusy, setModelSwitchBusy] = useState(false)
   /** 自定义上下文上限表单（三点菜单内联展开） */
   const [contextLimitEditing, setContextLimitEditing] = useState(false)
   const [contextLimitDraft, setContextLimitDraft] = useState('')
@@ -373,10 +414,13 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  const inputHistory = messages
-    .filter((message) => message.role === 'user')
-    .map((message) => message.text.trim())
-    .filter((text) => text && !text.startsWith(DECISION_RESPONSE_PREFIX) && !text.startsWith('【MoonGlass 一键托管】'))
+  const inputHistory = useMemo(
+    () => messages
+      .filter((message) => message.role === 'user')
+      .map((message) => message.text.trim())
+      .filter((text) => text && !text.startsWith(DECISION_RESPONSE_PREFIX) && !text.startsWith('【MoonGlass 一键托管】')),
+    [messages]
+  )
 
   useEffect(() => {
     setEnsuring(true)
@@ -433,13 +477,51 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   }, [refreshSessionStats, streaming])
 
 
+  const addImageFiles = useCallback(async (files: Iterable<File>): Promise<void> => {
+    const added: ImageAttachment[] = []
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) continue
+      if (file.size > MAX_RAW_IMAGE_BYTES) {
+        setImageError(t('chat.imageTooLarge', { name: file.name || file.type }))
+        continue
+      }
+      try {
+        added.push(await fileToImageAttachment(file))
+      } catch {
+        setImageError(t('chat.imageTooLarge', { name: file.name || file.type }))
+      }
+    }
+    if (added.length > 0) {
+      setImageError('')
+      setPendingImages((prev) => [...prev, ...added])
+    }
+  }, [])
+
+  /** 粘贴板含图片时拦截默认粘贴（图片不进文本框），转入待发送列表 */
+  const handlePaste = (e: ClipboardEvent<HTMLTextAreaElement>): void => {
+    const imageFiles = Array.from(e.clipboardData.items)
+      .filter((item) => item.type.startsWith('image/'))
+      .map((item) => item.getAsFile())
+      .filter((file): file is File => file !== null)
+    if (imageFiles.length === 0) return
+    e.preventDefault()
+    void addImageFiles(imageFiles)
+  }
+
   const handleSend = (): void => {
-    if (!input.trim() || streaming) return
-    void send(input)
+    if ((!input.trim() && pendingImages.length === 0) || streaming) return
+    void send(input, pendingImages.length > 0 ? pendingImages : undefined)
     setInput('')
+    setPendingImages([])
+    setImageError('')
     setHistoryIndex(null)
     historyDraftRef.current = ''
   }
+
+  /** 决策草稿更新回调：稳定引用，避免击穿 MessageBubble 的 memo */
+  const handleDecisionDraft = useCallback((request: AgentDecisionRequest, selectedIds: string[], customText: string): void => {
+    setDecisionDrafts((current) => ({ ...current, [request.id]: { selectedIds, customText } }))
+  }, [])
 
   const recallInput = (direction: 'previous' | 'next'): void => {
     if (inputHistory.length === 0) return
@@ -560,6 +642,22 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
       return
     }
     void handleSetContextLimit(parsed)
+  }
+
+  const handleModelChange = async (value: string): Promise<void> => {
+    if (!value || modelSwitchBusy) return
+    const parsed = JSON.parse(value) as [string, string]
+    if (!Array.isArray(parsed) || parsed.length !== 2) return
+    if (streaming && !window.confirm(t('chat.confirmStopAndSwitchModel'))) return
+
+    setModelSwitchBusy(true)
+    try {
+      if (streaming) await abort()
+      await setModel(parsed[0], parsed[1])
+      await refreshSessionStats()
+    } finally {
+      setModelSwitchBusy(false)
+    }
   }
 
   // 未配置 Provider 的引导
@@ -717,14 +815,10 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           <span className="text-[11px] text-zinc-400">{t('chat.currentModel')}</span>
           <select
           value={selectedModelValue}
-          onChange={(e) => {
-            const parsed = JSON.parse(e.target.value) as [string, string]
-            if (Array.isArray(parsed) && parsed.length === 2) {
-              // 切换成功后立即刷新统计徽标，上下文上限同步到新模型（注册表/覆盖值/回退）
-              void setModel(parsed[0], parsed[1]).then(() => refreshSessionStats())
-            }
-          }}
-          className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700"
+          onChange={(event) => void handleModelChange(event.target.value)}
+          disabled={!sessionInfo || !sessionInfo.selectedModel || ensuring || modelSwitchBusy || aborting}
+          className="rounded border border-zinc-300 bg-white px-2 py-1 text-xs text-zinc-700 disabled:cursor-wait disabled:opacity-60"
+          title={streaming ? t('chat.switchModelStopsCurrentTitle') : t('chat.currentModel')}
         >
           <option value="" disabled>
             {sessionInfo ? t('chat.selectModel') : t('common.loading')}
@@ -759,9 +853,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               msg={m}
               decisionResponse={m.decisionRequest ? decisionResponses.get(m.decisionRequest.id) : undefined}
               decisionDisabled={streaming}
-              onDecision={(request, selectedIds, customText) => {
-                setDecisionDrafts((current) => ({ ...current, [request.id]: { selectedIds, customText } }))
-              }}
+              onDecision={handleDecisionDraft}
               decisionDraft={m.decisionRequest ? decisionDrafts[m.decisionRequest.id] : undefined}
             />
           ))}
@@ -789,6 +881,47 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
 
       {/* 输入区 */}
       <div className="chat-composer border-t border-zinc-200 p-3">
+        {pendingImages.length > 0 && (
+          <div className="mb-2 flex flex-wrap items-center gap-2">
+            {pendingImages.map((image, index) => (
+              <span key={index} className="relative inline-block">
+                <img
+                  src={`data:${image.mimeType};base64,${image.data}`}
+                  alt={t('chat.imagePreviewAlt')}
+                  className="h-14 w-14 rounded border border-zinc-300 object-cover"
+                />
+                <button
+                  type="button"
+                  onClick={() => setPendingImages((prev) => prev.filter((_, i) => i !== index))}
+                  title={t('chat.removeImage')}
+                  className="absolute -right-1.5 -top-1.5 flex h-4 w-4 items-center justify-center rounded-full bg-zinc-600 text-[10px] leading-none text-white hover:bg-red-500"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+            <button
+              type="button"
+              onClick={() => setPendingImages([])}
+              className="text-xs text-zinc-500 hover:text-red-600"
+            >
+              {t('chat.clearImages')}
+            </button>
+          </div>
+        )}
+        {imageError && <div className="mb-2 text-xs text-red-600">{imageError}</div>}
+        <input
+          ref={fileInputRef}
+          type="file"
+          accept="image/*"
+          multiple
+          className="hidden"
+          onChange={(e) => {
+            const files = e.target.files
+            if (files?.length) void addImageFiles(files)
+            e.target.value = ''
+          }}
+        />
         <div className="flex w-full items-end gap-2">
           <textarea
             value={input}
@@ -797,6 +930,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               setHistoryIndex(null)
               historyDraftRef.current = e.target.value
             }}
+            onPaste={handlePaste}
             onKeyDown={(e) => {
               if (!e.nativeEvent.isComposing && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
                 const beforeCursor = e.currentTarget.value.slice(0, e.currentTarget.selectionStart)
@@ -824,6 +958,16 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
             disabled={streaming}
             className="flex-1 resize-none rounded border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-blue-500 disabled:opacity-60"
           />
+          {!streaming && (
+            <button
+              type="button"
+              onClick={() => fileInputRef.current?.click()}
+              title={t('chat.attachImage')}
+              className="rounded border border-zinc-300 px-3 py-2 text-zinc-600 hover:bg-zinc-100"
+            >
+              <ImagePlus size={16} />
+            </button>
+          )}
           {streaming ? (
             <button
               onClick={() => void abort()}
@@ -835,7 +979,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           ) : (
             <button
               onClick={handleSend}
-              disabled={!input.trim()}
+              disabled={!input.trim() && pendingImages.length === 0}
               className="rounded bg-blue-600 px-4 py-2 text-sm text-white hover:bg-blue-500 disabled:opacity-50"
             >
               {t('chat.send')}
@@ -847,7 +991,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   )
 }
 
-function MessageBubble({
+/** 只读面板（BatchSessionPeek）的决策回调占位：模块级稳定引用，配合 memo 避免无意义重渲染 */
+const noopDecision = (): void => { /* 只读面板不响应决策 */ }
+
+/** 决策草稿变更回调：稳定引用，保证 MessageBubble 的 memo 不被每次渲染的新闭包击穿 */
+function MessageBubbleImpl({
   msg,
   decisionResponse,
   decisionDisabled,
@@ -872,6 +1020,18 @@ function MessageBubble({
       : msg.text
     return (
       <div className="message-user self-end rounded-lg bg-blue-600 px-3 py-2 text-sm whitespace-pre-wrap text-white">
+        {msg.images && msg.images.length > 0 && (
+          <span className="mb-1 flex flex-wrap gap-1.5">
+            {msg.images.map((image, index) => (
+              <img
+                key={index}
+                src={`data:${image.mimeType};base64,${image.data}`}
+                alt={t('chat.imagePreviewAlt')}
+                className="max-w-72 rounded border border-white/40"
+              />
+            ))}
+          </span>
+        )}
         <span className="block">{displayText}</span>
         <span className="mt-1 block text-right text-[10px] text-blue-100">{time}</span>
       </div>
@@ -930,6 +1090,18 @@ function MessageBubble({
       }`}
     >
       <FileReferenceText text={msg.text} />
+      {msg.images && msg.images.length > 0 && (
+        <span className="mt-1 flex flex-wrap gap-1.5">
+          {msg.images.map((image, index) => (
+            <img
+              key={index}
+              src={`data:${image.mimeType};base64,${image.data}`}
+              alt={t('chat.imagePreviewAlt')}
+              className="max-w-72 rounded border border-zinc-200"
+            />
+          ))}
+        </span>
+      )}
       <span className="mt-1 block text-[10px] text-zinc-400">{time}</span>
       {msg.thinking && (
         <details
@@ -953,6 +1125,9 @@ function MessageBubble({
     </div>
   )
 }
+
+/** 消息气泡 memo 化：会话消息多（上限 320 条且单条可含大段 markdown）时，输入框每次击键不再重渲染整列气泡 */
+const MessageBubble = memo(MessageBubbleImpl)
 
 function FileReferenceText({ text }: { text: string }): React.JSX.Element {
   const { t } = useTranslation()

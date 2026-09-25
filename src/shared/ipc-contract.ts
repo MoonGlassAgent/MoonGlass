@@ -12,6 +12,7 @@ import type {
   FileContentResult,
   FileTreeNode,
   GateCheckResult,
+  ImageAttachment,
   IpLibraryImportInput,
   IpLibraryRecord,
   LlmProviderConfig,
@@ -110,6 +111,9 @@ export const IPC = {
     OpenExternal: 'fs:open-external',
     VerificationStatus: 'fs:verification-status'
   },
+  Coverage: {
+    Detail: 'coverage:detail'
+  },
   ProcessLibrary: {
     List: 'process-library:list',
     Catalog: 'process-library:catalog',
@@ -196,7 +200,7 @@ export interface MoonGlassApi {
   agent: {
     /** 确保项目的 Agent 会话就绪（惰性启动 pi 进程；阶段变化时重置会话） */
     ensureSession(projectId: string): Promise<AgentSessionInfo>
-    prompt(projectId: string, text: string): Promise<void>
+    prompt(projectId: string, text: string, images?: ImageAttachment[]): Promise<void>
     abort(projectId: string): Promise<void>
     setModel(projectId: string, providerId: string, modelId: string): Promise<AgentSessionInfo>
     getMessages(projectId: string): Promise<AgentUiMessage[]>
@@ -254,6 +258,10 @@ export interface MoonGlassApi {
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
     /** 在系统浏览器/默认程序中打开项目文件；路径必须相对项目工作区。 */
     openExternal(projectId: string, relPath: string): Promise<boolean>
+  }
+  coverage: {
+    /** 读取 verification/results/<scenario>/ 下的 Verilator 覆盖率明细（优先缓存，回退解析 coverage.dat） */
+    detail(projectId: string, relResultDir: string): Promise<import('./types/moonglass').CoverageDetailResult | null>
   }
   processLibrary: {
     list(): Promise<ProcessLibraryRecord[]>

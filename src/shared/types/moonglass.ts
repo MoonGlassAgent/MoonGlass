@@ -177,6 +177,45 @@ export interface FileContentResult {
   truncated: boolean
 }
 
+// ==================== Verilator 覆盖率明细 ====================
+
+/** 单个覆盖率检测点（对应 coverage.dat 的一条 C 记录） */
+export interface CoveragePointDetail {
+  /** 源码行号（coverage.dat 的 \x01l 字段） */
+  line: number
+  /** 源码列号（coverage.dat 的 \x01n 字段，可缺失） */
+  column?: number
+  /** 检测点类型（coverage.dat 的 \x01t 字段） */
+  kind: 'line' | 'branch' | 'expr' | 'toggle' | 'fsm_state' | 'fsm_arc'
+  /** 检测点语义（coverage.dat 的 \x01o 字段，如 block/if/else，可缺失） */
+  origin?: string
+  /** 命中次数（0 表示未覆盖） */
+  hits: number
+  /** 例化层级路径（coverage.dat 的 \x01h 字段，可缺失） */
+  hierarchy?: string
+}
+
+/** 单个源码文件的覆盖率检测点集合 */
+export interface CoverageFileDetail {
+  /** 源码文件绝对路径（coverage.dat 的 \x01f 字段） */
+  file: string
+  points: CoveragePointDetail[]
+}
+
+/** Verilator 覆盖率明细解析结果（coverage-detail.json 的形状） */
+export interface CoverageDetailResult {
+  generatedAt: string
+  files: CoverageFileDetail[]
+  /** 各类型覆盖率（百分比，与 parseVerilatorCoverage 同口径；无检测点的类型缺失） */
+  summary: {
+    line?: number
+    branch?: number
+    expression?: number
+    toggle?: number
+    fsm?: number
+  }
+}
+
 // ==================== EDA 工具链（§3.5） ====================
 
 export type SimulatorType = 'verilator' | 'vcs' | 'xcelium'
@@ -457,11 +496,19 @@ export interface AgentDecisionResponse {
   customText?: string
 }
 
+/** 随消息附带的图片（data 为裸 base64，非 data URL） */
+export interface ImageAttachment {
+  mimeType: string
+  data: string
+}
+
 /** 渲染端展示用的消息（由 pi 的 AgentMessage 映射简化而来） */
 export interface AgentUiMessage {
   id: string
   role: 'user' | 'assistant' | 'tool'
   text: string
+  /** 随消息附带的图片（用户贴图发送或 pi 侧图片内容块） */
+  images?: ImageAttachment[]
   toolName?: string
   toolCallId?: string
   /** 工具调用参数的格式化 JSON。 */

@@ -55,7 +55,7 @@ MoonGlass v0.9.2 是一次面向团队使用、跨语言交付和长时工程稳
 
 MoonGlass 通过需求/规格、Verification Intent、场景、Checker/Golden Model、测试日志、覆盖率、Formal 结果和残余风险记录形成机器签核建议，但不承诺绝对零缺陷，也不替代商业 EDA sign-off 与具备职责和授权的工程师最终签核。
 
-相关问答：[MoonGlass IP 可靠性交付客户问答](./docs/MOONGLASS-IP-RELIABILITY-FAQ-ZH-CN.html)。
+相关问答：[MoonGlass IP 可靠性交付客户问答](./docs/MoonGlass-IP可靠性交付客户问答.html)。
 
 ## 授权与联系
 

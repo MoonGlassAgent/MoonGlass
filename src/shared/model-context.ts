@@ -34,10 +34,12 @@ const rules: Array<{ pattern: RegExp; value: ModelContextMetadata }> = [
   // Mistral：-latest 别名当前指向 Large 3 / Medium 3.5 / Devstral 2（均 256K）；
   // 输出上限官方未公布，保留保守值
   { pattern: /(?:mistral-large-latest|mistral-medium-latest|devstral-latest)$/i, value: { contextWindow: 262_144, maxTokens: 32_768, source: 'Mistral 官方（输出上限未公布）', verified: false } },
-  // Moonshot：开放平台 kimi-k3 为 1M（默认输出 128K）；K2.6/K2.7-code 及
-  // Kimi Code 通道（k3 按档位 256K/1M，取保守 256K）均 256K
+  // Moonshot：开放平台 kimi-k3 为 1M（默认输出 128K）；Kimi Code 通道 kimi-for-coding
+  // 上下文已升至 1M（2026-09-15 产品侧确认，输出上限未公布取保守值）；
+  // K2.6/K2.7-code 及 Kimi Code 通道 k3（按档位 256K/1M，取保守 256K）均 256K
   { pattern: /^kimi-k3$/i, value: { contextWindow: 1_048_576, maxTokens: 131_072, source: 'Moonshot 官方', verified: true } },
-  { pattern: /^(?:kimi-k2\.7-code(?:-highspeed)?|kimi-k2\.6|kimi-for-coding(?:-highspeed)?|k3-256k|k3)$/i, value: { contextWindow: 262_144, maxTokens: 32_768, source: 'Moonshot 官方（Kimi Code 通道输出上限未公布）', verified: false } },
+  { pattern: /^kimi-for-coding(?:-highspeed)?$/i, value: { contextWindow: 1_048_576, maxTokens: 32_768, source: 'Moonshot 官方（Kimi Code 通道，输出上限未公布）', verified: false } },
+  { pattern: /^(?:kimi-k2\.7-code(?:-highspeed)?|kimi-k2\.6|k3-256k|k3)$/i, value: { contextWindow: 262_144, maxTokens: 32_768, source: 'Moonshot 官方（Kimi Code 通道输出上限未公布）', verified: false } },
   // 智谱：GLM-5.3 家族（含 flash 多模态）与 5.2 均 1M/128K；GLM-5 为 200K/128K
   { pattern: /glm-?5[._-]?3(?:[._-]flash)?$/i, value: { contextWindow: 1_048_576, maxTokens: 131_072, source: '智谱官方', verified: true } },
   { pattern: /glm-5\.2$/i, value: { contextWindow: 1_048_576, maxTokens: 131_072, source: '智谱官方', verified: true } },
