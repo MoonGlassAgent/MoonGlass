@@ -7,7 +7,7 @@
 
 import { app, shell, BrowserWindow } from 'electron'
 import { existsSync } from 'node:fs'
-import { dirname, join } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import { electronApp, optimizer, is } from '@electron-toolkit/utils'
 import { IPC } from '@shared/ipc-contract'
@@ -25,6 +25,10 @@ if (app.isPackaged && existsSync(join(executableDir, 'portable-mode'))) {
   const portableUserData = join(executableDir, 'userdata')
   app.setPath('userData', portableUserData)
   console.log('[moonglass] 便携模式数据目录:', portableUserData)
+} else if (!app.isPackaged && process.env.MOONGLASS_USERDATA) {
+  // 开发/诊断模式的数据目录隔离（E2E 与性能复现脚本使用，避免触碰真实 userData）
+  app.setPath('userData', resolve(process.env.MOONGLASS_USERDATA))
+  console.log('[moonglass] 隔离数据目录:', process.env.MOONGLASS_USERDATA)
 }
 
 const services = createApplication()

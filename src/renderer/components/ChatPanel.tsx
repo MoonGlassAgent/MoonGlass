@@ -5,7 +5,7 @@
  * 模型选择 + 输入区。会话由主进程 AgentService（Pi RPC 子进程）承载。
  */
 
-import { type ClipboardEvent, useCallback, useEffect, useRef, useState } from 'react'
+import { type ClipboardEvent, memo, useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { Link } from '@tanstack/react-router'
 import { ImagePlus, Minimize2, MoreVertical, RotateCcw, Ruler } from 'lucide-react'
@@ -366,7 +366,7 @@ function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; 
                 key={m.id}
                 msg={m}
                 decisionDisabled
-                onDecision={() => { /* 只读面板不响应决策 */ }}
+                onDecision={noopDecision}
               />
             ))}
           </div>
@@ -414,10 +414,13 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
 
-  const inputHistory = messages
-    .filter((message) => message.role === 'user')
-    .map((message) => message.text.trim())
-    .filter((text) => text && !text.startsWith(DECISION_RESPONSE_PREFIX) && !text.startsWith('【MoonGlass 一键托管】'))
+  const inputHistory = useMemo(
+    () => messages
+      .filter((message) => message.role === 'user')
+      .map((message) => message.text.trim())
+      .filter((text) => text && !text.startsWith(DECISION_RESPONSE_PREFIX) && !text.startsWith('【MoonGlass 一键托管】')),
+    [messages]
+  )
 
   useEffect(() => {
     setEnsuring(true)
@@ -514,6 +517,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
     setHistoryIndex(null)
     historyDraftRef.current = ''
   }
+
+  /** 决策草稿更新回调：稳定引用，避免击穿 MessageBubble 的 memo */
+  const handleDecisionDraft = useCallback((request: AgentDecisionRequest, selectedIds: string[], customText: string): void => {
+    setDecisionDrafts((current) => ({ ...current, [request.id]: { selectedIds, customText } }))
+  }, [])
 
   const recallInput = (direction: 'previous' | 'next'): void => {
     if (inputHistory.length === 0) return
@@ -845,9 +853,7 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               msg={m}
               decisionResponse={m.decisionRequest ? decisionResponses.get(m.decisionRequest.id) : undefined}
               decisionDisabled={streaming}
-              onDecision={(request, selectedIds, customText) => {
-                setDecisionDrafts((current) => ({ ...current, [request.id]: { selectedIds, customText } }))
-              }}
+              onDecision={handleDecisionDraft}
               decisionDraft={m.decisionRequest ? decisionDrafts[m.decisionRequest.id] : undefined}
             />
           ))}
@@ -985,7 +991,11 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   )
 }
 
-function MessageBubble({
+/** 只读面板（BatchSessionPeek）的决策回调占位：模块级稳定引用，配合 memo 避免无意义重渲染 */
+const noopDecision = (): void => { /* 只读面板不响应决策 */ }
+
+/** 决策草稿变更回调：稳定引用，保证 MessageBubble 的 memo 不被每次渲染的新闭包击穿 */
+function MessageBubbleImpl({
   msg,
   decisionResponse,
   decisionDisabled,
@@ -1115,6 +1125,9 @@ function MessageBubble({
     </div>
   )
 }
+
+/** 消息气泡 memo 化：会话消息多（上限 320 条且单条可含大段 markdown）时，输入框每次击键不再重渲染整列气泡 */
+const MessageBubble = memo(MessageBubbleImpl)
 
 function FileReferenceText({ text }: { text: string }): React.JSX.Element {
   const { t } = useTranslation()

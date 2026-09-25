@@ -8,6 +8,14 @@
 - 修复：SessionTabs 对未运行中的批次会话渲染 × 关闭按钮（复用既有 closeSession 链路：删除 JSONL + 清理模型登记，运行中批次仍不显示）；主进程 closeSession 增加保护——正在运行的 VERIF 批次会话（activeVerifBatches 命中）拒绝关闭并提示先停止托管，防止编排循环的 settle 等待悬空。
 - 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke` 通过。
 
+## 2026-09-15：聊天输入框"能粘贴不能键入"——巨型会话渲染阻塞修复
+
+- 症状与根因：巨型会话（用户实测 3.6M token）中输入框无法键入但可粘贴。粘贴是单事件、键入是连续按键+IME 组合，对长帧极敏感。`MessageBubble` 未 memo 化，每次击键重渲染全部消息（上限 320 条），`inputHistory` 每次渲染全量 filter。
+- 实测对照（`scripts/chat-input-perf-repro.mjs`，playwright 驱动真实应用 + 隔离 userData，合成 320 条/16.4MB 会话）：修复前巨型会话击键端到端中位 **112ms/键**（25 个 longtask，共 2308ms，最大 99ms），修复后 **17ms/键、0 longtask**、零焦点漂移、零 disabled 抖动。
+- 修复：`MessageBubble` 包 `React.memo`（重命名实现为 `MessageBubbleImpl`），消息列表 onDecision 改稳定 `useCallback`（`handleDecisionDraft`），BatchSessionPeek 用模块级 `noopDecision`，`inputHistory` 改 `useMemo([messages])`。
+- 配套：主进程新增 `MOONGLASS_USERDATA` 环境变量（仅非打包模式生效）隔离数据目录，供 E2E/诊断脚本不触碰真实 userData——Electron 在 Windows 下不读 APPDATA 环境变量，此前隔离方案无效。
+- 验证：复现脚本前后对照（数据如上）；`pnpm typecheck`、`pnpm build` 通过。
+
 ## 2026-09-15：lint 规则扩展（Verilator 警告升级 + 4 条结构规则）
 
 - 背景：对 verible 官方规则目录、svlint 规则集（ruleset-designintent）、lowRISC Verilog 风格指南与 Verilator 警告清单调研后挑选高价值项落地。
