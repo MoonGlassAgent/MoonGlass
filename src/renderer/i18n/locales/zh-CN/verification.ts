@@ -143,9 +143,19 @@ export const verification = {
     reuseTop: '复用顶层/静态证据',
     staticRules: '静态规则'
   },
+  moduleRisks: {
+    title: '风险集中在哪些模块',
+    subtitle: '按模块分组，条长为风险数，颜色为该模块最高风险权重',
+    empty: '当前没有识别到风险标记',
+    rest: '其余 {modules} 个模块（{count} 项）',
+    unknownModule: '未标注模块',
+    expand: '展开该模块的风险清单',
+    collapse: '收起风险清单'
+  },
   heat: {
-    title: '风险热区',
+    title: '风险热区（结构复杂度 × 交互）',
     subtitle: '纵轴交互强度，横轴结构复杂度；颜色越深风险越集中',
+    axesHint: '两轴为引擎启发式评分，非实测覆盖率',
     count: '{count} 项风险',
     none: '无风险'
   },

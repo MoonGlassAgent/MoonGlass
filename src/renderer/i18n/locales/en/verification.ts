@@ -143,9 +143,19 @@ export const verification: VerificationMessages = {
     reuseTop: 'Reuses top-level/static evidence',
     staticRules: 'Static rules'
   },
+  moduleRisks: {
+    title: 'Where Risks Concentrate',
+    subtitle: 'Grouped by module; bar length = risk count, color = highest risk score in the module',
+    empty: 'No risk markers identified',
+    rest: 'Other {modules} modules ({count} risks)',
+    unknownModule: 'Unspecified module',
+    expand: 'Expand risk list for this module',
+    collapse: 'Collapse risk list'
+  },
   heat: {
-    title: 'Risk Heatmap',
+    title: 'Risk Heatmap (Structural Complexity × Interaction)',
     subtitle: 'Y-axis interaction intensity, X-axis structural complexity; darker means more concentrated risk',
+    axesHint: 'Both axes are engine heuristic scores, not measured coverage',
     count: '{count} risks',
     none: 'No risks'
   },

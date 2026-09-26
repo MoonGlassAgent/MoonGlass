@@ -371,6 +371,7 @@ export function VerificationPosturePage(): React.JSX.Element {
   const [error, setError] = useState('')
   const [runningAction, setRunningAction] = useState<string | null>(null)
   const [actionMessage, setActionMessage] = useState('')
+  const [expandedModuleRisk, setExpandedModuleRisk] = useState<string | null>(null)
   const ensureAgent = useChatStore((store) => store.ensure)
   const sendAgentPrompt = useChatStore((store) => store.sendAndWait)
 
@@ -537,6 +538,32 @@ export function VerificationPosturePage(): React.JSX.Element {
     return { row, column, items }
   }), [risks])
 
+  // 模块风险分布：按 risk.object 分组，组内风险数降序（同数按组内最高 riskScore）取前 8，其余合并为一行
+  const moduleRiskView = useMemo(() => {
+    const byModule = new Map<string, RiskMarker[]>()
+    for (const risk of risks) {
+      const key = risk.object || t('verification.moduleRisks.unknownModule')
+      const list = byModule.get(key) ?? []
+      list.push(risk)
+      byModule.set(key, list)
+    }
+    const groups = [...byModule.entries()].map(([module, items]) => ({
+      key: module, module, items: [...items].sort((a, b) => b.riskScore - a.riskScore),
+      maxScore: Math.max(...items.map((item) => item.riskScore))
+    }))
+    groups.sort((a, b) => b.items.length - a.items.length || b.maxScore - a.maxScore)
+    const top = groups.slice(0, 8)
+    const rest = groups.slice(8)
+    const rows = rest.length > 0
+      ? [...top, { key: '__rest__', module: t('verification.moduleRisks.rest', { modules: rest.length, count: rest.reduce((sum, group) => sum + group.items.length, 0) }), items: rest.flatMap((group) => group.items).sort((a, b) => b.riskScore - a.riskScore), maxScore: Math.max(...rest.map((group) => group.maxScore)) }]
+      : top
+    return { rows, maxCount: rows.reduce((max, row) => Math.max(max, row.items.length), 1) }
+    // locale 变化时“其余/未标注”文案需重新推导
+  }, [risks, locale])
+
+  /** 模块风险清单内单条风险的 Agent 交接 prompt（与 deriveTopRisks 同一构造口径的精简版）。 */
+  const moduleRiskPrompt = (risk: RiskMarker): string => `请处理验证风险 ${risk.id}。风险语义：${risk.riskStatement ?? `${risk.title}，对象 ${risk.object}`} 请读取关联 RTL、VI/SCN 和原始证据，执行定向仿真、Assertion 或 Formal，完成后重新生成验证态势。`
+
   /** Top 风险行（未处理列表与已接受折叠区共用）。 */
   const renderRiskRow = (item: ExplainedRisk, index: number): React.JSX.Element => <div key={item.risk.id} className="grid grid-cols-[28px_minmax(0,1fr)_auto] gap-3 py-3"><div className={`flex h-6 w-6 items-center justify-center text-xs font-semibold text-white ${item.level === 'confirmed' ? 'bg-red-600' : item.level === 'specGap' ? 'bg-amber-600' : item.level === 'accepted' ? 'bg-emerald-600' : 'bg-zinc-700'}`}>{index + 1}</div><div className="min-w-0"><div className="flex items-center gap-2"><strong className="text-sm">{item.risk.title}</strong><span className="shrink-0 bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600">{t(RISK_LEVEL_LABELS[item.level])}</span><span className="font-mono text-[10px] text-zinc-400">{item.risk.id}</span></div><p className="mt-1 text-xs text-zinc-700"><b>{t('verification.risks.risk')}</b>{item.risk.riskStatement}</p><div className="mt-1 text-[11px] text-zinc-500"><b>{t('verification.risks.object')}</b><span className="font-mono">{item.risk.object}</span>{item.risk.source?.file ? <span className="ml-1 text-zinc-400">（{item.risk.source.file}{item.risk.source.line ? `:${item.risk.source.line}` : ''}）</span> : null}</div><div className="mt-1 text-xs text-zinc-600"><b>{t('verification.risks.gap')}</b>{item.gap}</div><div className="mt-1 text-xs text-red-700"><b>{t('verification.risks.impact')}</b>{item.impact}</div><div className="mt-1 text-xs text-emerald-700"><b>{t('verification.risks.recommendation')}</b>{item.recommendation}</div></div><button disabled={runningAction !== null} onClick={() => void runAction(item.risk.id, item.prompt)} className="self-center rounded border border-zinc-300 p-2 text-zinc-500 hover:border-emerald-500 hover:text-emerald-700 disabled:opacity-40" title={t('verification.risks.handoff')}><Wrench size={15} /></button></div>
 
@@ -620,15 +647,46 @@ export function VerificationPosturePage(): React.JSX.Element {
         <div className="p-5 pt-4"><div className="max-h-96 overflow-auto border-y border-zinc-200"><table className="w-full table-fixed text-left text-[11px]"><thead className="sticky top-0 bg-zinc-50 text-zinc-500"><tr><th className="w-44 px-2 py-2 font-medium">{t('verification.strategy.colModule')}</th><th className="w-28 px-2 py-2 font-medium">{t('verification.strategy.colLevel')}</th><th className="w-28 px-2 py-2 font-medium">{t('verification.strategy.colRole')}</th><th className="w-60 px-2 py-2 font-medium">{t('verification.strategy.colOracle')}</th><th className="px-2 py-2 font-medium">{t('verification.strategy.colGolden')}</th></tr></thead><tbody>{state.moduleVerificationStrategy.modules.map((plan) => <tr key={plan.module} className="border-t border-zinc-100 align-top"><td className="px-2 py-2"><strong className="font-mono text-zinc-800">{plan.module}</strong><div className="mt-1 text-[10px] text-zinc-400">{plan.standaloneTestbench ? t('verification.strategy.standaloneTb') : t('verification.strategy.reuseTop')}</div></td><td className="px-2 py-2"><span className={`px-1.5 py-0.5 font-semibold ${plan.level === 'IP_SIGNOFF' ? 'bg-emerald-100 text-emerald-700' : plan.level === 'UNIT_FOCUSED' ? 'bg-red-100 text-red-700' : plan.level === 'UNIT_SMOKE' ? 'bg-amber-100 text-amber-700' : 'bg-zinc-100 text-zinc-600'}`}>{plan.level}</span></td><td className="px-2 py-2 text-zinc-600"><div>{plan.role}</div><div className="mt-1 font-mono text-zinc-400">{plan.riskScore.toFixed(3)}</div></td><td className="px-2 py-2 text-zinc-600">{plan.oracleStrategies.length ? plan.oracleStrategies.join(' + ') : t('verification.strategy.staticRules')}</td><td className="px-2 py-2"><div className={plan.goldenModel.recommendation === 'RECOMMENDED' ? 'font-semibold text-emerald-700' : plan.goldenModel.recommendation === 'OPTIONAL' ? 'font-medium text-amber-700' : 'text-zinc-500'}>{plan.goldenModel.recommendation}</div><div className="mt-1 text-zinc-500">{plan.goldenModel.rationale}</div><div className="mt-1 text-[10px] text-zinc-400">{plan.reasons.join(' ')}</div></td></tr>)}</tbody></table></div></div>
       </CollapsibleSection>}
 
+      <section className="border-b border-zinc-200 bg-white p-5">
+        <div className="mb-3 flex items-end justify-between gap-3">
+          <div><h2 className="text-sm font-semibold">{t('verification.moduleRisks.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.moduleRisks.subtitle')}</p></div>
+          <span className="shrink-0 text-xs text-zinc-400">{t('verification.heat.count', { count: risks.length })}</span>
+        </div>
+        {moduleRiskView.rows.length === 0 ? <div className="border border-dashed border-zinc-200 py-8 text-center text-sm text-zinc-400">{t('verification.moduleRisks.empty')}</div> : <div className="divide-y divide-zinc-100 border-y border-zinc-200">
+          {moduleRiskView.rows.map((row) => {
+            const expanded = expandedModuleRisk === row.key
+            const topRisk = row.items[0]
+            const barCls = row.maxScore >= 0.7 ? 'bg-red-500' : row.maxScore >= 0.4 ? 'bg-amber-400' : 'bg-zinc-300'
+            return <div key={row.key}>
+              <button type="button" onClick={() => setExpandedModuleRisk(expanded ? null : row.key)} title={t(expanded ? 'verification.moduleRisks.collapse' : 'verification.moduleRisks.expand')} className="flex w-full items-center gap-3 py-2 text-left hover:bg-zinc-50">
+                <span className="w-44 shrink-0 truncate font-mono text-xs text-zinc-800" title={row.module}>{row.module}</span>
+                <span className="flex h-3 min-w-0 flex-1 items-center"><span className={`h-3 rounded-sm ${barCls}`} style={{ width: `${Math.max(3, Math.round(row.items.length * 100 / moduleRiskView.maxCount))}%` }} /></span>
+                <span className="w-8 shrink-0 text-right text-xs text-zinc-600">{row.items.length}</span>
+                <span className="w-64 shrink-0 truncate text-xs text-zinc-500" title={topRisk?.title}>{topRisk?.title}</span>
+                {expanded ? <ChevronDown size={14} className="shrink-0 text-zinc-400" /> : <ChevronRight size={14} className="shrink-0 text-zinc-400" />}
+              </button>
+              {expanded && <div className="divide-y divide-zinc-100 border-t border-zinc-100 bg-zinc-50/50 px-3">
+                {row.items.map((risk) => <div key={risk.id} className="flex items-center gap-3 py-2 text-xs">
+                  <span className="min-w-0 flex-1 truncate text-zinc-700" title={risk.title}>{risk.title}</span>
+                  <span className="shrink-0 font-mono text-[10px] text-zinc-400">{risk.id}</span>
+                  <span className={`shrink-0 font-mono text-[11px] ${risk.riskScore >= 0.7 ? 'text-red-600' : risk.riskScore >= 0.4 ? 'text-amber-600' : 'text-zinc-500'}`}>{risk.riskScore.toFixed(3)}</span>
+                  <button type="button" disabled={runningAction !== null} onClick={() => void runAction(risk.id, moduleRiskPrompt(risk))} className="shrink-0 rounded border border-zinc-300 p-1.5 text-zinc-500 hover:border-emerald-500 hover:text-emerald-700 disabled:opacity-40" title={t('verification.risks.handoff')}><Wrench size={13} /></button>
+                </div>)}
+              </div>}
+            </div>
+          })}
+        </div>}
+      </section>
+
       <CollapsibleSection title={t('verification.heat.title')} subtitle={t('verification.heat.subtitle')} aside={<span className="text-xs text-zinc-400">{t('verification.heat.count', { count: risks.length })}</span>}>
         <div className="p-5 pt-4">
-          <div className="grid max-w-2xl grid-cols-[52px_repeat(5,minmax(54px,1fr))] gap-1 text-center text-[10px]">
+          {risks.length === 0 ? <div className="py-4 text-center text-sm text-zinc-400">{t('verification.moduleRisks.empty')}</div> : <div title={t('verification.heat.axesHint')} className="grid max-w-2xl grid-cols-[52px_repeat(5,minmax(54px,1fr))] gap-1 text-center text-[10px]">
             <div />{HEAT_LEVEL_KEYS.map((key) => <div key={key} className="pb-1 text-zinc-400">{t(key)}</div>)}
             {heat.map((cell, index) => <div key={index} className="contents">
               {cell.column === 0 && <div className="flex items-center justify-end pr-2 text-zinc-400">{t(HEAT_LEVEL_KEYS[cell.row])}</div>}
               <div title={cell.items.map((item) => `${item.id} ${item.title} ${item.object}`).join('\n') || t('verification.heat.none')} className={`flex h-12 items-center justify-center border ${cell.items.length === 0 ? 'border-zinc-100 bg-zinc-50 text-zinc-300' : cell.items.length >= 4 ? 'border-red-500 bg-red-500 text-white' : cell.items.length >= 2 ? 'border-amber-400 bg-amber-300 text-amber-950' : 'border-emerald-300 bg-emerald-100 text-emerald-800'}`}>{cell.items.length}</div>
             </div>)}
-          </div>
+          </div>}
         </div>
       </CollapsibleSection>
 
