@@ -159,8 +159,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'VERIF',
     injectMode: 'prepend',
-    version: '2.4.0',
-    updatedAt: '2026-09-25',
+    version: '2.4.1',
+    updatedAt: '2026-09-28',
     content: `当前处于【验证完备】阶段。
 
 ## 执行范围规则
@@ -180,7 +180,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 1.1 读取并审查 module-verification-strategy.json：顶层 IP 执行 IP_SIGNOFF，高风险子模块执行 UNIT_FOCUSED，普通子模块执行 UNIT_SMOKE 或 STATIC_ONLY；不得把每个 .v 文件当成独立 DUT 重复完整 AIGV
 1.2 验证深度由风险决定，Oracle 类型由模块语义决定；Golden Model 由独立判定、故障定位和验证收敛收益决定，不得因子模块简单而禁止，也不得为了形式完整复制 RTL
 2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
-3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb", simulator="icarus") 完成功能回归
+3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb")（rtlCoverage 缺省开启，后端自动选择）完成功能回归
 4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成风险候选、结构事实、Spec Gap、Verification Intent、时间交互、边界条件、Coverage Hole 分类和排序后的 Scenario Registry；每个 Intent 必须是包含前置状态、定向激励、观察点、通过标准和证据要求的可证伪工程目标，不能用 taxonomy 或 feature 组合代替；引擎穷举的 Scenario 只是候选池，不是必须逐条执行的任务清单；风险标记与 Spec Gap 不是 Bug 结论
 4.1 build 完成后，读取规格、risk-register.json 与 structural-model.json，自己圈定 5~10 个最高价值的真实验证点：每个必须点名具体 RTL 信号（rtlSignals，必须能在结构模型中查到，支持 module.signal 或裸信号名）、具体失效反例（failureMode）、具体判定标准（passCriteria）、波段标签 wave（basic/corner/signoff；smoke 已废弃、声明后按 basic 处理；W2 增补必须带主题 topic，如错误注入/边界/并发碰撞/性能，引擎归一化防裂波），并锚定现有 riskIds 与 requirementIds——synthesis（PPA）通道条款（面积/时序/功耗等数值目标）不得以 simulation/formal 方法锚定，其验收义务在 SYNTH 阶段闭环（以 recommendedMethod="static" 登记综合报告审查）；然后调用 register_verification_intents 登记（origin=AGENT_INTENT，同分排序优先于引擎穷举候选）。被拒绝的锚点必须核对注册表/结构模型修正后重新登记，不得绕过或手写注册表。引擎穷举的 ENGINE_CANDIDATE 场景保留为候选池，可用 refine_verification_intents 精炼其 objective/failureMode/passCriteria 表述
 5. 读取 feature-interaction-graph.json；需要语义补充时调用 register_verification_hypotheses，每个推理必须引用 Risk/RTL Object/Interaction Edge，并区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN
@@ -201,6 +201,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 - 禁止整读 verification/intelligence/ 下的 slang-ast.json、verification-state.json、feature-interaction-graph.json（引擎中间产物/全量模型，体积过大）；日常状态读取唯一入口是 execution-summary.json（≤10KB 摘要），需要场景细节时以 select_next_verification_batch 的返回与按需定向读取为准，不得把整份 JSON 读入上下文
 - 行覆盖率目标 ≥90%
 - 条件覆盖率目标 ≥85%（Verilator 表达式求值口径：if/else 条件求值点，非 MC/DC 级操作数覆盖）
+- 功能覆盖率目标 ≥80%
 - 每个波次结束必须采集轻量覆盖率并处理未覆盖点（见执行规则 8）
 - 必须包含边界条件测试
 - 必须包含错误注入测试`
@@ -211,15 +212,28 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'QA',
     injectMode: 'prepend',
-    version: '2.1.0',
-    updatedAt: '2026-09-15',
+    version: '2.1.1',
+    updatedAt: '2026-09-28',
     content: `当前处于【质量检查】阶段。
 
 你的任务是：
 1. 运行完整的 Lint 检查（Verible + 自定义规则；含 moonglass 结构规则与时钟/复位禁入组合逻辑）
 2. 运行 CDC（Clock Domain Crossing）检查
 3. 复核复位结构、异步复位释放和跨复位域风险，评审结论写入 docs/06_validation/reset_review.md（与 SYNCASYNCNET / clk-rst-in-comb 的 lint 结果互相印证，并在签核文档中记录结论）
-4. 代码审查：按内置 RTL 代码审查清单（resources/moonglass/code-review/rtl-code-review-checklist.md 的 CR-01 ~ CR-12）逐条裁决 pass / waived / not_applicable，写 rtlqa/code-review-verdicts.json（含 rtlHash；waived 必须挂 waiverId 并在 verification/intelligence/signoff-approvals.json 有具名审批记录）
+4. 代码审查：按下述内置 RTL 代码审查清单逐条裁决 pass / waived / not_applicable，写 rtlqa/code-review-verdicts.json（含 rtlHash；waived 必须挂 waiverId 并在 verification/intelligence/signoff-approvals.json 有具名审批记录）。
+   清单（canonical 资产 resources/moonglass/code-review/rtl-code-review-checklist.md，只覆盖 lint 查不出的语义项；静态规则项由 lint 门禁兜底，不重复裁决）：
+   - CR-01 复位策略一致：同步/异步选择一致，异步释放经同步器，复位期间输出满足规格默认值
+   - CR-02 跨时钟域：CDC 路径有同步器/握手/FIFO，无裸组合跨越，与 CDC 扫描互证
+   - CR-03 状态机：编码完备、有 default/非法态恢复分支、无死锁、初始态明确
+   - CR-04 握手与背压：AXI/ready-valid 背压下不丢不重不死锁
+   - CR-05 寄存器语义：地址/位域/读写副作用与接口规格逐条一致
+   - CR-06 计数器与指针：溢出、回绕、空/满边界行为已定义
+   - CR-07 错误路径：非法输入/异常序列/超时中止行为已定义且与失效安全目标一致
+   - CR-08 位宽与符号：截断/扩展意图明确，无隐式符号位错误
+   - CR-09 可综合残留：无延时/initial 初始化/X 赋值等仿真专有结构残留
+   - CR-10 调试可观测性：关键状态可观测、故障可注入可定位
+   - CR-11 复位后初始状态：寄存器初始值与输出默认值满足上电行为条款
+   - CR-12 规格开放点：无 TBD/待澄清条款流入综合，遗留决策已记录
 5. 语义实现审查（全面 review）：逐条读取需求/规格条款，对照 RTL 裁决每个条款是否被实现——implemented（点名 RTL 模块/信号/行号作为证据，evidence 路径必须真实存在）/ partial / missing / not_applicable（synthesis 通道 PPA 条款移交 SYNTH，无需裁决）。写 rtlqa/spec-implementation-review.json（含 rtlHash）；partial/missing 必须挂 waiverId 且有具名审批。RTL 变更后必须重新审查（门禁按 rtlHash 校验新鲜度）
 6. 验证完备性审计：读取 execution-summary.json / verification-state.json 的 specMapping，核对每个规格条款（含断言级细化条款）都有 ≥1 个真实验证 Intent（引擎派生占位不算）、≥1 个绑定用例、当前 RTL 版本的 PASS 证据；WAIVED 需具名审批。有缺口时回到 VERIF 补验证，不得在 QA 阶段口头宣称完备
 7. 调用 run_verible_lint、run_cdc_check 和 check_synthesizability

@@ -2,6 +2,14 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-28：阶段提示词全量审查修复
+
+- 背景：v0.9.8 基线后对六个阶段提示词与门禁实际行为做逐条对照审查。
+- 修复（QA 模板 2.1.1）：QA 模板引用的代码审查清单 `resources/moonglass/code-review/rtl-code-review-checklist.md` 是应用资源目录、不在项目工作区内，pi 会话读不到——将 CR-01~CR-12 清单正文内嵌进模板，资源文件保留为 canonical 副本。
+- 修复（VERIF 模板 2.4.1）：约束清单补齐功能覆盖率 ≥80%（与门禁 func-coverage-gte-80 对齐）；规则 3 删除误导性的显式 `simulator="icarus"`（v0.9.8 起 icarus 请求自动升级 verilator 后端采覆盖率，改为缺省行为描述）。
+- 审查确认不改项：SYNTH 阶段 PPA 闭环指引缺失（用户决策暂不处理）；REQ_SPEC 超出门禁的产出与 register_map.md 落盘目录（保持现状）。
+- 验证：`pnpm typecheck` 全 workspace 通过；`qa-semantic-gate-smoke` 回归通过。
+
 ## 2026-09-15：v0.9.8 基线
 
 - **QA 阶段语义终审**：四类新门禁（语义实现审查 / 验证完备性审计 / 代码审查清单闭环 / 复位评审留档），QA 不再只做 Lint/CDC/可综合静态检查（详见同日专项条目）。
