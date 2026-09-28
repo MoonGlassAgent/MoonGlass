@@ -2,6 +2,16 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-15：QA 阶段语义终审（四类新门禁）
+
+- 背景：QA 阶段此前只有 Lint/CDC/可综合静态检查，缺少"规格是否被 RTL 实现""每个规格点是否有验证点+用例覆盖"的语义终审；代码审查与复位评审只有提示词文本、无机器检查。
+- **qa-spec-implementation-reviewed**：需求/规格 → RTL 语义实现审查。Agent 逐条款裁决 implemented/partial/missing/not_applicable 写 rtlqa/spec-implementation-review.json；门禁按 specMapping 条款闭集校验裁决完备、implemented 证据路径真实存在（支持 行号 后缀）、partial/missing 挂具名豁免（signoff-approvals.json）、rtlHash 与当前工作区一致（RTL 变更后旧审查不再采信）。
+- **qa-verification-completeness**：规格点 → 验证点 → 用例 → 证据完备性审计。引擎新增 auditVerificationCompleteness：每个 VERIF 通道条款要求真实验证 Intent + 场景绑定 + 当前 RTL 版本 PASS 证据，WAIVED 需 RR-WAIVER 具名审批；synthesis 通道条款不在本分母（SYNTH 阶段验收）。
+- **qa-code-review-done**：RTL 代码审查清单机器化。新增清单资产 resources/moonglass/code-review/rtl-code-review-checklist.md（CR-01~CR-12，只覆盖 lint 查不出的语义项）；Agent 逐条裁决写 rtlqa/code-review-verdicts.json，门禁校验无 open 项、waived 挂具名豁免、rtlHash 新鲜度。
+- **qa-reset-review-documented**：复位风险评审结论留档 docs/06_validation/reset_review.md。
+- 提示词：QA 阶段模板升级 2.1.0，四项任务与门禁口径写入。
+- 验证：新建 qa-semantic-gate-smoke（12 断言，阻断/放行/豁免/过期四路径全过，注册进 integration 套件）；verification-intelligence-smoke、eda-gate-smoke、batch-prompt-smoke 回归通过；pnpm typecheck 全 workspace 通过。
+
 ## 2026-09-15：已完成批次会话标签可关闭
 
 - 问题：会话标签栏中已完成的 VERIF 批次会话（"查看"徽标）无关闭按钮，完成记录不断堆积无法清理。

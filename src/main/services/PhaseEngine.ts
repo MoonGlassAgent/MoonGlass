@@ -11,7 +11,7 @@ import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
 import { basename, join, relative, sep } from 'node:path'
 import { runLint, runDesignLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
-import { buildVerificationIntelligence, reviewScenarioClosure, reviewSynthesisClauses, computeRtlHash } from '@moonglass/verification-intelligence-engine'
+import { buildVerificationIntelligence, reviewScenarioClosure, reviewSynthesisClauses, computeRtlHash, auditVerificationCompleteness } from '@moonglass/verification-intelligence-engine'
 import {
   PHASE_ORDER,
   type ChipProject,
@@ -31,7 +31,7 @@ export const GATE_RULES: readonly GateRule[] = [
   { from: 'ARCH', to: 'RTL', precondition: '总体架构和接口可用；独立微架构与时钟复位文档按设计复杂度选配', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
   { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
   { from: 'VERIF', to: 'QA', precondition: '覆盖率、Scenario 闭环与独立证据审查报告', autoChecks: ['line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'sim-passed', 'verification-scenario-closure', 'verification-evidence-review'] },
-  { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过，覆盖率无退化', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed', 'line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80'] }
+  { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过，语义实现与验证完备性已终审，覆盖率无退化', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed', 'line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'qa-spec-implementation-reviewed', 'qa-verification-completeness', 'qa-code-review-done', 'qa-reset-review-documented'] }
 ] as const
 
 /** checkId → check_type 映射 */
@@ -63,7 +63,11 @@ const CHECK_NAMES: Record<string, string> = {
   'sim-passed': '仿真通过',
   'verible-zero-error': 'Lint 零 Error',
   'yosys-synthesizable': 'Yosys 可综合性',
-  'cdc-passed': 'CDC 启发式风险扫描（非签核）'
+  'cdc-passed': 'CDC 启发式风险扫描（非签核）',
+  'qa-spec-implementation-reviewed': 'QA 需求/规格语义实现审查',
+  'qa-verification-completeness': 'QA 规格点-验证点-用例完备性审计',
+  'qa-code-review-done': 'QA 代码审查检查清单闭环',
+  'qa-reset-review-documented': 'QA 复位风险评审结论留档'
 }
 
 /** 门禁检查执行上下文（由调用方注入，避免本模块依赖 Electron） */
@@ -625,6 +629,123 @@ async function cdcPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
   }
 }
 
+/** 读取 signoff-approvals.json 的具名审批登记（QA 语义审查/代码审查的 waiver 校验用） */
+function readSignoffApprovals(workspaceDir: string): Map<string, { approver: string }> {
+  const path = join(workspaceDir, 'verification', 'intelligence', 'signoff-approvals.json')
+  const map = new Map<string, { approver: string }>()
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf-8')) as { approvals?: Array<{ riskId?: string; approver?: string; rationale?: string }> }
+    for (const item of data.approvals ?? []) {
+      if (item.riskId && item.approver && item.rationale) map.set(item.riskId, { approver: item.approver })
+    }
+  } catch { /* 缺失或损坏按"无审批"处理 */ }
+  return map
+}
+
+/** 与覆盖率门禁同口径的 RTL 新鲜度校验：返回当前 rtlHash（计算失败返回 null，不做过滤） */
+function currentWorkspaceRtlHash(workspaceDir: string): string | null {
+  try { return computeRtlHash(workspaceDir) } catch { return null }
+}
+
+/**
+ * QA 需求/规格语义实现审查（全面 review：每个规格条款是否被 RTL 实现）。
+ * Agent 逐条款裁决写 rtlqa/spec-implementation-review.json；门禁校验条款闭集完备、
+ * verdict 合法、implemented 证据真实存在、partial/missing 挂具名豁免、rtlHash 与当前一致。
+ */
+async function qaSpecImplementationReviewed(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  const reviewPath = join(ctx.workspaceDir, 'rtlqa', 'spec-implementation-review.json')
+  if (!existsSync(reviewPath)) {
+    return makeResult(checkId, false, 'error', '尚未完成需求/规格 → RTL 语义实现审查：rtlqa/spec-implementation-review.json 不存在（逐条款裁决 implemented/partial/missing/not_applicable 后重试）')
+  }
+  buildVerificationIntelligence(ctx.workspaceDir)
+  let clauses: Array<{ clauseId: string; channel?: string }> = []
+  try {
+    const state = JSON.parse(readFileSync(join(ctx.workspaceDir, 'verification', 'intelligence', 'verification-state.json'), 'utf-8')) as { specMapping?: { clauses?: Array<{ clauseId: string; channel?: string }> } }
+    clauses = (state.specMapping?.clauses ?? []).filter((clause) => (clause.channel ?? 'simulation') !== 'synthesis')
+  } catch { return makeResult(checkId, false, 'error', 'verification-state.json 无法解析，无法核对条款闭集') }
+
+  interface SpecReviewItem { clauseId?: string; verdict?: string; evidence?: unknown; waiverId?: string; note?: string }
+  let review: { rtlHash?: string; reviews?: SpecReviewItem[] }
+  try { review = JSON.parse(readFileSync(reviewPath, 'utf-8')) as typeof review } catch {
+    return makeResult(checkId, false, 'error', 'rtlqa/spec-implementation-review.json 无法解析')
+  }
+  const currentRtlHash = currentWorkspaceRtlHash(ctx.workspaceDir)
+  if (currentRtlHash && !review.rtlHash) {
+    return makeResult(checkId, false, 'error', '语义实现审查缺少 rtlHash 字段，无法确认与当前 RTL 一致：请在审查文件写入 rtlHash')
+  }
+  if (currentRtlHash && review.rtlHash && review.rtlHash !== currentRtlHash) {
+    return makeResult(checkId, false, 'error', '语义实现审查基于旧 RTL 版本（rtlHash 不匹配）：RTL 变更后需重新逐条款审查')
+  }
+  const byClause = new Map((review.reviews ?? []).filter((item) => typeof item.clauseId === 'string').map((item) => [item.clauseId as string, item]))
+  const approvals = readSignoffApprovals(ctx.workspaceDir)
+  const issues: string[] = []
+  for (const clause of clauses) {
+    const item = byClause.get(clause.clauseId)
+    if (!item) { issues.push(`${clause.clauseId} 缺少裁决`); continue }
+    const verdict = item.verdict
+    if (!['implemented', 'partial', 'missing', 'not_applicable'].includes(verdict ?? '')) {
+      issues.push(`${clause.clauseId} verdict 非法（${verdict ?? '缺失'}，应为 implemented/partial/missing/not_applicable）`)
+      continue
+    }
+    if (verdict === 'implemented') {
+      const evidence = Array.isArray(item.evidence) ? item.evidence.filter((entry): entry is string => typeof entry === 'string' && entry.trim().length > 0) : []
+      if (evidence.length === 0) { issues.push(`${clause.clauseId} 裁决 implemented 但无证据（需点名 RTL 模块/信号/行号路径）`); continue }
+      const missing = evidence.filter((entry) => !existsSync(join(ctx.workspaceDir, entry.replace(/:\d+(?::\d+)?$/, ''))))
+      if (missing.length > 0) issues.push(`${clause.clauseId} 证据路径不存在：${missing[0]}${missing.length > 1 ? ` 等 ${missing.length} 条` : ''}`)
+    } else if (verdict === 'partial' || verdict === 'missing') {
+      const waiver = typeof item.waiverId === 'string' ? approvals.get(item.waiverId) : undefined
+      if (!waiver) issues.push(`${clause.clauseId} 裁决 ${verdict} 但无具名豁免（signoff-approvals.json 需有 waiverId=${item.waiverId ?? '<缺失>'} 的记录，含审批人与依据）`)
+    }
+  }
+  if (issues.length > 0) {
+    const shown = issues.slice(0, MAX_ISSUES_IN_MESSAGE).join('；')
+    const more = issues.length > MAX_ISSUES_IN_MESSAGE ? ` 等 ${issues.length} 条` : ''
+    return makeResult(checkId, false, 'error', `语义实现审查 ${issues.length} 项未通过：${shown}${more}`)
+  }
+  return makeResult(checkId, true, 'error', `语义实现审查通过：${clauses.length} 个 VERIF 通道条款均有合法裁决（implemented 带证据 / partial、missing 挂具名豁免 / not_applicable）`)
+}
+
+/** QA 验证完备性审计（每个规格点是否有验证点、用例绑定与 PASS 证据） */
+async function qaVerificationCompletenessGate(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  buildVerificationIntelligence(ctx.workspaceDir)
+  const audit = auditVerificationCompleteness(ctx.workspaceDir)
+  if (audit.passed) {
+    return makeResult(checkId, true, 'error', `完备性审计通过：${audit.stats.covered}/${audit.stats.clauseTotal} 个规格条款有验证点 + 用例绑定 + 当前 RTL 版本的 PASS 证据（或具名豁免）`)
+  }
+  const shown = audit.blockers.slice(0, MAX_ISSUES_IN_MESSAGE).join('；')
+  const more = audit.blockers.length > MAX_ISSUES_IN_MESSAGE ? ` 等 ${audit.blockers.length} 条` : ''
+  return makeResult(checkId, false, 'error', `${audit.blockers.length} 个规格条款验证不完备：${shown}${more}`)
+}
+
+/** QA 代码审查检查清单闭环（rtlqa/code-review-verdicts.json，逐条 pass/waived/not_applicable） */
+async function qaCodeReviewDone(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  const path = join(ctx.workspaceDir, 'rtlqa', 'code-review-verdicts.json')
+  if (!existsSync(path)) {
+    return makeResult(checkId, false, 'error', '尚未完成代码审查：rtlqa/code-review-verdicts.json 不存在（按 RTL 代码审查清单 CR-01 ~ CR-12 逐条裁决 pass/waived/not_applicable）')
+  }
+  try {
+    const data = JSON.parse(readFileSync(path, 'utf-8')) as { rtlHash?: string; items?: Array<{ id?: string; status?: string; waiverId?: string }> }
+    const items = data.items ?? []
+    if (items.length === 0) {
+      return makeResult(checkId, false, 'error', '代码审查清单为空：必须逐条裁决 CR-01 ~ CR-12（pass/waived/not_applicable）')
+    }
+    const currentRtlHash = currentWorkspaceRtlHash(ctx.workspaceDir)
+    if (currentRtlHash && data.rtlHash && data.rtlHash !== currentRtlHash) {
+      return makeResult(checkId, false, 'error', '代码审查基于旧 RTL 版本（rtlHash 不匹配）：RTL 变更后需重新审查')
+    }
+    const approvals = readSignoffApprovals(ctx.workspaceDir)
+    const open = items.filter((item) => !['pass', 'waived', 'not_applicable'].includes(item.status ?? ''))
+    if (open.length > 0) {
+      return makeResult(checkId, false, 'error', `${open.length} 条审查项未闭环（缺失或状态非法）：${open.slice(0, 3).map((item) => item.id ?? '<无ID>').join('、')}${open.length > 3 ? ' 等' : ''}`)
+    }
+    const unwaivered = items.filter((item) => item.status === 'waived' && !approvals.has(item.waiverId ?? ''))
+    if (unwaivered.length > 0) {
+      return makeResult(checkId, false, 'error', `${unwaivered.length} 条 waived 项缺具名豁免：${unwaivered.slice(0, 3).map((item) => item.id).join('、')}${unwaivered.length > 3 ? ' 等' : ''}`)
+    }
+    return makeResult(checkId, true, 'error', `代码审查闭环：${items.length} 条均已裁决（pass / waived+具名豁免 / not_applicable）`)
+  } catch { return makeResult(checkId, false, 'error', 'rtlqa/code-review-verdicts.json 无法解析') }
+}
+
 /** 检查器注册表：checkId → 真实检查实现；未注册的走「未接入」占位 */
 const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promise<GateCheckResult>> = {
   'requirements-usable': requirementsUsable,
@@ -651,7 +772,11 @@ const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promi
   'verible-lint-zero-error': lintZeroError,
   'verible-zero-error': lintZeroError,
   'yosys-synthesizable': yosysSynthesizable,
-  'cdc-passed': cdcPassed
+  'cdc-passed': cdcPassed,
+  'qa-spec-implementation-reviewed': qaSpecImplementationReviewed,
+  'qa-verification-completeness': qaVerificationCompletenessGate,
+  'qa-code-review-done': qaCodeReviewDone,
+  'qa-reset-review-documented': requireFiles(['docs/06_validation/reset_review.md'])
 }
 
 export function createInitialPhases(): Record<Phase, PhaseState> {

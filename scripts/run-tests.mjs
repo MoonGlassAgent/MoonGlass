@@ -32,6 +32,7 @@ const suites = {
     'scripts/eda-gate-smoke.mjs',
     'scripts/simulation-artifacts-smoke.mjs',
     'scripts/verilator-coverage-smoke.mjs',
+    'scripts/qa-semantic-gate-smoke.mjs',
     'scripts/synthesis-flow-smoke.mjs'
   ]
 }

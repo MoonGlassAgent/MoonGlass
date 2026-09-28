@@ -2146,6 +2146,62 @@ export function reviewSynthesisClauses(workspaceDir: string): { passed: boolean;
   } catch { return { passed: true, blockers: [], total: 0, open: 0 } }
 }
 
+/**
+ * QA 阶段验证完备性审计（规格点 → 验证点 → 用例 → 证据 闭集完整性）：
+ * 对 specMapping 矩阵中每个 VERIF 通道条款（simulation/static；synthesis 通道的验收义务
+ * 在 SYNTH 阶段由 reviewSynthesisClauses 兜底）要求：
+ *   1. ≥1 个真实验证点（Verification Intent，AGENT_INTENT；CLAUSE_DERIVED 派生候选不算——
+ *      派生候选只是占位，不产生 intentIds）；
+ *   2. ≥1 个绑定的验证用例/场景（scenarioIds 非空）；
+ *   3. CURRENT PASS 证据（陈旧证据由 specMapping 的 PASSED 派生口径排除），且证据路径非空；
+ *   4. WAIVED 必须有具名审批（signoff-approvals.json 中对应 RR-WAIVER-<scenarioId> 记录）。
+ * 调用方应先执行 buildVerificationIntelligence 重建矩阵后再调用（与 reviewScenarioClosure 同约定）。
+ */
+export function auditVerificationCompleteness(workspaceDir: string): {
+  passed: boolean
+  blockers: string[]
+  warnings: string[]
+  stats: { clauseTotal: number; covered: number }
+} {
+  const workspace = resolve(workspaceDir)
+  const path = join(workspace, 'verification', 'intelligence', 'verification-state.json')
+  if (!existsSync(path)) {
+    return { passed: false, blockers: ['尚未生成 Verification State Model（先调用 build_verification_intelligence 重建验证态势）'], warnings: [], stats: { clauseTotal: 0, covered: 0 } }
+  }
+  let state: VerificationStateModel
+  try { state = JSON.parse(readFileSync(path, 'utf-8')) as VerificationStateModel } catch {
+    return { passed: false, blockers: ['verification-state.json 无法解析'], warnings: [], stats: { clauseTotal: 0, covered: 0 } }
+  }
+  const blockers: string[] = []
+  const warnings: string[] = []
+  const clauses = (state.specMapping?.clauses ?? []).filter((clause) => (clause.channel ?? 'simulation') !== 'synthesis')
+  const approvals = readRiskApprovals(workspace)
+  let covered = 0
+  for (const clause of clauses) {
+    if (clause.intentIds.length === 0) {
+      blockers.push(`${clause.clauseId} 无验证点（仅有引擎派生候选占位，未登记真实 Verification Intent）：${clause.text.slice(0, 60)}`)
+      continue
+    }
+    if (clause.scenarioIds.length === 0) {
+      blockers.push(`${clause.clauseId} 有验证点但无验证用例绑定（无 scenario 锚定该条款）`)
+      continue
+    }
+    if (clause.status === 'PASSED') {
+      if (clause.evidence.length === 0) blockers.push(`${clause.clauseId} 标记 PASSED 但无证据路径`)
+      else covered += 1
+      continue
+    }
+    if (clause.status === 'WAIVED') {
+      if (clause.scenarioIds.some((id) => approvals.has(`RR-WAIVER-${id}`))) covered += 1
+      else blockers.push(`${clause.clauseId} 已豁免但缺具名审批（signoff-approvals.json 需有对应 RR-WAIVER-* 记录）`)
+      continue
+    }
+    blockers.push(`${clause.clauseId} 状态 ${clause.status}：缺当前 RTL 版本的 PASS 证据`)
+  }
+  if (blockers.length > 8) warnings.push('（阻断明细过多时按 execution-summary.json 的 specMapping.unmappedClause 逐条处理）')
+  return { passed: blockers.length === 0, blockers, warnings, stats: { clauseTotal: clauses.length, covered } }
+}
+
 /** recordRootCause 的输入（缺 id/createdAt，由引擎派生）。字段口径见契约 §2.1。 */
 export interface RootCauseInput {
   scenarioId: string

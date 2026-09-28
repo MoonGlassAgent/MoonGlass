@@ -211,23 +211,28 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'QA',
     injectMode: 'prepend',
-    version: '2.0.0',
-    updatedAt: '2026-07-30',
+    version: '2.1.0',
+    updatedAt: '2026-09-15',
     content: `当前处于【质量检查】阶段。
 
 你的任务是：
-1. 运行完整的 Lint 检查（Verible + 自定义规则）
+1. 运行完整的 Lint 检查（Verible + 自定义规则；含 moonglass 结构规则与时钟/复位禁入组合逻辑）
 2. 运行 CDC（Clock Domain Crossing）检查
-3. 复核复位结构、异步复位释放和跨复位域风险，并在签核文档中记录结论
-4. 执行代码审查（Code Review）检查清单
-5. 调用 run_verible_lint、run_cdc_check 和 check_synthesizability
-6. Lint 与 CDC 报告分别写入 rtlqa/lint/、rtlqa/cdc/；复位风险和签核结论写入 docs/06_validation/
+3. 复核复位结构、异步复位释放和跨复位域风险，评审结论写入 docs/06_validation/reset_review.md（与 SYNCASYNCNET / clk-rst-in-comb 的 lint 结果互相印证，并在签核文档中记录结论）
+4. 代码审查：按内置 RTL 代码审查清单（resources/moonglass/code-review/rtl-code-review-checklist.md 的 CR-01 ~ CR-12）逐条裁决 pass / waived / not_applicable，写 rtlqa/code-review-verdicts.json（含 rtlHash；waived 必须挂 waiverId 并在 verification/intelligence/signoff-approvals.json 有具名审批记录）
+5. 语义实现审查（全面 review）：逐条读取需求/规格条款，对照 RTL 裁决每个条款是否被实现——implemented（点名 RTL 模块/信号/行号作为证据，evidence 路径必须真实存在）/ partial / missing / not_applicable（synthesis 通道 PPA 条款移交 SYNTH，无需裁决）。写 rtlqa/spec-implementation-review.json（含 rtlHash）；partial/missing 必须挂 waiverId 且有具名审批。RTL 变更后必须重新审查（门禁按 rtlHash 校验新鲜度）
+6. 验证完备性审计：读取 execution-summary.json / verification-state.json 的 specMapping，核对每个规格条款（含断言级细化条款）都有 ≥1 个真实验证 Intent（引擎派生占位不算）、≥1 个绑定用例、当前 RTL 版本的 PASS 证据；WAIVED 需具名审批。有缺口时回到 VERIF 补验证，不得在 QA 阶段口头宣称完备
+7. 调用 run_verible_lint、run_cdc_check 和 check_synthesizability
+8. Lint 与 CDC 报告分别写入 rtlqa/lint/、rtlqa/cdc/；复位风险和签核结论写入 docs/06_validation/
 
 门禁标准：
 - Lint：零 Error，Warning 需评审
-- CDC：零未同步跨时钟域信号
-- 复位风险：所有发现均已评审并有明确处置；当前工具链不宣称完成正式 RDC 工具签核
-- 代码审查：所有检查项通过`
+- CDC：零未同步跨时钟域信号（当前工具链为启发式扫描，不宣称正式 CDC/RDC 签核）
+- 覆盖率：行 ≥90% / 条件 ≥85% / 功能 ≥80%，且数据必须是当前 RTL 版本（rtlHash）的新鲜采集
+- 语义实现审查：全部 VERIF 通道条款有合法裁决，implemented 带真实证据，partial/missing 带具名豁免
+- 验证完备性：全部规格条款有验证点 + 用例绑定 + PASS 证据（或具名豁免）
+- 代码审查：CR-01 ~ CR-12 全部闭环
+- 复位风险：reset_review.md 留档，所有发现均已评审并有明确处置`
   },
 
   SYNTH: {
