@@ -2,6 +2,46 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-28：v0.9.9 基线
+
+- **RTL 死逻辑检查**：基于 slang elaborated AST 的无驱动/无负载（undriven/unused/dead）检出；internal 项可直接清理，命中架构文档或顶层端口的 spec-anchored 项必须经工程师裁决（删除/保留/TBD），裁决为删除时先同步架构文档；RTL 阶段联合 Lint 后必查，QA 门禁无未裁决项。
+- **OpenCode Go 供应商**：预置接入（`opencode.ai/zen/go/v1`）；自定义请求头端到端支持，`x-opencode-session` 会话头按会话稳定注入（官方 2026-09-06 起强制）；模型登记表补 gpt-6-luna/gpt-6-sol/grok-4.7。
+- **case3 用户缺陷**：Formal 中文路径 sby 调用失败修复；验证面板场景绑定链路修复。
+- 验证：typecheck 0 错误；core 25 + integration 6 smoke 套件全过。
+
+## 2026-09-28：RTL 死逻辑（无驱动/无负载）检查 + 架构契约工程师裁决
+
+- 背景（用户需求 2026-09-28）：RTL 阶段加入"没有 driver、没有 load"的检查——这类死代码留着会影响验证回归，应优先清理；若处置涉及架构设计文档变更（接口/寄存器/架构契约），必须通知工程师同意，不得由 Agent 自行删除。
+- **分析器（packages/eda-bridge/src/dead-logic.ts）**：基于 slang elaborated AST（--ast-json --ast-json-source-info，调用模式与 structural-analyzer 一致：AST 落临时目录、消费后删除、失败写 rtlqa/lint/dead_logic_slang.log）按模块统计每个 Net/Variable 的驱动（赋值 LHS / 输入端口方向 / 实例输出连接）与负载（表达式引用 / 输出端口方向 / 实例输入连接），产出 undriven / unused / dead 三类问题；generate 未选中分支 elaborated 后天然排除；同一模块多实例取驱动/负载并集防误报；slang 缺失显式报「工具缺失」（支持 MOONGLASS_SLANG_PATH 覆盖）。
+- **规格锚定分类**：信号名文本命中 docs/03_design/ 的 interface_spec/register_map/architecture/microarchitecture 或属顶层端口 → spec-anchored（需工程师裁决），否则 internal（可直接清理）。
+- **pi 工具 check_dead_logic**：报告写 rtlqa/lint/dead_logic_report.json + .md（中文摘要：文件:行、类型、分类、建议动作）；复跑自动继承仍命中项的既有裁决（按 模块.信号 键）。
+- **流程接入**：RTL 模板 2.1.0——联合 Lint 后必须 check_dead_logic，internal 直接清理，spec-anchored 逐项 request_user_decision 裁决（删除/保留+理由/TBD）并写回 adjudications，阶段完成前无未裁决项；QA 模板 2.2.0 门禁清单加"死逻辑检查无未裁决项"。
+- **QA 门禁 qa-dead-logic-adjudicated（PhaseEngine）**：报告缺失时 warning 提示放行（不阻断，与 CDC 启发式口径一致）；存在 spec-anchored 未裁决或裁决非法（decision ∉ remove/keep/tbd 或 rationale 为空）时阻断。
+- 验证：新建 dead-logic-smoke（15 断言：三类检出/实例连接/顶层端口/规格锚定/零误报/裁决继承/工具缺失路径，真实调 slang）注册进 core 套件；qa-semantic-gate-smoke 扩展 4 断言（缺失提示/未裁决阻断/非法裁决阻断/合法放行）；pi-tools-smoke 复制清单同步；`pnpm typecheck` 全 workspace 通过，typecheck:root 维持存量 11 项无新增。
+
+## 2026-09-28：BUG-FORMAL-PATH-001 中文项目路径 Formal 回归修复（case3 DDR_BIST）
+
+- 根因（实测确认）：内置 AIGV 工具链的 Python 是 MinGW/msvcrt 构建，窄 argv 按系统 ANSI 代码页（GBK）转码，非 ASCII 绝对路径经 argv 传递必然损坏为 surrogateescape 乱码——cmd 批处理包装与原生 sby.exe 同样中招（与 0.9.5/0.9.8 无关，机制上一直存在；0.9.5 成功案例应未经过含中文的 argv 路径）。
+- 修复（packages/eda-bridge/src/formal.ts）：非 ASCII 不再经 argv/配置文件传递——sby 以 cwd=verification/formal 工作目录运行（CreateProcessW 宽字符目录参数安全），`-d` 与 .sby 用相对纯 ASCII 路径；[files] 从绝对路径改为相对 formal 目录的相对路径（项目根的非 ASCII 前缀经 ../../ 消去）；配置内容含非 ASCII 时前置报清晰错误。
+- 顺带回答用户 F2：失败任务目录缺 config.sby 是因为 sby 在 open(argv 乱码) 阶段即崩，根本没进入工作目录生成阶段；修复后 config.sby 正常生成。
+- 验证：formal-smoke 新增中文路径回归用例（`中文项目\DDR_BIST` 工作区，bmc PASS）全过；pnpm typecheck 零错误；pi-tools-smoke 回归通过。
+
+## 2026-09-28：陈旧 PASS 污染防线（RTL 变更后旧证据不再污染当前状态）
+
+- 背景（用户担心核实）：RTL 变更后重跑回归时，旧 PASS 数据存在三个污染通道——eda-bridge 无条件合并旧覆盖率与通道结论（旧 RTL 的覆盖率会被盖上当前 rtlHash 混入门禁）、cocotb/cpp 路径会解析历史遗留 coverage.dat 当作本次结果、`...previous` 展开把旧 rtlCoveragePassed 带回；门禁侧 sim-passed 与 review_verification_evidence 无新鲜度过滤。
+- **eda-bridge**：新增 rtlInputHash（RTL 输入路径+内容哈希）写入 result.json；旧覆盖率、旧 coverageDataPath、旧 functionalPassed/rtlCoveragePassed 通道结论仅在同一 RTL 输入时继承，RTL 变更后一律丢弃并强制双通道重跑；两条仿真路径均只在 coverage.dat 本次运行被真正重写（mtime 前移）后才解析。
+- **门禁**：sim-passed 增加 rtlHash 新鲜度检查（过期证据报"请重新回归"，不充当仿真通过判定）；review_verification_evidence 剔除 rtlHash 不匹配的 result 并 warning 留痕。
+- 已有保护确认无洞：scenario_hits 陈旧 hit 降级 IMPACT_UNKNOWN/PARTIAL、specMapping PASSED 只认 CURRENT、陈旧 Formal 结果不得覆盖当前 hit、覆盖率门禁与 QA 语义审查的 rtlHash 过滤。
+- 验证：verilator-coverage-smoke 新增 4 项污染断言（RTL 变更后旧覆盖率不继承/通道复位/新 rtlInputHash）全过；qa-semantic-gate-smoke 新增 sim-passed 过期阻断/放行双路径；eda-gate/scenario-hits/verification-intelligence 回归全绿；pnpm typecheck 零错误。
+
+## 2026-09-28：BUG-VERIF-BIND-001 场景绑定反向指针（case3 DDR_BIST）
+
+- 背景：scenarioIds 路径的 run_simulation 只登记 reached/passed/reachCount/rtlHash/evidence，未记录"覆盖该场景的 testcase"，态势页绑定列显示"未绑定"（实测 155/165 场景缺反向指针）；WAIVED/formal-candidate 场景无 testcase 属设计使然却显示"未绑定"，造成"验证遗漏"的误读。
+- **登记层（pi-bridge writeScenarioHits/run_simulation）**：新增条目字段 boundTestcases + boundBy。run_simulation 从 JUnit XML 收集本次实际执行的全部测试函数（排除 skipped）：单用例运行时把该函数提升为所有显式绑定场景的精确 testName（boundBy=testcase-name）；多用例运行时整组记入 boundTestcases（boundBy=scenarioIds，批次级绑定）。跨次运行 union 合并去重，evidence/reachCount 合并语义不变（增量，不覆盖）。
+- **补绑层（FileService）**：新增 scanScenarioBindings——扫描测试函数 docstring 的 SCN-XXXXXXXX 引用建立"场景 → 测试函数"映射（manifest 的 scenarios 字段同样支持）；mapScenarioToTestId 增加该兜底；存量工程无需重跑即可追溯。执行行透传 scenarioId/boundTestcases。
+- **UI（VerificationPosturePage 用例全景）**：绑定列反查 executed 行的 scenarioId + boundTestcases；无用例时区分语义——已豁免显示"不适用（已豁免）"、formal-candidate 显示"Formal 关闭"、static 显示"静态审查关闭"，不再一律"未绑定"。i18n zh/en 同步。
+- 验证：scenario-hits-smoke 扩展 4 组反向指针断言（单用例精确/多例批次/合并去重/名称解析并存）全过；`pnpm typecheck`（workspace）与 pi-tools-smoke/verification-guidance-smoke 回归通过；typecheck:root 存量报错文件无新增。
+
 ## 2026-09-28：阶段提示词全量审查修复
 
 - 背景：v0.9.8 基线后对六个阶段提示词与门禁实际行为做逐条对照审查。
