@@ -161,5 +161,20 @@ export const LLM_PROVIDER_PRESETS: readonly LlmProviderConfig[] = [
     models: ['deepseek-ai/DeepSeek-V4-Flash', 'moonshotai/Kimi-K2.6', 'Qwen/Qwen3.5-397B-A17B', 'zai-org/GLM-5', 'MiniMaxAI/MiniMax-M2.7'],
     enabled: false,
     builtin: true
+  },
+  {
+    id: 'opencode',
+    name: 'OpenCode Go',
+    protocol: 'openai-compatible',
+    baseUrl: 'https://opencode.ai/zen/go/v1',
+    apiKey: '',
+    // OpenCode Go（opencode.ai 订阅网关）模型目录 2026-09 实时拉自 /models，选取主力编码模型
+    models: ['kimi-k3', 'glm-5.3', 'glm-5.3-flash', 'deepseek-flash', 'minimax-m3', 'qwen3.8-max', 'gpt-6-luna', 'grok-4.7'],
+    // OpenCode Go 自 2026-09-06 起每个 API 请求必须携带 x-opencode-session 会话头
+    // （每会话一个固定 ID，用于路由/prompt-cache 亲和；缺失报 400 MissingSessionID）。
+    // {{sessionId}} 占位符在注入 pi 时按会话文件短哈希替换。
+    headers: { 'x-opencode-session': '{{sessionId}}' },
+    enabled: false,
+    builtin: true
   }
 ]

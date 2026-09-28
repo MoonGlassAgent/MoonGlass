@@ -27,7 +27,7 @@ mkdirSync(join(bridgeDir, 'verification-intelligence'), { recursive: true })
 for (const f of ['moonglass-tools.ts', 'rtl-write-guard.ts']) {
   writeFileSync(join(bridgeDir, f), readFileSync(join('resources', 'moonglass', 'pi-bridge', f), 'utf-8'))
 }
-for (const f of ['tool-runner.ts', 'rtl-files.ts', 'simulation.ts', 'synthesis.ts', 'lint.ts', 'formal.ts']) {
+for (const f of ['tool-runner.ts', 'rtl-files.ts', 'simulation.ts', 'synthesis.ts', 'lint.ts', 'formal.ts', 'dead-logic.ts']) {
   writeFileSync(join(bridgeDir, 'eda-bridge', f), readFileSync(join('packages', 'eda-bridge', 'src', f), 'utf-8'))
 }
 for (const f of ['engine.ts', 'types.ts', 'structural-analyzer.ts']) {

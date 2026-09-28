@@ -18,7 +18,7 @@ for (const f of ['moonglass-providers.ts', 'model-context.ts', 'moonglass-tools.
 // Phase 4：同时复制 eda-bridge 共享实现到 pi-bridge 目录，供 moonglass-tools.ts 相对导入
 const edaBridgeDir = join(bridgeDir, 'eda-bridge')
 mkdirSync(edaBridgeDir, { recursive: true })
-for (const f of ['tool-runner.ts', 'rtl-files.ts', 'simulation.ts', 'synthesis.ts', 'lint.ts', 'formal.ts']) {
+for (const f of ['tool-runner.ts', 'rtl-files.ts', 'simulation.ts', 'synthesis.ts', 'lint.ts', 'formal.ts', 'dead-logic.ts']) {
   writeFileSync(
     join(edaBridgeDir, f),
     (await import('node:fs')).readFileSync(join(process.cwd(), 'packages', 'eda-bridge', 'src', f), 'utf-8')
@@ -47,6 +47,14 @@ const providers = [{
     'deepseek-v4-pro': { contextWindow: 777_777, maxTokens: 8_888 },
     'my-selfhost-model': { contextWindow: 333_333, maxTokens: 4_096 }
   }
+}, {
+  // 自定义请求头透传验证（OpenCode Go 场景：x-opencode-session 会话头；
+  // {{sessionId}} 占位符由主进程注入前替换，桥接收到的即最终值）。
+  // 模型选 gpt-6-luna：本机 pi 全局配置可能自带 kimi-k3（重名会被先注册者占用），
+  // 且该 ID 走新补的登记表规则（1.05M/128K），一并验证
+  id: 'opencode', name: 'OpenCode Go', protocol: 'openai-compatible', baseUrl: 'https://opencode.ai/zen/go/v1', apiKey: 'sk-dummy',
+  models: ['gpt-6-luna'],
+  headers: { 'x-opencode-session': 'smoke-session-001' }
 }]
 const providerFile = join(work, 'providers.json')
 writeFileSync(providerFile, JSON.stringify(providers), { mode: 0o600 })
@@ -128,6 +136,22 @@ for (const [id, expected] of Object.entries(expectedContexts)) {
   }
 }
 console.log('[context] contextWindows 覆盖/回退断言通过')
+
+// 自定义请求头：带 headers 的 provider 注册成功（模型进入可用列表、新补的登记表规则命中 1.05M），
+// 且桥接源码确实把 headers 透传给 pi.registerProvider
+const opencodeModel = byId.get('gpt-6-luna')
+if (!opencodeModel || opencodeModel.provider !== 'opencode' || opencodeModel.contextWindow !== 1_050_000 || opencodeModel.maxTokens !== 128_000) {
+  console.error(`[headers] opencode/gpt-6-luna 注册不符：实际 ${opencodeModel ? JSON.stringify({ provider: opencodeModel.provider, contextWindow: opencodeModel.contextWindow, maxTokens: opencodeModel.maxTokens }) : '(未注册)'}`)
+  child.kill()
+  process.exit(1)
+}
+const bridgeSource = readFileSync(join(process.cwd(), 'resources', 'moonglass', 'pi-bridge', 'moonglass-providers.ts'), 'utf-8')
+if (!bridgeSource.includes('headers: p.headers')) {
+  console.error('[headers] moonglass-providers.ts 缺少 headers 透传（headers: p.headers）')
+  child.kill()
+  process.exit(1)
+}
+console.log('[headers] 自定义请求头 provider 注册与桥接透传断言通过')
 
 // 再验证工具是否真的注册进了 Agent 工具集（get_state 不含工具清单，用 prompt 侧面验证成本高，此处以扩展无错误 + 进程就绪为准）
 // WS1/WS2：新工具与参数 schema 以源码标记断言兜底（扩展无错误已证明模块可被 pi 加载）

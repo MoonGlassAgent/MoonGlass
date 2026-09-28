@@ -113,8 +113,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'RTL',
     injectMode: 'prepend',
-    version: '2.0.0',
-    updatedAt: '2026-07-30',
+    version: '2.1.0',
+    updatedAt: '2026-09-28',
     content: `当前处于【RTL 开发】阶段。
 
 你的任务是：
@@ -151,6 +151,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 - 时钟/复位信号（clk/clock/rst/reset 词干命名，含 i_/o_ 前缀与 _n/n 低有效后缀）不得参与组合逻辑表达式，仅允许出现在时序 always 敏感表与复位条件中；跨时钟域信号必须经过同步器，禁止在 assign 右值或 always @(*) 块体内直接引用
 - 时序 always 一律使用非阻塞赋值 <=（for 循环变量除外），组合 always 一律使用阻塞赋值 =；可综合 RTL 禁用 ===/!==（case equality，X 语义仿真/综合不一致）；组合逻辑必须完整赋值避免推断锁存器（LATCH）；同一信号不得同时作同步与异步复位；自赋值（q <= q 保持态除外）需确认意图
 - 普通 part-select 的左右边界必须是常量表达式；动态选择使用 Verilog-2001 合法的 indexed part-select（base +: WIDTH 或 base -: WIDTH），其中 WIDTH 必须为常量
+- 联合 Lint/elaboration 通过后必须运行 check_dead_logic 做无驱动/无负载（死逻辑）检查：此类死代码留着会污染验证回归，应在本阶段优先处理。internal 项（纯内部死代码）直接清理；spec-anchored 项（信号名命中 docs/03_design 的 interface_spec/register_map/architecture/microarchitecture 或属顶层端口）处置涉及架构契约，必须逐项调用 request_user_decision 请工程师裁决（删除 / 保留并说明理由 / 标注 TBD），禁止 Agent 自行删除；裁决结果写回 rtlqa/lint/dead_logic_report.json 的 adjudications（key 为 "<模块>.<信号>"），裁决为删除时先同步更新对应架构文档再改 RTL；阶段完成前不得存在未裁决的 spec-anchored 项
 - 必须通过可综合性检查`
   },
 
@@ -212,7 +213,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'QA',
     injectMode: 'prepend',
-    version: '2.1.1',
+    version: '2.2.0',
     updatedAt: '2026-09-28',
     content: `当前处于【质量检查】阶段。
 
@@ -246,6 +247,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 - 语义实现审查：全部 VERIF 通道条款有合法裁决，implemented 带真实证据，partial/missing 带具名豁免
 - 验证完备性：全部规格条款有验证点 + 用例绑定 + PASS 证据（或具名豁免）
 - 代码审查：CR-01 ~ CR-12 全部闭环
+- 死逻辑检查：rtlqa/lint/dead_logic_report.json 中无未裁决的 spec-anchored 项（报告缺失时门禁提示而不阻断；存在未裁决项则阻断，须回到 RTL 阶段完成清理与工程师裁决）
 - 复位风险：reset_review.md 留档，所有发现均已评审并有明确处置`
   },
 

@@ -31,7 +31,7 @@ export const GATE_RULES: readonly GateRule[] = [
   { from: 'ARCH', to: 'RTL', precondition: '总体架构和接口可用；独立微架构与时钟复位文档按设计复杂度选配', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
   { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
   { from: 'VERIF', to: 'QA', precondition: '覆盖率、Scenario 闭环与独立证据审查报告', autoChecks: ['line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'sim-passed', 'verification-scenario-closure', 'verification-evidence-review'] },
-  { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过，语义实现与验证完备性已终审，覆盖率无退化', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed', 'line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'qa-spec-implementation-reviewed', 'qa-verification-completeness', 'qa-code-review-done', 'qa-reset-review-documented'] }
+  { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过，语义实现与验证完备性已终审，覆盖率无退化', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed', 'line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'qa-spec-implementation-reviewed', 'qa-verification-completeness', 'qa-code-review-done', 'qa-reset-review-documented', 'qa-dead-logic-adjudicated'] }
 ] as const
 
 /** checkId → check_type 映射 */
@@ -67,7 +67,8 @@ const CHECK_NAMES: Record<string, string> = {
   'qa-spec-implementation-reviewed': 'QA 需求/规格语义实现审查',
   'qa-verification-completeness': 'QA 规格点-验证点-用例完备性审计',
   'qa-code-review-done': 'QA 代码审查检查清单闭环',
-  'qa-reset-review-documented': 'QA 复位风险评审结论留档'
+  'qa-reset-review-documented': 'QA 复位风险评审结论留档',
+  'qa-dead-logic-adjudicated': 'QA 死逻辑检查无未裁决项'
 }
 
 /** 门禁检查执行上下文（由调用方注入，避免本模块依赖 Electron） */
@@ -375,6 +376,22 @@ async function simPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
     .filter((file) => basename(file) === 'result.json' && relative(resultsRoot, file).split(sep).length === 2)
   if (resultFiles.length === 0) {
     return makeResult(checkId, false, 'error', 'verification/results/<module>/result.json 不存在')
+  }
+  // 陈旧 PASS 污染防线：与覆盖率门禁同口径——rtlHash 与当前 RTL 不一致（或缺失）的
+  // result.json 视为过期证据，不得充当"仿真通过"判定，必须先重新回归
+  const currentRtlHash = currentWorkspaceRtlHash(ctx.workspaceDir)
+  if (currentRtlHash) {
+    const stale = resultFiles.filter((file) => {
+      try { return JSON.parse(readFileSync(file, 'utf-8')).rtlHash !== currentRtlHash } catch { return false }
+    })
+    if (stale.length > 0) {
+      return makeResult(
+        checkId,
+        false,
+        'error',
+        `${stale.length} 个模块的回归证据已过期（rtlHash 与当前 RTL 不一致或缺失）：${stale.map((file) => relative(ctx.workspaceDir, file)).join('、')}。请重新运行 run_simulation 回归后再检查`
+      )
+    }
   }
   const failed = resultFiles.filter((file) => {
     try { return JSON.parse(readFileSync(file, 'utf-8')).passed !== true } catch { return true }
@@ -746,6 +763,42 @@ async function qaCodeReviewDone(ctx: GateCheckContext, checkId: string): Promise
   } catch { return makeResult(checkId, false, 'error', 'rtlqa/code-review-verdicts.json 无法解析') }
 }
 
+/**
+ * QA 死逻辑检查裁决闭环（用户需求 2026-09-28：RTL 死逻辑检查 + 架构契约变更需工程师裁决）。
+ * 校验 rtlqa/lint/dead_logic_report.json：所有 spec-anchored 项（命中架构文档或顶层端口）
+ * 必须在 adjudications 中有合法裁决（remove/keep/tbd 且 rationale 非空）；internal 项由
+ * RTL 阶段直接清理，不进门禁。报告缺失时按提示放行（warning），与既有门禁严格度保持一致。
+ */
+async function qaDeadLogicAdjudicated(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  const path = join(ctx.workspaceDir, 'rtlqa', 'lint', 'dead_logic_report.json')
+  if (!existsSync(path)) {
+    return makeResult(checkId, true, 'warning', '提示：尚未运行死逻辑检查（rtlqa/lint/dead_logic_report.json 不存在）；建议在 RTL 阶段联合 Lint 后执行 check_dead_logic。本项不阻断流转')
+  }
+  interface DeadLogicIssueItem { module?: string; signal?: string; classification?: string }
+  interface DeadLogicAdjudicationItem { key?: string; decision?: string; rationale?: string }
+  let report: { issues?: DeadLogicIssueItem[]; adjudications?: DeadLogicAdjudicationItem[] }
+  try { report = JSON.parse(readFileSync(path, 'utf-8')) as typeof report } catch {
+    return makeResult(checkId, false, 'error', 'rtlqa/lint/dead_logic_report.json 无法解析')
+  }
+  const adjudications = new Map((report.adjudications ?? []).filter((item) => typeof item.key === 'string').map((item) => [item.key as string, item]))
+  const problems: string[] = []
+  const specAnchored = (report.issues ?? []).filter((issue) => issue.classification === 'spec-anchored')
+  for (const issue of specAnchored) {
+    const key = `${issue.module ?? ''}.${issue.signal ?? ''}`
+    const adjudication = adjudications.get(key)
+    if (!adjudication) { problems.push(`${key} 未裁决`); continue }
+    if (!['remove', 'keep', 'tbd'].includes(adjudication.decision ?? '') || !adjudication.rationale?.trim()) {
+      problems.push(`${key} 裁决非法（decision 应为 remove/keep/tbd 且 rationale 必填）`)
+    }
+  }
+  if (problems.length > 0) {
+    const shown = problems.slice(0, MAX_ISSUES_IN_MESSAGE).join('；')
+    const more = problems.length > MAX_ISSUES_IN_MESSAGE ? ` 等 ${problems.length} 条` : ''
+    return makeResult(checkId, false, 'error', `死逻辑检查 ${problems.length} 项 spec-anchored 未闭环：${shown}${more}（须回 RTL 阶段经 request_user_decision 工程师裁决并写回 adjudications）`)
+  }
+  return makeResult(checkId, true, 'error', `死逻辑检查闭环：${specAnchored.length} 项 spec-anchored 均有合法工程师裁决（remove / keep+理由 / tbd）`)
+}
+
 /** 检查器注册表：checkId → 真实检查实现；未注册的走「未接入」占位 */
 const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promise<GateCheckResult>> = {
   'requirements-usable': requirementsUsable,
@@ -776,7 +829,8 @@ const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promi
   'qa-spec-implementation-reviewed': qaSpecImplementationReviewed,
   'qa-verification-completeness': qaVerificationCompletenessGate,
   'qa-code-review-done': qaCodeReviewDone,
-  'qa-reset-review-documented': requireFiles(['docs/06_validation/reset_review.md'])
+  'qa-reset-review-documented': requireFiles(['docs/06_validation/reset_review.md']),
+  'qa-dead-logic-adjudicated': qaDeadLogicAdjudicated
 }
 
 export function createInitialPhases(): Record<Phase, PhaseState> {

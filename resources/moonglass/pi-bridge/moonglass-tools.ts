@@ -27,6 +27,7 @@ import { runCocotbSimulation, runVerilatorSimulation, resolveMaxWaveformGB, pars
 import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
 import { runFormalVerification } from './eda-bridge/formal'
 import { runDesignLint } from './eda-bridge/lint'
+import { analyzeDeadLogic, writeDeadLogicReport } from './eda-bridge/dead-logic'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
 import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause, computeRtlHash } from './verification-intelligence/engine.ts'
 import { createRtlWriteGuard } from './rtl-write-guard.ts'
@@ -176,6 +177,12 @@ export interface ScenarioHitWriteInput {
   testcase?: string
   /** 场景 ID → 执行该场景的 cocotb 测试函数名（从本次 JUnit XML 解析）；拿不到的场景不传，不写空 */
   testNames?: Record<string, string>
+  /**
+   * 本次运行实际执行的全部测试函数名（JUnit XML 中非 skipped 的 testcase）。
+   * BUG-VERIF-BIND-001：scenarioIds 路径的反向指针——单用例运行时该函数名会提升为条目的
+   * 精确 testName；多用例运行时整组记入 boundTestcases（批次级绑定，审计可追溯）。
+   */
+  runTestcases?: string[]
   passed: boolean
   rtlFiles: string[]
   evidence: string[]
@@ -223,8 +230,12 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
   for (const id of scenarioIds) {
     const previous = byId.get(id)
     // testName：把执行该场景的 cocotb 测试函数名记入条目，供 FileService 映射 TEST ID；
-    // 仅在拿到非空名字时写入（不写空字段），旧数据无此字段时读取侧回退 evidence 解析
-    const testName = input.testNames?.[id]
+    // 仅在拿到非空名字时写入（不写空字段），旧数据无此字段时读取侧回退 evidence 解析。
+    // BUG-VERIF-BIND-001：单用例运行（runTestcases 恰好一个）时把该用例提升为所有显式绑定
+    // 场景的精确 testName；多用例运行时整组记入 boundTestcases 并标注 boundBy=scenarioIds。
+    const preciseTestName = input.testNames?.[id] ?? (input.runTestcases?.length === 1 ? input.runTestcases[0] : undefined)
+    const runTestcases = input.runTestcases ?? []
+    const boundTestcases = [...new Set([...((previous?.boundTestcases as string[] | undefined) ?? []), ...runTestcases])]
     byId.set(id, {
       ...previous,
       id,
@@ -233,7 +244,8 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
       reachCount: Number(previous?.reachCount ?? 0) + 1,
       rtlHash,
       evidence: [...new Set([...((previous?.evidence as string[] | undefined) ?? []), ...evidence])],
-      ...(typeof testName === 'string' && testName ? { testName } : {}),
+      ...(typeof preciseTestName === 'string' && preciseTestName ? { testName: preciseTestName } : {}),
+      ...(boundTestcases.length > 0 ? { boundTestcases, boundBy: preciseTestName ? 'testcase-name' : 'scenarioIds' } : {}),
       generatedAt: new Date().toISOString()
     })
   }
@@ -787,6 +799,87 @@ export default function (pi: ExtensionAPI): void {
   })
 
   // ============================================================
+  // 工具 1.5: check_dead_logic — RTL 无驱动/无负载（死逻辑）检查
+  // （用户需求 2026-09-28：死代码影响验证回归，RTL 阶段优先清理；
+  //   涉及架构契约的处置必须经工程师裁决，禁止 Agent 自行删除）
+  // ============================================================
+  pi.registerTool({
+    name: 'check_dead_logic',
+    label: 'Check Dead Logic',
+    description: '基于 slang elaborated AST 按模块统计每个信号的驱动与负载，检出 undriven（有负载无驱动）/ unused（有驱动无负载）/ dead（两者兼有）三类死逻辑。报告写入 rtlqa/lint/dead_logic_report.json 与 dead_logic_report.md；internal 项可直接清理，spec-anchored 项（命中 docs/03_design 架构文档或属顶层端口）必须经 request_user_decision 请工程师裁决并写回报告 adjudications。',
+    promptSnippet: 'Check RTL for undriven/unused (dead) logic via slang elaborated AST',
+    promptGuidelines: 'Run after full-design lint/elaboration. Clean up internal items directly. For spec-anchored items never delete on your own: adjudicate each via request_user_decision (remove / keep with rationale / mark TBD) and record every decision into adjudications of rtlqa/lint/dead_logic_report.json. Re-run this tool after cleanup; prior adjudications for still-present items are carried over automatically.',
+    parameters: Type.Object({
+      topModule: Type.Optional(Type.String({ description: '顶层模块名（可选，缺省取 rtl/design.json 的 topModule）' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      const inputs = readRtlInputs(ctx.cwd)
+      if (inputs.designFiles.length === 0) throw new Error('工作区没有可检查的设计 RTL')
+      try {
+        const report = await analyzeDeadLogic({
+          workspace: ctx.cwd,
+          files: inputs.designFiles,
+          libraryFiles: inputs.libraryFiles,
+          includeDirs: inputs.includeDirs,
+          defines: inputs.defines,
+          topModule: (params.topModule as string | undefined) ?? inputs.topModule
+        })
+        const { jsonPath, mdPath } = writeDeadLogicReport(ctx.cwd, report)
+        const adjudicated = new Set(report.adjudications.map((item) => item.key))
+        const pending = report.issues.filter((issue) => issue.classification === 'spec-anchored' && !adjudicated.has(`${issue.module}.${issue.signal}`))
+
+        const lines = [
+          `## 死逻辑检查 — 完整设计（${inputs.designFiles.length} 个文件，顶层 ${(params.topModule as string | undefined) ?? inputs.topModule ?? '自动识别'}）`,
+          `**引擎**: slang ${report.tool.version}（elaborated AST，generate 未选中分支天然排除）`,
+          `**结果**: ${report.issues.length === 0 ? '✅ 无死逻辑' : `⚠️ ${report.issues.length} 项`}（undriven ${report.stats.undriven} / unused ${report.stats.unused} / dead ${report.stats.dead}）`,
+          `**分类**: internal（可直接清理）${report.stats.internal} 项；spec-anchored（需工程师裁决）${report.stats.specAnchored} 项，其中未裁决 ${pending.length} 项`,
+          `**报告**: ${relative(ctx.cwd, jsonPath)} / ${relative(ctx.cwd, mdPath)}`,
+          ''
+        ]
+        if (report.issues.length > 0) {
+          lines.push('### 问题列表（前 ' + MAX_ISSUES_IN_REPORT + ' 条）')
+          for (const issue of report.issues.slice(0, MAX_ISSUES_IN_REPORT)) {
+            const anchor = issue.topLevelPort ? '顶层端口' : issue.specAnchor ?? ''
+            lines.push(`- ${issue.file}:${issue.line} \`${issue.module}.${issue.signal}\` — ${issue.kind} / ${issue.classification}${anchor ? `（${anchor}）` : ''}：${issue.suggestion}`)
+          }
+          lines.push('')
+        }
+        if (pending.length > 0) {
+          lines.push(`### 待工程师裁决（${pending.length} 项 spec-anchored）`)
+          lines.push('逐项调用 request_user_decision 请工程师选择：删除 / 保留并说明理由 / 标注 TBD；')
+          lines.push('裁决结果追加到 rtlqa/lint/dead_logic_report.json 的 adjudications（key 为 "<模块>.<信号>"，decision ∈ remove/keep/tbd，rationale 必填）。')
+          lines.push('裁决涉及接口/寄存器/架构契约变更时，先同步更新 docs/03_design/ 对应文档再改 RTL。')
+        } else if (report.stats.internal > 0) {
+          lines.push('internal 项属死代码，直接清理（连同只服务于死信号的驱动/负载逻辑），清理后复跑本工具确认清零。')
+        }
+
+        return {
+          content: [{ type: 'text', text: lines.join('\n') }],
+          details: {
+            engine: 'slang-ast',
+            issueCount: report.issues.length,
+            undriven: report.stats.undriven,
+            unused: report.stats.unused,
+            dead: report.stats.dead,
+            specAnchored: report.stats.specAnchored,
+            internal: report.stats.internal,
+            pendingAdjudication: pending.length,
+            reportPath: relative(ctx.cwd, jsonPath),
+            issues: report.issues.slice(0, MAX_ISSUES_IN_REPORT)
+          }
+        }
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err)
+        return {
+          content: [{ type: 'text', text: `死逻辑检查失败: ${message}` }],
+          isError: true,
+          details: {}
+        }
+      }
+    }
+  })
+
+  // ============================================================
   // 工具 2: check_synthesizability — Yosys 可综合性检查
   // ============================================================
   pi.registerTool({
@@ -1213,7 +1306,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'run_simulation',
     label: 'Run Simulation',
-    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势；scenario_hits.json 由本工具独占写入，禁止手工编辑。purpose 声明运行用途：缺省 regression（回归证据）；mutation/probe 为隔离运行——不写 scenario_hits.json、不回写主 result.json 与主目录日志，结果落盘到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不计入回归判定与场景登记。',
+    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势（同时登记用例反向指针：单用例运行写精确 testName，多用例运行整组写 boundTestcases+boundBy=scenarioIds，供态势页绑定列追溯）；scenario_hits.json 由本工具独占写入，禁止手工编辑。purpose 声明运行用途：缺省 regression（回归证据）；mutation/probe 为隔离运行——不写 scenario_hits.json、不回写主 result.json 与主目录日志，结果落盘到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不计入回归判定与场景登记。',
     promptSnippet: 'Run Cocotb or legacy C++ RTL simulation and collect artifacts',
     promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench. Pass scenarioIds from select_next_verification_batch so scenario hits are auto-registered; never hand-write scenario_hits.json. Mutation/fault-injection or exploratory runs MUST use purpose="mutation" (or "probe") so their expected-FAIL results stay isolated from regression evidence and scenario registration. When authoring tests, bind each test function to its TEST ID in verification/<tb>/test_manifest.json ({"<test函数名>": {"testId": "TEST-..."}}) — or at least put the TEST ID in the first line of the test docstring — so the verification posture panel can map results back to the plan.',
     parameters: Type.Object({
@@ -1430,19 +1523,26 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         let scenarioHitsRegistered: string[] = []
         if (purpose === 'regression') {
           const testNames: Record<string, string> = {}
+          // BUG-VERIF-BIND-001：收集本次运行实际执行的全部测试函数（非 skipped），
+          // 作为 scenarioIds 绑定路径的用例反向指针（单用例→精确 testName；多用例→boundTestcases）
+          const runTestcases: string[] = []
           if (result.resultsXmlPath && existsSync(result.resultsXmlPath)) {
             const xml = readFileSync(result.resultsXmlPath, 'utf-8')
-            for (const nameMatch of xml.matchAll(/<testcase\b[^>]*?\bname="([^"]+)"/g)) {
-              const rawName = nameMatch[1]
+            for (const el of xml.matchAll(/<testcase\b[^>]*?(?:\/>|>[\s\S]*?<\/testcase>)/g)) {
+              const rawName = /name="([^"]+)"/.exec(el[0])?.[1]
+              if (!rawName) continue
+              if (/<skipped\b/.test(el[0])) continue
+              const funcName = /\b(test_\w+)/.exec(rawName)?.[1]
+              if (funcName) runTestcases.push(funcName)
               if (!/scn_[0-9a-fA-F]{8}/.test(rawName)) continue
-              const funcName = /\b(test_\w+)/.exec(rawName)?.[1] ?? rawName
-              for (const scn of rawName.matchAll(/scn_([0-9a-fA-F]{8})/g)) testNames[`SCN-${scn[1].toUpperCase()}`] = funcName
+              for (const scn of rawName.matchAll(/scn_([0-9a-fA-F]{8})/g)) testNames[`SCN-${scn[1].toUpperCase()}`] = funcName ?? rawName
             }
           }
           const hits = writeScenarioHits(resolve(ctx.cwd), topModule, {
             scenarioIds: params.scenarioIds as string[] | undefined,
             testcase: params.testcase as string | undefined,
             testNames,
+            runTestcases,
             passed: result.passed,
             rtlFiles,
             evidence: [result.resultPath, result.simulationLogPath, result.vcdPath ?? '']
@@ -2074,9 +2174,15 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       let totalTests = 0
       let passedTests = 0
       let skippedTests = 0
+      // 陈旧证据防线：rtlHash 与当前 RTL 不一致（或缺失）的 result.json 不参与
+      // 覆盖率阈值与必需证据判定，避免旧 RTL 的 PASS 污染签核审查
+      let currentRtlHash: string | null = null
+      try { currentRtlHash = computeRtlHash(resolve(ctx.cwd)) } catch { currentRtlHash = null }
+      let staleResultCount = 0
       for (const file of resultFiles) {
         try {
           const data = JSON.parse(readFileSync(file, 'utf-8')) as Record<string, unknown>
+          if (currentRtlHash && data.rtlHash !== currentRtlHash) { staleResultCount += 1; continue }
           if (data.passed !== true) blockers.push(`回归未通过：${relative(ctx.cwd, file)}`)
           totalTests += Number(data.testsTotal ?? 0)
           passedTests += Number(data.testsPassed ?? 0)
@@ -2127,6 +2233,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         } catch { blockers.push(`结果文件无法解析：${relative(ctx.cwd, file)}`) }
       }
       if (resultFiles.length === 0) blockers.push('未找到 verification/results/<module>/result.json（隔离运行目录不计入）')
+      if (staleResultCount > 0) warnings.push(`${staleResultCount} 份回归结果属于旧 RTL 版本（rtlHash 与当前不一致或缺失），已从审查剔除——如需采信请重新回归`)
       if (totalTests === 0) blockers.push('没有可核验的 Cocotb/JUnit 测试数量')
       if (skippedTests > 0) warnings.push(`${skippedTests} 个测试被跳过，签核前需说明原因`)
       const lineThreshold = Number(params.lineThreshold ?? 90)

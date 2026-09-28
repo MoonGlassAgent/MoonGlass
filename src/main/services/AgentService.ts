@@ -39,6 +39,7 @@ import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readE
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
+import { resolveProviderHeaders } from './provider-headers.ts'
 import { buildArtifactIndexSection } from './artifact-index.ts'
 
 /** pi 模型切换命令返回的 Model 对象最小字段 */
@@ -290,6 +291,7 @@ export class AgentService implements MoonGlassService {
     copyEda('lint.ts')
     copyEda('rtl-files.ts')
     copyEda('formal.ts')
+    copyEda('dead-logic.ts') // 死逻辑检查（moonglass-tools.ts 的 check_dead_logic 相对导入）
 
     const verificationIntelligenceDir = join(this.bridgeDir, 'verification-intelligence')
     mkdirSync(verificationIntelligenceDir, { recursive: true })
@@ -480,10 +482,13 @@ export class AgentService implements MoonGlassService {
    * 注入 pi 的 providers payload：在 Provider 配置基础上附加每个模型的有效上下文窗口
    * （用户自定义覆盖 > 登记表 > 兼容回退值）。pi 的模型注册表在进程启动时固定，
    * 覆盖值随下一次 spawn 生效；桥接对缺失的 contextWindows 字段回退到自带登记表。
+   * sessionKey 用于替换 headers 中的 {{sessionId}} 占位符（OpenCode Go 自 2026-09-06
+   * 起强制 x-opencode-session 会话头）：传会话文件名可保证同会话跨 respawn 稳定。
    */
-  private providerPayloads() {
+  private providerPayloads(sessionKey: string) {
     return this.readyProviders().map((p) => ({
       ...p,
+      headers: resolveProviderHeaders(p.headers, sessionKey),
       contextWindows: Object.fromEntries(
         p.models.map((m) => {
           const metadata = this.effectiveModelContext(m) ?? FALLBACK_MODEL_CONTEXT
@@ -709,8 +714,9 @@ argument-hint: "<模块名>"
       ?? this.readyProviders()[0]?.models[0]
     this.applyPhaseCompactionSettings(workspace, phase, intendedModel)
 
-    const providers = this.providerPayloads()
     const sessionFile = resolve(targetSessionFile ?? this.sessionFilePath(projectId))
+    // headers 的 {{sessionId}} 占位符按会话文件名短哈希替换：同会话跨 respawn 稳定、不同会话不同
+    const providers = this.providerPayloads(basename(sessionFile))
 
     // 隔离 pi 全局配置，并屏蔽所有 provider API key 环境变量，
     // 确保 pi 只使用 MoonGlass UI 中配置的 key（经一次性文件注入）。
@@ -1286,7 +1292,9 @@ argument-hint: "<模块名>"
     mkdirSync(analysisDir, { recursive: true })
     const providerFile = join(analysisDir, `providers-${randomUUID()}.json`)
     const sessionFile = join(analysisDir, `session-${randomUUID()}.jsonl`)
-    writeFileSync(providerFile, JSON.stringify(this.providerPayloads()), { encoding: 'utf-8', mode: 0o600 })
+    // 该路径的会话文件为一次性随机名，哈希它无法获得跨调用亲和；改用固定 key，
+    // 使 x-opencode-session 等会话头在多次分析间保持稳定（利于 prompt-cache 命中）
+    writeFileSync(providerFile, JSON.stringify(this.providerPayloads('moonglass-ip-analysis')), { encoding: 'utf-8', mode: 0o600 })
     let responseText = ''
     let processError = ''
     const client = new PiRpcClient({

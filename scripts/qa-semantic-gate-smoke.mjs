@@ -4,7 +4,7 @@
 import { register } from 'node:module'
 register('./ts-alias-hooks.mjs', import.meta.url)
 
-import { existsSync, mkdtempSync, mkdirSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -139,6 +139,51 @@ writeFileSync(join(root, 'rtlqa', 'spec-implementation-review.json'), JSON.strin
 }, null, 2), 'utf-8')
 byId = await qaChecks()
 check('旧 rtlHash 的语义审查不被采信', byId.get('qa-spec-implementation-reviewed')?.passed === false && byId.get('qa-spec-implementation-reviewed')?.message.includes('旧 RTL 版本'), byId.get('qa-spec-implementation-reviewed')?.message)
+
+// ---------- sim-passed 门禁新鲜度：rtlHash 缺失/不匹配的回归证据不采信 ----------
+let verifResults = await engine.runGateChecks(fakeProject('VERIF'), 'QA', { workspaceDir: root })
+let simPassedCheck = verifResults.find((r) => r.checkId === 'sim-passed')
+check('回归证据缺 rtlHash 时 sim-passed 判过期阻断', simPassedCheck?.passed === false && simPassedCheck?.message.includes('过期'), simPassedCheck?.message)
+const resultJsonPath = join(root, 'verification', 'results', 'simple', 'result.json')
+writeFileSync(resultJsonPath, JSON.stringify({ ...JSON.parse(readFileSync(resultJsonPath, 'utf-8')), rtlHash: computeRtlHash(root) }, null, 2), 'utf-8')
+verifResults = await engine.runGateChecks(fakeProject('VERIF'), 'QA', { workspaceDir: root })
+simPassedCheck = verifResults.find((r) => r.checkId === 'sim-passed')
+check('rtlHash 匹配后 sim-passed 放行', simPassedCheck?.passed === true, simPassedCheck?.message)
+
+// ---------- 死逻辑检查门禁（qa-dead-logic-adjudicated，2026-09-28 需求） ----------
+// 报告缺失：提示放行（warning），不阻断
+check('死逻辑报告缺失时提示而非阻断', byId.get('qa-dead-logic-adjudicated')?.passed === true && byId.get('qa-dead-logic-adjudicated')?.severity === 'warning', byId.get('qa-dead-logic-adjudicated')?.message)
+// 存在未裁决 spec-anchored 项：阻断
+mkdirSync(join(root, 'rtlqa', 'lint'), { recursive: true })
+writeFileSync(join(root, 'rtlqa', 'lint', 'dead_logic_report.json'), JSON.stringify({
+  version: 1, generatedAt: new Date().toISOString(), tool: { name: 'slang', version: 'fixture' },
+  stats: { modules: 1, signals: 2, undriven: 1, unused: 1, dead: 0, specAnchored: 1, internal: 1 },
+  issues: [
+    { module: 'simple', signal: 'o_dbg', kind: 'undriven', classification: 'spec-anchored', topLevelPort: true, file: 'rtl/simple.v', line: 3, suggestion: 'fixture' },
+    { module: 'simple', signal: 'w_tmp', kind: 'unused', classification: 'internal', topLevelPort: false, file: 'rtl/simple.v', line: 4, suggestion: 'fixture' }
+  ],
+  adjudications: []
+}, null, 2), 'utf-8')
+byId = await qaChecks()
+check('未裁决 spec-anchored 项阻断', byId.get('qa-dead-logic-adjudicated')?.passed === false && byId.get('qa-dead-logic-adjudicated')?.message.includes('simple.o_dbg'), byId.get('qa-dead-logic-adjudicated')?.message)
+// 非法裁决（缺 rationale）：阻断
+writeFileSync(join(root, 'rtlqa', 'lint', 'dead_logic_report.json'), JSON.stringify({
+  version: 1, generatedAt: new Date().toISOString(), tool: { name: 'slang', version: 'fixture' },
+  stats: { modules: 1, signals: 2, undriven: 1, unused: 1, dead: 0, specAnchored: 1, internal: 1 },
+  issues: [{ module: 'simple', signal: 'o_dbg', kind: 'undriven', classification: 'spec-anchored', topLevelPort: true, file: 'rtl/simple.v', line: 3, suggestion: 'fixture' }],
+  adjudications: [{ key: 'simple.o_dbg', decision: 'keep', rationale: '' }]
+}, null, 2), 'utf-8')
+byId = await qaChecks()
+check('裁决缺 rationale 阻断', byId.get('qa-dead-logic-adjudicated')?.passed === false && byId.get('qa-dead-logic-adjudicated')?.message.includes('裁决非法'), byId.get('qa-dead-logic-adjudicated')?.message)
+// 合法裁决：放行
+writeFileSync(join(root, 'rtlqa', 'lint', 'dead_logic_report.json'), JSON.stringify({
+  version: 1, generatedAt: new Date().toISOString(), tool: { name: 'slang', version: 'fixture' },
+  stats: { modules: 1, signals: 2, undriven: 1, unused: 1, dead: 0, specAnchored: 1, internal: 1 },
+  issues: [{ module: 'simple', signal: 'o_dbg', kind: 'undriven', classification: 'spec-anchored', topLevelPort: true, file: 'rtl/simple.v', line: 3, suggestion: 'fixture' }],
+  adjudications: [{ key: 'simple.o_dbg', decision: 'keep', rationale: '预留调试观测口', decidedBy: 'fixture-engineer', decidedAt: new Date().toISOString() }]
+}, null, 2), 'utf-8')
+byId = await qaChecks()
+check('spec-anchored 全部合法裁决后放行', byId.get('qa-dead-logic-adjudicated')?.passed === true, byId.get('qa-dead-logic-adjudicated')?.message)
 
 console.log(failures === 0 ? '\n✅ QA 语义门禁冒烟全部通过' : `\n❌ ${failures} 项失败`)
 process.exit(failures === 0 ? 0 : 1)

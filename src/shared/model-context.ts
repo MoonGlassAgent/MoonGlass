@@ -19,6 +19,8 @@ const rules: Array<{ pattern: RegExp; value: ModelContextMetadata }> = [
   // OpenAI：旗舰线 1.05M/128K；mini 与 codex 为 400K/128K
   { pattern: /^(?:gpt-6-astra|gpt-5\.6-(?:sol|terra|luna)|gpt-5\.5|gpt-5\.4)$/i, value: { contextWindow: 1_050_000, maxTokens: 128_000, source: 'OpenAI 官方', verified: true } },
   { pattern: /^(?:gpt-5\.4-mini|gpt-5\.3-codex)$/i, value: { contextWindow: 400_000, maxTokens: 128_000, source: 'OpenAI 官方', verified: true } },
+  // gpt-6-luna / gpt-6-sol：OpenCode Go 目录在售（2026-09），官方页未直连，按旗舰线口径间接核实
+  { pattern: /^gpt-6-(?:luna|sol)$/i, value: { contextWindow: 1_050_000, maxTokens: 128_000, source: 'OpenAI 官方（间接核实）', verified: false } },
   // Anthropic：1M 均为默认（非 beta）；haiku 4.5 固定 200K 无 1M 变体
   { pattern: /^claude-(?:opus-5|sonnet-5|fable-5-1)$/i, value: { contextWindow: 1_048_576, maxTokens: 128_000, source: 'Anthropic 官方', verified: true } },
   { pattern: /^claude-(?:opus-4-[678]|sonnet-4-6)$/i, value: { contextWindow: 1_048_576, maxTokens: 128_000, source: 'Anthropic 官方（输出上限页面口径曾不一致）', verified: false } },
@@ -28,6 +30,8 @@ const rules: Array<{ pattern: RegExp; value: ModelContextMetadata }> = [
   // xAI：输出上限官方未公布，取保守值；grok-4.5 为官方直证，其余为 2026-09 间接核实
   { pattern: /^grok-4\.5$/i, value: { contextWindow: 500_000, maxTokens: 65_536, source: 'xAI 官方', verified: true } },
   { pattern: /^grok-4\.6$/i, value: { contextWindow: 500_000, maxTokens: 65_536, source: 'xAI 官方（间接核实）', verified: false } },
+  // grok-4.7：OpenCode Go 目录在售（2026-09），规格未官方直连，沿用 4.6 口径
+  { pattern: /^grok-4\.7$/i, value: { contextWindow: 500_000, maxTokens: 65_536, source: 'xAI 官方（间接核实）', verified: false } },
   { pattern: /^grok-4\.3$/i, value: { contextWindow: 1_048_576, maxTokens: 65_536, source: 'xAI 官方（间接核实）', verified: false } },
   { pattern: /^grok-4\.20/i, value: { contextWindow: 2_097_152, maxTokens: 65_536, source: 'xAI 官方（间接核实）', verified: false } },
   { pattern: /^(?:grok-build|grok-code-fast)/i, value: { contextWindow: 262_144, maxTokens: 65_536, source: 'xAI 官方（间接核实）', verified: false } },

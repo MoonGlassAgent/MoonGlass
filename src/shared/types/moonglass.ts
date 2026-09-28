@@ -428,6 +428,13 @@ export interface LlmProviderConfig {
   apiKey: string
   /** 用户可用的模型 ID 列表（可增删） */
   models: string[]
+  /**
+   * 随每个 API 请求附加的自定义请求头（可选）。
+   * 值中的 `{{sessionId}}` 占位符在注入 pi 时按会话替换为稳定短哈希
+   * （见主进程 provider-headers.ts；OpenCode Go 自 2026-09-06 起强制
+   * x-opencode-session 会话头，缺失报 400 MissingSessionID）。
+   */
+  headers?: Record<string, string>
   enabled: boolean
   /** 预置 Provider 不可删除（字段可改） */
   builtin: boolean
@@ -666,6 +673,10 @@ export interface VerificationExecutedCase {
   errorMessage?: string
   /** 场景级阻断标签（来自 scenario_hits.json 的 blocker，如 RTL_L2_*） */
   blocker?: string
+  /** BUG-VERIF-BIND-001：该执行记录对应的场景 ID（scenario_hits 来源行才有） */
+  scenarioId?: string
+  /** BUG-VERIF-BIND-001：批次级绑定用例（scenarioIds 路径登记的运行用例集合；精确单用例在 testName） */
+  boundTestcases?: string[]
   timeSec?: number
 }
 

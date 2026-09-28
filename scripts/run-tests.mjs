@@ -25,7 +25,8 @@ const suites = {
     'scripts/eda-install-plan-smoke.mjs',
     'scripts/download-mirror-smoke.mjs',
     'scripts/clk-rst-comb-lint-smoke.mjs',
-    'scripts/lint-rules-smoke.mjs'
+    'scripts/lint-rules-smoke.mjs',
+    'scripts/dead-logic-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

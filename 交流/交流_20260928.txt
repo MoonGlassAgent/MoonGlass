@@ -1,0 +1,30 @@
+# MoonGlass 团队 × Kimi 工作记录（2026-09-28）
+
+## RTL 死逻辑检查（无驱动/无负载）——用户需求 2026-09-28
+
+需求：RTL 阶段加入无 driver / 无 load 检查；此类死代码影响验证回归，
+应在本阶段优先处理；涉及架构设计文档变更的处置必须经工程师同意。
+
+结论：不属于 Verible lint（文本/语法级做不了 elaboration 级分析），
+基于内置 slang 的 elaborated AST 实现。
+
+落地内容：
+- 新增 packages/eda-bridge/src/dead-logic.ts：slang --ast-json 消费，
+  按模块统计驱动/负载，检出 undriven / unused / dead 三类；
+  规格锚定分类（命中 docs/03_design 架构文档或顶层端口 →
+  spec-anchored 需工程师裁决，否则 internal 可直接清理）；
+  报告落 rtlqa/lint/dead_logic_report.{json,md}，复跑继承仍命中项
+  的既有裁决。
+- pi 工具 check_dead_logic（moonglass-tools.ts:806）。
+- RTL 提示词 2.1.0：联合 Lint 后必查；spec-anchored 必须
+  request_user_decision 裁决（删除/保留/TBD），禁止 Agent 自行删除；
+  裁决为删除时先同步架构文档再改 RTL；阶段完成前无未裁决项。
+- QA 提示词 2.2.0 + PhaseEngine 门禁 qa-dead-logic-adjudicated：
+  无未裁决 spec-anchored 项（报告缺失提示不阻断）。
+- 验证：dead-logic-smoke 15 断言（真实 slang）；qa-semantic-gate-smoke
+  +4；core 25 / integration 6 全过；typecheck 0 / root 基线 11。
+
+注意：slang.exe 裸跑 exit 127（DLL 依赖），必须走 analyzerEnv/工具链
+环境——分析器已复用引擎同款调用模式。工作区另有并行会话
+（case3 BUG-VERIF-BIND-001）的未提交改动，与本项无交集，未触碰。
+未提交，待团队审查。

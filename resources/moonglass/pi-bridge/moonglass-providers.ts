@@ -16,6 +16,12 @@ interface MoonGlassProvider {
   apiKey: string
   models: string[]
   /**
+   * 随每个 API 请求附加的自定义请求头（可选；pi 的 provider config 原生支持
+   * `headers` 字段）。主进程注入前已把 `{{sessionId}}` 占位符替换为会话短哈希
+   * （OpenCode Go 自 2026-09-06 起强制 x-opencode-session 会话头）。
+   */
+  headers?: Record<string, string>
+  /**
    * 主进程按模型计算的有效上下文窗口（用户自定义覆盖 > 内置登记表 > 兼容回退值）。
    * 可选字段：旧版 payload 缺失时回退到本扩展自带的登记表解析。
    * 注意：pi 的模型注册表在进程启动时固定，主进程侧的覆盖值变更只对新 spawn
@@ -50,6 +56,7 @@ export default function (pi: {
       baseUrl: p.baseUrl,
       apiKey: escapedKey,
       authHeader: true, // 明确添加 Authorization: Bearer header
+      ...(p.headers ? { headers: p.headers } : {}), // 自定义请求头（如 x-opencode-session）
       api: p.protocol === 'anthropic' ? 'anthropic-messages' : 'openai-completions',
       models: p.models.map((m) => {
         const isDeepSeekReasoner = p.id === 'deepseek' && m === 'deepseek-reasoner'

@@ -19,6 +19,7 @@ import type {
 } from '@shared/types'
 import { LLM_PROVIDER_PRESETS } from '@shared/llm-provider-presets'
 import type { MoonGlassService } from '../core/lifecycle'
+import { resolveProviderHeaders } from './provider-headers.ts'
 
 /** 磁盘存储格式：apiKeyEnc 为 safeStorage 密文（base64），apiKey 为旧版明文 */
 interface LlmProviderStoreFile {
@@ -229,7 +230,10 @@ export class LlmProviderService implements MoonGlassService {
 
     const headers: Record<string, string> = {
       Accept: 'application/json',
-      'User-Agent': `MoonGlass/${app.getVersion()}`
+      'User-Agent': `MoonGlass/${app.getVersion()}`,
+      // 自定义请求头（OpenCode Go 自 2026-09-06 起每个 API 请求强制 x-opencode-session，
+      // 缺失报 400 MissingSessionID）；连接测试无会话上下文，{{sessionId}} 用固定 key 替换
+      ...resolveProviderHeaders(provider.headers, 'moonglass-llm-test')
     }
     if (provider.protocol === 'anthropic') {
       headers['x-api-key'] = provider.apiKey
