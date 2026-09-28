@@ -61,7 +61,7 @@ export interface GuidanceState {
   explorationHistory?: { saturation: { status: string; completedRounds: number; noProgressStreak: number; explanation: string } }
   mutationAssessment?: { status: string; weightedScore: number | null; threshold: number; blockingSurvivors: string[] }
   residualRiskRegister?: Array<{ id: string; title: string; approved: boolean; approvalRequired: boolean }>
-  /** 波段进度（W0-W3，展示层契约；缺失时回退旧线性七步） */
+  /** 波段进度（W1-W3，展示层契约；缺失时回退旧线性七步；旧快照可能仍含 W0 条目） */
   waveProgress?: WaveProgressEntry[]
   /** 规格映射完备性矩阵（展示层契约） */
   specMapping?: SpecMapping
@@ -117,6 +117,35 @@ export interface VerificationStep {
   label: string
   status: 'pending' | 'running' | 'blocked' | 'completed'
   detail: string
+  /** 悬浮提示（如 W2 主题波的“为什么验这个”说明）；缺省时展示层回退 detail */
+  title?: string
+}
+
+/** W2 增补主题 → 说明文案 key（展示层映射表；主题名为引擎 TAXONOMY_TOPICS 与提示词示例的归一化形式） */
+const TOPIC_EXPLANATION_KEYS: Record<string, MessageKey> = {
+  并发碰撞: 'verification.topicExplanations.concurrencyCollision',
+  优先级仲裁: 'verification.topicExplanations.priorityArbitration',
+  在途事务一致性: 'verification.topicExplanations.inflightConsistency',
+  计数器边界: 'verification.topicExplanations.counterBoundary',
+  错误注入: 'verification.topicExplanations.errorInjection',
+  复位碰撞: 'verification.topicExplanations.resetCollision',
+  软硬件并发: 'verification.topicExplanations.swHwConcurrency',
+  跨时钟域: 'verification.topicExplanations.cdc',
+  超时处理: 'verification.topicExplanations.timeout',
+  反压: 'verification.topicExplanations.backpressure',
+  资源耗尽: 'verification.topicExplanations.resourceExhaustion',
+  错误恢复: 'verification.topicExplanations.errorRecovery',
+  忙时配置变更: 'verification.topicExplanations.busyConfigChange',
+  中断并发: 'verification.topicExplanations.interruptConcurrency',
+  边界: 'verification.topicExplanations.boundary',
+  性能: 'verification.topicExplanations.performance'
+}
+
+/** W2 主题“为什么验这个”说明：与引擎 normalizeTopic 同口径归一后查表，未知主题用通用句式。 */
+export function topicExplanation(topic: string): string {
+  const normalized = topic.trim().toLowerCase().replace(/\s+/g, ' ')
+  const key = TOPIC_EXPLANATION_KEYS[normalized]
+  return key ? t(key) : t('verification.topicExplanations.default')
 }
 
 const IMPACTS: Array<[RegExp, MessageKey]> = [
@@ -448,13 +477,15 @@ export function deriveVerificationSteps(state: GuidanceState | null): Verificati
     ...(['environment', 'regression', 'risk', 'coverage', 'formal', 'signoff'] as const).map((stepId, index) => ({ id: `pending-${index}`, label: t(`verification.stepLabels.${stepId}`), status: 'pending' as const, detail: t('verification.stepDetails.waitPrevious') }))
   ]
   const s = normalizeGuidanceState(state)
-  // 波段化（展示层契约）：有 waveProgress 时用 W0-W3 波段视图
+  // 波段化（展示层契约）：有 waveProgress 时用 W1-W3 波段视图（W0 冒烟已废弃）
   if (s.waveProgress?.length) {
     return s.waveProgress.map((wave) => ({
       id: wave.id,
       label: wave.label,
       status: wave.status === 'done' ? 'completed' as const : wave.status === 'in-progress' ? 'running' as const : 'pending' as const,
-      detail: waveDetail(wave)
+      detail: waveDetail(wave),
+      // W2 主题波悬浮提示：逐主题给出“为什么验这个”说明
+      title: wave.id === 'W2' && wave.topics?.length ? wave.topics.map((topic) => `${topic.name}：${topicExplanation(topic.name)}`).join('\n') : undefined
     }))
   }
   // 旧线性七步（引擎侧未产出 waveProgress 时回退）
@@ -477,10 +508,11 @@ export function deriveVerificationSteps(state: GuidanceState | null): Verificati
   return steps
 }
 
-/** 波段步骤详情：W1 用规格条款，W2 用主题波，其余用通过数。 */
+/** 波段步骤详情：W1 用规格条款（含剩余数），W2 用主题波，其余用通过数。 */
 function waveDetail(wave: WaveProgressEntry): string {
   if (wave.id === 'W1' && wave.specClauseTotal !== undefined) {
-    return t('verification.stepDetails.clausesPassed', { covered: wave.specClauseCovered ?? 0, total: wave.specClauseTotal })
+    const covered = wave.specClauseCovered ?? 0
+    return t('verification.stepDetails.clausesPassed', { covered, total: wave.specClauseTotal, remaining: Math.max(0, wave.specClauseTotal - covered) })
   }
   if (wave.id === 'W2' && wave.topics?.length) {
     return t('verification.stepDetails.waves', { count: wave.topics.length, topics: wave.topics.map((topic) => `${topic.name} ${topic.passedCount}/${topic.scenarioCount}`).join(t('verification.guidance.listJoin')) })

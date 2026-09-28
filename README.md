@@ -2,9 +2,9 @@
 
 MoonGlass 是面向 ASIC/SoC 工程师的芯片开发全流程 AI 工作台。它把需求、规格、架构、RTL、验证、质量和综合组织成一条可追踪、可审查、可恢复的工程链，让 Agent 的工作结果不仅是“生成了一段代码”，而是能够逐步形成设计文件、验证证据、问题记录和交付报告。
 
-当前版本：**v0.9.7** ｜ Windows x64
+当前版本：**v0.9.8** ｜ Windows x64
 
-[下载绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.7) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MoonGlass-AIGV验证方法学.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
+[查看 v0.9.8 发布说明](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.8) · [下载 v0.9.7 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.7) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MoonGlass-AIGV验证方法学.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
 
 ## MoonGlass 能做什么
 
@@ -41,6 +41,8 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 - **Residual Risk**：记录尚未闭环的风险、工具限制、证据不足和签核阻断原因。
 - **W0-W3 验证波段**：从环境与基础功能，到增补验证、签核和残余风险审查。
 - **验证态势**：集中展示 Spec Gap、Intent 闭环率、风险热区、覆盖缺口、失败诊断和下一步行动。
+- **用例全景与模块风险**：直接回答“验了什么、还缺什么、为什么未执行”，并按模块聚合风险与下一步计划。
+- **QA 语义终审**：在最终交付前复核需求语义、接口行为、错误处理与证据一致性，避免只看格式和文件存在性。
 
 详细说明：[MoonGlass AIGV 2.0 白皮书](./docs/MoonGlass-AIGV-2.0白皮书.html) ｜ [AIGV 方法学论文](./docs/MoonGlass-AIGV验证方法学.html)
 
@@ -71,7 +73,7 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 
 ## 快速开始
 
-普通用户建议直接下载 [Windows x64 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.7)，解压后运行 `MoonGlass.exe`。首次使用：
+普通用户当前可下载 [Windows x64 v0.9.7 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.7)，解压后运行 `MoonGlass.exe`。v0.9.8 绿色版将在完成独立打包与校验后另行上传。首次使用：
 
 1. 在“设置”中配置模型 Provider、API Key、Base URL 和模型列表。
 2. 在“设置”中检查开发环境与 EDA 工具链状态。
