@@ -20,4 +20,16 @@ writeFileSync(join(root, 'verification', 'formal', 'unsupported_sva.sv'), `modul
 const incompatible = await runFormalVerification({ workspaceDir: root, top: 'unsupported_sva', rtlFiles: [], propertyFiles: ['verification/formal/unsupported_sva.sv'], mode: 'bmc', depth: 8, taskName: 'unsupported_sva', obligation: 'supplemental' })
 if (incompatible.status !== 'ERROR' || incompatible.classification !== 'C6_FRONTEND_COMPATIBILITY') throw new Error('高级 SVA 应在求解前被兼容性预检拒绝')
 if (!incompatible.compatibilityIssues?.some((item) => item.construct === 'property/endproperty')) throw new Error('兼容性结果缺少 property 诊断')
-console.log(`Open-source Formal smoke passed: ${result.engine}, depth=${result.depth}, counterexample=${failed.traces[0]}, compatibility-preflight=${incompatible.compatibilityIssues.length}`)
+
+// BUG-FORMAL-PATH-001 回归：非 ASCII（中文）项目路径下 Formal 必须可用——
+// 内置工具链的 MinGW Python 窄 argv 按系统 ANSI(GBK) 转码，绝对路径经 argv 必损坏；
+// 修复为 cwd=formal 工作目录 + 相对纯 ASCII argv + [files] 相对路径。
+const cnRoot = mkdtempSync(join(tmpdir(), 'moonglass-formal-')) + '\\中文项目\\DDR_BIST'
+mkdirSync(join(cnRoot, 'rtl'), { recursive: true })
+mkdirSync(join(cnRoot, 'verification', 'formal'), { recursive: true })
+writeFileSync(join(cnRoot, 'rtl', 'counter.v'), readFileSync(join(root, 'rtl', 'counter.v'), 'utf-8'), 'utf-8')
+writeFileSync(join(cnRoot, 'verification', 'formal', 'counter_formal.sv'), readFileSync(join(root, 'verification', 'formal', 'counter_formal.sv'), 'utf-8'), 'utf-8')
+const cnResult = await runFormalVerification({ workspaceDir: cnRoot, top: 'counter_formal', rtlFiles: ['rtl/counter.v'], propertyFiles: ['verification/formal/counter_formal.sv'], mode: 'bmc', depth: 8, engine: 'boolector', taskName: 'cn_path_regression' })
+if (cnResult.status !== 'PASS') throw new Error(`中文路径 Formal 应 PASS，实际 ${cnResult.status}：${readFileSync(join(cnRoot, cnResult.logPath), 'utf-8').slice(-800)}`)
+
+console.log(`Open-source Formal smoke passed: ${result.engine}, depth=${result.depth}, counterexample=${failed.traces[0]}, compatibility-preflight=${incompatible.compatibilityIssues.length}, cn-path=${cnResult.status}`)

@@ -119,6 +119,19 @@ check('合成样例含已命中 branch 点', Boolean(syntheticCounter?.points.so
 check('合成样例可缺失字段正确省略', Boolean(syntheticCounter?.points.find((p) => p.kind === 'expr' && p.column === undefined && p.origin === undefined)))
 check('合成样例 fsm 点计入明细', Boolean(syntheticCounter?.points.some((p) => p.kind === 'fsm_state')))
 
+// ---- 陈旧 PASS 污染防线：RTL 变更后旧覆盖率与通道结论不得继承 ----
+// 场景：双通道均已通过（result.json 含覆盖率与 rtlCoveragePassed）→ 修改 RTL →
+// 重跑功能回归（icarus 回退路径无 RTL 覆盖率）。期望：旧覆盖率/通道结论全部丢弃。
+writeFileSync(rtl, readFileSync(rtl, 'utf-8') + '\n// rtl-change-for-staleness-test\n', 'utf-8')
+const rerunResult = await runCocotbSimulation({
+  topModule: 'counter', rtlFiles: [rtl], testModule: 'tests.test_counter', testDir,
+  simulator: 'icarus', waves: false, buildDir, resultDir, timeoutSec: 180
+})
+const staleMeta = JSON.parse(readFileSync(rerunResult.resultPath, 'utf-8'))
+check('RTL 变更后功能回归仍通过', rerunResult.passed === true && staleMeta.functionalPassed === true)
+check('RTL 变更后旧覆盖率字段不继承', staleMeta.lineCoverage === undefined && staleMeta.branchCoverage === undefined, `line=${String(staleMeta.lineCoverage)} branch=${String(staleMeta.branchCoverage)}`)
+check('RTL 变更后 RTL 覆盖率通道结论复位', staleMeta.rtlCoveragePassed === undefined, String(staleMeta.rtlCoveragePassed))
+check('RTL 变更后 result.json 携带新 rtlInputHash', typeof staleMeta.rtlInputHash === 'string' && staleMeta.rtlInputHash !== rtlMetadata.rtlInputHash)
 
 console.log(failures === 0 ? '\n✅ Verilator 覆盖率闭环冒烟通过' : `\n❌ ${failures} 项失败`)
 process.exit(failures === 0 ? 0 : 1)

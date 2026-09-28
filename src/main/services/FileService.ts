@@ -33,12 +33,21 @@ function extractTestName(evidence: string[]): string | null {
   return null
 }
 
-/** 场景 ID → TEST ID：优先条目自带 testName，其次 evidence 中的 ::test_ 函数名，均经 nameToId 映射；
+/** 场景 ID → TEST ID：优先条目自带 testName，其次 evidence 中的 ::test_ 函数名，
+ * 再次 docstring/manifest 的 SCN 补绑映射（BUG-VERIF-BIND-001），均经 nameToId 归一到 TEST ID；
  * 无法映射时返回空串（不再造 TEST-<SCN十六进制> 幽灵 ID），由渲染端归入“未映射”区。 */
-function mapScenarioToTestId(evidence: string[], nameToId: Map<string, { testId: string; module: string }>, testName?: string | null): string {
+function mapScenarioToTestId(
+  scenarioId: string,
+  evidence: string[],
+  nameToId: Map<string, { testId: string; module: string }>,
+  testName?: string | null,
+  scnToTest?: Map<string, { testName: string; testId: string; module: string }>
+): string {
   if (testName && nameToId.has(testName)) return nameToId.get(testName)!.testId
   const viaEvidence = extractTestName(evidence)
   if (viaEvidence && nameToId.has(viaEvidence)) return nameToId.get(viaEvidence)!.testId
+  const viaDoc = scnToTest?.get(scenarioId)
+  if (viaDoc) return viaDoc.testId || nameToId.get(viaDoc.testName)?.testId || ''
   return ''
 }
 
@@ -61,11 +70,11 @@ function listPyFilesRecursive(dir: string): string[] {
 }
 
 /**
- * 从 cocotb 测试源码提取 test 函数 docstring 中的 TEST ID（放宽兜底）：
- * 允许 `-> 返回标注`、r 前缀与 ''' 引号、TEST ID 出现在 docstring 前 5 行内。
+ * 逐测试函数提取 docstring 文本（放宽兜底）：
+ * 允许 `-> 返回标注`、r 前缀与 ''' 引号；docstring 须是函数体第一条语句，截取前 5 行。
  */
-function scanDocstringBindings(content: string): Array<{ testName: string; testId: string }> {
-  const bindings: Array<{ testName: string; testId: string }> = []
+function scanTestDocstrings(content: string): Array<{ testName: string; doc: string }> {
+  const result: Array<{ testName: string; doc: string }> = []
   const lines = content.split(/\r?\n/)
   const defRe = /^\s*async\s+def\s+(test_\w+)\s*\([^)]*\)\s*(?:->\s*[^:]+)?\s*:/
   for (let i = 0; i < lines.length; i++) {
@@ -80,12 +89,33 @@ function scanDocstringBindings(content: string): Array<{ testName: string; testI
       break
     }
     if (docStart < 0) continue
-    for (let j = docStart; j < Math.min(docStart + 5, lines.length); j++) {
-      const id = /\b(TEST-[A-Z0-9-]+)\b/.exec(lines[j])
-      if (id) {
-        bindings.push({ testName: def[1], testId: id[1] })
-        break
-      }
+    result.push({ testName: def[1], doc: lines.slice(docStart, Math.min(docStart + 5, lines.length)).join('\n') })
+  }
+  return result
+}
+
+/**
+ * 从 cocotb 测试源码提取 test 函数 docstring 中的 TEST ID（放宽兜底）：
+ * TEST ID 出现在 docstring 前 5 行内。
+ */
+function scanDocstringBindings(content: string): Array<{ testName: string; testId: string }> {
+  const bindings: Array<{ testName: string; testId: string }> = []
+  for (const { testName, doc } of scanTestDocstrings(content)) {
+    const id = /\b(TEST-[A-Z0-9-]+)\b/.exec(doc)
+    if (id) bindings.push({ testName, testId: id[1] })
+  }
+  return bindings
+}
+
+/**
+ * BUG-VERIF-BIND-001 (b)：从测试函数 docstring/前 5 行提取 SCN-XXXXXXXX 场景引用，
+ * 建立"场景 → 测试函数"的补绑映射（验证侧以注释引用场景的存量工程无需重跑即可追溯）。
+ */
+function scanScenarioBindings(content: string): Array<{ testName: string; scenarioId: string }> {
+  const bindings: Array<{ testName: string; scenarioId: string }> = []
+  for (const { testName, doc } of scanTestDocstrings(content)) {
+    for (const match of doc.matchAll(/\bSCN-([0-9A-Fa-f]{8})\b/g)) {
+      bindings.push({ testName, scenarioId: `SCN-${match[1].toUpperCase()}` })
     }
   }
   return bindings
@@ -254,16 +284,25 @@ export class FileService implements MoonGlassService {
       status.environment.missing.push('尚未搭建 Cocotb 验证环境（需要 verification/<module>_tb/tests 与 env）')
     }
 
-    // ── 2. testName → TEST ID 映射 ───────────────────────────
+    // ── 2. testName → TEST ID 映射 + SCN 场景补绑映射 ──────────
     // 首选 verification/<tb>/test_manifest.json（显式登记，存在时以它为准）；
     // 兜底解析 tests/ 下（递归）测试函数 docstring 中的 TEST ID。
+    // scnToTest：场景 → 测试函数（docstring SCN 引用 + manifest scenarios 字段），
+    // 供 BUG-VERIF-BIND-001 (b) 类"注释引用"场景补建映射，无需重跑回归。
     const nameToId = new Map<string, { testId: string; module: string }>()
+    const scnToTest = new Map<string, { testName: string; testId: string; module: string }>()
     for (const tb of status.environment.testbenches) {
       const testsDir = join(verificationDir, tb, 'tests')
       if (existsSync(testsDir)) {
         for (const filePath of listPyFilesRecursive(testsDir)) {
-          for (const binding of scanDocstringBindings(safeRead(filePath))) {
+          const content = safeRead(filePath)
+          for (const binding of scanDocstringBindings(content)) {
             nameToId.set(binding.testName, { testId: binding.testId, module: tb })
+          }
+          for (const binding of scanScenarioBindings(content)) {
+            if (!scnToTest.has(binding.scenarioId)) {
+              scnToTest.set(binding.scenarioId, { testName: binding.testName, testId: '', module: tb })
+            }
           }
         }
       }
@@ -271,10 +310,15 @@ export class FileService implements MoonGlassService {
       if (!existsSync(manifestPath)) continue
       try {
         // manifest 格式：{ "<test函数名>": { "testId": "TEST-...", "scenarios": ["SCN-..."] } }
-        const manifest = JSON.parse(safeRead(manifestPath)) as Record<string, { testId?: string }>
+        const manifest = JSON.parse(safeRead(manifestPath)) as Record<string, { testId?: string; scenarios?: unknown }>
         for (const [testName, entry] of Object.entries(manifest)) {
           if (typeof entry?.testId === 'string' && /^TEST-[A-Z0-9-]+$/.test(entry.testId)) {
             nameToId.set(testName, { testId: entry.testId, module: tb })
+          }
+          for (const scenario of Array.isArray(entry?.scenarios) ? entry.scenarios : []) {
+            if (typeof scenario === 'string' && /^SCN-[0-9A-Fa-f]{8}$/.test(scenario)) {
+              scnToTest.set(scenario.toUpperCase(), { testName, testId: entry.testId ?? '', module: tb })
+            }
           }
         }
       } catch { /* 损坏的 manifest 忽略，回退 docstring 扫描结果 */ }
@@ -344,14 +388,20 @@ export class FileService implements MoonGlassService {
             const evidence = (sc.evidence as string[] | undefined) ?? []
             // 条目自带 testName（run_simulation 从 JUnit 解析写入）优先，兼容旧数据的 evidence 解析
             const hitTestName = typeof sc.testName === 'string' && sc.testName ? sc.testName : null
-            const testId = mapScenarioToTestId(evidence, nameToId, hitTestName)
+            const boundTestcases = Array.isArray(sc.boundTestcases)
+              ? (sc.boundTestcases as unknown[]).filter((item): item is string => typeof item === 'string')
+              : undefined
+            const testId = mapScenarioToTestId(id, evidence, nameToId, hitTestName, scnToTest)
             const passed = sc.passed === true
             const blocker = String(sc.blocker ?? '')
             const isFail = !passed && (sc.reached === true || blocker.length > 0)
             // testId 为空时用场景 ID 作 key，避免多条未映射记录互相覆盖
             executedByTestId.set(testId || `scenario:${id}`, {
               testId,
-              testName: hitTestName ?? extractTestName(evidence) ?? '',
+              testName: hitTestName ?? extractTestName(evidence) ?? scnToTest.get(id)?.testName ?? '',
+              // BUG-VERIF-BIND-001：场景 ID 与批次级绑定用例透传给态势页（绑定列区分路径 A/B）
+              scenarioId: id,
+              ...(boundTestcases?.length ? { boundTestcases } : {}),
               module: moduleDir,
               status: passed ? 'PASS' : isFail ? 'FAIL' : 'SKIPPED',
               bugFound: isFail,

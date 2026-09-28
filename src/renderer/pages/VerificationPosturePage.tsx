@@ -102,7 +102,7 @@ const HEAT_LEVEL_KEYS: MessageKey[] = ['verification.heatLevels.low', 'verificat
 const PANORAMA_WAVE_LABELS: Record<string, string> = { smoke: 'W1', basic: 'W1', corner: 'W2', signoff: 'W3' }
 type PanoramaCategory = 'failed' | 'specBlocked' | 'planned' | 'unplanned' | 'verified' | 'waived'
 type PanoramaFilter = 'all' | 'failing' | 'pending' | 'unplanned'
-interface PanoramaRow { id: string; what: string; waveLabel: string; topic?: string; topicWhy?: string; tests: Array<{ label: string; status?: string }>; category: PanoramaCategory; why: string; whyTitle?: string; when: string; planOrder: number }
+interface PanoramaRow { id: string; what: string; waveLabel: string; topic?: string; topicWhy?: string; tests: Array<{ label: string; status?: string }>; category: PanoramaCategory; why: string; whyTitle?: string; when: string; planOrder: number; /** BUG-VERIF-BIND-001：无用例时的语义区分——豁免/Formal/静态审查的场景没有 testcase 是设计使然，不得显示"未绑定" */ noTestReason?: 'waived' | 'formal' | 'static' }
 const PANORAMA_STATUS_META: Record<PanoramaCategory, { labelKey: MessageKey; cls: string }> = {
   failed: { labelKey: 'verification.panorama.statusFailed', cls: 'bg-red-100 text-red-700' },
   specBlocked: { labelKey: 'verification.panorama.statusSpecBlocked', cls: 'bg-orange-100 text-orange-700' },
@@ -151,14 +151,22 @@ function buildPanoramaRows(state: VerificationState, scenarios: PanoramaScenario
     list.push(hole)
     holesByScenario.set(hole.scenarioId, list)
   }
-  // 场景↔用例绑定：cocotb 测试函数名内嵌 scn_<8hex> 对应 SCN-XXXXXXXX
+  // 场景↔用例绑定：cocotb 测试函数名内嵌 scn_<8hex> 对应 SCN-XXXXXXXX（路径 B）；
+  // BUG-VERIF-BIND-001：scenarioIds 路径（A）经 scenario_hits 的 testName/boundTestcases
+  // 透传到 executed 行（带 scenarioId），此处直接反查；docstring 注释引用由 FileService 补绑
   const boundTests = (scenarioId: string): Array<{ label: string; status?: string }> => {
     const hex = scenarioId.replace(/^SCN-/i, '').toLowerCase()
-    if (!hex) return []
-    const token = `scn_${hex}`
     const byLabel = new Map<string, { label: string; status?: string }>()
-    for (const plannedCase of runStatus?.planned ?? []) if (plannedCase.name?.toLowerCase().includes(token)) byLabel.set(plannedCase.testId || plannedCase.name, { label: plannedCase.testId || plannedCase.name })
-    for (const executedCase of runStatus?.executed ?? []) if (executedCase.testName?.toLowerCase().includes(token)) byLabel.set(executedCase.testId || executedCase.testName, { label: executedCase.testId || executedCase.testName, status: executedCase.status })
+    if (hex) {
+      const token = `scn_${hex}`
+      for (const plannedCase of runStatus?.planned ?? []) if (plannedCase.name?.toLowerCase().includes(token)) byLabel.set(plannedCase.testId || plannedCase.name, { label: plannedCase.testId || plannedCase.name })
+      for (const executedCase of runStatus?.executed ?? []) if (executedCase.testName?.toLowerCase().includes(token)) byLabel.set(executedCase.testId || executedCase.testName, { label: executedCase.testId || executedCase.testName, status: executedCase.status })
+    }
+    for (const executedCase of runStatus?.executed ?? []) {
+      if (executedCase.scenarioId !== scenarioId) continue
+      const names = executedCase.testName ? [executedCase.testName] : (executedCase.boundTestcases ?? [])
+      for (const name of names) if (name) byLabel.set(executedCase.testId || name, { label: executedCase.testId || name, status: executedCase.status })
+    }
     return [...byLabel.values()]
   }
   const categoryOf = (status: string): PanoramaCategory =>
@@ -188,7 +196,12 @@ function buildPanoramaRows(state: VerificationState, scenarios: PanoramaScenario
         : waveGated ? t('verification.panorama.whenWaveGate')
           : t('verification.panorama.whenNone')
     const rowTopic = scenario.topic ?? intent?.topic
-    return { id: scenario.id, what: intent?.objective || scenario.title || scenario.id, waveLabel: PANORAMA_WAVE_LABELS[waveKey] ?? '—', topic: rowTopic, topicWhy: waveKey === 'corner' && rowTopic ? topicExplanation(rowTopic) : undefined, tests: boundTests(scenario.id), category, why, whyTitle, when, planOrder: batchIndex ?? Number.MAX_SAFE_INTEGER }
+    const methods = intent?.recommendedMethods ?? []
+    const noTestReason = category === 'waived' ? 'waived' as const
+      : methods.includes('formal-candidate') ? 'formal' as const
+        : methods.includes('static') ? 'static' as const
+          : undefined
+    return { id: scenario.id, what: intent?.objective || scenario.title || scenario.id, waveLabel: PANORAMA_WAVE_LABELS[waveKey] ?? '—', topic: rowTopic, topicWhy: waveKey === 'corner' && rowTopic ? topicExplanation(rowTopic) : undefined, tests: boundTests(scenario.id), category, why, whyTitle, when, planOrder: batchIndex ?? Number.MAX_SAFE_INTEGER, noTestReason }
   })
   // 无场景的验证点：UNMAPPED 规格条款
   const unmappedClauses = state.specMapping?.clauses?.length
@@ -233,7 +246,7 @@ function CasePanoramaSection({ state, scenarios, runStatus }: { state: Verificat
           {visible.map((row) => { const meta = PANORAMA_STATUS_META[row.category]; return <tr key={row.id} className="border-t border-zinc-100 align-top">
             <td className="px-2 py-2"><div className="truncate text-zinc-800" title={row.what}>{row.what}</div><div className="mt-0.5 truncate font-mono text-[10px] text-zinc-400">{row.id}</div></td>
             <td className="px-2 py-2 text-zinc-600" title={row.topicWhy ?? row.topic}>{row.waveLabel}{row.topic ? ` · ${row.topic}` : ''}</td>
-            <td className="px-2 py-2">{row.tests.length > 0 ? <div className="flex flex-wrap gap-1">{row.tests.map((test) => <span key={test.label} className={`inline-block max-w-full truncate px-1 py-0.5 font-mono text-[10px] ${test.status === 'PASS' ? 'bg-emerald-50 text-emerald-700' : test.status === 'FAIL' || test.status === 'ERROR' ? 'bg-red-50 text-red-700' : 'bg-zinc-100 text-zinc-600'}`} title={test.label}>{test.label}</span>)}</div> : <span className="text-zinc-400" title={t('verification.run.unmappedHint')}>{t('verification.panorama.noTests')}</span>}</td>
+            <td className="px-2 py-2">{row.tests.length > 0 ? <div className="flex flex-wrap gap-1">{row.tests.map((test) => <span key={test.label} className={`inline-block max-w-full truncate px-1 py-0.5 font-mono text-[10px] ${test.status === 'PASS' ? 'bg-emerald-50 text-emerald-700' : test.status === 'FAIL' || test.status === 'ERROR' ? 'bg-red-50 text-red-700' : 'bg-zinc-100 text-zinc-600'}`} title={test.label}>{test.label}</span>)}</div> : row.noTestReason === 'waived' ? <span className="text-zinc-400" title={t('verification.panorama.noTestsWaivedHint')}>{t('verification.panorama.noTestsWaived')}</span> : row.noTestReason === 'formal' ? <span className="text-zinc-400" title={t('verification.panorama.noTestsFormalHint')}>{t('verification.panorama.noTestsFormal')}</span> : row.noTestReason === 'static' ? <span className="text-zinc-400">{t('verification.panorama.noTestsStatic')}</span> : <span className="text-zinc-400" title={t('verification.run.unmappedHint')}>{t('verification.panorama.noTests')}</span>}</td>
             <td className="px-2 py-2"><span className={`inline-block px-1.5 py-0.5 text-[10px] font-semibold ${meta.cls}`}>{t(meta.labelKey)}</span></td>
             <td className="px-2 py-2 text-zinc-600" title={row.whyTitle}>{row.why === '—' ? <span className="text-zinc-300">—</span> : row.why}</td>
             <td className="px-2 py-2 text-zinc-600">{row.when === '—' ? <span className="text-zinc-300">—</span> : row.when}</td>

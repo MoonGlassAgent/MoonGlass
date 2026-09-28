@@ -6,6 +6,7 @@
  */
 
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path'
 import {
   locateTool,
@@ -290,6 +291,21 @@ function readResult(path: string): Record<string, unknown> {
 }
 
 /**
+ * RTL 输入内容哈希（路径 + 内容）：识别 result.json 里的旧覆盖率/通道结论是否属于
+ * 同一 RTL 输入。RTL 变更后旧数据一律不得继承——否则旧 RTL 的覆盖率会被盖上当前
+ * rtlHash 混入门禁判定（陈旧 PASS 污染防线，与引擎 rtlHash 新鲜度同口径）。
+ */
+function hashRtlInputs(rtlFiles: string[]): string {
+  const hash = createHash('sha256')
+  for (const file of [...rtlFiles].sort()) {
+    hash.update(file).update('\0')
+    try { hash.update(readFileSync(file)) } catch { /* 缺文件由调用方前置校验拦截 */ }
+    hash.update('\0')
+  }
+  return hash.digest('hex')
+}
+
+/**
  * 缺陷 DEFECT-PACK-001#17 主 result.json 防覆盖：本次写入 passed=false 而既有文件
  * passed=true 时，先把既有成功证据旁路归档为 result.pass-<时间戳>.json 再写入，
  * 保证黄金证据可追溯；失败覆盖失败、成功覆盖成功直接写。返回归档路径（未归档为 null）。
@@ -472,6 +488,9 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
   // 这是可接受的取舍：cocotb 主要用于定向用例，超巨波形已无调试价值。
   const maxWaveformGB = resolveMaxWaveformGB(options.maxWaveformGB)
   const wavesEnabled = options.waves !== false
+  // 陈旧 coverage.dat 防线：运行前记录 mtime，运行后只有本次真正重写过的 coverage.dat
+  // 才解析——否则历史 cpp 运行遗留的 coverage.dat 会被当作本次（未插桩/失败）运行的覆盖率
+  const coverageMtimeBefore = existsSync(coverageDataPath) ? statSync(coverageDataPath).mtimeMs : 0
   const guardAbort = new AbortController()
   if (options.signal) {
     if (options.signal.aborted) guardAbort.abort()
@@ -536,14 +555,22 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
   const testsSkipped = (xml.match(/<skipped\b/g) ?? []).length
   const testsPassed = Math.max(0, testsTotal - testsFailed - testsSkipped)
   const passed = execution.code === 0 && testsPassed > 0 && testsFailed === 0
-  const coverage = parseVerilatorCoverage(coverageDataPath)
+  const coverage = rtlCoverage && existsSync(coverageDataPath) && statSync(coverageDataPath).mtimeMs > coverageMtimeBefore
+    ? parseVerilatorCoverage(coverageDataPath)
+    : {}
+  // percentage() 可能返回全 undefined 的对象，以"存在数值字段"判定本次是否真采到覆盖率
+  const freshCoverageData = Object.values(coverage).some((value) => typeof value === 'number')
   coverage.functionalCoverage = readFunctionalCoverage(functionalCoveragePath)
   const previous = readResult(resultPath)
-  const previousCoverage = (previous.coverage ?? {}) as CoverageSummary
+  const rtlInputHash = hashRtlInputs(options.rtlFiles)
+  // 陈旧 PASS 污染防线：旧覆盖率、旧 coverageDataPath、旧 RTL 覆盖率通道结论只在
+  // 同一 RTL 输入（rtlInputHash 一致）时才继承；RTL 变更后一律丢弃，强制该通道重跑
+  const previousIsCurrentRtl = typeof previous.rtlInputHash === 'string' && previous.rtlInputHash === rtlInputHash
+  const previousCoverage = (previousIsCurrentRtl ? previous.coverage ?? {} : {}) as CoverageSummary
   const mergedCoverage = { ...previousCoverage, ...Object.fromEntries(Object.entries(coverage).filter(([, value]) => value !== undefined)) }
   const hasMergedCoverage = Object.values(mergedCoverage).some((value) => typeof value === 'number')
-  const coverageReportPath = hasMergedCoverage ? writeCoverageReport(options.resultDir, mergedCoverage, rtlCoverage ? coverageDataPath : (previous.coverageDataPath as string | undefined)) : undefined
-  const rtlCoveragePassed = previous.rtlCoveragePassed
+  const coverageReportPath = hasMergedCoverage ? writeCoverageReport(options.resultDir, mergedCoverage, freshCoverageData ? coverageDataPath : (previousIsCurrentRtl ? previous.coverageDataPath as string | undefined : undefined)) : undefined
+  const rtlCoveragePassed = previousIsCurrentRtl ? previous.rtlCoveragePassed : undefined
   const overallPassed = rtlCoveragePassed === undefined ? passed : passed && rtlCoveragePassed === true
   // 缺陷 DEFECT-PACK-001#17：失败结果不得直接覆盖既有成功证据
   const archivedResultPath = overallPassed ? null : archivePassedResult(resultPath, previous)
@@ -551,6 +578,8 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
     ...previous,
     passed: overallPassed,
     functionalPassed: passed,
+    // 显式覆写（undefined 经 JSON 序列化丢弃）：防止 ...previous 把旧 RTL 的通道结论带回来
+    rtlCoveragePassed,
     framework: 'cocotb',
     simulator,
     topModule: options.topModule,
@@ -576,7 +605,8 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
     lineCoverage: mergedCoverage.lineCoverage,
     branchCoverage: mergedCoverage.branchCoverage,
     functionalCoverage: mergedCoverage.functionalCoverage,
-    coverageDataPath: rtlCoverage && existsSync(coverageDataPath) ? coverageDataPath : previous.coverageDataPath ?? null,
+    rtlInputHash,
+    coverageDataPath: freshCoverageData ? coverageDataPath : previousIsCurrentRtl ? previous.coverageDataPath ?? null : null,
     coverageReportPath: coverageReportPath ?? null,
     finishedAt: new Date().toISOString()
   }, null, 2), 'utf-8')
@@ -592,7 +622,7 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
     waveformAbortedReason: waveformAbortedEffective ? 'size-limit' : undefined,
     waveformOverLimitUncontrolled: waveformOverLimitUncontrolled || undefined,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
-    coverageDataPath: rtlCoverage && existsSync(coverageDataPath) ? coverageDataPath : undefined,
+    coverageDataPath: freshCoverageData ? coverageDataPath : undefined,
     coverageReportPath,
     resultsXmlPath: existsSync(resultsXml) ? resultsXml : null,
     buildStageFailed: marker < 0,
@@ -745,6 +775,8 @@ export async function runVerilatorSimulation(
   const waveformMonitor = trace && !tbHasWaveformGuard
     ? monitorWaveformSize([resultDir], maxWaveformGB * 1073741824, () => { waveformOverLimitUncontrolled = true })
     : undefined
+  // 陈旧 coverage.dat 防线：与 cocotb 路径同口径——只有本次仿真重写过的 coverage.dat 才解析
+  const coverageMtimeBefore = existsSync(coverageDataPath) ? statSync(coverageDataPath).mtimeMs : 0
   const { stdout: runOut, stderr: runErr, code: runCode } = await run(
     binExe,
     // 缺陷 DEFECT-PACK-001#6：仿真以 resultDir 为 cwd，覆盖率文件用纯文件名——
@@ -769,13 +801,20 @@ export async function runVerilatorSimulation(
   const vcdPath = trace ? join(resultDir, `${topModule}.vcd`) : null
   const resolvedVcd = vcdPath && existsSync(vcdPath) ? vcdPath : null
   const passed = runCode === 0 || runCode === null
-  const coverage = parseVerilatorCoverage(coverageDataPath)
+  const coverage = rtlCoverage && existsSync(coverageDataPath) && statSync(coverageDataPath).mtimeMs > coverageMtimeBefore
+    ? parseVerilatorCoverage(coverageDataPath)
+    : {}
+  const freshCoverageData = Object.values(coverage).some((value) => typeof value === 'number')
   const previous = readResult(resultPath)
-  const previousCoverage = (previous.coverage ?? {}) as CoverageSummary
+  const rtlInputHash = hashRtlInputs(rtlFiles)
+  // 陈旧 PASS 污染防线：与 cocotb 路径同口径——旧覆盖率与旧功能通道结论只在
+  // 同一 RTL 输入（rtlInputHash 一致）时继承；RTL 变更后丢弃，强制功能通道重跑
+  const previousIsCurrentRtl = typeof previous.rtlInputHash === 'string' && previous.rtlInputHash === rtlInputHash
+  const previousCoverage = (previousIsCurrentRtl ? previous.coverage ?? {} : {}) as CoverageSummary
   const mergedCoverage = { ...previousCoverage, ...Object.fromEntries(Object.entries(coverage).filter(([, value]) => value !== undefined)) }
   const hasMergedCoverage = Object.values(mergedCoverage).some((value) => typeof value === 'number')
-  const coverageReportPath = hasMergedCoverage ? writeCoverageReport(resultDir, mergedCoverage, coverageDataPath) : undefined
-  const functionalPassed = previous.functionalPassed ?? previous.passed
+  const coverageReportPath = hasMergedCoverage ? writeCoverageReport(resultDir, mergedCoverage, freshCoverageData ? coverageDataPath : undefined) : undefined
+  const functionalPassed = previousIsCurrentRtl ? previous.functionalPassed ?? previous.passed : undefined
   const overallPassed = functionalPassed === undefined ? passed : functionalPassed === true && passed
   // 缺陷 DEFECT-PACK-001#17：失败结果不得直接覆盖既有成功证据
   const archivedResultPath = overallPassed ? null : archivePassedResult(resultPath, previous)
@@ -799,7 +838,8 @@ export async function runVerilatorSimulation(
     lineCoverage: mergedCoverage.lineCoverage,
     branchCoverage: mergedCoverage.branchCoverage,
     functionalCoverage: mergedCoverage.functionalCoverage,
-    coverageDataPath: existsSync(coverageDataPath) ? coverageDataPath : null,
+    rtlInputHash,
+    coverageDataPath: freshCoverageData ? coverageDataPath : previousIsCurrentRtl ? previous.coverageDataPath ?? null : null,
     coverageReportPath: coverageReportPath ?? null,
     finishedAt: new Date().toISOString()
   }, null, 2), 'utf-8')
@@ -816,7 +856,7 @@ export async function runVerilatorSimulation(
     waveformAbortedReason: waveformAborted ? 'size-limit' : undefined,
     waveformOverLimitUncontrolled: waveformOverLimitUncontrolled || undefined,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
-    coverageDataPath: existsSync(coverageDataPath) ? coverageDataPath : undefined,
+    coverageDataPath: freshCoverageData ? coverageDataPath : undefined,
     coverageReportPath,
     ...(archivedResultPath ? { archivedResultPath } : {})
   }

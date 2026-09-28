@@ -77,8 +77,15 @@ export async function runFormalVerification(options: FormalRunOptions): Promise<
   const scopeHash = rtlHash.digest('hex')
   // #8：优先使用调用方传入的工作区统一口径哈希；未提供时保持旧行为（rtlHash = 输入文件清单哈希）
   const currentRtlHash = options.workspaceRtlHash ?? scopeHash
-  const files = [...names.entries()]
-  writeFileSync(configPath, `[options]\nmode ${mode}\ndepth ${depth}\nwait on\n\n[engines]\nsmtbmc ${engine}\n\n[script]\nread -formal -sv ${files.map(([name]) => name).join(' ')}\nprep -top ${options.top}\n\n[files]\n${files.map(([name, file]) => `${name} ${file.replace(/\\/g, '/')}`).join('\n')}\n`, 'utf-8')
+  // BUG-FORMAL-PATH-001（内容侧）：MinGW Python 以系统 ANSI（GBK）读取配置文件，
+  // 非 ASCII 绝对路径会在读文件阶段炸出 UnicodeDecodeError；[files] 改写为相对 formal
+  // 工作目录的相对路径（项目根目录的非 ASCII 前缀经 ../../ 自然消去，不进文件内容）
+  const files = [...names.entries()].map(([name, file]) => [name, relative(root, file).replace(/\\/g, '/')] as [string, string])
+  const configContent = `[options]\nmode ${mode}\ndepth ${depth}\nwait on\n\n[engines]\nsmtbmc ${engine}\n\n[script]\nread -formal -sv ${files.map(([name]) => name).join(' ')}\nprep -top ${options.top}\n\n[files]\n${files.map(([name, file]) => `${name} ${file}`).join('\n')}\n`
+  if (/[^\x00-\x7F]/.test(configContent)) {
+    throw new Error('Formal 暂不支持非 ASCII 的 RTL/属性文件名或相对路径（内置工具链的 MinGW Python 以系统 ANSI 读取 .sby 配置）：请将这些文件重命名为 ASCII 后重试')
+  }
+  writeFileSync(configPath, configContent, 'utf-8')
   const compatibilityIssues = checkYosysFormalCompatibility(workspace, options.propertyFiles)
   if (compatibilityIssues.length) {
     const logPath = join(resultDir, 'moonglass-formal.log')
@@ -102,7 +109,12 @@ export async function runFormalVerification(options: FormalRunOptions): Promise<
       env.PATH = `${shimDir}${delimiter}${env.PATH ?? ''}`
     }
   }
-  const execution = await run(sby, ['-f', '-d', resultDir, configPath], env, options.signal, workspace, 15 * 60_000)
+  // BUG-FORMAL-PATH-001：打包工具链的 Python 是 MinGW/msvcrt 构建，窄 argv 按系统 ANSI
+  // 代码页（GBK）转码——非 ASCII 绝对路径经 argv 传递必被损坏（surrogateescape 乱码），
+  // cmd 批处理包装同样如此。因此 .sby 与 -d 一律使用相对 formal 工作目录的纯 ASCII
+  // 相对路径，非 ASCII 仅经 cwd（宽字符目录参数，安全）传递；[files] 中的绝对路径是
+  // 配置文件内容而非 argv，不受此限制。
+  const execution = await run(sby, ['-f', '-d', relative(root, resultDir).replace(/\\/g, '/'), basename(configPath)], env, options.signal, root, 15 * 60_000)
   const combined = `${execution.stdout}\n${execution.stderr}`; const logPath = join(resultDir, 'moonglass-formal.log'); writeFileSync(logPath, combined, 'utf-8')
   const statusText = collect(resultDir, /^status$/i).map((file) => readFileSync(file, 'utf-8')).join('\n')
   const token = /\b(PASS|FAIL|UNKNOWN|ERROR)\b/i.exec(`${statusText}\n${combined}`)?.[1]?.toUpperCase() as FormalRunResult['status'] | undefined

@@ -109,4 +109,31 @@ const unbound = writeScenarioHits(workspace2, 'dma', { testcase: 'test_plain_reg
 if (unbound.registered.length !== 0 || !unbound.warnings.some((item) => item.includes('未绑定场景'))) throw new Error('未绑定场景时返回异常')
 if (existsSync(join(workspace2, 'verification', 'results', 'dma', 'scenario_hits.json'))) throw new Error('未绑定场景时不应创建 scenario_hits.json')
 
-console.log('Scenario hits smoke passed: 首次写入/按ID更新/保留他人条目/FAIL登记/testcase解析/显式优先/未绑定提示')
+// 8. BUG-VERIF-BIND-001：scenarioIds 路径的用例反向指针
+// 8a. 单用例运行：用例名提升为所有显式绑定场景的精确 testName，boundBy=testcase-name
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-CCCCCCCC'], passed: true, rtlFiles: [rtlFile], evidence, runTestcases: ['test_single_case'] })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-CCCCCCCC')
+if (!entry || entry.testName !== 'test_single_case' || entry.boundBy !== 'testcase-name') throw new Error(`单用例精确绑定失败：${JSON.stringify(entry)}`)
+if (!Array.isArray(entry.boundTestcases) || entry.boundTestcases.join(',') !== 'test_single_case') throw new Error('单用例未写入 boundTestcases')
+
+// 8b. 多用例运行：整组记入 boundTestcases，boundBy=scenarioIds，不写精确 testName
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-DDDDDDDD'], passed: true, rtlFiles: [rtlFile], evidence, runTestcases: ['test_batch_a', 'test_batch_b'] })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-DDDDDDDD')
+if (!entry || entry.testName !== undefined || entry.boundBy !== 'scenarioIds') throw new Error(`多用例批次绑定失败：${JSON.stringify(entry)}`)
+if (entry.boundTestcases.join(',') !== 'test_batch_a,test_batch_b') throw new Error('多用例 boundTestcases 未整组登记')
+
+// 8c. 批次绑定跨次合并去重
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-DDDDDDDD'], passed: true, rtlFiles: [rtlFile], evidence, runTestcases: ['test_batch_b', 'test_batch_c'] })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-DDDDDDDD')
+if (entry.boundTestcases.join(',') !== 'test_batch_a,test_batch_b,test_batch_c') throw new Error('boundTestcases 跨次合并未去重')
+
+// 8d. 名称解析路径（scn_<hex>）精确 testName 与 boundTestcases 并存
+writeScenarioHits(workspace, 'dma', { testcase: 'test_dma_scn_eeeeeeee_wrap', passed: true, rtlFiles: [rtlFile], evidence, testNames: { 'SCN-EEEEEEEE': 'test_dma_scn_eeeeeeee_wrap' }, runTestcases: ['test_dma_scn_eeeeeeee_wrap'] })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-EEEEEEEE')
+if (!entry || entry.testName !== 'test_dma_scn_eeeeeeee_wrap' || entry.boundBy !== 'testcase-name') throw new Error(`名称解析路径 testName 缺失：${JSON.stringify(entry)}`)
+
+console.log('Scenario hits smoke passed: 首次写入/按ID更新/保留他人条目/FAIL登记/testcase解析/显式优先/未绑定提示/绑定反向指针(单用例精确/多例批次/合并去重/名称解析)')
