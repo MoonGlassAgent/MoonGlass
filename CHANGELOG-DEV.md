@@ -2,6 +2,12 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-15：v0.9.8 基线
+
+- **QA 阶段语义终审**：四类新门禁（语义实现审查 / 验证完备性审计 / 代码审查清单闭环 / 复位评审留档），QA 不再只做 Lint/CDC/可综合静态检查（详见同日专项条目）。
+- 版本号：package.json 与 APP_INFO 同步 0.9.8。
+- 验证：`pnpm typecheck`、`qa-semantic-gate-smoke`（12 断言）、`verification-intelligence-smoke`/`eda-gate-smoke`/`batch-prompt-smoke` 回归全部通过。
+
 ## 2026-09-15：QA 阶段语义终审（四类新门禁）
 
 - 背景：QA 阶段此前只有 Lint/CDC/可综合静态检查，缺少"规格是否被 RTL 实现""每个规格点是否有验证点+用例覆盖"的语义终审；代码审查与复位评审只有提示词文本、无机器检查。
