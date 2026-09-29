@@ -14,6 +14,21 @@ import { IPC } from '@shared/ipc-contract'
 import { createApplication } from './core/application'
 import { registerIpcHandlers } from './ipc'
 
+// EPIPE 防御（2026-09-29 实测事故）：父进程管道断开（启动终端被关闭/管道破裂）后，
+// Windows 上 console.log 写 stdout 会同步抛 EPIPE 未捕获异常并弹窗（曾击中
+// spawnSession 的日志行导致会话创建中断）。把 console 各方法包一层：仅吞 EPIPE，
+// 其他错误照常抛出。
+for (const method of ['log', 'info', 'warn', 'error', 'debug'] as const) {
+  const original = console[method].bind(console)
+  console[method] = (...args: unknown[]): void => {
+    try {
+      original(...args)
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'EPIPE') throw error
+    }
+  }
+}
+
 app.setName('MoonGlass')
 
 /**
