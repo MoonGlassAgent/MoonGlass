@@ -186,11 +186,12 @@ export function countBlockedAttempts(workspace: string, windowStart: string, win
 /**
  * 派发门控判定（M4 §5.2）：修复会话进行中返回拒绝/暂停原因，否则 null。
  * 门控只拦新派发，不强杀在跑批次/仿真（设计 §5.3）；
- * 修复结束后不自动续跑，由修复结果的 follow-up 引导验证会话继续（§5.5）。
+ * 批次循环（pause）等待修复 settle 后自动续跑（托管 VERIF 断档修复，e2e 实测 2026-09-28），
+ * 单次派发（reject）仍直接拒绝，由修复结果的 follow-up 引导验证会话继续（§5.5）。
  */
 export function rtlFixGateReason(activeFixSessionName: string | undefined, mode: 'reject' | 'pause'): string | null {
   if (!activeFixSessionName) return null
   return mode === 'reject'
     ? `RTL 修复会话 ${activeFixSessionName} 进行中，rtl/ 处于写保护窗口，拒绝派发新验证批次；修复完成后由修复结果引导继续验证`
-    : `等待 RTL 修复完成：修复会话 ${activeFixSessionName} 进行中，暂停派发新批次（修复结束后不自动续跑，由修复结果的 follow-up 引导验证继续）`
+    : `等待 RTL 修复完成：修复会话 ${activeFixSessionName} 进行中，暂停派发新批次，修复 settle 后自动续跑`
 }

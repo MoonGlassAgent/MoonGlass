@@ -129,13 +129,19 @@ const MANAGED_PHASE_PROMPTS: Record<Exclude<Phase, 'VERIF'>, string> = {
 
 // VERIF 托管（上下文治理第 3 批）：主会话只做规划与最终审查；
 // 批次场景由主进程经 runVerifBatches 逐批 spawn 平行会话执行，完成判定绑定工具登记证据。
+// 托管 VERIF 断档修复（e2e 实测 2026-09-28）：规划会话曾越界自行跑 17 分钟回归并登记
+// confirmed 根因（提前触发修复派发与批次门控），prompt 据此收敛为"只规划、只登记假设"。
 const MANAGED_VERIF_PLANNING_PROMPT =
-  '完成验证规划与环境准备：更新验证计划和覆盖率计划，搭建或修复验证环境并跑通一次基础回归确认环境可用；' +
+  '完成验证规划与环境准备：更新验证计划和覆盖率计划，搭建或修复验证环境（只做编译/展开级别的可用性检查）；' +
   '调用 build_verification_intelligence 生成风险候选与结构事实，圈定真实验证点并用 register_verification_intents 登记（锚定真实 riskIds/requirementIds/rtlSignals）。' +
-  '场景批次执行由 MoonGlass 主进程编排派发到独立批次会话，本会话只做规划，不要逐批执行场景回归。'
+  '本会话只做规划与意图登记：禁止运行仿真/Formal 回归（场景执行由 MoonGlass 主进程编排的后续批次会话承担）；' +
+  '若发现疑似 RTL bug，只在 root-causes.json 记录为假设（hypothesis），禁止登记 confirmed 根因' +
+  '（confirmed 登记会立即触发 RTL 修复会话派发，应由批次执行/诊断循环触发）。'
 const MANAGED_VERIF_REVIEW_PROMPT =
   'VERIF 批次执行已结束。读取 verification/intelligence/execution-summary.json 核对批次结果与证据增量；' +
-  '调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始测试、日志、result.json 和覆盖率证据，存在阻断项时继续修复并回归；' +
+  '调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始测试、日志、result.json 和覆盖率证据；' +
+  '发现阻断项时不要在本会话重跑大规模回归：证据缺口与疑似 RTL bug 登记为假设并写入审查结论，走诊断循环' +
+  '（确认根因会触发独立修复会话；批次补跑由 MoonGlass 编排决定）；' +
   '最后用实际机器可读产物和原始证据更新 docs/04_verification/ 文档、需求追溯和 docs/06_validation/ 验证报告。'
 
 function pendingDecisionRequests(): AgentDecisionRequest[] {

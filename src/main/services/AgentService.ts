@@ -23,7 +23,7 @@ import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync,
 import { basename, dirname, join, resolve } from 'node:path'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound } from '@moonglass/verification-intelligence-engine'
-import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, ImageAttachment, IpLibraryRecord, Phase, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
+import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, ImageAttachment, IpLibraryRecord, Phase, ProjectSessionActivity, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict } from '@shared/types'
 import { PHASE_LABELS } from '@shared/types'
 import { FALLBACK_MODEL_CONTEXT, resolveModelContext } from '@shared/model-context'
 import type { ModelContextMetadata } from '@shared/model-context'
@@ -39,6 +39,8 @@ import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readE
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
+import { aggregateSessionActivity, type SessionActivitySource } from './session-activity.ts'
+import { consumeInterruptedSessions, writeInterruptedSessions, type InterruptedSessionRecord } from './interrupted-sessions.ts'
 import { resolveProviderHeaders } from './provider-headers.ts'
 import { buildArtifactIndexSection } from './artifact-index.ts'
 
@@ -223,6 +225,8 @@ const STALL_CHECK_INTERVAL_MS = 30_000
 const RETAINED_BATCH_SESSIONS = 5
 /** 会话目录中每阶段保留的最近任务会话数（M2 §3.4）；超出的更老任务会话归档进 archive/ */
 const RETAINED_TASK_SESSIONS = 10
+/** 批次循环等待 RTL 修复 settle 的超时上限（65 分钟，略高于修复会话自身 60 分钟预算） */
+const RTL_FIX_WAIT_TIMEOUT_MS = 65 * 60_000
 
 export class AgentService implements MoonGlassService {
   readonly name = 'agent-service'
@@ -232,6 +236,8 @@ export class AgentService implements MoonGlassService {
   private pendingEnsures = new Map<string, Promise<AgentSessionInfo>>()
   /** 切走后仍在执行的会话进程，按项目和会话文件保存。 */
   private backgroundSessions = new Map<string, Map<string, PiSession>>()
+  /** 上一轮被应用退出中断的会话（start 时一次性消费标记文件，本轮内存保留供徽标展示） */
+  private interruptedSessions: InterruptedSessionRecord[] = []
   private piBinPath = ''
   private bridgeDir = ''
   private emit: (projectId: string, event: AgentStreamEvent, sessionName?: string) => void = () => {}
@@ -342,6 +348,46 @@ export class AgentService implements MoonGlassService {
         console.warn('[agent-service] 修复中标志 stale 检查失败（忽略，不影响启动）', error)
       }
     }
+
+    // 上轮被应用退出中断的会话标记：一次性消费（读取后即删文件），本轮内存保留，
+    // sessionActivity() 据此给项目卡片输出"上轮中断 · 可继续输入"徽标。
+    this.interruptedSessions = consumeInterruptedSessions(this.interruptedSessionsFilePath())
+    if (this.interruptedSessions.length > 0) {
+      console.log(`[agent-service] 检测到上轮被中断的会话 ${this.interruptedSessions.length} 个（历史已保留，可继续输入续跑）`)
+    }
+  }
+
+  /** 中断会话标记文件路径（userData/moonglass/interrupted-sessions.json） */
+  private interruptedSessionsFilePath(): string {
+    return join(app.getPath('userData'), 'moonglass', 'interrupted-sessions.json')
+  }
+
+  /**
+   * 应用退出前调用（will-quit → stopAll 之前）：把仍在运行的会话清单原子写入
+   * 中断标记文件，供下次启动提示"上轮中断"；无运行会话时不落盘。
+   */
+  markInterruptedSessions(): void {
+    const interruptedAt = new Date().toISOString()
+    const records: InterruptedSessionRecord[] = []
+    const seen = new Set<string>()
+    const collect = (session: PiSession): void => {
+      if (!session.isStreaming) return
+      const key = `${session.projectId}__${session.activeSessionName}`
+      if (seen.has(key)) return
+      seen.add(key)
+      records.push({ projectId: session.projectId, sessionName: session.activeSessionName, phase: session.phase, interruptedAt })
+    }
+    for (const session of this.sessions.values()) collect(session)
+    for (const projectSessions of this.backgroundSessions.values()) {
+      for (const session of projectSessions.values()) collect(session)
+    }
+    if (records.length === 0) return
+    try {
+      writeInterruptedSessions(this.interruptedSessionsFilePath(), records)
+      console.log(`[agent-service] 退出中断标记已落盘：${records.length} 个运行中会话`)
+    } catch (error) {
+      console.error('[agent-service] 退出中断标记写入失败（不影响退出）', error)
+    }
   }
 
   stop(): void {
@@ -410,6 +456,34 @@ export class AgentService implements MoonGlassService {
       if (session.isStreaming && !phases.includes(session.phase)) phases.push(session.phase)
     }
     return phases
+  }
+
+  /**
+   * 全部项目的会话活动聚合（项目列表页卡片徽标轮询）：遍历前台 sessions 与后台
+   * backgroundSessions（VERIF 批次 / RTL 修复会话也挂在后者），只输出有存活会话的项目；
+   * 上轮被应用退出中断的会话合并进结果（无存活会话的项目也会出现，供"上轮中断"徽标）。
+   */
+  sessionActivity(): Record<string, ProjectSessionActivity> {
+    const sources: SessionActivitySource[] = []
+    for (const session of this.sessions.values()) {
+      sources.push({ projectId: session.projectId, sessionName: session.activeSessionName, isStreaming: session.isStreaming })
+    }
+    for (const projectSessions of this.backgroundSessions.values()) {
+      for (const session of projectSessions.values()) {
+        sources.push({ projectId: session.projectId, sessionName: session.activeSessionName, isStreaming: session.isStreaming })
+      }
+    }
+    const result = aggregateSessionActivity(sources)
+    for (const record of this.interruptedSessions) {
+      let entry = result[record.projectId]
+      if (!entry) {
+        entry = { hasSession: false, running: false, runningSessions: [] }
+        result[record.projectId] = entry
+      }
+      entry.interrupted ??= []
+      if (!entry.interrupted.includes(record.sessionName)) entry.interrupted.push(record.sessionName)
+    }
+    return result
   }
 
   /** 项目目录切换前释放该项目的全部 Pi 进程，后续进入项目时会从新路径重新创建。 */
@@ -1093,7 +1167,9 @@ argument-hint: "<模块名>"
    * sessionBelongsToPhase，阶段过滤/purge/归档无需改动），会话头带 parentSession
    * 血缘指向切换前的活动会话（pi SessionHeader 原生字段，格式见 pi session-format.md），
    * 随后经 switchSession 成为前台会话：当前前台空闲则 dispose，正在流式则按既有
-   * 方式 park 到后台续跑；模型选择走 switchSession 的既有回退链。
+   * 方式 park 到后台续跑；模型选择优先继承切换前当前会话的 selectedModel
+   * （用户正在使用的选择），再走 switchSession 的既有回退链
+   * （modelStore 活跃会话记录 → providers[0]）。
    * slug 从任务标题（缺省时取首条 prompt 前 20 字）净化生成，为空则只用时间戳。
    */
   async startTask(projectId: string, input?: { title?: string; firstPrompt?: string }): Promise<AgentSessionInfo> {
@@ -1151,12 +1227,23 @@ argument-hint: "<模块名>"
       'utf-8'
     )
 
+    // 托管 VERIF 断档修复（e2e 实测 2026-09-28）：任务会话优先继承切换前当前会话的
+    // selectedModel（用户正在使用的模型选择）——预置进 modelStore，由 switchSession 的
+    // 既有校验/回退链接管（provider 或模型失效时仍回落 providers[0].models[0]）。
+    const taskSessionName = sessionNameFromFile(newFile)
+    const inheritedModel = session.selectedModel
+    if (inheritedModel) {
+      this.modelStore.set(projectId, taskSessionName, inheritedModel.providerId, inheritedModel.modelId)
+    }
+
     try {
-      const info = await this.switchSession(projectId, sessionNameFromFile(newFile))
+      const info = await this.switchSession(projectId, taskSessionName)
       // M2 §3.4：新任务会话落盘后做一次留存扫描（开销小、时机确定性）
       this.archiveTaskSessions(projectId)
       return info
     } catch (error) {
+      // 切换失败时连同预置的模型继承记录一并清理，避免残留指向已删除会话文件
+      this.modelStore.delete(projectId, taskSessionName)
       rmSync(newFile, { force: true })
       throw error
     }
@@ -1576,13 +1663,20 @@ argument-hint: "<模块名>"
   private verifBatchStopRequested = new Set<string>()
   /** 正在进行中的批次会话（供 stopVerifBatches 中止）；批次结束（含熔断）后移除 */
   private activeVerifBatches = new Map<string, PiSession>()
+  /**
+   * 等待 RTL 修复 settle 的批次循环唤醒器（托管 VERIF 断档修复，e2e 实测 2026-09-28）：
+   * runRtlFixSession 收尾时以 'settled' 唤醒，stopVerifBatches 以 'stopped' 打断等待。
+   */
+  private rtlFixWaiters = new Map<string, Set<(outcome: 'settled' | 'stopped') => void>>()
 
   /**
    * 停止 VERIF 批次编排：置停止标记（runVerifBatches 不再派发新批次），
-   * 并中止当前正在运行的批次会话（其 settle 等待会随 abort 返回，归档由 runVerifBatch 收尾）。
+   * 并中止当前正在运行的批次会话（其 settle 等待会随 abort 返回，归档由 runVerifBatch 收尾）；
+   * 正在等待 RTL 修复 settle 的循环也一并打断。
    */
   async stopVerifBatches(projectId: string): Promise<void> {
     this.verifBatchStopRequested.add(projectId)
+    this.notifyRtlFixWaiters(projectId, 'stopped')
     const active = this.activeVerifBatches.get(projectId)
     if (!active) return
     try {
@@ -1590,6 +1684,35 @@ argument-hint: "<模块名>"
     } catch (error) {
       console.warn('[agent-service] 批次会话中止命令未及时响应，由批次收尾路径强制归档', error)
     }
+  }
+
+  /**
+   * 等待 RTL 修复会话 settle（事件挂接，非轮询忙等）：返回 'settled'（修复窗口收尾）、
+   * 'stopped'（用户停止托管打断）或 'timeout'（超过 timeoutMs 仍未 settle，由调用方熔断）。
+   * 注册唤醒器后复查 activeRtlFixes，闭合"门控检查到挂起之间修复已收尾"的竞态。
+   */
+  private waitForRtlFixSettled(projectId: string, timeoutMs: number): Promise<'settled' | 'stopped' | 'timeout'> {
+    return new Promise((resolvePromise) => {
+      const waiters = this.rtlFixWaiters.get(projectId) ?? new Set<(outcome: 'settled' | 'stopped') => void>()
+      this.rtlFixWaiters.set(projectId, waiters)
+      const timer = setTimeout(() => finish('timeout'), timeoutMs)
+      const finish = (outcome: 'settled' | 'stopped' | 'timeout'): void => {
+        clearTimeout(timer)
+        waiters.delete(done)
+        if (waiters.size === 0) this.rtlFixWaiters.delete(projectId)
+        resolvePromise(outcome)
+      }
+      const done = (outcome: 'settled' | 'stopped'): void => finish(outcome)
+      waiters.add(done)
+      if (!this.activeRtlFixes.has(projectId)) finish('settled')
+    })
+  }
+
+  /** 唤醒等待某项目 RTL 修复 settle 的批次循环（settled=修复收尾；stopped=用户停止打断）。 */
+  private notifyRtlFixWaiters(projectId: string, outcome: 'settled' | 'stopped'): void {
+    const waiters = this.rtlFixWaiters.get(projectId)
+    if (!waiters) return
+    for (const done of [...waiters]) done(outcome)
   }
 
   /**
@@ -1709,9 +1832,12 @@ argument-hint: "<模块名>"
    * VERIF 批次编排循环：select_next_verification_batch 等价的主进程选择
    * （复用 scenario-execution-plan.json，缺失时重建引擎产物）→ 逐批 runVerifBatch。
    * 批次熔断（证据缺失 / watchdog / DIAGNOSTIC_ENHANCEMENT 无进展）即停止后续批次。
-   * M4 §5.2：RTL 修复进行中暂停派发新批次（熔断类停止，修复结束后不自动续跑）。
+   * M4 §5.2 + 托管 VERIF 断档修复（e2e 实测 2026-09-28）：RTL 修复进行中时不再直接
+   * circuit-break，而是等待修复会话 settle（超时上限 RTL_FIX_WAIT_TIMEOUT_MS，可被
+   * 用户停止打断）后继续选批循环——托管与手动两条路径都自动续跑，修复结果的
+   * follow-up 仍照常送达来源会话。
    */
-  async runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number }): Promise<VerifBatchLoopResult> {
+  async runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number; rtlFixWaitTimeoutMs?: number }): Promise<VerifBatchLoopResult> {
     const batchSize = Math.max(1, Math.min(12, Math.trunc(options?.batchSize ?? 3)))
     const maxBatches = Math.max(1, Math.trunc(options?.maxBatches ?? 20))
     const workspace = this.workspaceDir(projectId)
@@ -1721,13 +1847,24 @@ argument-hint: "<模块名>"
       if (this.verifBatchStopRequested.has(projectId)) {
         return { batches, stoppedBy: 'user-stop', message: '用户停止托管：已中止当前批次，不再派发新批次' }
       }
-      // M4 §5.2 派发门控：每轮选批前检查修复中标志（内存态）；修复期间暂停派发，
-      // 视为熔断类停止条件（记日志 + UI status 通知），修复结束后不自动续跑（§5.5）
+      // M4 §5.2 派发门控：每轮选批前检查修复中标志（内存态）。命中时等待修复 settle 后
+      // 续跑（等待不占批次额度）：修复失败（STILL_FAIL/UNKNOWN）也继续——验证会话会开新
+      // 假设链，连续无进展仍由批次完成判定的既有熔断条件兜底；在跑批次不强杀（§5.3）不变。
+      // 仅等待超时（修复卡死）才按熔断类停止退出。
       const gatePause = rtlFixGateReason(this.activeRtlFixes.get(projectId)?.activeSessionName, 'pause')
       if (gatePause) {
         console.warn(`[agent-service] ${gatePause}`)
         this.emit(projectId, { type: 'status', message: gatePause })
-        return { batches, stoppedBy: 'circuit-break', message: gatePause }
+        const waitOutcome = await this.waitForRtlFixSettled(projectId, options?.rtlFixWaitTimeoutMs ?? RTL_FIX_WAIT_TIMEOUT_MS)
+        if (waitOutcome === 'stopped' || this.verifBatchStopRequested.has(projectId)) {
+          return { batches, stoppedBy: 'user-stop', message: '用户停止托管：等待 RTL 修复期间收到停止请求，不再派发新批次' }
+        }
+        if (waitOutcome === 'timeout') {
+          return { batches, stoppedBy: 'circuit-break', message: `等待 RTL 修复会话 settle 超时（${Math.round((options?.rtlFixWaitTimeoutMs ?? RTL_FIX_WAIT_TIMEOUT_MS) / 60_000)} 分钟），停止派发新批次` }
+        }
+        this.emit(projectId, { type: 'status', message: 'RTL 修复会话已结束，恢复 VERIF 批次派发' })
+        index -= 1
+        continue
       }
       let scenarioIds: string[]
       try {
@@ -2065,6 +2202,9 @@ argument-hint: "<模块名>"
     }
     session.client.dispose()
     this.activeRtlFixes.delete(projectId)
+    // 托管 VERIF 断档修复（e2e 实测 2026-09-28）：先摘除修复中标志再唤醒等待中的
+    // 批次循环（runVerifBatches 门控据此续跑），避免唤醒后复查仍看到修复进行中
+    this.notifyRtlFixWaiters(projectId, 'settled')
 
     this.deliverRtlFixOutcome(projectId, source, fix, sessionName, judgment)
   }
