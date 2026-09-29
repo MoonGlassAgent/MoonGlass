@@ -125,3 +125,24 @@ export function readExecutionPlanBatch(workspaceDir: string, limit: number): str
     return null
   }
 }
+
+/**
+ * 瞬时供应商/网络故障判定（批次编排自动重试的唯一放行类别，实测案例：PSRAM_CTRL 批次 7
+ * 遇 openrouter 空响应 settle，无证据产出被熔断）。覆盖原始错误与 llm-resilience
+ * humanizeLlmError 的中文语义化文案。watchdog 熔断/诊断停滞/用户停止不在此列。
+ */
+const TRANSIENT_SESSION_ERROR_PATTERNS: RegExp[] = [
+  /empty response/i,
+  /\b429\b/,
+  /\b5\d\d\b/,
+  /rate.?limit|overloaded|temporarily unavailable|service unavailable|bad gateway|gateway/i,
+  /timed?\s*out|etimedout|esockettimedout|econnreset|econnrefused|socket hang up|fetch failed|network error/i,
+  /模型服务暂时不可用/,
+  /模型服务限流/
+]
+
+/** 错误文本是否为瞬时供应商/网络故障（可重试）；空/null 不算。 */
+export function isTransientSessionError(errorMessage: string | null | undefined): boolean {
+  const text = (errorMessage ?? '').trim()
+  return text.length > 0 && TRANSIENT_SESSION_ERROR_PATTERNS.some((pattern) => pattern.test(text))
+}

@@ -35,7 +35,7 @@ import type { LlmProviderService } from './LlmProviderService.ts'
 import type { AgentModelStore } from './AgentModelStore.ts'
 import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
-import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
+import { isDiagnosticStalled, isTransientSessionError, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixAuditRelativePath, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { appendRtlFixOutcome } from './rtl-fix-outcome-ledger.ts'
@@ -270,6 +270,9 @@ const RETAINED_BATCH_SESSIONS = 5
 const RETAINED_TASK_SESSIONS = 10
 /** 批次循环等待 RTL 修复 settle 的超时上限（65 分钟，略高于修复会话自身 60 分钟预算） */
 const RTL_FIX_WAIT_TIMEOUT_MS = 65 * 60_000
+
+/** 批次瞬时供应商故障的自动重试上限（每批次；不占 maxBatches 批次额度） */
+const VERIF_BATCH_MAX_TRANSIENT_RETRIES = 2
 /** 验证运行循环任务会话 settle 等待上限（与批次/修复会话同口径：60 分钟有界会话） */
 const RUN_LOOP_TASK_TIMEOUT_MS = 60 * 60_000
 /** 暂停待人期间的证据轮询粒度（§5.2：恢复由证据变化触发，15s 轮询 verification/ mtime） */
@@ -1926,14 +1929,19 @@ argument-hint: "<模块名>"
       // 完成判定（决策 4）：绑定工具登记证据，不读会话文本
       const verdict = judgeBatchCompletion(workspace, ids, startedAt)
       const diagnosticAfter = readDiagnosticControl(workspace)
+      // 瞬时供应商故障分类（空响应/限流/5xx/超时等，实测案例见 isTransientSessionError 注释）：
+      // 证据齐全时尾随瞬时错误不推翻证据判定（证据优先）；证据缺失时熔断消息保留，
+      // 由 runVerifBatches 识别 errorMessage 自动重试同一批次
+      const transientSessionError = isTransientSessionError(run.errorMessage)
       const breakers: string[] = []
-      if (run.errorMessage) breakers.push(`批次会话异常：${run.errorMessage}`)
+      if (run.errorMessage && !(verdict.complete && transientSessionError)) breakers.push(`批次会话异常：${run.errorMessage}`)
       if (run.watchdogAbort) breakers.push(`watchdog 熔断：${run.watchdogAbort}`)
       if (this.verifBatchStopRequested.has(projectId)) breakers.push('用户停止托管')
       if (!verdict.complete) breakers.push(`证据缺失：${verdict.reasons.join('；')}`)
       if (isDiagnosticStalled(diagnosticBefore, diagnosticAfter)) breakers.push('diagnostic-control 进入 DIAGNOSTIC_ENHANCEMENT 且本批诊断等级无进展')
       if (breakers.length === 0) {
-        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 正常完成（证据齐）：${ids.join('、')}` }, sessionName)
+        const trailingTransient = verdict.complete && transientSessionError ? `（尾随瞬时故障不推翻证据：${run.errorMessage}）` : ''
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 正常完成（证据齐）${trailingTransient}：${ids.join('、')}` }, sessionName)
         result = finish({ status: 'completed', verdict, circuitBreaker: null, errorMessage: null }, sessionName)
       } else {
         const circuitBreaker = breakers.join('；')
@@ -1978,6 +1986,7 @@ argument-hint: "<模块名>"
     const maxBatches = Math.max(1, Math.trunc(options?.maxBatches ?? 20))
     const workspace = this.workspaceDir(projectId)
     const batches: VerifBatchRunResult[] = []
+    let transientRetries = 0
     this.verifBatchStopRequested.delete(projectId)
     // 方案 C 批 1（§3.2）：循环开始重置状态文件（上次循环终态保留到此刻被覆盖）
     this.patchVerifLoopLedger(workspace, (ledger) => {
@@ -2047,6 +2056,21 @@ argument-hint: "<模块名>"
       }
       batches.push(result)
       if (result.status !== 'completed') {
+        // 瞬时供应商故障（空响应/限流/5xx/超时等）自动重试同一批次，至多 2 次不占批次额度；
+        // 重试耗尽或非瞬时原因才熔断——一次 API 抖动不该终止整个验证循环
+        if (
+          isTransientSessionError(result.errorMessage)
+          && !this.verifBatchStopRequested.has(projectId)
+          && transientRetries < VERIF_BATCH_MAX_TRANSIENT_RETRIES
+        ) {
+          transientRetries += 1
+          this.emit(projectId, {
+            type: 'status',
+            message: `VERIF 批次 ${result.sessionName} 遭遇供应商瞬时故障（${result.errorMessage}），自动重试同一批次（第 ${transientRetries}/${VERIF_BATCH_MAX_TRANSIENT_RETRIES} 次）`
+          })
+          index -= 1
+          continue
+        }
         const message = `批次 ${result.sessionName} 未正常完成（${result.circuitBreaker ?? result.errorMessage ?? '未知原因'}），已停止后续批次`
         // 用户停止导致的在跑批次熔断按 stopped 终态落盘（与 stopVerifBatches 的写入口径一致）
         if (this.verifBatchStopRequested.has(projectId)) this.writeVerifLoopTerminal(workspace, 'stopped')
@@ -2057,6 +2081,7 @@ argument-hint: "<模块名>"
           message
         }
       }
+      transientRetries = 0 // 正常完成后重置重试计数
     }
     this.writeVerifLoopTerminal(workspace, 'completed')
     return { batches, stoppedBy: 'max-batches', message: `达到批次上限 ${maxBatches}，停止派发；可再次调用继续` }

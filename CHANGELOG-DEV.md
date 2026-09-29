@@ -2,6 +2,13 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-29：验证运行循环实测三连修（PSRAM_CTRL 试跑反馈）
+
+- **批次瞬时故障自动重试**：PSRAM_CTRL 批次 7 遇 openrouter 空响应（`Provider returned an empty response`）settle、零证据产出被熔断——一次 API 抖动终止了整个验证循环。修复：①`isTransientSessionError` 纯函数分类器（空响应/429/5xx/超时/连接重置，覆盖 humanize 中文文案，verif-batch-verdict.ts）；②证据齐全时尾随瞬时错误不推翻证据判定（证据优先）；③内层批次循环对瞬时故障自动重试同一批次（至多 2 次、不占批次额度），耗尽才熔断。smoke：verif-batch-verdict-smoke 新增 11 条分类断言。
+- **循环"已在运行"僵尸句柄**（commit 05a8981）：账本 loopId 代际守卫（残留循环苏醒静默退出、禁止写账）+ 启动守卫内存句柄×磁盘账本交叉对账（账本缺失/终态自动清场放行）+ 启动对话框「强制停止并重启」逃生按钮。smoke：verif-run-loop-smoke L 段。
+- **循环决策提案弹出真实决策卡**（commit bcd3dbb）：`llm-decision-pending` 暂停提示引用的决策卡片此前并不存在（只发了纯文本 status）；提取 ProposedDecisionCard 共享组件，ChatPanel 消息流底部新增循环决策请示区，批准/否决直达 decide IPC。
+- 验证：typecheck 基线零新增；core 34 scripts 全绿；`pnpm build` 通过。
+
 ## 2026-09-29：验证长程运行循环（VERIF-RUN-LOOP，批 1-4）
 
 - **设计文档**：`docs/VERIF-RUN-LOOP-DESIGN-ZH-CN.md`——外循环 = 规则驱动 + 证据裁决 + 结构化决策层（LLM/工程师双源、单一决策账本）；解决"小任务完成即停、无法自主完成整个验证活动"的断档。

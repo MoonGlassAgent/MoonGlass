@@ -14,7 +14,7 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
 })
 writeFileSync(outfile, compiled.outputText, 'utf8')
-const { judgeBatchCompletion, isDiagnosticStalled, readExecutionPlanBatch } = await import(pathToFileURL(outfile))
+const { judgeBatchCompletion, isDiagnosticStalled, isTransientSessionError, readExecutionPlanBatch } = await import(pathToFileURL(outfile))
 
 const workspace = join(dir, 'ws')
 mkdirSync(join(workspace, 'verification', 'results', 'dma'), { recursive: true })
@@ -100,5 +100,18 @@ assert.equal(
 // 未进入 DIAGNOSTIC_ENHANCEMENT → 不熔断
 assert.equal(isDiagnosticStalled(null, { mode: 'NORMAL_DEBUG', attempts: failedAt([0]) }), false)
 assert.equal(isDiagnosticStalled(null, null), false)
+
+// 瞬时供应商故障分类（批次自动重试放行类别；PSRAM_CTRL 批次 7 空响应实测案例）
+assert.equal(isTransientSessionError('Provider returned an empty response'), true)
+assert.equal(isTransientSessionError('模型服务暂时不可用（502 Bad Gateway）'), true)
+assert.equal(isTransientSessionError('模型服务限流，请稍后重试或切换模型（429）'), true)
+assert.equal(isTransientSessionError('fetch failed'), true)
+assert.equal(isTransientSessionError('socket hang up'), true)
+assert.equal(isTransientSessionError('request timed out after 30000ms'), true)
+assert.equal(isTransientSessionError(''), false)
+assert.equal(isTransientSessionError(null), false)
+assert.equal(isTransientSessionError('cocotb 编译失败：语法错误'), false)
+assert.equal(isTransientSessionError('API Key 无效或无权限访问该模型（401）'), false)
+assert.equal(isTransientSessionError('模型服务余额不足或套餐已过期（402）'), false)
 
 console.log('verif-batch-verdict-smoke: OK')
