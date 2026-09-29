@@ -1,6 +1,6 @@
 {
   "name": "moonglass",
-  "version": "0.9.9",
+  "version": "0.9.10",
   "description": "MoonGlass ASIC Design Agent — 芯片开发全流程 AI 工作台",
   "private": true,
   "license": "SEE LICENSE IN LICENSE",
