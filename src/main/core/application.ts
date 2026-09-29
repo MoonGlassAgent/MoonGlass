@@ -49,7 +49,7 @@ export function createApplication(): ApplicationServices {
   const eda = new EdaService(userDataDir, projects)
   const llm = new LlmProviderService()
   const modelStore = new AgentModelStore()
-  const agent = new AgentService(projects, llm, modelStore)
+  const agent = new AgentService(projects, llm, modelStore, phaseEngine)
   const files = new FileService(projects)
   const coverage = new CoverageService(projects)
   const designBrowser = new DesignBrowserService(userDataDir)

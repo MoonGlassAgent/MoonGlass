@@ -11,7 +11,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
-import { createHash } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { basename, dirname, join, relative, resolve } from 'node:path'
 import type { ExtensionAPI } from '@earendil-works/pi-coding-agent'
 import { Type } from 'typebox'
@@ -283,6 +283,61 @@ function rebuildVerificationPosture(workspace: string): string | null {
   } catch (err) {
     return err instanceof Error ? err.message : String(err)
   }
+}
+
+// ---- 验证运行循环决策账本（VERIF-RUN-LOOP 批 3 §9.2；schema 与主进程 decision-ledger.ts 同源） ----
+
+interface RunLoopDecisionRecord {
+  id: string
+  createdAt: string
+  source: 'rule' | 'llm' | 'human'
+  trigger: string
+  action: { kind: 'derived' | 'custom'; actionId: string | null; prompt: string; expectedOutput: string; stopCriteria: string }
+  rationale: string
+  evidenceRefs: string[]
+  status: 'proposed' | 'approved' | 'rejected' | 'executed' | 'superseded'
+  outcome: 'advanced' | 'no-progress' | 'failed' | null
+}
+
+/** 决策账本滚动上限（§9.2：≤100 条，新在前） */
+const RUN_LOOP_DECISION_LEDGER_LIMIT = 100
+
+/**
+ * 决策账本追加（追加式、新在前、原子写）：trigger='user-instruction'（工程师明确指示）
+ * 登记为 source='human' 且直接 approved（§3.3 工程师指令不审批）；其余 LLM 提案为
+ * source='llm'、status='proposed'，待人审批（顾问模式默认）。主进程读取方做缺字段归一。
+ */
+function appendRunLoopDecisionLedger(workspace: string, input: {
+  source: 'llm' | 'human'
+  trigger: string
+  action: { kind: 'derived' | 'custom'; actionId: string | null; prompt: string; expectedOutput: string; stopCriteria: string }
+  rationale: string
+  evidenceRefs: string[]
+}): RunLoopDecisionRecord {
+  const ledgerPath = join(workspace, 'verification', 'results', 'decision-ledger.json')
+  let existing: Array<{ id?: unknown }> = []
+  try {
+    const parsed = JSON.parse(readFileSync(ledgerPath, 'utf-8')) as { decisions?: unknown }
+    if (Array.isArray(parsed.decisions)) existing = parsed.decisions as Array<{ id?: unknown }>
+  } catch { /* 缺文件/损坏按空账本起步，由主进程读取方归一 */ }
+  const existingIds = new Set(existing.map((item) => String(item?.id ?? '')))
+  let id = ''
+  do {
+    id = `DEC-${randomBytes(4).toString('hex').toUpperCase()}`
+  } while (existingIds.has(id))
+  const record: RunLoopDecisionRecord = {
+    id,
+    createdAt: new Date().toISOString(),
+    source: input.source,
+    trigger: input.trigger,
+    action: input.action,
+    rationale: input.rationale,
+    evidenceRefs: input.evidenceRefs,
+    status: input.source === 'human' ? 'approved' : 'proposed',
+    outcome: null
+  }
+  writeJsonAtomic(ledgerPath, { version: 1, decisions: [record, ...existing].slice(0, RUN_LOOP_DECISION_LEDGER_LIMIT) })
+  return record
 }
 
 // ============================================================
@@ -2041,6 +2096,65 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         }
       } catch (err) {
         return { content: [{ type: 'text', text: `根因登记被拒绝：${err instanceof Error ? err.message : String(err)}` }], details: {}, isError: true }
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'propose_run_decision',
+    label: 'Propose Run Loop Decision',
+    description: '向 MoonGlass 验证运行循环的决策账本登记一条下一步行动提案（verification/results/decision-ledger.json，追加式）。仅当处于循环决策升级会话（规则空转/熔断恢复，由主进程派发）或用户在会话中明确指示改变循环方向时才允许调用；常规验证工作禁止调用本工具。trigger=user-instruction（工程师明确指示）时登记为 source=human 并直接批准，循环自动执行；其余登记为 source=llm、status=proposed，经决策卡片由工程师批准后才执行（顾问模式默认，委托模式未开启）。action.expectedOutput 与 action.stopCriteria 必填且必须非空；derived 类 actionId 必须是推导内核已知动作 id（规则层白名单校验，幻觉动作会在批准时被拒）。',
+    promptSnippet: 'Propose the next run-loop action as a ledger decision during an escalation session or on explicit user instruction',
+    promptGuidelines: 'Call only in a run-loop decision escalation session (dispatched by MoonGlass on rule-stall or breaker-recovery) or when the user explicitly instructs a direction change in this conversation. Keep rationale ≤200 chars. expectedOutput and stopCriteria are required and must be non-empty. For derived actions use a real derived action id from the verification guidance kernel; for custom instructions pass actionId=null. After registering, the proposal goes to the engineer via a decision card; do not re-submit duplicates.',
+    parameters: Type.Object({
+      trigger: Type.Union([
+        Type.Literal('rule-stall', { description: '规则空转升级会话（主进程派发）' }),
+        Type.Literal('breaker-recovery', { description: '熔断恢复升级会话（主进程派发）' }),
+        Type.Literal('user-instruction', { description: '用户在会话中明确指示改方向（登记为工程师决策，直接批准）' })
+      ], { description: '登记触发' }),
+      action: Type.Object({
+        kind: Type.Union([Type.Literal('derived'), Type.Literal('custom')], { description: 'derived=引用推导内核已知动作 id；custom=自由指令（actionId 必须传 null）' }),
+        actionId: Type.Optional(Type.Union([Type.String(), Type.Null()], { description: 'derived 类必填：推导内核已知动作 id；custom 类必须为 null 或省略' })),
+        prompt: Type.String({ minLength: 1, description: '具体可执行的动作指令（≤4000 字；经决策卡片批准后以任务会话派发执行）' }),
+        expectedOutput: Type.String({ minLength: 1, description: '期望产出，必填非空' }),
+        stopCriteria: Type.String({ minLength: 1, description: '停止条件，必填非空' })
+      }),
+      rationale: Type.String({ minLength: 1, maxLength: 200, description: '决策理由，≤200 字' }),
+      evidenceRefs: Type.Array(Type.String(), { description: '证据锚点（相对工作区的账本/证据文件路径，须真实读取过）' })
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      try {
+        if (params.action.prompt.length > 4000) throw new Error(`prompt 超过 4000 字上限（当前 ${params.action.prompt.length} 字）`)
+        if (params.action.kind === 'derived' && !params.action.actionId?.trim()) {
+          throw new Error("kind='derived' 时必须提供非空 actionId（推导内核已知动作 id）")
+        }
+        if (params.action.kind === 'custom' && params.action.actionId != null) {
+          throw new Error("kind='custom' 时 actionId 必须为 null（自由指令不挂推导动作 id）")
+        }
+        const source = params.trigger === 'user-instruction' ? 'human' : 'llm'
+        const record = appendRunLoopDecisionLedger(resolve(ctx.cwd), {
+          source,
+          trigger: params.trigger,
+          action: {
+            kind: params.action.kind,
+            actionId: params.action.kind === 'derived' ? params.action.actionId!.trim() : null,
+            prompt: params.action.prompt,
+            expectedOutput: params.action.expectedOutput,
+            stopCriteria: params.action.stopCriteria
+          },
+          rationale: params.rationale,
+          evidenceRefs: params.evidenceRefs
+        })
+        const statusText = record.status === 'approved'
+          ? '已批准（工程师指令不审批，循环将自动拾取执行）'
+          : '已登记为待审批提案（顾问模式：经决策卡片由工程师批准后才执行）'
+        return {
+          content: [{ type: 'text', text: `## 循环决策登记\n\n- 决策 ID：${record.id}\n- 来源/触发：${record.source} / ${record.trigger}\n- 状态：${statusText}\n- 落盘：verification/results/decision-ledger.json` }],
+          details: { record },
+          isError: false
+        }
+      } catch (err) {
+        return { content: [{ type: 'text', text: `循环决策登记被拒绝：${err instanceof Error ? err.message : String(err)}` }], details: {}, isError: true }
       }
     }
   })

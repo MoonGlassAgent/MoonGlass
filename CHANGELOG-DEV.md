@@ -2,6 +2,16 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-29：验证长程运行循环（VERIF-RUN-LOOP，批 1-4）
+
+- **设计文档**：`docs/VERIF-RUN-LOOP-DESIGN-ZH-CN.md`——外循环 = 规则驱动 + 证据裁决 + 结构化决策层（LLM/工程师双源、单一决策账本）；解决"小任务完成即停、无法自主完成整个验证活动"的断档。
+- **批 1 推导内核下沉**：`verification-guidance` 纯函数迁至 `src/shared/verification-guidance.ts`（i18n 经 GuidanceTranslate 注入，内核只产文案 key），UI 与循环共用同一份推导；渲染端为薄壳，页面调用签名不变。
+- **批 2 循环骨架**：`src/main/services/verif-run-loop.ts` 纯函数核心 + AgentService 驱动——11 态状态机、`verification/results/run-loop.json` 账本（原子写+归一化）、四维预算熔断（拍数 50 / token 500 万 / 墙钟 240min / 连续无进展 3 拍，启动可覆盖）、重启对账（中断态转熔断待人确认，不擅自续跑）、批次类动作委托既有内层编排、修复门控嵌入、门禁通过才 completed、失败转 gate-blocked 待人。
+- **批 3 决策层**：`decision-ledger.json`（rule/llm/human 三源记账、执行后按证据回填 outcome）；新 pi 工具 `propose_run_decision`；规则空转/熔断恢复派发决策升级会话提案待人审（无提案才熔断）；批准前合法性校验（动作白名单/停止条件非空/预算）；工程师指令直接 approved 不审批；批准自动续跑、否决转熔断。
+- **批 4 UI**：主区"验证运行"页签——RunLoopCard（11 态徽标/当前动作+来源徽标/三条预算水位/暂停原因卡/拍时间线/启停控制+预算对话框/决策请示批准否决+决策历史）+ 手动接管互斥（循环运行中手动动作先确认暂停循环）+ 一键托管 VERIF 三段式删除、切换为循环驱动并跟随其终态。
+- 验证：`pnpm typecheck` 5 包全绿、`typecheck:root` 基线 11 零新增、core 34 scripts 全绿、`pnpm build` 通过。
+- 备注：随附 `src/renderer/store/managedStore.ts`（并行团队的托管状态 store，WorkspacePage 有 5 行调用依赖，其项目卡片侧 UI 改动未随本提交）；CHANGELOG 中 2026-09-15 三节为并行团队已验证工作（卡片拖拽排序/聊天输入探针）的记录。
+
 ## 2026-09-29：v1.0.0 基线
 
 - **验证策略修订《TOP 优先，UT 例外》**（`docs/AIGV-TOP-FIRST-STRATEGY-ZH-CN.md`）：DUT 默认整个设计（TOP），子模块 UT 改为诊断驱动的例外；配套配置空间模型（寄存器组合账本），"需求→规格→验证"链条顶层闭合。
@@ -96,6 +106,33 @@
 - 问题：会话标签栏中已完成的 VERIF 批次会话（"查看"徽标）无关闭按钮，完成记录不断堆积无法清理。
 - 修复：SessionTabs 对未运行中的批次会话渲染 × 关闭按钮（复用既有 closeSession 链路：删除 JSONL + 清理模型登记，运行中批次仍不显示）；主进程 closeSession 增加保护——正在运行的 VERIF 批次会话（activeVerifBatches 命中）拒绝关闭并提示先停止托管，防止编排循环的 settle 等待悬空。
 - 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke` 通过。
+
+## 2026-09-15：长按拖拽二次失败修复 + 聊天输入诊断探针
+
+- 拖拽二次失败：根因是长按计时器被"按住移动超过 8px"取消——用户首次成功后形成肌肉记忆，后续按下立即拖动（移动发生在 350ms 阈值内）导致拖拽被误取消。改为按住期间允许移动，仅松手/Esc 取消计时。E2E 扩展为连续三次拖拽 + 快速先按后拖，全部断言通过。
+- 聊天输入间歇性无法键入（新线索：粘贴/删除正常、等待后自愈）：在 ChatPanel 输入框埋诊断探针——localStorage 置 `moonglass:chat-input-debug=1` 刷新后，console 记录 IME composition 起止、keydown/input、focus/blur、disabled 抖动与 longtask，用于下次复现时取证区分"组合输入被杀 / disabled 抖动 / 焦点丢失 / 主线程长帧"四类机制。
+- 验证：`pnpm typecheck`、`pnpm build`、`e2e-project-card-dnd` 全过。
+
+## 2026-09-15：项目卡片改为长按拖拽 + 实时挤开排位
+
+- 交互调整（按用户反馈）：移除拖拽手柄，**长按卡片任意位置（350ms）启动拖拽**；短按保持原有链接进项目行为（拖拽结束后抑制随后 click 防误进）。
+- 拖拽体验：拖动中卡片变为跟随指针的幽灵卡，原位置显示虚线占位框；指针悬停目标卡片时按行列中点实时计算插入位置并立即重排（占位框移动、其他卡片以 FLIP 动画平滑挤开）；松手持久化顺序，Esc 取消不保存。
+- 实现：放弃 HTML5 DnD（无法长按启动），自实现 pointer 事件状态机（长按计时器 + 8px 移动阈值取消 + window 级 pointermove/pointerup/keydown 监听 + elementFromPoint 命中检测）。
+- 验证：新建 `scripts/e2e-project-card-dnd.mjs`（playwright 真实应用，MOONGLASS_USERDATA 隔离）10 项断言全过：短按不重排、长按出幽灵卡、占位框随拖动移位、松手顺序持久化、重挂载后顺序保持；`pnpm build` 通过。
+
+## 2026-09-15：项目卡片位置稳定 + 可拖拽排序
+
+- 问题：主进程 `ProjectService.list()` 按 updatedAt 降序返回项目，点进项目再回列表页卡片就重新排位，难以形成空间记忆。
+- 修复（渲染层覆盖排序，不动主进程接口）：卡片展示顺序改为"自定义顺序优先 + 未保存项目按创建时间升序稳定追加"，自定义顺序存 localStorage（`moonglass:project-order`）。
+- 拖拽：卡片左缘新增拖拽手柄（GripVertical，悬停显现，仅手柄可拖不影响链接点击与文本选择），HTML5 DnD 拖到目标卡片即插入其位置并即时持久化；拖放目标有高亮 ring 反馈。
+- 验证：`pnpm typecheck`、`pnpm build` 通过。
+
+## 2026-09-15：项目卡片显示一键托管状态
+
+- 需求：项目卡片区只能看到"会话进行中/空闲"徽标，看不到哪些项目正在一键托管。
+- 实现：托管运行状态从 WorkspacePage 本地 useState 提升到模块级 `managedStore`（zustand，记录 running/当前阶段/终点阶段/开始时间；托管循环跨页面存活与应用重启即终止的语义一致，不持久化）。WorkspacePage 在循环启动、逐阶段推进、finally 收尾三处同步；项目卡片新增天蓝色"托管中 · {阶段}"脉冲徽标（tooltip 显示当前阶段/终点/开始时间），优先级高于会话活动徽标。
+- 顺带加固：`startManagedRun` 增加 store 级防重——工作区重挂载后本地状态复位但旧托管循环可能仍在跑，防止启动第二个并发托管循环。
+- 验证：`pnpm typecheck`、`pnpm build` 通过。
 
 ## 2026-09-15：移除工作区底部工程控制台
 

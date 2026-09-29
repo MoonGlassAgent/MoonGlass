@@ -7,7 +7,7 @@
 import { BrowserWindow, dialog, ipcMain, nativeTheme, shell } from 'electron'
 import { IPC } from '@shared/ipc-contract'
 import { PHASE_ORDER } from '@shared/types'
-import type { ImageAttachment, IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest } from '@shared/types'
+import type { ImageAttachment, IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest, VerifRunLoopStartOptions } from '@shared/types'
 import type { ApplicationServices } from './core/application'
 import { pathToFileURL } from 'node:url'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
@@ -327,6 +327,17 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Agent.StopVerifBatches, async (_e, projectId: string) => {
     await agent.stopVerifBatches(projectId)
   })
+
+  // 验证运行循环（VERIF-RUN-LOOP 批 2/批 3）：外层循环控制通道 + 决策审批（decide）
+  ipcMain.handle(IPC.Agent.StartVerifRunLoop, (_e, projectId: string, options?: VerifRunLoopStartOptions) =>
+    agent.startVerifRunLoop(projectId, options)
+  )
+  ipcMain.handle(IPC.Agent.PauseVerifRunLoop, (_e, projectId: string) => agent.pauseVerifRunLoop(projectId))
+  ipcMain.handle(IPC.Agent.ResumeVerifRunLoop, (_e, projectId: string) => agent.resumeVerifRunLoop(projectId))
+  ipcMain.handle(IPC.Agent.StopVerifRunLoop, (_e, projectId: string) => agent.stopVerifRunLoop(projectId))
+  ipcMain.handle(IPC.Agent.DecideVerifRunDecision, (_e, projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string) =>
+    agent.decideVerifRunDecision(projectId, decisionId, verdict, editedPrompt)
+  )
 
   // ==================== 项目文件 ====================
   ipcMain.handle(IPC.Fs.Tree, (_e, projectId: string) => files.tree(projectId))

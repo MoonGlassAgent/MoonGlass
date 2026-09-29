@@ -188,7 +188,18 @@ for (const marker of [
   'topic',
   'wave',
   'executionBatches',
-  '聚类组'
+  '聚类组',
+  // VERIF-RUN-LOOP 批 3：propose_run_decision 工具注册与决策账本 schema（§9.2）
+  "name: 'propose_run_decision'",
+  'appendRunLoopDecisionLedger',
+  "Type.Literal('rule-stall'",
+  "Type.Literal('breaker-recovery'",
+  "Type.Literal('user-instruction'",
+  'expectedOutput',
+  'stopCriteria',
+  'decision-ledger.json',
+  "input.source === 'human' ? 'approved' : 'proposed'",
+  '工程师指令不审批'
 ]) {
   if (!toolsSource.includes(marker)) {
     console.error(`[schema] moonglass-tools.ts 缺少标记：${marker}`)

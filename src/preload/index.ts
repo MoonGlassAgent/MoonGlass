@@ -5,7 +5,7 @@
 
 import { contextBridge, ipcRenderer } from 'electron'
 import { IPC, type MoonGlassApi } from '@shared/ipc-contract'
-import type { AgentEventPayload, ImageAttachment, IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest } from '@shared/types'
+import type { AgentEventPayload, ImageAttachment, IpLibraryImportInput, LlmProviderConfig, Phase, PhaseResetMode, PythonRunRequest, VerifRunLoopStartOptions } from '@shared/types'
 
 const api: MoonGlassApi = {
   ui: {
@@ -102,6 +102,13 @@ const api: MoonGlassApi = {
     runVerifBatches: (projectId: string, options?: { batchSize?: number; maxBatches?: number }) =>
       ipcRenderer.invoke(IPC.Agent.RunVerifBatches, projectId, options),
     stopVerifBatches: (projectId: string) => ipcRenderer.invoke(IPC.Agent.StopVerifBatches, projectId),
+    startVerifRunLoop: (projectId: string, options?: VerifRunLoopStartOptions) =>
+      ipcRenderer.invoke(IPC.Agent.StartVerifRunLoop, projectId, options),
+    pauseVerifRunLoop: (projectId: string) => ipcRenderer.invoke(IPC.Agent.PauseVerifRunLoop, projectId),
+    resumeVerifRunLoop: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ResumeVerifRunLoop, projectId),
+    stopVerifRunLoop: (projectId: string) => ipcRenderer.invoke(IPC.Agent.StopVerifRunLoop, projectId),
+    decideVerifRunDecision: (projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string) =>
+      ipcRenderer.invoke(IPC.Agent.DecideVerifRunDecision, projectId, decisionId, verdict, editedPrompt),
     onEvent: (cb: (payload: AgentEventPayload) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, payload: AgentEventPayload): void =>
         cb(payload)

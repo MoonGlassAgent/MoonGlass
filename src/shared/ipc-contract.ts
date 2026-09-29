@@ -32,6 +32,7 @@ import type {
   ToolInstallResult,
   VerifBatchLoopResult,
   VerifBatchRunResult,
+  VerifRunLoopStartOptions,
   WaveformOpenResult
 } from './types/moonglass'
 import type { OpenProcessLibrary, ProcessLibraryRecord } from './types/moonglass'
@@ -109,7 +110,14 @@ export const IPC = {
     /** VERIF 批次编排（第 3 批）：单个批次 / 循环派发 */
     RunVerifBatch: 'agent:run-verif-batch',
     RunVerifBatches: 'agent:run-verif-batches',
-    StopVerifBatches: 'agent:stop-verif-batches'
+    StopVerifBatches: 'agent:stop-verif-batches',
+    /** 验证运行循环（VERIF-RUN-LOOP 批 2）：外层循环启动/暂停/恢复/停止；状态读取走 fs.readJson(run-loop.json) + 既有 watch */
+    StartVerifRunLoop: 'agent:start-verif-run-loop',
+    PauseVerifRunLoop: 'agent:pause-verif-run-loop',
+    ResumeVerifRunLoop: 'agent:resume-verif-run-loop',
+    StopVerifRunLoop: 'agent:stop-verif-run-loop',
+    /** 循环决策层（批 3，§3.3）：工程师对挂起决策给出批准/否决；决策账本 verification/results/decision-ledger.json */
+    DecideVerifRunDecision: 'agent:decide-verif-run-decision'
   },
   Fs: {
     Tree: 'fs:tree',
@@ -260,6 +268,15 @@ export interface MoonGlassApi {
     runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number }): Promise<VerifBatchLoopResult>
     /** 停止 VERIF 批次编排：中止进行中的批次会话并不再派发新批次 */
     stopVerifBatches(projectId: string): Promise<void>
+    /** 启动 VERIF 验证运行循环（批 2，仅 VERIF 阶段、同项目单循环）；状态读取走 fs.readJson + 既有 watch，不经 IPC */
+    startVerifRunLoop(projectId: string, options?: VerifRunLoopStartOptions): Promise<void>
+    pauseVerifRunLoop(projectId: string): Promise<void>
+    /** 恢复：清暂停并重新推导续跑（paused-human/paused-breaker 态） */
+    resumeVerifRunLoop(projectId: string): Promise<void>
+    stopVerifRunLoop(projectId: string): Promise<void>
+    /** 循环决策层（批 3，§3.3）：工程师对挂起的 LLM 提案给出批准/否决，可附修改后的指令；
+     *  批准后循环拾取执行（合法性校验不过 → 记 rejected 并抛错） */
+    decideVerifRunDecision(projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string): Promise<void>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
   }

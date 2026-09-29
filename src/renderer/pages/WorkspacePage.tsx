@@ -28,7 +28,10 @@ import {
   type ChipProject,
   type GateCheckResult,
   type AgentDecisionRequest,
-  type Phase
+  type Phase,
+  type VerifRunLoopLedger,
+  type VerifRunLoopStartOptions,
+  type VerifRunLoopState
 } from '@shared/types'
 import { serializeDecisionResponses } from '@shared/agent-interaction'
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
@@ -39,17 +42,23 @@ import { MarkdownPreview } from '../components/MarkdownPreview'
 import { VerificationGuideCard } from '../components/VerificationGuideCard'
 import {
   FixWindowBanner,
+  RunLoopCard,
+  VerifRunPanel,
+  normalizeDecisionLedger,
   normalizeRootCauseRecords,
   normalizeRtlFixInProgress,
   normalizeRtlFixOutcomes,
+  normalizeRunLoopLedger,
   normalizeVerifBatchLoop,
   type RootCauseRecordView,
   type RtlFixInProgressView,
   type RtlFixOutcomeView,
-  type VerifBatchLoopView
+  type VerifBatchLoopView,
+  type VerifRunDecisionEntryView
 } from '../components/verif-run'
 import { GlossaryTip } from '../components/GlossaryTip'
 import { useChatStore } from '../store/chatStore'
+import { useManagedStore } from '../store/managedStore'
 import { deriveVerificationActions, deriveVerificationSteps, type GuidanceState } from '../verification-guidance'
 import { useTranslation, phaseLabel, type MessageKey } from '../i18n'
 import { useVerificationChanged } from '../hooks/useVerificationChanged'
@@ -63,13 +72,23 @@ interface ManagedStep {
   detail: string
 }
 
-/** 验证运行页签数据（方案 C）：批次循环/修复判定/修复窗口/根因链四份落盘 JSON 的归一化视图 */
+/** 验证运行页签数据（方案 C + 外层循环批 4）：批次循环/修复判定/修复窗口/根因链/
+ *  外层循环账本/决策账本六份落盘 JSON 的归一化视图 */
 interface VerifRunData {
   batchLoop: VerifBatchLoopView | null
   fixOutcomes: RtlFixOutcomeView[]
   fixInProgress: RtlFixInProgressView | null
   rootCauses: RootCauseRecordView[]
+  runLoop: VerifRunLoopLedger | null
+  decisions: VerifRunDecisionEntryView[]
 }
+
+/** 手动/自动互斥（§7.2 方向盘唯一）：这些状态表示循环持有方向盘，手动动作需先弹确认并暂停循环 */
+const RUN_LOOP_ACTIVE_STATES: readonly VerifRunLoopState[] = ['planning', 'running', 'judging', 'repairing', 'signoff-review', 'gate-check']
+/** 托管切换（批 4）轮询 run-loop.json 的收敛态：completed 继续托管，stopped/paused-* 停止托管 */
+const RUN_LOOP_SETTLED_STATES: readonly VerifRunLoopState[] = ['completed', 'stopped', 'paused-human', 'paused-breaker']
+/** 托管轮询间隔（毫秒，§10 批 4：10–15s） */
+const RUN_LOOP_POLL_INTERVAL_MS = 12_000
 
 const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 const isManagedPause = (message: string): boolean => /用户停止托管|托管已暂停|L3\/L4 高影响/.test(message)
@@ -130,8 +149,9 @@ function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasi
   </div>
 }
 
-// 注意：VERIF 不在此表——VERIF 托管走"主会话规划 → 主进程批级派发 → 主会话终审"
-// 三段式（MANAGED_VERIF_PLANNING_PROMPT / runVerifBatches / MANAGED_VERIF_REVIEW_PROMPT）
+// 注意：VERIF 不在此表——VERIF 托管走"验证运行循环"（VERIF-RUN-LOOP 批 4 托管切换，
+// 设计文档 §10）：startVerifRunLoop（默认预算）→ 轮询 run-loop.json 直至终态/暂停态，
+// completed 继续托管推进门禁，stopped/paused-* 停止托管交用户处置（见 startManagedRun）。
 const MANAGED_PHASE_PROMPTS: Record<Exclude<Phase, 'VERIF'>, string> = {
   REQ_SPEC: '完成需求-规格定义：审查项目目标，补齐产品需求、模块规格、接口规格和需求-规格追溯矩阵，消除占位内容并执行文档检查。',
   ARCH: '完成架构设计：根据已批准需求规格更新总体架构、模块划分、接口、时钟复位和寄存器设计，并检查需求追溯。简单单模块/单时钟复位设计可将说明合并在 architecture.md；仅在复杂微架构、多时钟、多复位或 CDC/RDC 场景单独创建 microarchitecture.md、clock_reset.md。',
@@ -139,24 +159,6 @@ const MANAGED_PHASE_PROMPTS: Record<Exclude<Phase, 'VERIF'>, string> = {
   QA: '完成质量检查：执行变更审查、代码 Review、检查清单、Lint/CDC/回归证据核对，修复阻断问题并形成 QA 报告。',
   SYNTH: '完成综合评估：检查约束，生成 SDC，执行逻辑综合，汇总网表、单元、面积和时序估算及警告；明确区分估算与正式签核。'
 }
-
-// VERIF 托管（上下文治理第 3 批）：主会话只做规划与最终审查；
-// 批次场景由主进程经 runVerifBatches 逐批 spawn 平行会话执行，完成判定绑定工具登记证据。
-// 托管 VERIF 断档修复（e2e 实测 2026-09-28）：规划会话曾越界自行跑 17 分钟回归并登记
-// confirmed 根因（提前触发修复派发与批次门控），prompt 据此收敛为"只规划、只登记假设"。
-const MANAGED_VERIF_PLANNING_PROMPT =
-  '完成验证规划与环境准备：更新验证计划和覆盖率计划，搭建或修复验证环境（TOP 优先：只搭一套 TOP cocotb 环境，verification/<topModule>_tb/，总线 VIP 挂接寄存器配置，driver/monitor/scoreboard/golden model 面向顶层接口；不按模块分级多套；只做编译/展开级别的可用性检查）；' +
-  '规格含寄存器/配置章节时经 register_config_space 登记配置空间账本（规格缺寄存器章节转 Spec Gap 阻断，不得编造寄存器）；' +
-  '调用 build_verification_intelligence 生成风险候选与结构事实，圈定真实验证点并用 register_verification_intents 登记（锚定真实 riskIds/requirementIds/rtlSignals）。' +
-  '本会话只做规划与意图登记：禁止运行仿真/Formal 回归（场景执行由 MoonGlass 主进程编排的后续批次会话承担）；' +
-  '若发现疑似 RTL bug，只在 root-causes.json 记录为假设（hypothesis），禁止登记 confirmed 根因' +
-  '（confirmed 登记会立即触发 RTL 修复会话派发，应由批次执行/诊断循环触发）。'
-const MANAGED_VERIF_REVIEW_PROMPT =
-  'VERIF 批次执行已结束。读取 verification/intelligence/execution-summary.json 核对批次结果与证据增量；' +
-  '调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始测试、日志、result.json 和覆盖率证据；' +
-  '发现阻断项时不要在本会话重跑大规模回归：证据缺口与疑似 RTL bug 登记为假设并写入审查结论，走诊断循环' +
-  '（确认根因会触发独立修复会话；批次补跑由 MoonGlass 编排决定）；' +
-  '最后用实际机器可读产物和原始证据更新 docs/04_verification/ 文档、需求追溯和 docs/06_validation/ 验证报告。'
 
 function pendingDecisionRequests(): AgentDecisionRequest[] {
   const messages = useChatStore.getState().messages
@@ -306,7 +308,7 @@ export function WorkspacePage(): React.JSX.Element {
     setProject(await window.moonglass.project.get(projectId))
   }, [projectId])
 
-  // 验证运行页签数据加载：四份 JSON 各自独立读取（单份损坏/缺失不影响其余），归一化后一次性回填
+  // 验证运行页签数据加载：六份 JSON 各自独立读取（单份损坏/缺失不影响其余），归一化后一次性回填
   // 防重入：进行中的加载不重复进入，期间到达的变更推送合并为一次尾随重载（与 VerifStatusBar 同模式）
   const verifRunLoadingRef = useRef(false)
   const verifRunPendingRef = useRef(false)
@@ -316,17 +318,21 @@ export function WorkspacePage(): React.JSX.Element {
     const readResult = async (relPath: string): Promise<unknown> => {
       try { return await window.moonglass.fs.readJson(projectId, relPath) } catch { return null }
     }
-    const [batchLoopRaw, outcomesRaw, inProgressRaw, rootCausesRaw] = await Promise.all([
+    const [batchLoopRaw, outcomesRaw, inProgressRaw, rootCausesRaw, runLoopRaw, decisionsRaw] = await Promise.all([
       readResult('verification/results/verif-batch-loop.json'),
       readResult('verification/results/rtl-fix-outcomes.json'),
       readResult('verification/results/rtl-fix-in-progress.json'),
-      readResult('verification/results/root-causes.json')
+      readResult('verification/results/root-causes.json'),
+      readResult('verification/results/run-loop.json'),
+      readResult('verification/results/decision-ledger.json')
     ])
     setVerifRunData({
       batchLoop: normalizeVerifBatchLoop(batchLoopRaw),
       fixOutcomes: normalizeRtlFixOutcomes(outcomesRaw),
       fixInProgress: normalizeRtlFixInProgress(inProgressRaw),
-      rootCauses: normalizeRootCauseRecords(rootCausesRaw)
+      rootCauses: normalizeRootCauseRecords(rootCausesRaw),
+      runLoop: normalizeRunLoopLedger(runLoopRaw),
+      decisions: normalizeDecisionLedger(decisionsRaw)
     })
     verifRunLoadingRef.current = false
     if (verifRunPendingRef.current) { verifRunPendingRef.current = false; void loadVerifRun() }
@@ -786,6 +792,45 @@ export function WorkspacePage(): React.JSX.Element {
     }
   }
 
+  // ---- 外层循环卡控制（VERIF-RUN-LOOP 批 4，§7.1 做控制）：薄 IPC 包装，错误抛给卡内错误条 ----
+  const handleRunLoopStart = async (options: VerifRunLoopStartOptions): Promise<void> => {
+    await window.moonglass.agent.startVerifRunLoop(projectId, options)
+    appendLog(t('workspace.log.runLoopStarted'))
+    void loadVerifRun()
+  }
+  const handleRunLoopPause = async (): Promise<void> => {
+    await window.moonglass.agent.pauseVerifRunLoop(projectId)
+    void loadVerifRun()
+  }
+  const handleRunLoopResume = async (): Promise<void> => {
+    await window.moonglass.agent.resumeVerifRunLoop(projectId)
+    void loadVerifRun()
+  }
+  const handleRunLoopStop = async (): Promise<void> => {
+    await window.moonglass.agent.stopVerifRunLoop(projectId)
+    void loadVerifRun()
+  }
+  const handleRunLoopDecide = async (decisionId: string, verdict: 'approved' | 'rejected'): Promise<void> => {
+    // 批 3 决策层 IPC（advisor 模式）：主进程实现前会抛 NotImplemented，错误经卡内提示
+    await window.moonglass.agent.decideVerifRunDecision(projectId, decisionId, verdict)
+    void loadVerifRun()
+  }
+
+  /** §7.2 手动/自动互斥（方向盘唯一）：循环持有方向盘时，手动动作先确认并暂停循环，再走原发送路径。 */
+  const guardManualVerifAction = async (action: () => Promise<void>): Promise<void> => {
+    const runLoop = verifRunData?.runLoop
+    if (runLoop && RUN_LOOP_ACTIVE_STATES.includes(runLoop.state)) {
+      if (!window.confirm(t('workspace.confirm.manualTakeover'))) return
+      try {
+        await window.moonglass.agent.pauseVerifRunLoop(projectId)
+        void loadVerifRun()
+      } catch (error) {
+        appendLog(t('workspace.log.runLoopPauseFailed', { error: error instanceof Error ? error.message : String(error) }))
+      }
+    }
+    await action()
+  }
+
   const runManagedAgent = async (instruction: string): Promise<void> => {
     const prompt = `【MoonGlass 一键托管】\n${instruction}\n\n` +
       '托管规则：直接检查并修改实际项目文件，调用本阶段适用工具完成验证，所有结论必须引用真实证据。' +
@@ -861,13 +906,17 @@ export function WorkspacePage(): React.JSX.Element {
   }
 
   const startManagedRun = async (): Promise<void> => {
-    if (!project || managedRunning) return
+    // store 中的 running 跨组件存活：工作区重挂载后本地 managedRunning 已复位，
+    // 但旧托管循环可能仍在后台执行，借此防止重复启动第二个托管循环
+    if (!project || managedRunning || useManagedStore.getState().byProject[projectId]?.running) return
     const startIndex = PHASE_ORDER.indexOf(project.currentPhase)
     const endIndex = PHASE_ORDER.indexOf(managedEndPhase)
     if (endIndex < startIndex) return
     managedStopRef.current = false
     setManagedDialogOpen(false)
     setManagedRunning(true)
+    // 托管状态提升到模块级 store：项目列表页卡片据此显示「托管中」徽标
+    useManagedStore.getState().start(projectId, managedEndPhase)
     setManagedReportPath('')
     setMainTab('chat')
     const startedAt = new Date().toISOString()
@@ -876,11 +925,26 @@ export function WorkspacePage(): React.JSX.Element {
     let outcome: 'completed' | 'completed_with_risk' | 'paused' | 'stopped' | 'failed' = 'completed'
     let failure = ''
     let totalRisks = 0
+    /** 托管轮询 run-loop.json 直至收敛态（10–15s 间隔，沿用页面 wait 惯例）；用户停止时抛出中断。 */
+    const pollManagedRunLoop = async (): Promise<VerifRunLoopLedger | null> => {
+      for (;;) {
+        await wait(RUN_LOOP_POLL_INTERVAL_MS)
+        if (managedStopRef.current) throw new Error('用户停止托管')
+        let ledger: VerifRunLoopLedger | null = null
+        try {
+          ledger = normalizeRunLoopLedger(await window.moonglass.fs.readJson(projectId, 'verification/results/run-loop.json'))
+        } catch {
+          ledger = null
+        }
+        if (ledger && RUN_LOOP_SETTLED_STATES.includes(ledger.state)) return ledger
+      }
+    }
     try {
       await ensureAgent(projectId)
       if (!useChatStore.getState().sessionInfo?.providersReady) throw new Error('模型会话未就绪，请先配置并测试模型服务')
       for (let index = startIndex; index <= endIndex; index += 1) {
         const phase = PHASE_ORDER[index]
+        useManagedStore.getState().setPhase(projectId, phase)
         if (managedStopRef.current) throw new Error('用户停止托管')
         const step: ManagedStep = { phase, status: 'running', detail: 'Agent 正在执行阶段任务' }
         steps.push(step)
@@ -914,17 +978,22 @@ export function WorkspacePage(): React.JSX.Element {
         }
         try {
           if (phase === 'VERIF') {
-            // 第 3 批：VERIF 风险闭环改为“主会话规划 → 主进程逐批 spawn 批次会话执行 → 主会话最终审查”
-            await runManagedAgent(MANAGED_VERIF_PLANNING_PROMPT)
-            if (managedStopRef.current) throw new Error('用户停止托管')
-            const loop = await window.moonglass.agent.runVerifBatches(projectId)
-            appendLog(t('workspace.log.managedVerifBatches', { count: loop.batches.length, stoppedBy: loop.stoppedBy, message: loop.message }))
-            if (loop.stoppedBy !== 'exhausted') {
+            // 批 4 托管切换（设计文档 §10）：三段式固定脚本收敛为验证运行循环托管——
+            // 启动循环（默认预算）后轮询账本；completed 继续托管推进门禁/QA，
+            // stopped/paused-* 写日志汇总并停止托管（提示用户去"验证运行"页签处置）。
+            await window.moonglass.agent.startVerifRunLoop(projectId)
+            appendLog(t('workspace.log.managedRunLoopStarted'))
+            const finalLedger = await pollManagedRunLoop()
+            if (finalLedger && finalLedger.state === 'completed') {
+              appendLog(t('workspace.log.managedRunLoopCompleted', { beats: finalLedger.beat }))
+            } else {
+              const stateText = finalLedger ? t(`verifRun.loop.state.${finalLedger.state}`) : '—'
+              const pauseReason = finalLedger?.pause ? `${finalLedger.pause.reason}${finalLedger.pause.detail ? `：${finalLedger.pause.detail}` : ''}` : ''
               totalRisks += 1
-              step.detail = `VERIF 批次编排中止（${loop.stoppedBy}）：${loop.message}`
+              step.detail = `验证运行循环停在 ${stateText}，托管已停止`
+              appendLog(t('workspace.log.managedRunLoopHalted', { state: stateText, reason: pauseReason || '—' }))
+              throw new Error(`托管已暂停：验证运行循环 ${stateText}${pauseReason ? `（${pauseReason}）` : ''}；请前往"验证运行"页签处置，恢复循环后可手动推进`)
             }
-            if (managedStopRef.current) throw new Error('用户停止托管')
-            await runManagedAgent(MANAGED_VERIF_REVIEW_PROMPT)
           } else {
             await runManagedAgent(MANAGED_PHASE_PROMPTS[phase])
           }
@@ -991,6 +1060,12 @@ export function WorkspacePage(): React.JSX.Element {
       }
       setManagedSteps([...steps])
     } finally {
+      // 批 4：托管结束（完成/带风险/失败/用户停止）时拍停验证运行循环，避免无人值守继续烧钱；
+      // paused 态例外——循环停在待人工/熔断，留给用户在"验证运行"页签处置后可一键恢复
+      if (outcome !== 'paused') {
+        await window.moonglass.agent.stopVerifRunLoop(projectId).catch((error) =>
+          appendLog(t('workspace.log.managedRunLoopStopFailed', { error: error instanceof Error ? error.message : String(error) })))
+      }
       if (outcome === 'completed' && totalRisks > 0) outcome = 'completed_with_risk'
       const path = await writeManagedReport(outcome, startedAt, steps, failure)
       const resultText = outcome === 'completed'
@@ -1000,12 +1075,16 @@ export function WorkspacePage(): React.JSX.Element {
           : t('workspace.log.managedPaused')
       appendLog(t('workspace.log.managedFinished', { result: resultText, path }))
       setManagedRunning(false)
+      useManagedStore.getState().finish(projectId)
       await reload()
     }
   }
 
   const stopManagedRun = async (): Promise<void> => {
     managedStopRef.current = true
+    // 批 4：托管停止时一并停止验证运行循环（无循环/已终态时主进程为幂等 no-op）
+    await window.moonglass.agent.stopVerifRunLoop(projectId).catch((error) =>
+      appendLog(t('workspace.log.managedRunLoopStopFailed', { error: error instanceof Error ? error.message : String(error) })))
     // M1 §3.6：主进程 abort 已覆盖该项目全部存活会话（前台 + 后台任务会话 + VERIF 批次编排）
     // 无条件 abort：停止时前台通常空闲（在等批次/后台任务），按 streaming 判断会漏掉后台任务会话
     await abortAgent()
@@ -1257,7 +1336,12 @@ export function WorkspacePage(): React.JSX.Element {
           </div>
         )}
 
-        {project.currentPhase === 'VERIF' && <VerifStatusBar projectId={project.id} agentStreaming={agentStreaming} onAction={(prompt) => void handleVerificationGuidanceAction(prompt)} onPlanEnv={() => void handlePlanEnv()} onBasic={() => void handleBasicValidation()} onCorner={() => void handleCornerWaves()} onSignoff={() => void handleSignoff()} />}
+        {project.currentPhase === 'VERIF' && <VerifStatusBar projectId={project.id} agentStreaming={agentStreaming}
+          onAction={(prompt) => void guardManualVerifAction(() => handleVerificationGuidanceAction(prompt))}
+          onPlanEnv={() => void guardManualVerifAction(handlePlanEnv)}
+          onBasic={() => void guardManualVerifAction(handleBasicValidation)}
+          onCorner={() => void guardManualVerifAction(handleCornerWaves)}
+          onSignoff={() => void guardManualVerifAction(handleSignoff)} />}
 
         {project.currentPhase === 'SYNTH' && (
           <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">
@@ -1301,6 +1385,14 @@ export function WorkspacePage(): React.JSX.Element {
               >
                 {t('workspace.tabs.chat')}
               </button>
+              <button
+                onClick={() => setMainTab('verifrun')}
+                className={`shrink-0 rounded-t px-3 py-1.5 text-xs ${
+                  mainTab === 'verifrun' ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
+                }`}
+              >
+                {t('workspace.tabs.verifRun')}
+              </button>
               <SessionTabs projectId={project.id} onActivate={() => setMainTab('chat')} />
               {openFiles.map((f) => (
                 <span
@@ -1321,6 +1413,30 @@ export function WorkspacePage(): React.JSX.Element {
             <div className="workspace-content flex-1 min-h-0">
               <div className={mainTab === 'chat' ? 'h-full' : 'hidden'}>
                 <ChatPanel projectId={project.id} phase={project.currentPhase} />
+              </div>
+
+              {/* 验证运行页签（方案 C + 外层循环批 4）：外层循环卡置顶，批次进度/修复卡在下；
+                  手动动作（开始基础验证）与自动循环互斥（§7.2 方向盘唯一） */}
+              <div className={mainTab === 'verifrun' ? 'h-full overflow-y-auto p-3' : 'hidden'}>
+                <div className="space-y-3">
+                  <RunLoopCard
+                    runLoop={verifRunData?.runLoop ?? null}
+                    decisions={verifRunData?.decisions ?? []}
+                    onStart={handleRunLoopStart}
+                    onPause={handleRunLoopPause}
+                    onResume={handleRunLoopResume}
+                    onStop={handleRunLoopStop}
+                    onDecide={handleRunLoopDecide}
+                  />
+                  <VerifRunPanel
+                    batchLoop={verifRunData?.batchLoop ?? null}
+                    fixOutcomes={verifRunData?.fixOutcomes ?? []}
+                    fixInProgress={verifRunData?.fixInProgress ?? null}
+                    rootCauses={verifRunData?.rootCauses ?? []}
+                    onStartBasicVerification={() => void guardManualVerifAction(handleBasicValidation)}
+                    onContinueInChat={(breaker) => void handleVerificationGuidanceAction(`验证批次编排熔断（${breaker.reason}）：${breaker.detail}\n\n请在对话中分析熔断原因并给出恢复建议，等待我确认后再执行修复动作。`)}
+                  />
+                </div>
               </div>
 
               {/* 文件查看 */}

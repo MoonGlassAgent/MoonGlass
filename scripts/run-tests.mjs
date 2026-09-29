@@ -21,6 +21,8 @@ const suites = {
     'scripts/scenario-hits-smoke.mjs',
     'scripts/verif-batch-verdict-smoke.mjs',
     'scripts/verif-loop-ledger-smoke.mjs',
+    'scripts/verif-run-loop-smoke.mjs',
+    'scripts/decision-ledger-smoke.mjs',
     'scripts/session-transcript-smoke.mjs',
     'scripts/batch-prompt-smoke.mjs',
     'scripts/formal-smoke.mjs',

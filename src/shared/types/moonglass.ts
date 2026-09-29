@@ -653,6 +653,133 @@ export interface VerifBatchLoopResult {
   message: string
 }
 
+// ==================== 验证运行循环（VERIF-RUN-LOOP 批 2，设计文档 §4/§6/§9.1） ====================
+
+/** 外层循环状态机 11 态（设计文档 §4.1；idle=未运行，planning=W0 无态势规划，running/judging 为执行与证据判定，repairing=修复门控挂起） */
+export type VerifRunLoopState =
+  | 'idle'
+  | 'planning'
+  | 'running'
+  | 'judging'
+  | 'repairing'
+  | 'paused-human'
+  | 'paused-breaker'
+  | 'signoff-review'
+  | 'gate-check'
+  | 'completed'
+  | 'stopped'
+
+/** 波段（waveProgress 首个 in-progress 条目；无则 null） */
+export type VerifRunWave = 'W0' | 'W1' | 'W2' | 'W3'
+
+/** 当前拍已派发的动作（无则 null） */
+export interface VerifRunLoopCurrent {
+  kind: string
+  actionId: string | null
+  sessionName: string
+  dispatchedAt: string
+  /** 决策来源徽标（批 3 起规则/LLM/工程师三源均有值；升级会话为 'llm'） */
+  source: 'rule' | 'llm' | 'human'
+  /** 决策账本条目 ID（批 3 decision-ledger 接入后回填；规则自动拍为其 rule-auto 记录 id） */
+  decisionId: string
+}
+
+/** 暂停结构化记录（§5.1 暂停即落盘；kind=human 待人处置，kind=breaker 熔断待人处置） */
+export interface VerifRunLoopPause {
+  kind: 'human' | 'breaker'
+  reason: string
+  detail: string
+  pendingItems: string[]
+  since: string
+}
+
+/** 预算水位（§6：拍数/token/墙钟；连续无进展拍数由 lastBeats 前导 advanced=false 计数推导） */
+export interface VerifRunLoopBudget {
+  beats: number
+  maxBeats: number
+  tokensUsed: number
+  maxTokens: number
+  startedAt: string
+  maxWallMinutes: number
+}
+
+/** 最近拍摘要（新在前，滚动 ≤20 条） */
+export interface VerifRunLoopBeatEntry {
+  beat: number
+  summary: string
+  decisionId: string
+  verdict: string
+  advanced: boolean
+}
+
+/** 覆盖式循环账本（verification/results/run-loop.json，§9.1；原子写 + 缺字段归一） */
+export interface VerifRunLoopLedger {
+  version: 1
+  updatedAt: string
+  state: VerifRunLoopState
+  wave: VerifRunWave | null
+  beat: number
+  current: VerifRunLoopCurrent | null
+  pause: VerifRunLoopPause | null
+  budget: VerifRunLoopBudget
+  lastBeats: VerifRunLoopBeatEntry[]
+}
+
+/** 启动选项（均可选；缺省见主进程 verif-run-loop.ts 的 DEFAULT_*，§13 待决策 2 实测后调） */
+export interface VerifRunLoopStartOptions {
+  maxBeats?: number
+  maxTokens?: number
+  maxWallMinutes?: number
+  noProgressLimit?: number
+}
+
+// ==================== 验证运行循环决策账本（VERIF-RUN-LOOP 批 3，设计文档 §3.2/§3.3/§9.2） ====================
+
+/** 决策来源：规则自动 / LLM 提案 / 工程师指令（§3.3 工程师决策不审批，直接 approved） */
+export type VerifRunDecisionSource = 'rule' | 'llm' | 'human'
+
+/** 决策登记触发（§9.2 trigger 口径；rule-auto=规则层每拍自动记账，user-instruction=工程师在会话中明确指示） */
+export type VerifRunDecisionTrigger = 'rule-auto' | 'rule-stall' | 'breaker-recovery' | 'user-instruction' | 'manual-override'
+
+/** 决策动作形态：derived=引用推导内核已知动作 id（需规则层白名单校验）；custom=自由指令（actionId 恒为 null） */
+export interface VerifRunDecisionAction {
+  kind: 'derived' | 'custom'
+  /** derived 时为推导内核已知动作 id（src/shared/verification-guidance 的 VERIFICATION_DERIVED_ACTION_IDS）；custom 时为 null */
+  actionId: string | null
+  prompt: string
+  /** 期望产出（合法性校验：approved 前必须非空；规则自动记录允许空串） */
+  expectedOutput: string
+  /** 停止条件（同 expectedOutput 口径） */
+  stopCriteria: string
+}
+
+/** 决策生命周期：proposed=待人审批（顾问模式默认）→ approved/rejected → executed=已派发执行 → superseded=被取代 */
+export type VerifRunDecisionStatus = 'proposed' | 'approved' | 'rejected' | 'executed' | 'superseded'
+
+/** 执行结果回填（按证据裁决：拍判定 advanced/no-progress；会话异常记 failed；未执行恒为 null） */
+export type VerifRunDecisionOutcome = 'advanced' | 'no-progress' | 'failed' | null
+
+/** 决策账本条目（id=DEC-<8hex>；追加式，新在前，滚动 ≤100 条） */
+export interface VerifRunDecision {
+  id: string
+  createdAt: string
+  source: VerifRunDecisionSource
+  trigger: string
+  action: VerifRunDecisionAction
+  /** ≤200 字 */
+  rationale: string
+  /** 证据锚点（相对工作区的账本/证据文件路径） */
+  evidenceRefs: string[]
+  status: VerifRunDecisionStatus
+  outcome: VerifRunDecisionOutcome
+}
+
+/** 追加式决策账本（verification/results/decision-ledger.json，§9.2；原子写 + 缺字段归一 + ≤100 截断） */
+export interface VerifRunDecisionLedger {
+  version: 1
+  decisions: VerifRunDecision[]
+}
+
 /** 波段进度条目（W1-W3，展示层契约，引擎侧生产；W0 冒烟已废弃，旧快照可能仍含 W0 条目，渲染端需容错） */
 export interface WaveProgressEntry {
   id: 'W0' | 'W1' | 'W2' | 'W3'

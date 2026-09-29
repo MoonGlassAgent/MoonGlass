@@ -4,6 +4,7 @@
  */
 
 export * from './types.ts'
+export { RunLoopCard, type RunLoopCardProps } from './RunLoopCard.tsx'
 export { VerifRunPanel, type VerifRunPanelProps } from './VerifRunPanel.tsx'
 export { FixWindowBanner, type FixWindowBannerProps } from './FixWindowBanner.tsx'
 export { RootCauseChainSection, type RootCauseChainSectionProps } from './RootCauseChainSection.tsx'

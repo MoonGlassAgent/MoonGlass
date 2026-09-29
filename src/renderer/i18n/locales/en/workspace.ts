@@ -87,7 +87,8 @@ export const workspace: WorkspaceMessages = {
   },
 
   tabs: {
-    chat: '💬 Chat'
+    chat: '💬 Chat',
+    verifRun: '🔬 Verification Runs'
   },
 
   viewer: {
@@ -116,6 +117,7 @@ export const workspace: WorkspaceMessages = {
     gateBlocked: 'Gate checks not fully passed ({count} Error-level checks failed).\n\nContinue advancing to {phase} anyway?\nFailed checks remain as known issues flagged with a red exclamation mark.',
     rollback: 'Rolling back to {phase} marks later-phase outputs as obsolete. Confirm rollback?',
     enterDuringManaged: 'A managed run is in progress and depends on the phase order; switching phases manually may break the orchestration. Switch anyway?',
+    manualTakeover: 'The autonomous verification loop is running.\n\nPause it and execute this action manually instead?',
     resetNoArtifacts: '  - No phase artifacts',
     resetArchive: 'Archive & Restart',
     resetPurge: 'Permanently Delete',
@@ -169,7 +171,12 @@ export const workspace: WorkspaceMessages = {
     managedDecisionSendFailed: 'Managed run: failed to send auto-decision, retry {attempt}/3: {error}',
     managedTaskSessionFailed: 'Managed run: failed to start task session, continuing in the current session: {error}',
     managedChangeFailed: 'Managed run: change response for {phase} failed, risk recorded, continuing: {error}',
-    managedVerifBatches: 'Managed run: VERIF batch orchestration finished {count} batches ({stoppedBy}): {message}',
+    managedRunLoopStarted: 'Managed run: verification run loop started (default budgets); waiting for a terminal or paused state…',
+    managedRunLoopCompleted: 'Managed run: verification run loop completed ({beats} beats); continuing to gate / QA',
+    managedRunLoopHalted: 'Managed run: verification run loop halted at "{state}" ({reason}); managed run stopped. Go to the "Verification Runs" tab to handle it, then resume the loop and advance manually',
+    managedRunLoopStopFailed: 'Failed to stop the verification run loop: {error}',
+    runLoopStarted: 'Verification run loop started',
+    runLoopPauseFailed: 'Failed to pause the verification run loop: {error} (continuing the manual action anyway)',
     managedAgentFailed: 'Managed run: Agent error in {phase}, risk recorded, continuing to gate checks: {error}',
     managedGateCarried: 'Managed run: {phase} gate still has {count} blockers; marked unsigned and advancing',
     managedGateRecoveryFailed: 'Managed run: gate-recovery Agent error, continuing to the next round: {error}',

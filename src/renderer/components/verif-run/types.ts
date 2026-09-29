@@ -1,7 +1,10 @@
 /**
  * 验证失败诊断与修复可视化（方案 C）渲染端视图类型与缺字段归一化 helper。
  *
- * 镜像主进程落盘 JSON 的 schema（渲染端禁止 import src/main 或引擎包，类型在此镜像定义）：
+ * 镜像主进程落盘 JSON 的 schema（渲染端禁止 import src/main 或引擎包，类型在此镜像定义；
+ * 外层循环账本 VerifRunLoopLedger 等类型 shared 已定义，直接复用）：
+ * - verification/results/run-loop.json             外层循环账本（覆盖式，VERIF-RUN-LOOP §9.1）
+ * - verification/results/decision-ledger.json      决策账本（追加式 ≤100，新在前，§9.2）
  * - verification/results/verif-batch-loop.json     批次循环状态（覆盖式）
  * - verification/results/rtl-fix-outcomes.json     修复判定账本（新记录在前）
  * - verification/results/rtl-fix-in-progress.json  修复窗口标志（存在即修复中）
@@ -12,6 +15,185 @@
  * 所有 normalize* 入口接受 JSON.parse 产出的 unknown，缺字段/坏类型一律归一为默认值
  * （与主进程读取方的归一口径一致，version 演进预留）。
  */
+
+// ============================================================
+// 外层循环账本（run-loop.json，§9.1）与决策账本（decision-ledger.json，§9.2）
+// ============================================================
+
+import type {
+  VerifRunLoopBeatEntry,
+  VerifRunLoopBudget,
+  VerifRunLoopCurrent,
+  VerifRunLoopLedger,
+  VerifRunLoopState,
+  VerifRunWave
+} from '@shared/types'
+
+/** 渲染端预算默认值：与主进程 verif-run-loop.ts 的 DEFAULT_* 同源（§6/§13 待决策 2） */
+export const RUN_LOOP_DEFAULT_MAX_BEATS = 50
+export const RUN_LOOP_DEFAULT_MAX_TOKENS = 5_000_000
+export const RUN_LOOP_DEFAULT_MAX_WALL_MINUTES = 240
+
+export type VerifRunDecisionSource = 'rule' | 'llm' | 'human'
+export type VerifRunDecisionStatus = 'proposed' | 'approved' | 'rejected' | 'executed' | 'superseded'
+export type VerifRunDecisionOutcome = 'advanced' | 'no-progress' | 'failed'
+
+/** 决策账本条目的动作载荷（§9.2 action） */
+export interface VerifRunDecisionActionView {
+  kind: 'derived' | 'custom'
+  actionId: string | null
+  prompt: string
+  expectedOutput: string
+  stopCriteria: string
+}
+
+/** 决策账本条目视图（§9.2；账本新在前，滚动 ≤100 条） */
+export interface VerifRunDecisionEntryView {
+  id: string
+  createdAt: string
+  source: VerifRunDecisionSource
+  trigger: string
+  action: VerifRunDecisionActionView
+  rationale: string
+  evidenceRefs: string[]
+  status: VerifRunDecisionStatus
+  outcome: VerifRunDecisionOutcome | null
+}
+
+/** 决策账本滚动上限（§9.2：≤100 条） */
+export const VERIF_RUN_DECISIONS_LIMIT = 100
+
+const RUN_LOOP_STATES: readonly VerifRunLoopState[] = [
+  'idle', 'planning', 'running', 'judging', 'repairing',
+  'paused-human', 'paused-breaker', 'signoff-review', 'gate-check',
+  'completed', 'stopped'
+]
+
+function normalizeRunLoopState(value: unknown): VerifRunLoopState {
+  return RUN_LOOP_STATES.includes(value as VerifRunLoopState) ? value as VerifRunLoopState : 'idle'
+}
+
+function normalizeRunLoopWave(value: unknown): VerifRunWave | null {
+  return value === 'W0' || value === 'W1' || value === 'W2' || value === 'W3' ? value : null
+}
+
+function normalizeRunLoopCurrent(value: unknown): VerifRunLoopCurrent | null {
+  const current = asRecord(value)
+  if (!current) return null
+  return {
+    kind: asString(current.kind),
+    actionId: typeof current.actionId === 'string' ? current.actionId : null,
+    sessionName: asString(current.sessionName),
+    dispatchedAt: asString(current.dispatchedAt),
+    source: current.source === 'llm' || current.source === 'human' ? current.source : 'rule',
+    decisionId: asString(current.decisionId)
+  }
+}
+
+function normalizeRunLoopPause(value: unknown): VerifRunLoopLedger['pause'] {
+  const pause = asRecord(value)
+  if (!pause) return null
+  return {
+    kind: pause.kind === 'breaker' ? 'breaker' : 'human',
+    reason: asString(pause.reason),
+    detail: asString(pause.detail),
+    pendingItems: asStringArray(pause.pendingItems),
+    since: asString(pause.since)
+  }
+}
+
+function normalizeRunLoopBudget(value: unknown): VerifRunLoopBudget {
+  const budget = asRecord(value) ?? {}
+  const numberOf = (field: unknown, fallback: number): number => {
+    const parsed = Number(field)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback
+  }
+  return {
+    beats: numberOf(budget.beats, 0),
+    maxBeats: numberOf(budget.maxBeats, RUN_LOOP_DEFAULT_MAX_BEATS),
+    tokensUsed: numberOf(budget.tokensUsed, 0),
+    maxTokens: numberOf(budget.maxTokens, RUN_LOOP_DEFAULT_MAX_TOKENS),
+    startedAt: asString(budget.startedAt),
+    maxWallMinutes: numberOf(budget.maxWallMinutes, RUN_LOOP_DEFAULT_MAX_WALL_MINUTES)
+  }
+}
+
+function normalizeRunLoopBeatEntries(value: unknown): VerifRunLoopBeatEntry[] {
+  if (!Array.isArray(value)) return []
+  return value
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({
+      beat: asNumber(item.beat),
+      summary: asString(item.summary),
+      decisionId: asString(item.decisionId),
+      verdict: asString(item.verdict),
+      advanced: asBoolean(item.advanced)
+    }))
+    .slice(0, 20)
+}
+
+/** run-loop.json 归一化；非对象返回 null（按无循环记录处理，与主进程读取方同口径）。 */
+export function normalizeRunLoopLedger(raw: unknown): VerifRunLoopLedger | null {
+  const data = asRecord(raw)
+  if (!data) return null
+  return {
+    version: 1,
+    updatedAt: asString(data.updatedAt),
+    state: normalizeRunLoopState(data.state),
+    wave: normalizeRunLoopWave(data.wave),
+    beat: asNumber(data.beat),
+    current: normalizeRunLoopCurrent(data.current),
+    pause: normalizeRunLoopPause(data.pause),
+    budget: normalizeRunLoopBudget(data.budget),
+    lastBeats: normalizeRunLoopBeatEntries(data.lastBeats)
+  }
+}
+
+function normalizeDecisionSource(value: unknown): VerifRunDecisionSource {
+  return value === 'llm' || value === 'human' ? value : 'rule'
+}
+
+function normalizeDecisionStatus(value: unknown): VerifRunDecisionStatus {
+  return value === 'proposed' || value === 'approved' || value === 'rejected' || value === 'executed' || value === 'superseded'
+    ? value
+    : 'proposed'
+}
+
+function normalizeDecisionOutcome(value: unknown): VerifRunDecisionOutcome | null {
+  return value === 'advanced' || value === 'no-progress' || value === 'failed' ? value : null
+}
+
+function normalizeDecisionAction(value: unknown): VerifRunDecisionActionView {
+  const action = asRecord(value) ?? {}
+  return {
+    kind: action.kind === 'custom' ? 'custom' : 'derived',
+    actionId: typeof action.actionId === 'string' ? action.actionId : null,
+    prompt: asString(action.prompt),
+    expectedOutput: asString(action.expectedOutput),
+    stopCriteria: asString(action.stopCriteria)
+  }
+}
+
+/** decision-ledger.json 归一化；接受账本对象或裸 decisions 数组，坏条目丢弃，滚动 ≤100 条。 */
+export function normalizeDecisionLedger(raw: unknown): VerifRunDecisionEntryView[] {
+  const list = Array.isArray(raw) ? raw : (Array.isArray(asRecord(raw)?.decisions) ? asRecord(raw)?.decisions as unknown[] : [])
+  return list
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({
+      id: asString(item.id),
+      createdAt: asString(item.createdAt),
+      source: normalizeDecisionSource(item.source),
+      trigger: asString(item.trigger),
+      action: normalizeDecisionAction(item.action),
+      rationale: asString(item.rationale),
+      evidenceRefs: asStringArray(item.evidenceRefs),
+      status: normalizeDecisionStatus(item.status),
+      outcome: normalizeDecisionOutcome(item.outcome)
+    }))
+    .slice(0, VERIF_RUN_DECISIONS_LIMIT)
+}
 
 // ============================================================
 // 批次循环状态（verif-batch-loop.json）

@@ -102,7 +102,8 @@ export const workspace = {
 
   // 主区选项卡
   tabs: {
-    chat: '💬 对话'
+    chat: '💬 对话',
+    verifRun: '🔬 验证运行'
   },
 
   // 文件查看器工具栏
@@ -134,6 +135,7 @@ export const workspace = {
     gateBlocked: '门禁未完全通过（{count} 项 Error 级检查失败）。\n\n确定在门禁没有完全通过的情况下继续推进到 {phase} 吗？\n未通过的检查项将以红色感叹号保留为遗留问题。',
     rollback: '回退到 {phase} 后，后续阶段产出将被标记为废弃。确认回退？',
     enterDuringManaged: '一键托管进行中，托管流程依赖阶段推进顺序，手动切换阶段可能打乱编排。确认切换？',
+    manualTakeover: '自动验证循环正在运行。\n\n将暂停自动循环，改为你手动执行该动作？',
     resetNoArtifacts: '  - 当前没有阶段产物',
     resetArchive: '归档并重新开始',
     resetPurge: '永久清除',
@@ -188,7 +190,12 @@ export const workspace = {
     managedDecisionSendFailed: '一键托管：自动决策回传失败，第 {attempt}/3 次重试：{error}',
     managedTaskSessionFailed: '一键托管：开启任务会话失败，沿用当前会话：{error}',
     managedChangeFailed: '一键托管：{phase} 变更响应异常，记录风险并继续：{error}',
-    managedVerifBatches: '一键托管：VERIF 批次编排完成 {count} 批（{stoppedBy}）：{message}',
+    managedRunLoopStarted: '一键托管：验证运行循环已启动（默认预算），等待循环跑到终态或暂停…',
+    managedRunLoopCompleted: '一键托管：验证运行循环已完成（{beats} 拍），继续托管推进门禁/QA',
+    managedRunLoopHalted: '一键托管：验证运行循环停在「{state}」（{reason}），托管停止；请前往"验证运行"页签处置，恢复循环后可手动推进',
+    managedRunLoopStopFailed: '停止验证运行循环失败：{error}',
+    runLoopStarted: '验证运行循环已启动',
+    runLoopPauseFailed: '暂停验证运行循环失败：{error}（仍继续手动执行）',
     managedAgentFailed: '一键托管：{phase} Agent 异常，记录风险并继续检查门禁：{error}',
     managedGateCarried: '一键托管：{phase} 门禁仍有 {count} 个阻断项，已标记未签核并继续推进',
     managedGateRecoveryFailed: '一键托管：门禁恢复 Agent 异常，继续下一轮：{error}',

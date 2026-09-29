@@ -1,4 +1,9 @@
-import { deriveTopRisks, deriveVerificationActions, deriveVerificationSteps } from '../src/renderer/verification-guidance.ts'
+// 渲染端薄壳会运行时 import '@shared/verification-guidance'，纯 Node 下需先注册别名钩子
+// （静态 import 会被提升，先于注册执行，因此这里必须动态 import）
+import { register } from 'node:module'
+register('./ts-alias-hooks.mjs', import.meta.url)
+const { deriveTopRisks, deriveVerificationActions, deriveVerificationSteps } = await import('../src/renderer/verification-guidance.ts')
+const { deriveVerificationActions: deriveActionsCore } = await import('../src/shared/verification-guidance.ts')
 
 const state = {
   criticalOpen: ['SCN-1'],
@@ -33,5 +38,8 @@ if (deriveVerificationActions(requiredError)[0]?.id !== 'fix-formal') throw new 
 
 const supplementalFail = { ...closed, formalResults: [{ status: 'FAIL', mode: 'bmc', obligation: 'supplemental' }] }
 if (deriveVerificationSteps(supplementalFail).find((item) => item.id === 'formal')?.status !== 'blocked') throw new Error('任何 Formal FAIL 均必须阻断')
+
+const sharedCoreActions = deriveActionsCore(state, (key) => String(key))
+if (sharedCoreActions[0]?.id !== 'add-checkers' || sharedCoreActions[0]?.priority !== 'P0') throw new Error('shared 内核与渲染端薄壳推导不一致')
 
 console.log('Verification guidance smoke passed: actions, risks, steps')

@@ -8,6 +8,7 @@ import { join } from 'node:path'
 
 const ALIASES = {
   '@shared/types': join(process.cwd(), 'src', 'shared', 'types', 'index.ts'),
+  '@shared/verification-guidance': join(process.cwd(), 'src', 'shared', 'verification-guidance.ts'),
   '@moonglass/eda-bridge': join(process.cwd(), 'packages', 'eda-bridge', 'src', 'index.ts'),
   '@moonglass/prompts': join(process.cwd(), 'packages', 'prompts', 'src', 'index.ts'),
   '@moonglass/rtl-engine': join(process.cwd(), 'packages', 'rtl-engine', 'src', 'index.ts')
