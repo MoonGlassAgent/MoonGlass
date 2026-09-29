@@ -716,6 +716,8 @@ export interface VerifRunLoopBeatEntry {
 export interface VerifRunLoopLedger {
   version: 1
   updatedAt: string
+  /** 代际标记：每次启动生成新 id；残留（僵尸）循环苏醒时 id 不符即静默退出、禁止写账 */
+  loopId: string
   state: VerifRunLoopState
   wave: VerifRunWave | null
   beat: number

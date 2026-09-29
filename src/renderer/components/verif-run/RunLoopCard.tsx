@@ -88,8 +88,8 @@ function BudgetBar({ label, used, max, suffix }: { label: string; used: number; 
   </div>
 }
 
-/** 启动对话框：四项预算输入（留空/非法回落主进程默认值）。 */
-function StartDialog({ onSubmit, onClose }: { onSubmit: (options: VerifRunLoopStartOptions) => Promise<void>; onClose: () => void }): React.JSX.Element {
+/** 启动对话框：四项预算输入（留空/非法回落主进程默认值）；"已在运行"错误给强制停止重启逃生门。 */
+function StartDialog({ onSubmit, onStop, onClose }: { onSubmit: (options: VerifRunLoopStartOptions) => Promise<void>; onStop: () => Promise<void>; onClose: () => void }): React.JSX.Element {
   const { t } = useTranslation()
   const [maxBeats, setMaxBeats] = useState(String(RUN_LOOP_DEFAULT_MAX_BEATS))
   const [maxTokens, setMaxTokens] = useState(String(RUN_LOOP_DEFAULT_MAX_TOKENS))
@@ -102,6 +102,12 @@ function StartDialog({ onSubmit, onClose }: { onSubmit: (options: VerifRunLoopSt
     const parsed = Number(text)
     return Number.isFinite(parsed) && parsed > 0 ? Math.trunc(parsed) : undefined
   }
+  const buildOptions = (): VerifRunLoopStartOptions => ({
+    maxBeats: positive(maxBeats),
+    maxTokens: positive(maxTokens),
+    maxWallMinutes: positive(maxWallMinutes),
+    noProgressLimit: positive(noProgressLimit)
+  })
   const fields: Array<{ key: MessageKey; hintKey: MessageKey; value: string; set: (text: string) => void }> = [
     { key: 'verifRun.loop.startDialog.maxBeats', hintKey: 'verifRun.loop.startDialog.maxBeatsHint', value: maxBeats, set: setMaxBeats },
     { key: 'verifRun.loop.startDialog.maxTokens', hintKey: 'verifRun.loop.startDialog.maxTokensHint', value: maxTokens, set: setMaxTokens },
@@ -112,12 +118,21 @@ function StartDialog({ onSubmit, onClose }: { onSubmit: (options: VerifRunLoopSt
     setBusy(true)
     setError(null)
     try {
-      await onSubmit({
-        maxBeats: positive(maxBeats),
-        maxTokens: positive(maxTokens),
-        maxWallMinutes: positive(maxWallMinutes),
-        noProgressLimit: positive(noProgressLimit)
-      })
+      await onSubmit(buildOptions())
+      onClose()
+    } catch (err) {
+      setError(t('verifRun.loop.actionFailed', { error: err instanceof Error ? err.message : String(err) }))
+    } finally {
+      setBusy(false)
+    }
+  }
+  // 逃生门：主进程报"已在运行"（残留句柄，账本缺失/终态）→ 先停止再重启
+  const forceRestart = async (): Promise<void> => {
+    setBusy(true)
+    setError(null)
+    try {
+      await onStop()
+      await onSubmit(buildOptions())
       onClose()
     } catch (err) {
       setError(t('verifRun.loop.actionFailed', { error: err instanceof Error ? err.message : String(err) }))
@@ -144,7 +159,12 @@ function StartDialog({ onSubmit, onClose }: { onSubmit: (options: VerifRunLoopSt
           <span className="mt-1 block text-[10px] font-normal leading-4 text-zinc-400">{t(field.hintKey)}</span>
         </label>)}
       </div>
-      {error && <p className="mx-5 mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">{error}</p>}
+      {error && <div className="mx-5 mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
+        <p>{error}</p>
+        {error.includes('已在运行') && <button type="button" onClick={() => void forceRestart()} disabled={busy} className="mt-2 inline-flex items-center gap-1.5 rounded border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50">
+          {t('verifRun.loop.forceRestart')}
+        </button>}
+      </div>}
       <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-3">
         <button type="button" onClick={onClose} disabled={busy} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 disabled:opacity-50">{t('common.cancel')}</button>
         <button type="button" onClick={() => void submit()} disabled={busy} className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50">
@@ -341,6 +361,6 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
       </details>}
     </div>
 
-    {startDialogOpen && <StartDialog onSubmit={onStart} onClose={() => setStartDialogOpen(false)} />}
+    {startDialogOpen && <StartDialog onSubmit={onStart} onStop={onStop} onClose={() => setStartDialogOpen(false)} />}
   </section>
 }

@@ -86,6 +86,8 @@ export const verifRun = {
     resume: '继续',
     stop: '停止',
     actionFailed: '操作失败：{error}',
+    /** 启动报"已在运行"（残留句柄）时的逃生门：先停止再重启 */
+    forceRestart: '强制停止并重启',
     startDialog: {
       title: '启动自动验证循环',
       description: '循环按拍自动推导并执行验证动作（规划/批次/修复/签核/门禁），需要人工时结构化暂停、答完自动续跑。预算是无人值守的硬护栏，超限即熔断。',

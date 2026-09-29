@@ -87,6 +87,8 @@ export const verifRun: Messages['verifRun'] = {
     resume: 'Resume',
     stop: 'Stop',
     actionFailed: 'Action failed: {error}',
+    /** Escape hatch for the "already running" start error (stale handle): stop then restart */
+    forceRestart: 'Force stop & restart',
     startDialog: {
       title: 'Start Autonomous Verification Loop',
       description: 'The loop derives and executes verification actions beat by beat (planning / batches / fixes / sign-off / gate), pausing structurally when human input is needed and resuming once answered. Budgets are hard guardrails for unattended runs; exceeding them trips the circuit breaker.',

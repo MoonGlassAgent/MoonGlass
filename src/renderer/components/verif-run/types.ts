@@ -140,6 +140,7 @@ export function normalizeRunLoopLedger(raw: unknown): VerifRunLoopLedger | null 
   return {
     version: 1,
     updatedAt: asString(data.updatedAt),
+    loopId: asString(data.loopId),
     state: normalizeRunLoopState(data.state),
     wave: normalizeRunLoopWave(data.wave),
     beat: asNumber(data.beat),

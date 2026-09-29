@@ -25,11 +25,13 @@ const {
   buildRunLoopEscalationPrompt,
   checkRunLoopBudget,
   classifyRunLoopAction,
+  classifyRunLoopStartGuard,
   closureCountsOf,
   createRunLoopLedger,
   deriveRunLoopWave,
   evidenceFingerprint,
   isDirectBreakerReason,
+  isRunLoopSuperseded,
   judgeRunLoopAdvanced,
   noProgressStreak,
   planDecideRunLoopTransition,
@@ -429,4 +431,31 @@ writeFileSync(join(wsDecisionEvidence, 'verification', 'results', 'decision-ledg
 assert.notEqual(evidenceFingerprint(wsDecisionEvidence), fingerprintBefore)
 assert.ok(evidenceFingerprint(wsDecisionEvidence).includes('decision-ledger.json'))
 
-console.log('verif-run-loop-smoke: OK（拍决策映射/派发映射/预算四分支/无进展熔断/推进判定/暂停恢复/账本归一+截断/重启对账/态势回退/证据指纹/批3升级prompt+直接熔断白名单+decide迁移/决策账本入证据指纹）')
+// ── L 段：loopId 代际守卫（僵尸循环修复）──
+// L1. createRunLoopLedger 生成非空 loopId 且两次创建不同
+const ledgerA = createRunLoopLedger(resolveRunLoopStartOptions(), NOW, false)
+const ledgerB = createRunLoopLedger(resolveRunLoopStartOptions(), NOW, false)
+assert.ok(ledgerA.loopId.startsWith('LOOP-'))
+assert.notEqual(ledgerA.loopId, ledgerB.loopId)
+// L2. 旧账本缺 loopId → 归一化为 ''（兼容 v0 账本）
+const wsLegacy = join(dir, 'ws-legacy-loop')
+mkdirSync(join(wsLegacy, 'verification', 'results'), { recursive: true })
+const legacyPayload = JSON.parse(JSON.stringify(ledgerA))
+delete legacyPayload.loopId
+writeFileSync(join(wsLegacy, 'verification', 'results', 'run-loop.json'), JSON.stringify(legacyPayload), 'utf-8')
+assert.equal(readVerifRunLoopLedger(wsLegacy).loopId, '')
+// L3. 启动守卫对账：无句柄放行；句柄+活跃账本拒绝；句柄+无账本/终态/idle → 僵尸清场
+assert.equal(classifyRunLoopStartGuard(false, null), 'ok')
+assert.equal(classifyRunLoopStartGuard(true, { ...ledgerA, state: 'running' }), 'reject-running')
+assert.equal(classifyRunLoopStartGuard(true, null), 'zombie-cleanup')
+assert.equal(classifyRunLoopStartGuard(true, { ...ledgerA, state: 'stopped' }), 'zombie-cleanup')
+assert.equal(classifyRunLoopStartGuard(true, { ...ledgerA, state: 'completed' }), 'zombie-cleanup')
+assert.equal(classifyRunLoopStartGuard(true, { ...ledgerA, state: 'idle' }), 'zombie-cleanup')
+// L4. 代际不符判定：账本与当前 loopId 不同→superseded；任一侧为空串→不判（兼容旧账本/无守卫调用方）
+assert.equal(isRunLoopSuperseded(null, 'LOOP-A'), false)
+assert.equal(isRunLoopSuperseded({ ...ledgerA, loopId: 'LOOP-A' }, 'LOOP-A'), false)
+assert.equal(isRunLoopSuperseded({ ...ledgerA, loopId: 'LOOP-A' }, 'LOOP-B'), true)
+assert.equal(isRunLoopSuperseded({ ...ledgerA, loopId: '' }, 'LOOP-B'), false)
+assert.equal(isRunLoopSuperseded({ ...ledgerA, loopId: 'LOOP-A' }, ''), false)
+
+console.log('verif-run-loop-smoke: OK（拍决策映射/派发映射/预算四分支/无进展熔断/推进判定/暂停恢复/账本归一+截断/重启对账/态势回退/证据指纹/批3升级prompt+直接熔断白名单+decide迁移/决策账本入证据指纹/loopId代际守卫+启动守卫对账）')

@@ -139,6 +139,7 @@ export function readVerifRunLoopLedger(workspace: string): VerifRunLoopLedger | 
   return {
     version: 1,
     updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : '',
+    loopId: typeof data.loopId === 'string' ? data.loopId : '',
     state: normalizeState(data.state),
     wave: normalizeWave(data.wave),
     beat: Number(data.beat ?? 0) || 0,
@@ -156,6 +157,34 @@ export function writeVerifRunLoopLedger(workspace: string, ledger: VerifRunLoopL
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify({ ...ledger, version: 1, updatedAt: new Date().toISOString() }, null, 2), 'utf-8')
   renameSync(temporary, path)
+}
+
+// ==================== 代际守卫（僵尸循环：内存句柄活着但账本被删/终态/被新循环取代） ====================
+
+/** 僵尸循环被新循环取代时抛出的内部信号（拍循环捕获后静默退出，不落熔断）。 */
+export class RunLoopSupersededError extends Error {
+  constructor() {
+    super('验证运行循环已被新实例取代（loopId 代际不符）')
+    this.name = 'RunLoopSupersededError'
+  }
+}
+
+/** 代际不符判定：账本带 loopId 且与当前循环不一致 → 当前循环是残留僵尸。 */
+export function isRunLoopSuperseded(ledger: VerifRunLoopLedger | null, loopId: string): boolean {
+  return Boolean(ledger && ledger.loopId && loopId && ledger.loopId !== loopId)
+}
+
+/**
+ * 启动守卫对账：内存句柄与磁盘账本交叉验证。
+ * - 无句柄 → 放行；
+ * - 有句柄且账本为活跃态 → 真实在跑，拒绝（UI 应显示暂停/停止入口）；
+ * - 有句柄但账本缺失/终态/idle → 僵尸（典型来源：账本随 verification/ 被删、或长 await 卡住期间账本丢失），
+ *   调用方做清场（停止标记+打断修复等待+移除句柄）后放行启动。
+ */
+export function classifyRunLoopStartGuard(hasHandle: boolean, ledger: VerifRunLoopLedger | null): 'ok' | 'reject-running' | 'zombie-cleanup' {
+  if (!hasHandle) return 'ok'
+  const active = ledger !== null && ledger.state !== 'idle' && ledger.state !== 'stopped' && ledger.state !== 'completed'
+  return active ? 'reject-running' : 'zombie-cleanup'
 }
 
 /** 读取-变更-原子写的一站式入口；文件缺失时从默认初值起步；每次写入强制 lastBeats 滚动上限。 */
@@ -194,6 +223,8 @@ export function createRunLoopLedger(options: ResolvedRunLoopOptions, now: string
   return {
     version: 1,
     updatedAt: now,
+    // 代际标记：残留循环（内存句柄活着但账本被删/终态）苏醒时据此判 superseded
+    loopId: `LOOP-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
     state: hasPosture ? 'running' : 'planning',
     wave: hasPosture ? null : 'W0',
     beat: 0,
