@@ -1412,7 +1412,7 @@ export function WorkspacePage(): React.JSX.Element {
             {/* 内容区 */}
             <div className="workspace-content flex-1 min-h-0">
               <div className={mainTab === 'chat' ? 'h-full' : 'hidden'}>
-                <ChatPanel projectId={project.id} phase={project.currentPhase} />
+                <ChatPanel projectId={project.id} phase={project.currentPhase} loopDecisions={verifRunData?.decisions ?? []} onLoopDecision={handleRunLoopDecide} />
               </div>
 
               {/* 验证运行页签（方案 C + 外层循环批 4）：外层循环卡置顶，批次进度/修复卡在下；

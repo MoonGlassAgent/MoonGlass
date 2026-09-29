@@ -66,6 +66,8 @@ export const verifRun = {
     beatsTitle: '最近节拍（新在前，绿点=推进）',
     decisionsTitle: '决策请示',
     proposedEmpty: '暂无待裁决的决策提案',
+    /** 会话底部循环请示区的副标题提示 */
+    proposedHint: '（验证循环暂停待人：批准后自动续跑，否决转熔断处置）',
     rationaleLabel: '理由',
     promptLabel: '动作指令',
     expectedLabel: '预期产出',

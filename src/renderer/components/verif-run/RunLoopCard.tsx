@@ -14,17 +14,17 @@
  */
 
 import { useEffect, useState } from 'react'
-import { Check, OctagonPause, Play, Repeat, Square, X } from 'lucide-react'
+import { OctagonPause, Play, Repeat, Square } from 'lucide-react'
 import type { VerifRunLoopLedger, VerifRunLoopStartOptions, VerifRunLoopState } from '@shared/types'
 import { useTranslation, type MessageKey } from '../../i18n'
+import { DECISION_SOURCE_META, ProposedDecisionCard } from './ProposedDecisionCard'
 import {
   RUN_LOOP_DEFAULT_MAX_BEATS,
   RUN_LOOP_DEFAULT_MAX_TOKENS,
   RUN_LOOP_DEFAULT_MAX_WALL_MINUTES,
   formatVerifTimestamp,
   type VerifRunDecisionEntryView,
-  type VerifRunDecisionOutcome,
-  type VerifRunDecisionSource
+  type VerifRunDecisionOutcome
 } from './types'
 
 export interface RunLoopCardProps {
@@ -57,13 +57,6 @@ const STATE_META: Record<VerifRunLoopState, { labelKey: MessageKey; cls: string 
   'gate-check': { labelKey: 'verifRun.loop.state.gate-check', cls: 'bg-violet-100 text-violet-700' },
   completed: { labelKey: 'verifRun.loop.state.completed', cls: 'bg-emerald-100 text-emerald-700' },
   stopped: { labelKey: 'verifRun.loop.state.stopped', cls: 'bg-zinc-100 text-zinc-600' }
-}
-
-/** 决策来源徽标（规则=蓝 / LLM=紫 / 人工=绿，§7.1 动作来源徽标同口径） */
-const SOURCE_META: Record<VerifRunDecisionSource, { labelKey: MessageKey; cls: string }> = {
-  rule: { labelKey: 'verifRun.loop.source.rule', cls: 'bg-sky-100 text-sky-700' },
-  llm: { labelKey: 'verifRun.loop.source.llm', cls: 'bg-violet-100 text-violet-700' },
-  human: { labelKey: 'verifRun.loop.source.human', cls: 'bg-emerald-100 text-emerald-700' }
 }
 
 /** outcome 徽标（advanced 绿 / no-progress 灰 / failed 红；未回填用状态徽标灰） */
@@ -175,51 +168,6 @@ function StartDialog({ onSubmit, onStop, onClose }: { onSubmit: (options: VerifR
   </div>
 }
 
-/** 决策请示卡片（status='proposed'）：rationale / prompt 摘要 / 预期产出 / 停止条件 / 证据数 + 批准否决。 */
-function ProposedDecisionCard({ decision, onDecide }: { decision: VerifRunDecisionEntryView; onDecide: RunLoopCardProps['onDecide'] }): React.JSX.Element {
-  const { t } = useTranslation()
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState<string | null>(null)
-  const source = SOURCE_META[decision.source]
-  const decide = async (verdict: 'approved' | 'rejected'): Promise<void> => {
-    setBusy(true)
-    setError(null)
-    try {
-      await onDecide(decision.id, verdict)
-    } catch (err) {
-      setError(t('verifRun.loop.actionFailed', { error: err instanceof Error ? err.message : String(err) }))
-    } finally {
-      setBusy(false)
-    }
-  }
-  return <div className="rounded border border-violet-200 bg-violet-50/50 p-3">
-    <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-      <span className="font-mono text-[11px] font-semibold text-zinc-700">{decision.id || '—'}</span>
-      <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${source.cls}`}>{t(source.labelKey)}</span>
-      {decision.action.actionId && <span className="font-mono text-[10px] text-zinc-500">{decision.action.actionId}</span>}
-      {decision.createdAt && <span className="ml-auto text-[10px] text-zinc-400">{formatVerifTimestamp(decision.createdAt)}</span>}
-    </div>
-    {decision.rationale && <p className="mt-1.5 text-xs text-zinc-700">{decision.rationale}</p>}
-    {decision.action.prompt && <p className="mt-1 truncate font-mono text-[10px] text-zinc-500" title={decision.action.prompt}>{t('verifRun.loop.promptLabel')}：{decision.action.prompt}</p>}
-    <div className="mt-1.5 grid gap-x-4 gap-y-0.5 text-[11px] text-zinc-600 sm:grid-cols-2">
-      {decision.action.expectedOutput && <span className="truncate" title={decision.action.expectedOutput}>{t('verifRun.loop.expectedLabel')}：{decision.action.expectedOutput}</span>}
-      {decision.action.stopCriteria && <span className="truncate" title={decision.action.stopCriteria}>{t('verifRun.loop.stopCriteriaLabel')}：{decision.action.stopCriteria}</span>}
-    </div>
-    <div className="mt-2 flex items-center gap-2">
-      <span className="text-[10px] text-zinc-400">{t('verifRun.loop.evidenceCount', { count: decision.evidenceRefs.length })}</span>
-      <div className="ml-auto flex gap-2">
-        <button type="button" onClick={() => void decide('approved')} disabled={busy} className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
-          <Check size={12} />{t('verifRun.loop.approve')}
-        </button>
-        <button type="button" onClick={() => void decide('rejected')} disabled={busy} className="inline-flex items-center gap-1 rounded border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50">
-          <X size={12} />{t('verifRun.loop.reject')}
-        </button>
-      </div>
-    </div>
-    {error && <p className="mt-2 rounded border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] text-red-700">{error}</p>}
-  </div>
-}
-
 /** 外层循环卡（§7.1 看状态/做控制/收请示 三合一）。 */
 export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, onStop, onDecide }: RunLoopCardProps): React.JSX.Element {
   const { t } = useTranslation()
@@ -277,7 +225,7 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
         {runLoop.current ? <div className="mt-1 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
           <span className="font-mono text-zinc-800">{runLoop.current.kind || '—'}</span>
           {runLoop.current.actionId && <span className="font-mono text-[11px] text-zinc-500">{runLoop.current.actionId}</span>}
-          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${SOURCE_META[runLoop.current.source].cls}`}>{t(SOURCE_META[runLoop.current.source].labelKey)}</span>
+          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${DECISION_SOURCE_META[runLoop.current.source].cls}`}>{t(DECISION_SOURCE_META[runLoop.current.source].labelKey)}</span>
           {runLoop.current.sessionName && <span className="font-mono text-[10px] text-zinc-400">{t('verifRun.loop.sessionLabel', { name: runLoop.current.sessionName })}</span>}
           {runLoop.current.dispatchedAt && <span className="text-[10px] text-zinc-400">{t('verifRun.batch.dispatchedAt', { time: formatVerifTimestamp(runLoop.current.dispatchedAt) })}</span>}
         </div> : <p className="mt-1 text-[11px] text-zinc-400">{t('verifRun.loop.noCurrent')}</p>}
@@ -345,7 +293,7 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
         <summary className="cursor-pointer px-2.5 py-1.5 text-[11px] font-medium text-zinc-600 hover:bg-zinc-50">{t('verifRun.loop.historyTitle', { count: history.length })}</summary>
         <div className="divide-y divide-zinc-100 border-t border-zinc-200">
           {history.map((decision) => {
-            const source = SOURCE_META[decision.source]
+            const source = DECISION_SOURCE_META[decision.source]
             return <div key={decision.id || `${decision.createdAt}-${decision.action.prompt}`} className="flex flex-wrap items-center gap-x-2 gap-y-1 px-2.5 py-1.5 text-[11px]">
               <span className="font-mono text-zinc-600">{decision.id || '—'}</span>
               <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${source.cls}`}>{t(source.labelKey)}</span>

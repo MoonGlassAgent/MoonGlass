@@ -67,6 +67,8 @@ export const verifRun: Messages['verifRun'] = {
     beatsTitle: 'Recent beats (newest first; green = advanced)',
     decisionsTitle: 'Decisions',
     proposedEmpty: 'No pending decision proposals',
+    /** Subtitle hint for the loop decision section pinned at the bottom of the chat */
+    proposedHint: '(Loop paused for human input: resumes on approval; rejection trips the breaker)',
     rationaleLabel: 'Rationale',
     promptLabel: 'Action prompt',
     expectedLabel: 'Expected output',

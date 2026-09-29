@@ -14,6 +14,7 @@ import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/ag
 import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
 import { useChatStore } from '../store/chatStore'
 import { useTranslation, phaseLabel, t } from '../i18n'
+import { ProposedDecisionCard, type VerifRunDecisionEntryView } from './verif-run'
 
 interface SessionInfo {
   name: string
@@ -32,9 +33,44 @@ function isBatchSession(name: string): boolean {
   return name.includes('--batch-') || name.includes('--fix-')
 }
 
+/**
+ * 聊天输入框事件诊断（排查间歇性"无法键入"）：
+ * localStorage 置 moonglass:chat-input-debug=1 并刷新后，把组合输入(IME)/按键/
+ * 输入/焦点/disabled 变化/长任务打到 console。取证后删除该 flag 即可关闭。
+ */
+function chatInputDebug(event: string, detail?: unknown): void {
+  if (localStorage.getItem('moonglass:chat-input-debug') !== '1') return
+  console.log(`[chat-input] ${new Date().toISOString().slice(11, 23)} ${event}`, detail ?? '')
+}
+
+/** 长任务观察（仅在诊断 flag 开启时安装，随组件卸载清理） */
+function installChatInputDebugObservers(textarea: HTMLTextAreaElement): (() => void) | null {
+  if (localStorage.getItem('moonglass:chat-input-debug') !== '1') return null
+  let lastDisabled = textarea.disabled
+  const mutation = new MutationObserver(() => {
+    if (textarea.disabled !== lastDisabled) {
+      lastDisabled = textarea.disabled
+      chatInputDebug('disabled-flap', { disabled: textarea.disabled })
+    }
+  })
+  mutation.observe(textarea, { attributes: true, attributeFilter: ['disabled'] })
+  let perf: PerformanceObserver | null = null
+  try {
+    perf = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) chatInputDebug('longtask', { ms: Math.round(entry.duration) })
+    })
+    perf.observe({ entryTypes: ['longtask'] })
+  } catch { /* 环境不支持 longtask 观察 */ }
+  return () => { mutation.disconnect(); perf?.disconnect() }
+}
+
 interface ChatPanelProps {
   projectId: string
   phase: Phase
+  /** 验证运行循环待审批决策（VERIF-RUN-LOOP §7.1：请示进会话底部）；空数组/缺省不渲染 */
+  loopDecisions?: VerifRunDecisionEntryView[]
+  /** 循环决策批准/否决回调（经 agent:decide-verif-run-decision IPC 落账本） */
+  onLoopDecision?: (decisionId: string, verdict: 'approved' | 'rejected') => Promise<void>
 }
 
 function formatTokens(value: number): string {
@@ -377,7 +413,7 @@ function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; 
   )
 }
 
-export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Element {
+export function ChatPanel({ projectId, phase, loopDecisions, onLoopDecision }: ChatPanelProps): React.JSX.Element {
   const { t } = useTranslation()
   const {
     sessionInfo,
@@ -413,6 +449,15 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [contextLimitError, setContextLimitError] = useState('')
   const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+
+  // 输入框事件诊断观察器（仅 moonglass:chat-input-debug=1 时安装）
+  useEffect(() => {
+    const el = composerRef.current
+    if (!el) return
+    const cleanup = installChatInputDebugObservers(el)
+    return () => cleanup?.()
+  }, [])
 
   const inputHistory = useMemo(
     () => messages
@@ -897,6 +942,18 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
             </div>
           </div>
         )}
+        {/* 验证运行循环决策请示（VERIF-RUN-LOOP §7.1：提案在会话底部集中呈卡，批准/否决直达循环账本） */}
+        {loopDecisions && onLoopDecision && loopDecisions.some((decision) => decision.status === 'proposed') && (
+          <div className="mt-3 space-y-3 rounded border border-violet-200 bg-violet-50/60 p-3">
+            <span className="block text-xs font-medium text-violet-800">
+              {t('verifRun.loop.decisionsTitle')}
+              <span className="ml-1 font-normal text-violet-600">{t('verifRun.loop.proposedHint')}</span>
+            </span>
+            {loopDecisions.filter((decision) => decision.status === 'proposed').map((decision) => (
+              <ProposedDecisionCard key={decision.id || `${decision.createdAt}-${decision.action.prompt}`} decision={decision} onDecide={onLoopDecision} />
+            ))}
+          </div>
+        )}
         <div ref={bottomRef} />
       </div>
 
@@ -945,14 +1002,21 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         />
         <div className="flex w-full items-end gap-2">
           <textarea
+            ref={composerRef}
             value={input}
             onChange={(e) => {
+              chatInputDebug('input', { len: e.target.value.length, disabled: e.target.disabled })
               setInput(e.target.value)
               setHistoryIndex(null)
               historyDraftRef.current = e.target.value
             }}
+            onCompositionStart={() => chatInputDebug('compositionstart')}
+            onCompositionEnd={(e) => chatInputDebug('compositionend', { len: e.currentTarget.value.length })}
+            onFocus={() => chatInputDebug('focus')}
+            onBlur={() => chatInputDebug('blur', { activeElement: document.activeElement?.tagName ?? 'null' })}
             onPaste={handlePaste}
             onKeyDown={(e) => {
+              chatInputDebug('keydown', { key: e.key, composing: e.nativeEvent.isComposing, disabled: e.currentTarget.disabled })
               if (!e.nativeEvent.isComposing && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
                 const beforeCursor = e.currentTarget.value.slice(0, e.currentTarget.selectionStart)
                 const afterCursor = e.currentTarget.value.slice(e.currentTarget.selectionEnd)
