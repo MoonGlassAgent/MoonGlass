@@ -108,7 +108,9 @@ export const chat = {
     drafted: '本项已完成，等待其他确认项',
     waitingAgent: '等待 Agent 完成本轮回复',
     noImmediateTrigger: '完成本项后不会立即触发下一轮',
-    complete: '完成本项'
+    complete: '完成本项',
+    hoisted: '待确认项「{title}」已移至会话底部集中处理，点击跳转',
+    hoistedHint: '（待确认项已集中到此处，无需向上翻找）'
   }
 }
 

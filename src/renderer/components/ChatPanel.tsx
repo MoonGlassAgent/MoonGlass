@@ -554,8 +554,14 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const pendingDecisions = messages
     .flatMap((message) => message.decisionRequest ? [message.decisionRequest] : [])
     .filter((request) => !decisionResponses.has(request.id))
+  /** 待确认决策 ID 集合：这些卡片不在原消息位置渲染，统一提升到底部 */
+  const pendingDecisionIds = new Set(pendingDecisions.map((request) => request.id))
   const completedDraftCount = pendingDecisions.filter((request) => Boolean(decisionDrafts[request.id])).length
   const allDecisionsReady = pendingDecisions.length > 0 && completedDraftCount === pendingDecisions.length
+  /** 滚动到会话底部（待确认决策集中区） */
+  const scrollToPending = useCallback((): void => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [])
   const selectedModelValue = sessionInfo?.selectedModel
     ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId])
     : ''
@@ -855,6 +861,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               decisionDisabled={streaming}
               onDecision={handleDecisionDraft}
               decisionDraft={m.decisionRequest ? decisionDrafts[m.decisionRequest.id] : undefined}
+              decisionHoisted={m.decisionRequest ? pendingDecisionIds.has(m.decisionRequest.id) : false}
+              onScrollToPending={scrollToPending}
             />
           ))}
           {streaming && messages.at(-1)?.role !== 'assistant' && (
@@ -862,18 +870,31 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           )}
         </div>
         {pendingDecisions.length > 0 && (
-          <div className="mt-3 flex items-center justify-between gap-3 rounded border border-blue-200 bg-blue-50 px-4 py-3">
-            <span className="text-xs text-blue-800">
+          <div className="mt-3 space-y-3 rounded border border-blue-200 bg-blue-50/60 p-3">
+            <span className="block text-xs font-medium text-blue-800">
               {t('chat.pendingDecisions', { done: completedDraftCount, total: pendingDecisions.length })}
+              <span className="ml-1 font-normal text-blue-600">{t('chat.decision.hoistedHint')}</span>
             </span>
-            <button
-              type="button"
-              disabled={!allDecisionsReady || streaming}
-              onClick={submitAllDecisions}
-              className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {t('chat.submitAllDecisions')}
-            </button>
+            {/* 待确认项集中渲染在会话最新位置，不再随消息流被顶上去 */}
+            {pendingDecisions.map((request) => (
+              <DecisionCard
+                key={request.id}
+                request={request}
+                disabled={streaming}
+                onSubmit={handleDecisionDraft}
+                draft={decisionDrafts[request.id]}
+              />
+            ))}
+            <div className="flex items-center justify-end gap-3 border-t border-blue-200 pt-2">
+              <button
+                type="button"
+                disabled={!allDecisionsReady || streaming}
+                onClick={submitAllDecisions}
+                className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t('chat.submitAllDecisions')}
+              </button>
+            </div>
           </div>
         )}
         <div ref={bottomRef} />
@@ -1000,13 +1021,18 @@ function MessageBubbleImpl({
   decisionResponse,
   decisionDisabled,
   onDecision,
-  decisionDraft
+  decisionDraft,
+  decisionHoisted,
+  onScrollToPending
 }: {
   msg: AgentUiMessage
   decisionResponse?: AgentDecisionResponse
   decisionDisabled: boolean
   onDecision: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
   decisionDraft?: { selectedIds: string[]; customText: string }
+  /** 未确认的决策卡被提升到会话底部集中处理；原位置只留占位标记 */
+  decisionHoisted?: boolean
+  onScrollToPending?: () => void
 }): React.JSX.Element {
   const { t, locale } = useTranslation()
   const thinkingRef = useRef<HTMLDetailsElement>(null)
@@ -1040,6 +1066,18 @@ function MessageBubbleImpl({
 
   if (msg.role === 'tool') {
     if (msg.decisionRequest) {
+      // 待确认项已提升到底部：原位置留可点击的占位标记，避免用户在长会话中翻找
+      if (decisionHoisted) {
+        return (
+          <button
+            type="button"
+            onClick={onScrollToPending}
+            className="message-tool w-full max-w-2xl self-start rounded border border-dashed border-blue-300 bg-blue-50/50 px-3 py-1.5 text-left text-xs text-blue-600 hover:bg-blue-50"
+          >
+            ▸ {t('chat.decision.hoisted', { title: msg.decisionRequest.title })}
+          </button>
+        )
+      }
       return (
         <DecisionCard
           request={msg.decisionRequest}
