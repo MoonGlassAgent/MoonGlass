@@ -5,7 +5,7 @@
  *   创建应用服务注册表 → 注册 IPC → app.ready 后启动全部服务并创建主窗口
  */
 
-import { app, shell, BrowserWindow } from 'electron'
+import { app, shell, BrowserWindow, dialog } from 'electron'
 import { existsSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -85,6 +85,43 @@ function createMainWindow(): BrowserWindow {
     if (!wc.isDestroyed()) wc.send(IPC.Agent.Event, { projectId, event, sessionName })
   })
 
+  // 手动界面重载：Ctrl+Shift+R 只刷新渲染进程，主进程内的 Agent 会话（pi 子进程）不受影响。
+  // before-input-event 先于页面按键与菜单加速键派发，preventDefault 同时压住默认菜单的
+  // 强制刷新（Shift+CmdOrCtrl+R），保证行为一致为普通 reload；不接管默认 Ctrl+R/F5。
+  wc.on('before-input-event', (event, input) => {
+    if (input.type === 'keyDown' && input.control && input.shift && input.code === 'KeyR') {
+      event.preventDefault()
+      console.log('[moonglass] 收到 Ctrl+Shift+R，手动重载界面（进行中的 Agent 会话不受影响）')
+      wc.reload()
+    }
+  })
+
+  // 退出守卫：仍有会话在运行时拦截窗口关闭，由用户确认是否中断。
+  // 打包冒烟（MOONGLASS_STARTUP_SMOKE）在创建窗口前已自行退出，不会走到这里；
+  // 无运行会话时直接放行。对话框文案为主进程原生 UI，无渲染端 i18n 运行时，保持中文。
+  let closeGuardConfirmed = false
+  win.on('close', (event) => {
+    if (closeGuardConfirmed) return
+    const runningProjects = Object.values(services.agent.sessionActivity()).filter((a) => a.running).length
+    if (runningProjects === 0) return
+    event.preventDefault()
+    void dialog.showMessageBox(win, {
+      type: 'warning',
+      title: '退出 MoonGlass',
+      message: `有 ${runningProjects} 个项目的会话正在进行`,
+      detail: '退出将中断它们（会话历史保留，可重启后继续）。',
+      buttons: ['仍要退出', '取消'],
+      defaultId: 1,
+      cancelId: 1,
+      noLink: true
+    }).then(({ response }) => {
+      if (response === 0 && !win.isDestroyed()) {
+        closeGuardConfirmed = true
+        win.close()
+      }
+    })
+  })
+
   win.on('ready-to-show', () => { rendererRecoveryCount = 0; win.show() })
 
   win.webContents.setWindowOpenHandler((details) => {
@@ -156,5 +193,8 @@ app.on('window-all-closed', () => {
 })
 
 app.on('will-quit', async () => {
+  // 正常退出必经此处：stopAll 杀掉全部 pi 会话前，先把仍在运行的会话清单
+  // 落盘为中断标记（userData/moonglass/interrupted-sessions.json），供下次启动提示"上轮中断"
+  services.agent.markInterruptedSessions()
   await services.lifecycle.stopAll()
 })

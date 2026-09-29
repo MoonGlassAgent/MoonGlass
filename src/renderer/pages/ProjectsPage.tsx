@@ -4,7 +4,7 @@
 
 import { useEffect, useState } from 'react'
 import { Cpu, FolderOpen, Plus, ScanSearch } from 'lucide-react'
-import { PHASE_ORDER, type ChipProject, type Phase, type ProjectImportAssessment } from '@shared/types'
+import { PHASE_ORDER, type ChipProject, type Phase, type ProjectImportAssessment, type ProjectSessionActivity } from '@shared/types'
 import { ProjectCard } from '../components/ProjectCard'
 import { phaseLabel, useTranslation } from '../i18n'
 import { useAppStore } from '../store/appStore'
@@ -29,10 +29,23 @@ export function ProjectsPage(): React.JSX.Element {
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [editError, setEditError] = useState('')
+  const [sessionActivity, setSessionActivity] = useState<Record<string, ProjectSessionActivity>>({})
 
   useEffect(() => {
     void refreshProjects()
   }, [refreshProjects])
+
+  // 会话活动徽标轮询（3s，离开页面清理；失败保留旧数据不闪烁）
+  useEffect(() => {
+    let cancelled = false
+    const load = async (): Promise<void> => {
+      const activity = await window.moonglass.agent.getSessionActivity().catch(() => null)
+      if (!cancelled && activity) setSessionActivity(activity)
+    }
+    void load()
+    const timer = window.setInterval(() => void load(), 3_000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [])
 
   const handleCreate = async (): Promise<void> => {
     if (!name.trim()) return
@@ -290,6 +303,7 @@ export function ProjectsPage(): React.JSX.Element {
             <ProjectCard
               key={p.id}
               project={p}
+              activity={sessionActivity[p.id]}
               onDelete={handleDelete}
               onMigrate={migratingProjectId ? undefined : handleMigrate}
               onEdit={beginEdit}

@@ -567,6 +567,18 @@ export interface AgentSessionInfo {
   backgroundRunningPhases?: Phase[]
 }
 
+/** 单个项目的会话活动聚合（AgentService.sessionActivity 返回，项目卡片徽标据此渲染） */
+export interface ProjectSessionActivity {
+  /** 项目存在存活会话（前台或后台）；仅有上轮中断标记而无存活会话时也会出现在聚合结果中（hasSession 为 false） */
+  hasSession: boolean
+  /** 任一会话正在流式执行（进行中） */
+  running: boolean
+  /** 进行中的会话展示名列表（卡片 tooltip 用） */
+  runningSessions: string[]
+  /** 上一轮被应用退出中断的会话展示名（启动时一次性消费，本轮保留；无则省略） */
+  interrupted?: string[]
+}
+
 /** VERIF 批次完成判定（上下文治理第 3 批，决策 4：绑定工具登记证据，不读会话文本） */
 export interface VerifBatchVerdict {
   /** 全齐：所有场景已登记 scenario_hits 且 posture 晚于批次开始 */
