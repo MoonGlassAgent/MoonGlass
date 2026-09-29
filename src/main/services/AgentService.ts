@@ -37,7 +37,9 @@ import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
 import { isDiagnosticStalled, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
-import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
+import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixAuditRelativePath, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
+import { appendRtlFixOutcome } from './rtl-fix-outcome-ledger.ts'
+import { readVerifLoopLedger, updateVerifLoopLedger, type VerifBatchLoopLedger } from './verif-loop-ledger.ts'
 import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
 import { aggregateSessionActivity, type SessionActivitySource } from './session-activity.ts'
 import { consumeInterruptedSessions, writeInterruptedSessions, type InterruptedSessionRecord } from './interrupted-sessions.ts'
@@ -351,7 +353,11 @@ export class AgentService implements MoonGlassService {
 
     // 上轮被应用退出中断的会话标记：一次性消费（读取后即删文件），本轮内存保留，
     // sessionActivity() 据此给项目卡片输出"上轮中断 · 可继续输入"徽标。
-    this.interruptedSessions = consumeInterruptedSessions(this.interruptedSessionsFilePath())
+    // 过滤掉会话 JSONL 已被 purge 删除的记录，避免提示不存在的中断会话。
+    this.interruptedSessions = consumeInterruptedSessions(
+      this.interruptedSessionsFilePath(),
+      join(app.getPath('userData'), 'moonglass', 'pi-sessions')
+    )
     if (this.interruptedSessions.length > 0) {
       console.log(`[agent-service] 检测到上轮被中断的会话 ${this.interruptedSessions.length} 个（历史已保留，可继续输入续跑）`)
     }
@@ -666,7 +672,7 @@ docs/{01_project,02_requirements,03_design,04_verification,05_implementation,06_
 rtl/
 rtl/macros/
 rtlqa/{lint,cdc}/
-verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/
+verification/<topModule>_tb/{agents,env,coverage,tests,sequences,sim}/
 verification/results/<module>/
 imp/{constraints,synthesis}/
 scripts/
@@ -674,6 +680,7 @@ scripts/
 
 - 文档工作必须使用 \`doc-repository\` 技能并写入对应规范文件。
 - 首次进入验证实现前必须使用 \`verification-planning\`；已有通过校验的验证规划时应直接增量复用，再使用 \`cocotb-verification\`，不得因每个子任务重复重建全套文档。
+- 验证环境 TOP 优先：DUT 默认就是整个设计（rtl/design.json 的 topModule），只搭一套 TOP cocotb 环境（\`verification/<topModule>_tb/\`，总线 VIP 挂接寄存器配置，driver/monitor/scoreboard/golden model 面向顶层接口），全部 testcase 面向 TOP、场景锚定 TOP 接口与规格条款；不按模块分级搭建多套环境。子模块 UT 是诊断驱动的例外：诊断账本升级到 L3/L4 且 probe 子模块信号仍无法定位时，必须经 \`register_ut_escalation\` 登记后才可单独建模块 Testbench，禁止未经登记直接搭模块 TB；例外 UT 的 PASS 不替代 TOP 回归证据。
 - RTL 只写入 \`rtl/\`；Lint/CDC 报告分别写入 \`rtlqa/lint/\` 和 \`rtlqa/cdc/\`。
 - RTL 阶段必须维护 \`rtl/design.json\` 和 \`rtl/filelist.f\`：design.json 的 filelist 写字符串 \`"filelist.f"\`，源文件顺序逐行写入 filelist.f，并明确 topModule、includeDirs 与 defines。
 - 默认假设没有可用 SRAM/ROM 宏。若架构需要存储宏，先在 \`docs/03_design/architecture.md\` 记录组织、端口、时序、面积/功耗估算和替换责任，再把存储体从控制器剥离为参数化 bank 级宏接口。
@@ -710,16 +717,16 @@ scripts/
     const promptsDir = join(dotPi, 'prompts')
     mkdirSync(promptsDir, { recursive: true })
 
-    // verify 模板：用户敲 /verify <模块名> 一键触发验证闭环
+    // verify 模板：用户敲 /verify <模块名> 一键触发验证闭环（TOP 优先：默认对 topModule 整套设计闭环）
     const verifyTemplate = `---
 description: 对指定模块完成规范化验证闭环
 argument-hint: "<模块名>"
 ---
-请对模块 **$1** 完成完整验证闭环：
+请对模块 **$1** 完成完整验证闭环（TOP 优先：$1 非顶层时按 UT 例外纪律处理）：
 
-1. 使用 verification-planning 技能维护 docs/04_verification/ 三份基线计划与六份 AIGV 方法/闭环文档。
+1. 使用 verification-planning 技能维护 docs/04_verification/ 三份基线计划与六份 AIGV 方法/闭环文档；规格含寄存器章节时经 register_config_space 登记配置空间（缺寄存器章节转 Spec Gap，不得编造）。
 2. 使用 collect_rtl_files、read_verilog、run_verible_lint 和 check_synthesizability。
-3. 使用 cocotb-verification 技能在 verification/$1_tb/ 创建规范环境。
+3. 使用 cocotb-verification 技能在 verification/$1_tb/ 创建规范环境；若 $1 不是顶层模块，必须先经 register_ut_escalation 登记 UT 例外（写明理由与关联失败指纹），禁止未经登记直接搭模块 Testbench。
 4. 调用 build_verification_intelligence 生成风险候选与结构事实，阅读后圈定 5~10 个真实验证点并用 register_verification_intents 登记（锚定真实 riskIds/requirementIds/rtlSignals），再用 select_next_verification_batch 选择最高优先级 Scenario，优先配置现有 sequence/driver 并在测试中绑定 SCN-* ID。
 5. 完善 Cocotb 测试后，使用 run_simulation(mode="cocotb", testModule=..., testDir=..., simulator="icarus", scenarioIds=[...]) 实际运行；scenario_hits.json 与态势快照由工具自动登记重建，禁止手写。
 6. 确认 verification/results/$1/ 中存在编译日志、仿真日志、result.json、scenario_hits.json 和波形。
@@ -1678,12 +1685,40 @@ argument-hint: "<模块名>"
     this.verifBatchStopRequested.add(projectId)
     this.notifyRtlFixWaiters(projectId, 'stopped')
     const active = this.activeVerifBatches.get(projectId)
+    // 方案 C 批 1（§3.2）：确有循环在跑/等修复时把状态文件改写为 stopped；
+    // 无循环记录（终态或从未启动）不造文件
+    const loopState = readVerifLoopLedger(this.workspaceDir(projectId))?.state
+    if (active || loopState === 'running' || loopState === 'awaiting-rtl-fix') {
+      this.writeVerifLoopTerminal(this.workspaceDir(projectId), 'stopped')
+    }
     if (!active) return
     try {
       await active.client.command({ type: 'abort' }, 5_000)
     } catch (error) {
       console.warn('[agent-service] 批次会话中止命令未及时响应，由批次收尾路径强制归档', error)
     }
+  }
+
+  /**
+   * 批次循环状态原子更新（方案 C 批 1，§3.2）：尽力落盘——
+   * 写失败仅 console.error，不影响批次编排主流程。
+   */
+  private patchVerifLoopLedger(workspace: string, mutate: (ledger: VerifBatchLoopLedger) => void): void {
+    try {
+      updateVerifLoopLedger(workspace, mutate)
+    } catch (error) {
+      console.error('[agent-service] verif-batch-loop.json 落盘失败（不影响批次编排）', error)
+    }
+  }
+
+  /** 循环终态落盘（completed/circuit-broken/stopped）：清空当前批与等待标记，history 保留供 UI 展示。 */
+  private writeVerifLoopTerminal(workspace: string, outcome: 'completed' | 'circuit-broken' | 'stopped', circuitBreaker: { reason: string; detail: string } | null = null): void {
+    this.patchVerifLoopLedger(workspace, (ledger) => {
+      ledger.state = outcome
+      ledger.currentBatch = null
+      ledger.rtlFixWait = null
+      ledger.circuitBreaker = outcome === 'circuit-broken' ? circuitBreaker : null
+    })
   }
 
   /**
@@ -1723,7 +1758,7 @@ argument-hint: "<模块名>"
    * （保留最近 5 个批次 JSONL 供只读回看）。
    * M4 §5.2：RTL 修复会话进行中时入口直接拒绝（在跑批次/仿真不强杀，只拦新派发）。
    */
-  async runVerifBatch(projectId: string, scenarioIds: string[], options?: { batchIndex?: number; timeoutMs?: number }): Promise<VerifBatchRunResult> {
+  async runVerifBatch(projectId: string, scenarioIds: string[], options?: { batchIndex?: number; timeoutMs?: number; loopManaged?: boolean }): Promise<VerifBatchRunResult> {
     const project = this.projects.get(projectId)
     if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
     if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法派发 VERIF 批次会话')
@@ -1753,7 +1788,10 @@ argument-hint: "<模块名>"
     try {
       promptText = buildBatchPrompt(workspace, ids)
     } catch (error) {
-      return finish({ status: 'error', verdict: emptyVerdict, circuitBreaker: null, errorMessage: `批次 prompt 生成失败：${error instanceof Error ? error.message : String(error)}` }, '')
+      const errorMessage = `批次 prompt 生成失败：${error instanceof Error ? error.message : String(error)}`
+      // 方案 C 批 1（§3.2）：单次派发未进入循环时由本函数写终态；循环驱动时终态由 runVerifBatches 统一写
+      if (!options?.loopManaged) this.writeVerifLoopTerminal(workspace, 'circuit-broken', { reason: errorMessage, detail: '批次未派发' })
+      return finish({ status: 'error', verdict: emptyVerdict, circuitBreaker: null, errorMessage }, '')
     }
 
     // 平行会话文件：与 resetSession 相同的两行头；重名时追加时间戳后缀
@@ -1798,7 +1836,18 @@ argument-hint: "<模块名>"
       session.ready = true
 
       this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 已派发到平行会话 ${sessionName}：${ids.join('、')}` }, sessionName)
+      // 方案 C 批 1（§3.2）：批次已派发 → running + currentBatch(dispatched)
+      this.patchVerifLoopLedger(workspace, (ledger) => {
+        ledger.state = 'running'
+        ledger.currentBatch = { index: batchIndex, sessionName, scenarioIds: ids, dispatchedAt: new Date().toISOString(), phase: 'dispatched' }
+        ledger.circuitBreaker = null
+        ledger.rtlFixWait = null
+      })
       const run = await this.runBatchToSettled(session, promptText, options?.timeoutMs ?? 60 * 60_000, batchIndex)
+      // 方案 C 批 1（§3.2）：批次会话已结束 → 完成判定进行中（settling）
+      this.patchVerifLoopLedger(workspace, (ledger) => {
+        if (ledger.currentBatch?.index === batchIndex && ledger.currentBatch.sessionName === sessionName) ledger.currentBatch.phase = 'settling'
+      })
 
       // 完成判定（决策 4）：绑定工具登记证据，不读会话文本
       const verdict = judgeBatchCompletion(workspace, ids, startedAt)
@@ -1825,6 +1874,19 @@ argument-hint: "<模块名>"
     result.archivedTo = archive.archivedTo
     result.keptForReview = archive.keptForReview
     this.activeVerifBatches.delete(projectId)
+    // 方案 C 批 1（§3.2）：批次收尾——history 追加（新记录在前，缺哪个 scenario 的登记细节入 reason）；
+    // 单次派发（非循环驱动）顺带写终态，循环驱动时终态由 runVerifBatches 统一写
+    const historyReason = result.status === 'completed'
+      ? (result.verdict.reasons.length > 0 ? result.verdict.reasons.join('；') : '证据齐全：scenario_hits 已登记且 posture 已重建')
+      : (result.circuitBreaker ?? result.errorMessage ?? '未知原因')
+    this.patchVerifLoopLedger(workspace, (ledger) => {
+      ledger.currentBatch = null
+      ledger.history.unshift({ index: batchIndex, scenarioIds: ids, verdict: result.status === 'completed' ? 'completed' : 'circuit-broken', reason: historyReason, settledAt: result.finishedAt })
+    })
+    if (!options?.loopManaged) {
+      this.writeVerifLoopTerminal(workspace, result.status === 'completed' ? 'completed' : 'circuit-broken',
+        result.status === 'completed' ? null : { reason: historyReason, detail: `批次 ${sessionName} 未正常完成` })
+    }
     return result
   }
 
@@ -1843,8 +1905,17 @@ argument-hint: "<模块名>"
     const workspace = this.workspaceDir(projectId)
     const batches: VerifBatchRunResult[] = []
     this.verifBatchStopRequested.delete(projectId)
+    // 方案 C 批 1（§3.2）：循环开始重置状态文件（上次循环终态保留到此刻被覆盖）
+    this.patchVerifLoopLedger(workspace, (ledger) => {
+      ledger.state = 'running'
+      ledger.currentBatch = null
+      ledger.circuitBreaker = null
+      ledger.rtlFixWait = null
+      ledger.history = []
+    })
     for (let index = 0; index < maxBatches; index += 1) {
       if (this.verifBatchStopRequested.has(projectId)) {
+        this.writeVerifLoopTerminal(workspace, 'stopped')
         return { batches, stoppedBy: 'user-stop', message: '用户停止托管：已中止当前批次，不再派发新批次' }
       }
       // M4 §5.2 派发门控：每轮选批前检查修复中标志（内存态）。命中时等待修复 settle 后
@@ -1855,13 +1926,27 @@ argument-hint: "<模块名>"
       if (gatePause) {
         console.warn(`[agent-service] ${gatePause}`)
         this.emit(projectId, { type: 'status', message: gatePause })
+        // 方案 C 批 1（§3.2）：等修复暂停落盘（rootCauseId/since 取自修复中标志）
+        const fixFlag = readRtlFixFlag(workspace)
+        this.patchVerifLoopLedger(workspace, (ledger) => {
+          ledger.state = 'awaiting-rtl-fix'
+          ledger.currentBatch = null
+          ledger.rtlFixWait = { rootCauseId: fixFlag?.rootCauseId ?? '', since: fixFlag?.startedAt ?? new Date().toISOString() }
+        })
         const waitOutcome = await this.waitForRtlFixSettled(projectId, options?.rtlFixWaitTimeoutMs ?? RTL_FIX_WAIT_TIMEOUT_MS)
         if (waitOutcome === 'stopped' || this.verifBatchStopRequested.has(projectId)) {
+          this.writeVerifLoopTerminal(workspace, 'stopped')
           return { batches, stoppedBy: 'user-stop', message: '用户停止托管：等待 RTL 修复期间收到停止请求，不再派发新批次' }
         }
         if (waitOutcome === 'timeout') {
-          return { batches, stoppedBy: 'circuit-break', message: `等待 RTL 修复会话 settle 超时（${Math.round((options?.rtlFixWaitTimeoutMs ?? RTL_FIX_WAIT_TIMEOUT_MS) / 60_000)} 分钟），停止派发新批次` }
+          const message = `等待 RTL 修复会话 settle 超时（${Math.round((options?.rtlFixWaitTimeoutMs ?? RTL_FIX_WAIT_TIMEOUT_MS) / 60_000)} 分钟），停止派发新批次`
+          this.writeVerifLoopTerminal(workspace, 'circuit-broken', { reason: '等待 RTL 修复 settle 超时', detail: message })
+          return { batches, stoppedBy: 'circuit-break', message }
         }
+        this.patchVerifLoopLedger(workspace, (ledger) => {
+          ledger.state = 'running'
+          ledger.rtlFixWait = null
+        })
         this.emit(projectId, { type: 'status', message: 'RTL 修复会话已结束，恢复 VERIF 批次派发' })
         index -= 1
         continue
@@ -1870,26 +1955,36 @@ argument-hint: "<模块名>"
       try {
         scenarioIds = this.selectVerifBatchScenarioIds(workspace, batchSize)
       } catch (error) {
-        return { batches, stoppedBy: 'error', message: `批次选择失败：${error instanceof Error ? error.message : String(error)}` }
+        const message = `批次选择失败：${error instanceof Error ? error.message : String(error)}`
+        this.writeVerifLoopTerminal(workspace, 'circuit-broken', { reason: '批次选择失败', detail: message })
+        return { batches, stoppedBy: 'error', message }
       }
       if (scenarioIds.length === 0) {
+        this.writeVerifLoopTerminal(workspace, 'completed')
         return { batches, stoppedBy: 'exhausted', message: '场景执行队列已空：没有待执行的 Scenario' }
       }
       let result: VerifBatchRunResult
       try {
-        result = await this.runVerifBatch(projectId, scenarioIds, { batchIndex: this.nextVerifBatchIndex(projectId) })
+        result = await this.runVerifBatch(projectId, scenarioIds, { batchIndex: this.nextVerifBatchIndex(projectId), loopManaged: true })
       } catch (error) {
-        return { batches, stoppedBy: 'error', message: `批次派发异常：${error instanceof Error ? error.message : String(error)}` }
+        const message = `批次派发异常：${error instanceof Error ? error.message : String(error)}`
+        this.writeVerifLoopTerminal(workspace, 'circuit-broken', { reason: '批次派发异常', detail: message })
+        return { batches, stoppedBy: 'error', message }
       }
       batches.push(result)
       if (result.status !== 'completed') {
+        const message = `批次 ${result.sessionName} 未正常完成（${result.circuitBreaker ?? result.errorMessage ?? '未知原因'}），已停止后续批次`
+        // 用户停止导致的在跑批次熔断按 stopped 终态落盘（与 stopVerifBatches 的写入口径一致）
+        if (this.verifBatchStopRequested.has(projectId)) this.writeVerifLoopTerminal(workspace, 'stopped')
+        else this.writeVerifLoopTerminal(workspace, 'circuit-broken', { reason: result.circuitBreaker ?? result.errorMessage ?? '未知原因', detail: message })
         return {
           batches,
           stoppedBy: 'circuit-break',
-          message: `批次 ${result.sessionName} 未正常完成（${result.circuitBreaker ?? result.errorMessage ?? '未知原因'}），已停止后续批次`
+          message
         }
       }
     }
+    this.writeVerifLoopTerminal(workspace, 'completed')
     return { batches, stoppedBy: 'max-batches', message: `达到批次上限 ${maxBatches}，停止派发；可再次调用继续` }
   }
 
@@ -2206,7 +2301,7 @@ argument-hint: "<模块名>"
     // 批次循环（runVerifBatches 门控据此续跑），避免唤醒后复查仍看到修复进行中
     this.notifyRtlFixWaiters(projectId, 'settled')
 
-    this.deliverRtlFixOutcome(projectId, source, fix, sessionName, judgment)
+    this.deliverRtlFixOutcome(projectId, source, fix, sessionName, judgment, fixStartedAt)
   }
 
   /**
@@ -2246,7 +2341,34 @@ argument-hint: "<模块名>"
    * 内容含判定、证据路径、新 rtlHash 与下一步指引（FIXED→继续选批/回归；
    * STILL_FAIL/UNKNOWN→回诊断循环开新假设链）。
    */
-  private deliverRtlFixOutcome(projectId: string, source: PiSession, fix: PendingRtlFix, sessionName: string, judgment: RtlFixJudgment): void {
+  private deliverRtlFixOutcome(projectId: string, source: PiSession, fix: PendingRtlFix, sessionName: string, judgment: RtlFixJudgment, fixStartedAt: string): void {
+    // 方案 C 批 1（§3.1）：判定送达时落盘修复判定账本（尽力而为，失败仅 console.error 不影响送达）；
+    // blockedAttempts 优先取窗口收尾审计文件的统计，审计缺失/未产审计时按拦截账本窗口计数兜底
+    try {
+      const workspace = this.workspaceDir(projectId)
+      const settledAt = new Date().toISOString()
+      const auditPath = rtlFixAuditRelativePath(fix.rootCauseId)
+      let blockedAttempts: number
+      try {
+        const audit = JSON.parse(readFileSync(join(workspace, auditPath), 'utf-8')) as { blockedAttempts?: unknown }
+        blockedAttempts = typeof audit.blockedAttempts === 'number' ? audit.blockedAttempts : countBlockedAttempts(workspace, fixStartedAt, settledAt)
+      } catch {
+        blockedAttempts = countBlockedAttempts(workspace, fixStartedAt, settledAt)
+      }
+      appendRtlFixOutcome(workspace, {
+        rootCauseId: fix.rootCauseId,
+        scenarioId: fix.scenarioId,
+        fixSessionName: sessionName,
+        judgment: judgment.outcome,
+        reason: judgment.reason,
+        startedAt: fixStartedAt,
+        settledAt,
+        auditPath,
+        blockedAttempts
+      })
+    } catch (error) {
+      console.error('[agent-service] rtl-fix-outcomes.json 落盘失败（不影响判定送达）', error)
+    }
     const outcomeLabels: Record<RtlFixJudgment['outcome'], string> = {
       FIXED: 'FIXED（回归通过）',
       STILL_FAIL: 'STILL_FAIL（回归仍失败）',

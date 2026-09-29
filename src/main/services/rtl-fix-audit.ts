@@ -143,6 +143,12 @@ export function diffRtlSnapshots(before: RtlTreeSnapshot, after: RtlTreeSnapshot
   return { changed: changed.sort(), created: created.sort(), deleted: deleted.sort() }
 }
 
+/** 审计文件的工作区相对路径（正斜杠，供判定账本 auditPath 引用与读取方 join 定位共用）。 */
+export function rtlFixAuditRelativePath(rootCauseId: string): string {
+  const safeId = rootCauseId.replaceAll(/[^A-Za-z0-9_-]/g, '-')
+  return `verification/results/rtl-fix-audit-${safeId}.json`
+}
+
 /** 修复窗口审计记录（落盘 verification/results/rtl-fix-audit-<RC-id>.json） */
 export interface RtlFixAudit {
   rootCauseId: string
@@ -159,8 +165,7 @@ export interface RtlFixAudit {
 
 /** 落盘审计文件，返回文件路径。 */
 export function writeRtlFixAudit(workspace: string, audit: RtlFixAudit): string {
-  const safeId = audit.rootCauseId.replaceAll(/[^A-Za-z0-9_-]/g, '-')
-  const path = join(workspace, RESULTS_RELATIVE_DIR, `rtl-fix-audit-${safeId}.json`)
+  const path = join(workspace, rtlFixAuditRelativePath(audit.rootCauseId))
   mkdirSync(dirname(path), { recursive: true })
   writeFileSync(path, JSON.stringify(audit, null, 2), 'utf-8')
   return path

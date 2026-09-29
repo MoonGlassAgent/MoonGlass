@@ -7,6 +7,7 @@
 
 import type { ToolDetection } from '@shared/types'
 import { locateTool, run, toolEnv } from './tool-runner'
+import { COCOTB_VERSION_RANGE, isCocotbVersionCompatible, TOOLCHAIN_MANIFEST } from './toolchain-manifest'
 
 type Probe = Omit<ToolDetection, 'found' | 'path' | 'version'> & {
   candidates: string[]
@@ -71,7 +72,16 @@ async function probeOne(probe: Probe): Promise<ToolDetection> {
   } catch {
     // 版本获取失败不影响探测结果
   }
-  return { ...metadata, found: true, path: toolPath, version }
+  const result: ToolDetection = { ...metadata, found: true, path: toolPath, version }
+  // cocotb 版本范围校验（T1）：不兼容时仍判 found（工具存在），但标记 versionCompatible=false
+  // 并给出升级指引，由 UI 提示用户按 pin 版本升级。
+  if (probe.installId === 'python-cocotb' && version) {
+    result.versionCompatible = isCocotbVersionCompatible(version)
+    if (!result.versionCompatible) {
+      result.versionHint = `当前 cocotb 版本 ${version} 不在支持范围（${COCOTB_VERSION_RANGE}），运行侧依赖 cocotb 2.x API；请执行：pip install --user --upgrade "cocotb==${TOOLCHAIN_MANIFEST['python-cocotb'].pinnedVersion}"`
+    }
+  }
+  return result
 }
 
 /** 探测全部已注册的 EDA 工具 */

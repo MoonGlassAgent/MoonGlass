@@ -95,6 +95,23 @@ export const settings = {
       managed: 'MoonGlass 管理安装',
       system: '系统环境'
     },
+    selfCheck: '环境自检',
+    selfChecking: '自检中…',
+    selfCheckRunning: '正在逐项执行最小编译 / 综合 / 形式验证 / 仿真链路，可能耗时约 1 分钟，请稍候…',
+    selfCheckResult: '环境自检结果：{passed}/{total} 项通过（{ranAt}）',
+    selfCheckFailed: '环境自检执行失败：{message}',
+    selfCheckStatusPass: '通过',
+    selfCheckStatusFail: '失败',
+    selfCheckStatusSkipped: '跳过',
+    selfCheckGoInstall: '前往安装',
+    versionIncompatible: '版本不兼容',
+    selfCheckItems: {
+      icarus: 'Icarus 编译 + 运行',
+      verible: 'Verible 最小 Lint',
+      yosys: 'Yosys 综合（含 ABC）',
+      sby: 'SymbiYosys 形式验证（BMC）',
+      cocotb: 'Cocotb + Icarus 仿真'
+    },
     categories: {
       runtime: { label: '基础运行环境', detail: 'Agent、技能脚本和依赖管理' },
       build: { label: '构建环境', detail: '版本管理与本地编译' },

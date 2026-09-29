@@ -8,9 +8,9 @@ Supports: Standard UART protocol with configurable baud rate
 
 import cocotb
 from cocotb.triggers import RisingEdge, FallingEdge, Timer, Event
-from cocotb.log import SimLog
 from dataclasses import dataclass
 from typing import Optional, List
+import logging
 import queue
 
 
@@ -71,7 +71,7 @@ class UARTTransmitter:
         """
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.config = config or UARTConfig()
         
         # 发送队列
@@ -105,7 +105,7 @@ class UARTTransmitter:
         
         # Start bit (0)
         tx_signal.value = 0
-        await Timer(int(bit_time), units='ns')
+        await Timer(int(bit_time), unit='ns')
         
         # Data bits (LSB first)
         parity = 0
@@ -113,20 +113,20 @@ class UARTTransmitter:
             bit = (data >> i) & 1
             tx_signal.value = bit
             parity ^= bit
-            await Timer(int(bit_time), units='ns')
+            await Timer(int(bit_time), unit='ns')
         
         # Parity bit
         if self.config.parity == 'even':
             tx_signal.value = parity
-            await Timer(int(bit_time), units='ns')
+            await Timer(int(bit_time), unit='ns')
         elif self.config.parity == 'odd':
             tx_signal.value = 1 - parity
-            await Timer(int(bit_time), units='ns')
+            await Timer(int(bit_time), unit='ns')
         
         # Stop bit(s) (1)
         tx_signal.value = 1
         for _ in range(self.config.stop_bits):
-            await Timer(int(bit_time), units='ns')
+            await Timer(int(bit_time), unit='ns')
         
         self.trans_count += 1
         self.bytes_count += 1
@@ -148,7 +148,7 @@ class UARTTransmitter:
                 data = self.queue.get_nowait()
                 await self.send_byte(data)
             except queue.Empty:
-                await Timer(100, units='ns')
+                await Timer(100, unit='ns')
 
 
 # ============================================================
@@ -172,7 +172,7 @@ class UARTReceiver:
         """
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.config = config or UARTConfig()
         
         # 接收数据
@@ -209,10 +209,10 @@ class UARTReceiver:
         
         # 等待Start bit (下降沿)
         while rx_signal.value == 1:
-            await Timer(int(bit_time / 2), units='ns')
+            await Timer(int(bit_time / 2), unit='ns')
         
         # 确认Start bit (在位中间采样)
-        await Timer(int(bit_time), units='ns')
+        await Timer(int(bit_time), unit='ns')
         if rx_signal.value != 0:
             trans.frame_error = True
             self.frame_errors += 1
@@ -223,7 +223,7 @@ class UARTReceiver:
         data = 0
         parity = 0
         for i in range(self.config.data_bits):
-            await Timer(int(bit_time), units='ns')
+            await Timer(int(bit_time), unit='ns')
             bit = int(rx_signal.value)
             data |= (bit << i)
             parity ^= bit
@@ -232,21 +232,21 @@ class UARTReceiver:
         
         # 校验Parity bit
         if self.config.parity == 'even':
-            await Timer(int(bit_time), units='ns')
+            await Timer(int(bit_time), unit='ns')
             received_parity = int(rx_signal.value)
             if received_parity != parity:
                 trans.parity_error = True
                 self.parity_errors += 1
                 self.log.warning(f"Parity error: data=0x{data:02X}")
         elif self.config.parity == 'odd':
-            await Timer(int(bit_time), units='ns')
+            await Timer(int(bit_time), unit='ns')
             received_parity = int(rx_signal.value)
             if received_parity != (1 - parity):
                 trans.parity_error = True
                 self.parity_errors += 1
         
         # 检查Stop bit
-        await Timer(int(bit_time), units='ns')
+        await Timer(int(bit_time), unit='ns')
         if rx_signal.value != 1:
             trans.frame_error = True
             self.frame_errors += 1
@@ -269,7 +269,7 @@ class UARTReceiver:
                 await self.receive_byte()
             except Exception as e:
                 self.log.error(f"Receive error: {e}")
-                await Timer(int(self.config.bit_time_ns), units='ns')
+                await Timer(int(self.config.bit_time_ns), unit='ns')
     
     def get_data(self) -> bytes:
         """获取接收的字节数据"""
@@ -284,7 +284,7 @@ class UARTScoreboard:
     
     def __init__(self, name: str = "uart_scoreboard"):
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         self.expected: List[int] = []
         self.actual: List[int] = []
@@ -331,7 +331,7 @@ class UARTEnvironment:
     def __init__(self, dut, name: str = "uart_env", config: UARTConfig = None):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.config = config or UARTConfig()
         
         # 组件
@@ -381,7 +381,7 @@ async def uart_loopback_test(dut):
     await env.send(test_data)
     
     # 等待接收完成
-    await Timer(int(len(test_data) * 10 * config.bit_time_ns * 1.5), units='ns')
+    await Timer(int(len(test_data) * 10 * config.bit_time_ns * 1.5), unit='ns')
     
     # 报告
     env.report()

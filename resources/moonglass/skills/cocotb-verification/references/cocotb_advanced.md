@@ -100,8 +100,8 @@ async def create_phase_shifted_clocks(dut):
 
 ```python
 from cocotb.triggers import RisingEdge, Event
-from cocotb.log import SimLog
 from typing import List, Callable
+import logging
 
 class BaseDriver:
     """可重用的驱动器基类"""
@@ -109,7 +109,7 @@ class BaseDriver:
     def __init__(self, dut, name: str, clk_signal):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.clk = clk_signal
         self.queue = []
         self._idle = Event()
@@ -438,6 +438,43 @@ class RegisterModel:
         for addr, reg in self.registers.items():
             reg['value'] = reg['reset_value']
 ```
+
+### 配置序列 → 业务流量范式（TOP 优先）
+
+这类 IP 的业务/corner 场景本质是配置寄存器组合：testcase 一律面向
+TOP，激励分两段——先经总线 VIP 下发**配置序列**，再发送**业务流量**并
+检查外部可观察行为。
+
+```python
+@cocotb.test(timeout_time=200, timeout_unit="us")
+async def config_then_traffic_test(dut):
+    env = TopEnv(dut)
+    env.start_clock()
+    await env.reset()
+    await env.run()
+
+    # 1. 配置序列：经总线 VIP 编程配置寄存器
+    await env.bus.write_reg(REG_CFG_MODE, MODE_RUN)      # enum 字段
+    await env.bus.write_reg(REG_CFG_THRESH, THRESH_MAX)  # range 字段边界
+    await env.bus.write_reg(REG_CFG_EN, 1)               # flag 字段
+
+    # 2. 业务流量：在配置上下文下发激励
+    await env.send_transactions(make_traffic(count=20))
+    await env.wait_idle()
+
+    # 3. 判定：scoreboard 比对 + 配置覆盖埋点已随序列自动记录
+    assert env.get_result()
+    env.report()  # report() 结束时会写 config-coverage.json（若存在 config-space）
+```
+
+配置覆盖埋点由生成的环境承担：每次寄存器写入自动按
+`verification/intelligence/config-space.json` 记桶（enum 每值一桶；range
+分 0/min/典型/max 四桶；flag 两桶），constraints 涉及的字段对自动记
+cross；仿真结束写入
+`verification/results/<topModule>/config-coverage.json` 并跨回归累积
+（启动时读旧文件合并 hits，结束写回）。账本不存在时环境跳过埋点，
+禁止编造寄存器；非法配置组合必须校验 DUT 行为符合规格期望（报错/
+忽略/截断），不得把非法激励当 PASS 放行。
 
 ## 断言助手
 

@@ -8,7 +8,9 @@ import type {
   AgentSessionInfo,
   AgentSessionStats,
   AgentUiMessage,
+  ArtifactDriftEntry,
   ChipProject,
+  EnvSelfCheckReport,
   FileContentResult,
   FileTreeNode,
   GateCheckResult,
@@ -48,7 +50,8 @@ export const IPC = {
     Update: 'project:update',
     Delete: 'project:delete',
     Migrate: 'project:migrate',
-    GenerateDashboard: 'project:generate-dashboard'
+    GenerateDashboard: 'project:generate-dashboard',
+    ReconcileArtifacts: 'project:reconcile-artifacts'
   },
   Phase: {
     Advance: 'phase:advance',
@@ -68,7 +71,9 @@ export const IPC = {
     InstallMissing: 'eda:install-missing',
     GetInstallStatus: 'eda:get-install-status',
     OpenInstallPage: 'eda:open-install-page',
-    OpenWaveform: 'eda:open-waveform'
+    OpenWaveform: 'eda:open-waveform',
+    /** 用户侧环境自检（T6 env doctor）：主进程逐项执行最小端到端检查 */
+    SelfCheck: 'eda:self-check'
   },
   Python: {
     Run: 'python:run'
@@ -112,7 +117,12 @@ export const IPC = {
     ReadJson: 'fs:read-json',
     WriteText: 'fs:write-text',
     OpenExternal: 'fs:open-external',
-    VerificationStatus: 'fs:verification-status'
+    VerificationStatus: 'fs:verification-status',
+    /** 订阅/退订项目 verification/ 目录监视（引用计数；仅 .json 变更触发推送） */
+    WatchVerification: 'fs:watch-verification',
+    UnwatchVerification: 'fs:unwatch-verification',
+    /** 主进程 → 渲染进程推送：verification/ 下 JSON 产物发生变化（send，非 invoke） */
+    VerificationChanged: 'verification:changed'
   },
   Coverage: {
     Detail: 'coverage:detail'
@@ -158,6 +168,8 @@ export interface MoonGlassApi {
     delete(id: string): Promise<boolean>
     migrate(id: string, destinationPath: string): Promise<ProjectMigrationResult>
     generateDashboard(id: string): Promise<{ path: string; generatedAt: string; opened: boolean }>
+    /** 阶段产物漂移对账：返回记录已完成但产物已全部从磁盘消失的阶段清单 */
+    reconcileArtifacts(projectId: string): Promise<ArtifactDriftEntry[]>
   }
   phase: {
     /** 推进阶段（先跑门禁检查，Error 级失败则阻断并返回未推进的原状态；
@@ -175,7 +187,7 @@ export interface MoonGlassApi {
     /** 完成最终综合阶段并将项目标记为完成 */
     completeProject(projectId: string): Promise<ChipProject | null>
     previewReset(projectId: string, phase: Phase, mode: PhaseResetMode): Promise<PhaseResetPreview>
-    reset(projectId: string, phase: Phase, mode: PhaseResetMode): Promise<PhaseResetResult>
+    reset(projectId: string, phase: Phase, mode: PhaseResetMode, options?: { resetDownstream?: boolean }): Promise<PhaseResetResult>
   }
   eda: {
     /** 默认返回持久缓存；force=true 时重新扫描开发环境和 EDA 工具。 */
@@ -187,6 +199,8 @@ export interface MoonGlassApi {
     openInstallPage(url: string): Promise<boolean>
     /** 使用 GTKWave 打开项目内的 VCD/FST 波形文件 */
     openWaveform(projectId: string, relPath: string): Promise<WaveformOpenResult>
+    /** 用户侧环境自检（T6）：逐项执行最小端到端检查并返回 PASS/FAIL/跳过明细与修复指引 */
+    runEnvironmentSelfCheck(): Promise<EnvSelfCheckReport>
   }
   python: {
     run(req: PythonRunRequest): Promise<PythonRunResult>
@@ -263,6 +277,12 @@ export interface MoonGlassApi {
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
     /** 在系统浏览器/默认程序中打开项目文件；路径必须相对项目工作区。 */
     openExternal(projectId: string, relPath: string): Promise<boolean>
+    /** 开始监视项目 verification/ 目录（幂等、引用计数）；引擎产物/证据 JSON 变化时推送 VerificationChanged */
+    watchVerification(projectId: string): Promise<void>
+    /** 退订监视（引用计数归零才真正关闭 watcher） */
+    unwatchVerification(projectId: string): Promise<void>
+    /** 订阅 verification/ 变更推送，返回退订函数 */
+    onVerificationChanged(cb: (payload: { projectId: string }) => void): () => void
   }
   coverage: {
     /** 读取 verification/results/<scenario>/ 下的 Verilator 覆盖率明细（优先缓存，回退解析 coverage.dat） */

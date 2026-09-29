@@ -247,7 +247,22 @@ export interface SignoffPackage {
   evidenceFiles: string[]
 }
 
-export type ModuleVerificationLevel = 'STATIC_ONLY' | 'UNIT_SMOKE' | 'UNIT_FOCUSED' | 'IP_SIGNOFF'
+/**
+ * 模块验证策略两态（AIGV 验证策略修订《TOP 优先，UT 例外》§3.1）：
+ * - TOP_SIGNOFF：topSet 模块（唯一或若干顶层），完整 AIGV Intent/Scenario + 端到端回归与覆盖率 + Multi-Oracle + Mutation + 签核包；
+ * - COVERED_BY_TOP：其余全部模块，默认经 TOP 场景与全设计覆盖率间接验证，requiredChecks 收敛为静态检查；
+ * - UT_EXCEPTION：已登记 active UT 例外的模块（数据源 = verification/results/ut-escalations.json，引擎 rebuild 时联查）。
+ */
+export type ModuleVerificationLevel = 'TOP_SIGNOFF' | 'COVERED_BY_TOP' | 'UT_EXCEPTION'
+/** 旧四级枚举（读取兼容用，不再由引擎产生；§8 迁移：IP_SIGNOFF→TOP_SIGNOFF，其余→COVERED_BY_TOP）。 */
+export type LegacyModuleVerificationLevel = 'STATIC_ONLY' | 'UNIT_SMOKE' | 'UNIT_FOCUSED' | 'IP_SIGNOFF'
+
+/** 旧四级 → 新两态的读取兼容映射（读旧策略文件/旧 posture 时统一走此口径）。 */
+export function normalizeModuleVerificationLevel(level: string | null | undefined): ModuleVerificationLevel {
+  if (level === 'TOP_SIGNOFF' || level === 'COVERED_BY_TOP' || level === 'UT_EXCEPTION') return level
+  return level === 'IP_SIGNOFF' ? 'TOP_SIGNOFF' : 'COVERED_BY_TOP'
+}
+
 export type ModuleOracleStrategy = 'ASSERTION' | 'PROTOCOL_CHECKER' | 'REFERENCE_MODEL' | 'METAMORPHIC' | 'FORMAL' | 'END_TO_END'
 
 export interface ModuleVerificationPlan {
@@ -262,6 +277,7 @@ export interface ModuleVerificationPlan {
     rationale: string
   }
   requiredChecks: string[]
+  /** 语义（§3.1）：该模块是否已登记 active UT 例外（例外路径单独建 TB）；TOP 默认环境不在此标记。 */
   standaloneTestbench: boolean
 }
 
@@ -273,6 +289,117 @@ export interface ModuleVerificationStrategy {
   modules: ModuleVerificationPlan[]
   summary: Record<ModuleVerificationLevel, number>
   policy: string[]
+}
+
+/**
+ * UT 例外登记记录（§3.2 schema）。落 verification/results/ut-escalations.json（证据区）。
+ * failureSignature 可空：允许预防性 UT（§11 决策 1）——此时 reason 须写明预防性理由；
+ * topScenarioIds 必须存在于 scenario-registry（幻觉引用拒绝，引擎登记时校验）。
+ */
+export interface UtEscalationRecord {
+  /** 稳定 id：UTX-<sha1(module+reason) 前8位大写>；同模块同 reason 幂等复用 */
+  id: string
+  /** RTL 模块名，锚点校验必须存在于结构模型 */
+  module: string
+  /** ≤200 字：为什么 TOP 激励/观测不足以定位（或预防性理由） */
+  reason: string
+  /** 关联 diagnostic-control 失败指纹；预防性 UT 可为空 */
+  failureSignature: string | null
+  /** 关联 root-causes.json 记录（RC-*）；可为空 */
+  rootCauseId: string | null
+  /** 触发升级的 TOP 场景（SCN-*）；预防性 UT 可为空数组 */
+  topScenarioIds: string[]
+  createdAt: string
+  status: 'active' | 'retired'
+  retiredReason: string | null
+}
+
+export interface UtEscalationsFile {
+  version: 1
+  escalations: UtEscalationRecord[]
+}
+
+/** 配置字段取值域（§4.2 schema，三选一）。 */
+export type ConfigFieldDomain =
+  | { kind: 'enum'; values: Array<{ value: string; label: string }> }
+  | { kind: 'range'; min: number; max: number }
+  | { kind: 'flag' }
+
+export interface ConfigRegisterField {
+  name: string
+  msb: number
+  lsb: number
+  resetValue: string | null
+  domain: ConfigFieldDomain
+  /** 规格条款锚点（SPEC-xxx#a）；可为空 */
+  clauseId: string | null
+  /** ≤120 字 */
+  description: string
+}
+
+export interface ConfigRegister {
+  /** 寄存器名（规格书口径） */
+  name: string
+  /** 偏移地址，规格未写可空 */
+  address: string | null
+  /** 锚定的寄存器模块（如 apb_regs），锚点校验必须存在于结构模型 */
+  rtlModule: string
+  fields: ConfigRegisterField[]
+}
+
+export interface ConfigConstraint {
+  type: 'mutex' | 'requires' | 'illegal'
+  /** `<register>.<field>` 引用，登记时校验必须存在 */
+  fields: string[]
+  /** 约束语义（含期望行为：报错/忽略/截断） */
+  description: string
+  clauseId: string | null
+}
+
+/**
+ * 配置空间账本（§4.2 schema）。落 verification/intelligence/config-space.json（引擎产物区，Agent 禁手改）。
+ * 生成方式：Agent 抽取 + 引擎锚点校验（register_config_space），与 Intent 登记同一诚实性哲学。
+ */
+export interface ConfigSpaceFile {
+  version: 1
+  generatedAt: string
+  registers: ConfigRegister[]
+  constraints: ConfigConstraint[]
+}
+
+/** 配置覆盖采集文件条目（§4.5 原始 schema，cocotb 环境经 MOONGLASS_FUNCTIONAL_COVERAGE_FILE 通道回传）。 */
+export interface ConfigCoverageCoverpoint {
+  id: string
+  /** `<register>.<field>` 字段引用 */
+  field: string
+  buckets: Array<{ label: string; hits: number }>
+}
+export interface ConfigCoverageCross {
+  id: string
+  /** 参与交叉的 `<register>.<field>` 字段引用 */
+  fields: string[]
+  bins: Array<{ key: string; hits: number }>
+}
+
+/** config-coverage.json 原始文件（§4.5 schema）。落 verification/results/<topModule>/config-coverage.json。 */
+export interface ConfigCoverageFile {
+  version: 1
+  generatedAt: string
+  rtlHash: string
+  topModule: string
+  coverpoints: ConfigCoverageCoverpoint[]
+  crosses: ConfigCoverageCross[]
+}
+
+/** 引擎归一化后的配置覆盖视图（posture.configCoverage 数据源；§11 决策 2：先进态势记账，不定签核阈值）。 */
+export interface ConfigCoverageSummary {
+  generatedAt: string
+  rtlHash: string | null
+  topModule: string | null
+  /** rtlHash 与当前 RTL 不一致或缺失即 stale（freshness 口径与覆盖率门禁一致） */
+  stale: boolean
+  coverpoints: Array<ConfigCoverageCoverpoint & { hitBuckets: number; bucketCount: number; hitRate: number; totalHits: number }>
+  crosses: Array<ConfigCoverageCross & { hitBins: number; binCount: number; hitRate: number; totalHits: number }>
 }
 
 export interface SourceReference { file: string; line?: number; section?: string }
@@ -528,8 +655,10 @@ export interface RiskMarker {
 export interface VerificationScenario {
   id: string
   title: string
-  /** 场景来源：引擎穷举候选、Agent 登记的验证意图，或规格条款派生的 basic 候选；旧数据无此字段按 ENGINE_CANDIDATE 处理。 */
-  origin?: 'ENGINE_CANDIDATE' | 'AGENT_INTENT' | 'CLAUSE_DERIVED'
+  /** 场景来源：引擎穷举候选、Agent 登记的验证意图、规格条款派生的 basic 候选，或配置空间派生的配置点候选（origin='CONFIG_DERIVED' 时携带 configPoint 标记）；旧数据无此字段按 ENGINE_CANDIDATE 处理。 */
+  origin?: 'ENGINE_CANDIDATE' | 'AGENT_INTENT' | 'CLAUSE_DERIVED' | 'CONFIG_DERIVED'
+  /** 配置点来源标记（§4.3）：仅 origin=CONFIG_DERIVED 场景携带，说明该场景由 config-space 哪类配置点派生；refs 为 `<register>.<field>` 引用或 constraint 描述。 */
+  configPoint?: { class: 'business' | 'boundary' | 'illegal' | 'dynamic'; refs: string[] }
   /** 波段标签（v0.8.6）；旧数据无此字段由 resolveWave 按来源/方法推导 */
   wave?: VerificationWave
   /** W2 增补批归一化主题 */
@@ -556,6 +685,10 @@ export interface VerificationScenario {
   evidence: string[]
   reachCount: number
   assertionPassed?: boolean
+  /** 失败摘要（方案 C 批 1 §3.3）：scenario_hits 登记的归一化首个错误行（≤160 字），仅 FAIL 证据携带；透传字段，不参与状态派生 */
+  failureSummary?: string
+  /** 失败指纹（与 diagnostic-control 同一算法）：把场景失败关联到诊断账本；透传字段，不参与状态派生 */
+  failureSignature?: string
   coverageDelta: Record<string, number>
   updatedAt: string
 }

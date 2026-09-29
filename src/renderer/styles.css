@@ -738,7 +738,6 @@ select {
   box-shadow: inset 0 1px 4px rgb(20 25 35 / 4%), 0 7px 22px rgb(20 25 35 / 5%);
 }
 
-.workspace-bottom,
 .chat-composer {
   background-color: rgb(255 255 255 / 88%);
   box-shadow: 0 -6px 20px rgb(20 25 35 / 5%), inset 0 1px rgb(255 255 255 / 92%);
@@ -773,14 +772,6 @@ select {
   width: 1px;
   height: 28px;
   transform: translateY(-50%);
-}
-
-.resize-rail-y::after {
-  top: 2px;
-  left: 50%;
-  width: 28px;
-  height: 1px;
-  transform: translateX(-50%);
 }
 
 .resize-rail:hover,
@@ -855,162 +846,7 @@ select {
   box-shadow: inset 0 0 0 1px var(--line);
 }
 
-.engineering-console-tabs {
-  min-height: 37px;
-  background-color: rgb(246 247 249 / 78%);
-  box-shadow: inset 0 -1px rgb(20 25 35 / 6%);
-}
-
-.engineering-console-tabs > button:not(.console-icon-button) {
-  min-height: 30px;
-  border-bottom: 2px solid transparent;
-  transition: color 120ms ease, background-color 120ms ease, border-color 120ms ease;
-}
-
-.engineering-console-tabs > button.bg-zinc-100 {
-  border-bottom-color: var(--accent);
-  background-color: rgb(255 255 255 / 88%) !important;
-  color: var(--accent);
-}
-
-.console-icon-button {
-  display: inline-flex;
-  width: 25px;
-  height: 25px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid transparent;
-  border-radius: 4px;
-  color: var(--muted);
-}
-
-.console-icon-button:hover {
-  border-color: var(--line);
-  background-color: var(--surface-raised);
-  color: var(--text);
-}
-
-.console-action {
-  display: inline-flex;
-  min-height: 27px;
-  align-items: center;
-  gap: 5px;
-  border: 1px solid var(--line-strong);
-  border-radius: 5px;
-  background-color: rgb(255 255 255 / 90%);
-  padding: 3px 9px;
-  color: #515761;
-  font-size: 11px;
-  font-weight: 500;
-  box-shadow: 0 1px 2px rgb(20 25 35 / 4%);
-}
-
-.console-action:hover {
-  border-color: var(--accent-border);
-  color: var(--accent);
-}
-
-.console-action:disabled {
-  cursor: default;
-  opacity: 0.48;
-}
-
-.problem-count {
-  display: inline-flex;
-  align-items: center;
-  gap: 5px;
-}
-
-.problem-count::before {
-  content: '';
-  width: 7px;
-  height: 7px;
-  border-radius: 50%;
-}
-
-.problem-count-error::before {
-  background-color: #dc2626;
-}
-
-.problem-count-warning::before {
-  background-color: #d97706;
-}
-
-.console-list {
-  border: 1px solid var(--line);
-  border-radius: 6px;
-  background-color: rgb(255 255 255 / 62%);
-  box-shadow: inset 0 1px 3px rgb(20 25 35 / 3%);
-}
-
-.console-row {
-  display: flex;
-  min-height: 29px;
-  align-items: center;
-  gap: 8px;
-  border-bottom: 1px solid rgb(225 228 232 / 72%);
-  padding: 5px 9px;
-}
-
-.console-row:last-child {
-  border-bottom: 0;
-}
-
-button.console-row:hover {
-  background-color: var(--accent-soft);
-}
-
-.console-empty {
-  display: flex;
-  min-height: 54px;
-  align-items: center;
-  justify-content: center;
-  border: 1px dashed var(--line-strong);
-  border-radius: 6px;
-  padding: 12px;
-  color: #8a9099;
-  font-size: 11px;
-  text-align: center;
-}
-
 /* 工作区深色覆盖必须位于基础组件样式之后，避免被浅色规则重新覆盖。 */
-:root[data-color-mode='dark'] .workspace-bottom {
-  background-color: rgb(24 27 32 / 96%);
-  box-shadow: 0 -6px 20px rgb(0 0 0 / 20%), inset 0 1px rgb(255 255 255 / 5%);
-}
-
-:root[data-color-mode='dark'] .engineering-console-tabs {
-  background-color: #20242a;
-  box-shadow: inset 0 -1px rgb(255 255 255 / 7%);
-}
-
-:root[data-color-mode='dark'] .engineering-console-tabs > button.bg-zinc-100 {
-  background-color: #292e35 !important;
-  color: var(--accent);
-}
-
-:root[data-color-mode='dark'] .console-list {
-  background-color: rgb(20 23 27 / 72%);
-  box-shadow: inset 0 1px 3px rgb(0 0 0 / 22%);
-}
-
-:root[data-color-mode='dark'] .console-row {
-  border-bottom-color: rgb(255 255 255 / 7%);
-}
-
-:root[data-color-mode='dark'] .console-empty {
-  border-color: var(--line-strong);
-  background-color: #20242a;
-  color: var(--muted);
-}
-
-:root[data-color-mode='dark'] .console-action {
-  border-color: var(--line-strong);
-  background-color: #252a31;
-  color: #c4c9d1;
-  box-shadow: 0 1px 2px rgb(0 0 0 / 24%);
-}
-
 :root[data-color-mode='dark'] .workspace-status {
   background-color: #181b20;
   box-shadow: inset 0 1px rgb(255 255 255 / 5%);
@@ -1032,26 +868,6 @@ button.console-row:hover {
   background-color: #1b1f24;
   color: var(--text);
   box-shadow: inset 0 1px 4px rgb(0 0 0 / 22%);
-}
-
-.console-metric {
-  display: flex;
-  min-width: 0;
-  align-items: baseline;
-  justify-content: space-between;
-  border-left: 3px solid var(--accent-border);
-  border-radius: 4px;
-  background-color: rgb(255 255 255 / 72%);
-  padding: 6px 9px;
-  color: var(--muted);
-  font-size: 11px;
-  box-shadow: inset 0 0 0 1px var(--line);
-}
-
-.console-metric strong {
-  color: var(--text);
-  font-size: 16px;
-  font-weight: 600;
 }
 
 .environment-group {
@@ -1279,10 +1095,6 @@ button.console-row:hover {
   border-color: #6b5326;
   background-color: #332817;
   color: #fcd34d;
-}
-
-:root[data-color-mode='dark'] .console-metric {
-  background-color: rgb(20 23 27 / 72%);
 }
 
 :root[data-color-mode='dark'] .message-assistant {

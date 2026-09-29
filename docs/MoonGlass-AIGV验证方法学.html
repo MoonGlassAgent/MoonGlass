@@ -23,6 +23,7 @@
     <div class="subtitle">从 Requirement Model、RTL Structure 与 Verification Space，到 W0-W3 执行、Multi-Oracle、Mutation 和机器签核建议的统一工程框架</div>
     <div class="meta"><span>作者：MoonGlass Contributors</span><span>版本：2.1</span><span>日期：2026-09-14</span><span>适用软件：MoonGlass v0.9.x</span><span>联系：moonglassagent@126.com</span></div>
     <div class="notice"><b>文档性质：</b>本文描述 MoonGlass 当前实现及其工程设计原则，是方法学白皮书与开放讨论稿，不是商业 EDA 签核认证，也不是已经完成同行评审的实验论文。文中会明确区分“已实现机制”“项目适配要求”和“研究假设”。</div>
+    <div class="notice"><b>2026-09-29 修订：</b>模块验证策略由四级分级修订为“TOP 优先，UT 例外”两态，并新增配置空间模型（详见 docs/AIGV-TOP-FIRST-STRATEGY-ZH-CN.md）；§4.8 已按新口径改写。</div>
   </header>
 
   <div class="layout">
@@ -148,7 +149,8 @@
         <h3>4.7 Scenario 六轴状态</h3>
         <p>单一状态枚举不足以表达真实验证进度。AIGV 2.1 将 Scenario 分解为生命周期、到达、裁决、证据、时效性和闭环六轴。一个场景可以已经 EXECUTED，却仍是 NOT_REACHED；可以得到 PASS，却因证据 PARTIAL 不能闭环；也可以在 RTL 变化后从 CURRENT 进入 IMPACT_UNKNOWN。状态不会因为重复重建模型而被“洗绿”，恢复 CURRENT 必须依赖绑定新 RTL Hash 的证据。</p>
         <h3>4.8 模块验证策略</h3>
-        <table><thead><tr><th>层级</th><th>适用对象</th><th>验证深度</th></tr></thead><tbody><tr><td>STATIC_ONLY</td><td>低风险、结构简单的普通子模块</td><td>编译/elaboration、Lint、可综合性、端口与未驱动检查</td></tr><tr><td>UNIT_SMOKE</td><td>需要独立冒烟的普通子模块</td><td>静态检查加最小合法事务、复位与基本 Checker</td></tr><tr><td>UNIT_FOCUSED</td><td>结构或语义风险较高的子模块</td><td>定向 Testbench、模块风险 Scenario、边界/异常/并发与 Oracle 证据</td></tr><tr><td>IP_SIGNOFF</td><td><code>design.json</code> 指定的顶层 IP</td><td>完整 AIGV Intent/Scenario、端到端回归、Multi-Oracle、Mutation、Residual Risk 与签核包</td></tr></tbody></table>
+        <p>2026-09-29 起，模块验证策略由四级分级（STATIC_ONLY/UNIT_SMOKE/UNIT_FOCUSED/IP_SIGNOFF）修订为“TOP 优先，UT 例外”两态：默认只针对整个设计（TOP）搭建一套验证环境，全部 Scenario 锚定 TOP 接口与规格条款；子模块不再预先分级建独立 Testbench，仅当诊断升级后 probe 子模块信号仍无法定位时，经登记（<code>ut-escalations.json</code>）成为 UT 例外单独验证，例外用例的 PASS 不替代 TOP 证据。配置完备性由新增的配置空间模型保障：规格寄存器章节抽取为机器可读的 <code>config-space.json</code>，按业务/边界/非法/动态四类配置点派生场景并回传配置覆盖。</p>
+        <table><thead><tr><th>层级</th><th>适用对象</th><th>验证深度</th></tr></thead><tbody><tr><td>TOP_SIGNOFF</td><td><code>design.json</code> 指定的顶层（TOP）</td><td>完整 AIGV Intent/Scenario、端到端回归、Multi-Oracle、Mutation、Residual Risk 与签核包</td></tr><tr><td>COVERED_BY_TOP</td><td>其余全部子模块</td><td>编译/elaboration、Lint、可综合性、端口与未驱动检查，经 TOP 场景与全设计覆盖率间接验证</td></tr><tr><td>UT_EXCEPTION</td><td>诊断升级后 probe 仍无法定位、经登记的例外模块</td><td>定向 Testbench、模块风险 Scenario、边界/异常/并发与 Oracle 证据；修复后须回到 TOP 回归确认</td></tr></tbody></table>
         <p>风险分析仍覆盖全部 RTL，但只有顶层和风险选中的子模块进入完整 Scenario 闭环。验证深度由风险决定，Oracle 类型由语义决定；小模块可以在独立判断和定位收益明显时使用 Golden Model，顶层也不能为了形式完整而复制 RTL 作为“参考模型”。</p>
       </section>
 
@@ -391,7 +393,7 @@
         <div class="equation">Semantic Coverage = Verified Behavior Bins / Planned Behavior Bins</div>
         <p>应同时报告 line、expression/branch、toggle、FSM、functional bin/cross、Intent closure 和 requirement trace completeness，避免单一聚合数字掩盖缺口。</p>
         <h3>15.2 效率指标</h3>
-        <ul><li>每个新增闭环 Intent 的仿真时间与 Agent token 成本。</li><li>每轮反馈带来的 Coverage Delta、Critical Open 减少量与 Novelty Score。</li><li>验证规划、环境搭建、基础回归和风险闭环各自的交付时间及重复工作比例。</li><li>各模块层级投入：STATIC_ONLY/UNIT_SMOKE/UNIT_FOCUSED/IP_SIGNOFF 的执行成本与缺陷收益。</li><li>失败定位平均时间、无效 seed 比例、重复测试比例与同指纹重复修复次数。</li><li>每次失败迭代的诊断等级增量，以及进入 DIAGNOSTIC_ENHANCEMENT 后首次获得新证据所需轮次。</li><li>每个有效 Mutation 的执行成本、检出率和 survivor 关闭时间。</li><li>Agent 建议被工程师采纳、修改或拒绝的比例。</li></ul>
+        <ul><li>每个新增闭环 Intent 的仿真时间与 Agent token 成本。</li><li>每轮反馈带来的 Coverage Delta、Critical Open 减少量与 Novelty Score。</li><li>验证规划、环境搭建、基础回归和风险闭环各自的交付时间及重复工作比例。</li><li>各模块策略两态（TOP_SIGNOFF/COVERED_BY_TOP，含 UT_EXCEPTION 例外登记）的执行成本与缺陷收益。</li><li>失败定位平均时间、无效 seed 比例、重复测试比例与同指纹重复修复次数。</li><li>每次失败迭代的诊断等级增量，以及进入 DIAGNOSTIC_ENHANCEMENT 后首次获得新证据所需轮次。</li><li>每个有效 Mutation 的执行成本、检出率和 survivor 关闭时间。</li><li>Agent 建议被工程师采纳、修改或拒绝的比例。</li></ul>
         <h3>15.3 可信性指标</h3>
         <ul><li>Risk 精确率：抽样风险中确有合理结构依据的比例。</li><li>Spec Gap 精确率与召回率。</li><li>错误闭环率：被标记 VERIFIED 但复审缺少到达/独立裁决/证据的比例。</li><li>Oracle 冲突发现率与同源偏差率。</li><li>风险加权 Mutation Score，以及高风险 survivor 数量。</li><li>证据可复现率：在干净环境中可重跑并得到一致结果的比例。</li><li>变更敏感度：RTL/规格变化后受影响 Intent 被正确重新打开的比例。</li></ul>
       </section>

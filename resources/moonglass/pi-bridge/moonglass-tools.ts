@@ -29,7 +29,7 @@ import { runFormalVerification } from './eda-bridge/formal'
 import { runDesignLint } from './eda-bridge/lint'
 import { analyzeDeadLogic, writeDeadLogicReport } from './eda-bridge/dead-logic'
 import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
-import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause, computeRtlHash } from './verification-intelligence/engine.ts'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause, computeRtlHash, registerUtEscalation, retireUtEscalation, registerConfigSpace } from './verification-intelligence/engine.ts'
 import { createRtlWriteGuard } from './rtl-write-guard.ts'
 
 type DiagnosticLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5'
@@ -88,13 +88,21 @@ function filesHash(files: string[]): string {
   return hash.digest('hex')
 }
 
-function failureSignature(log: string): string {
-  const normalized = log.split(/\r?\n/)
+/** 失败日志归一化行（路径/时间/十六进制/大数字脱敏 + 错误关键词过滤），failureSignature 与 failureSummary 共用同一次归一化 */
+function normalizeFailureLines(log: string): string[] {
+  return log.split(/\r?\n/)
     .map((line) => line.replace(/[A-Z]:\\[^\s:]+/gi, '<path>').replace(/\b\d+(?:\.\d+)?\s*(?:ns|us|ms|s|cycles?)\b/gi, '<time>').replace(/\b0x[0-9a-f]+\b/gi, '<hex>').replace(/\b\d{4,}\b/g, '<number>').trim())
     .filter((line) => /error|fail|assert|mismatch|timeout|traceback|exception|fatal/i.test(line))
-    .slice(-12)
-    .join('\n') || log.slice(-1200)
+}
+
+function failureSignature(log: string): string {
+  const normalized = normalizeFailureLines(log).slice(-12).join('\n') || log.slice(-1200)
   return createHash('sha1').update(normalized).digest('hex').slice(0, 12)
+}
+
+/** 失败摘要（方案 C 批 1 §3.3）：归一化后首个错误行，≤160 字硬截断；无错误行返回空串（调用方不写字段） */
+function failureSummary(log: string): string {
+  return (normalizeFailureLines(log)[0] ?? '').slice(0, 160)
 }
 
 function inferDiagnosticLevel(log: string, hasWaveform: boolean): { level: DiagnosticLevel; observations: string[] } {
@@ -184,6 +192,10 @@ export interface ScenarioHitWriteInput {
    */
   runTestcases?: string[]
   passed: boolean
+  /** FAIL 时写入：失败日志归一化后首个错误行（≤160 字硬截断，方案 C 批 1 §3.3）；PASS 路径不写并清除旧值 */
+  failureSummary?: string
+  /** FAIL 时写入：与 diagnostic-control 同一算法的失败指纹（归一化 sha1 前 12 位） */
+  failureSignature?: string
   rtlFiles: string[]
   evidence: string[]
 }
@@ -236,7 +248,7 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
     const preciseTestName = input.testNames?.[id] ?? (input.runTestcases?.length === 1 ? input.runTestcases[0] : undefined)
     const runTestcases = input.runTestcases ?? []
     const boundTestcases = [...new Set([...((previous?.boundTestcases as string[] | undefined) ?? []), ...runTestcases])]
-    byId.set(id, {
+    const entry: Record<string, unknown> = {
       ...previous,
       id,
       reached: true,
@@ -247,7 +259,17 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
       ...(typeof preciseTestName === 'string' && preciseTestName ? { testName: preciseTestName } : {}),
       ...(boundTestcases.length > 0 ? { boundTestcases, boundBy: preciseTestName ? 'testcase-name' : 'scenarioIds' } : {}),
       generatedAt: new Date().toISOString()
-    })
+    }
+    // 方案 C 批 1（§3.3）：FAIL 登记携带失败摘要/指纹（供 UI 显示"为什么失败"）；
+    // PASS 路径不写——并清掉上一次 FAIL 留下的旧字段，避免通过后的场景仍挂陈旧失败信息
+    if (input.passed) {
+      delete entry.failureSummary
+      delete entry.failureSignature
+    } else if (typeof input.failureSummary === 'string' && input.failureSummary) {
+      entry.failureSummary = input.failureSummary
+      if (typeof input.failureSignature === 'string' && input.failureSignature) entry.failureSignature = input.failureSignature
+    }
+    byId.set(id, entry)
   }
   writeJsonAtomic(path, { rtlHash, scenarios: [...byId.values()] })
   return { registered: scenarioIds, warnings }
@@ -459,7 +481,10 @@ interface ModuleInfo {
 
 // 简化端口提取：匹配 module 声明中的 port 列表和参数
 const MODULE_HEADER = /^\s*module\s+(\w+)\s*#?\(?([^;]*?)\)?\s*\(/
-const PORT_DIR = /^\s*(input|output|inout)\s+(\[.*?\])?\s*(\w+)/
+// 端口方向行：方向后先跳过 net/data-type/signedness 关键字（wire/reg/logic/bit/tri/signed/unsigned），
+// 再取 packed 维度，最后才是端口名。修复缺陷：原正则 `(\[.*?\])?` 失配后 `(\w+)` 会把
+// `input wire en` 中的 `wire` 误当作端口名，导致 generate_tb 驱动不存在的 top->wire。
+const PORT_DIR = /^\s*(input|output|inout)\s+(?:(?:wire|reg|logic|bit|tri|signed|unsigned)\s+)*((?:\[[^\]]*\]\s*)*)(\w+)/
 const PARAM_LINE = /^\s*parameter\s+(\w+)\s*=\s*([^,;]+)/
 
 function extractModuleInfo(code: string, filePath: string): ModuleInfo {
@@ -1544,6 +1569,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
             testNames,
             runTestcases,
             passed: result.passed,
+            // 方案 C 批 1（§3.3）：FAIL 时失败摘要/指纹随登记落盘（与 diagnostic-control 同一次归一化产出）
+            ...(result.passed ? {} : { failureSummary: failureSummary(result.log), failureSignature: failureSignature(result.log) }),
             rtlFiles,
             evidence: [result.resultPath, result.simulationLogPath, result.vcdPath ?? '']
           })
@@ -2014,6 +2041,116 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         }
       } catch (err) {
         return { content: [{ type: 'text', text: `根因登记被拒绝：${err instanceof Error ? err.message : String(err)}` }], details: {}, isError: true }
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'register_ut_escalation',
+    label: 'Register UT Escalation',
+    description: '登记/退役 UT 例外（TOP 优先，UT 例外策略）：诊断账本升级到 L3/L4、probe 子模块信号仍无法定位后，经本工具登记为例外模块并单独建 TB；例外 PASS 不替代 TOP 回归证据。预防性 UT 允许登记（failureSignature 传空，reason 必须写明预防性理由）。登记落 verification/results/ut-escalations.json（证据区审计线索），成功后自动重建验证态势（策略表该模块显示 UT_EXCEPTION、场景锚点放开、执行计划纳入排队）；退役保留历史。未经登记禁止直接搭模块 Testbench。',
+    promptSnippet: 'Register a diagnosis-driven UT exception after TOP-level probes fail to localize',
+    promptGuidelines: 'Call only after the diagnostic ledger reaches L3/L4 and probing submodule signals still cannot localize the failure (or explicitly as a preventive UT with the rationale in reason). Anchors are validated: module must exist in the structural model, topScenarioIds must exist in scenario-registry, rootCauseId must exist in root-causes.json. Fix rejected anchors and re-register; never bypass by editing ut-escalations.json.',
+    parameters: Type.Object({
+      action: Type.Union([Type.Literal('register'), Type.Literal('retire')], { description: 'register=登记例外；retire=退役该模块的 active 例外（需 retiredReason）' }),
+      module: Type.String({ minLength: 1, description: 'RTL 模块名（结构模型中必须存在）' }),
+      reason: Type.String({ minLength: 1, maxLength: 200, description: '≤200 字：为什么 TOP 激励/观测不足以定位；预防性 UT 时写明预防性理由' }),
+      failureSignature: Type.Optional(Type.String({ description: '关联 diagnostic-control 失败指纹；预防性 UT 可省略或传空' })),
+      rootCauseId: Type.Optional(Type.String({ description: '关联 root-causes.json 记录（RC-*），引擎校验存在性；可省略' })),
+      topScenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '触发升级的 TOP 场景（必须在 scenario-registry 中存在）；预防性 UT 可省略或传空数组' })),
+      retiredReason: Type.Optional(Type.String({ minLength: 1, description: 'action=retire 必填：退役依据（如根因修复且 TOP 回归已覆盖）' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      onUpdate?.({ content: [{ type: 'text', text: params.action === 'register' ? '正在校验锚点并登记 UT 例外…' : '正在退役 UT 例外…' }] })
+      try {
+        if (params.action === 'retire') {
+          if (!params.retiredReason?.trim()) throw new Error('action=retire 必须提供 retiredReason（退役依据）')
+          // 工具层按模块解析 active 例外 id（引擎退役接口以 id 为锚）
+          const escalationsPath = join(ctx.cwd, 'verification', 'results', 'ut-escalations.json')
+          const activeForModule: Array<{ id: string; reason: string }> = []
+          if (existsSync(escalationsPath)) {
+            try {
+              const parsed = JSON.parse(readFileSync(escalationsPath, 'utf-8')) as { escalations?: Array<{ id: string; module: string; status: string; reason: string }> }
+              for (const item of parsed.escalations ?? []) {
+                if (item.module === params.module && item.status === 'active') activeForModule.push({ id: item.id, reason: item.reason })
+              }
+            } catch { /* 文件损坏按无登记处理，由引擎接口报错 */ }
+          }
+          if (!activeForModule.length) throw new Error(`模块 ${params.module} 没有 active 的 UT 例外可退役`)
+          const retired = activeForModule.map((item) => retireUtEscalation(ctx.cwd, item.id, params.retiredReason))
+          const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+          return {
+            content: [{ type: 'text', text: `## UT 例外退役\n\n- 模块：${params.module}\n- 退役：${retired.map((item) => `${item.id}（${item.reason.slice(0, 40)}）`).join('、')}\n- 依据：${params.retiredReason}\n- ${rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次退役）：${rebuildError}` : '态势快照已自动重建（策略表恢复 COVERED_BY_TOP），退役记录保留供签核审计'}` }],
+            details: { retired },
+            isError: false
+          }
+        }
+        const result = registerUtEscalation(ctx.cwd, {
+          module: params.module,
+          reason: params.reason,
+          failureSignature: params.failureSignature ?? null,
+          rootCauseId: params.rootCauseId ?? null,
+          topScenarioIds: params.topScenarioIds ?? []
+        })
+        const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+        return {
+          content: [{ type: 'text', text: `## UT 例外登记\n\n- 记录 ID：${result.record.id}${result.reused ? '（同模块同 reason 已存在，幂等复用）' : ''}\n- 模块：${result.record.module}\n- 理由：${result.record.reason}\n- 失败指纹：${result.record.failureSignature ?? '（预防性 UT，无指纹）'}\n- 关联 TOP 场景：${result.record.topScenarioIds.join('、') || '无'}\n- 落盘：verification/results/ut-escalations.json\n- ${rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次登记）：${rebuildError}` : '态势快照已自动重建：策略表该模块显示 UT_EXCEPTION，模块场景锚点放开并纳入执行计划；修复后须回 TOP 回归确认，例外 PASS 不替代 TOP 证据'}` }],
+          details: { record: result.record, reused: result.reused },
+          isError: false
+        }
+      } catch (err) {
+        return { content: [{ type: 'text', text: `UT 例外登记/退役被拒绝：${err instanceof Error ? err.message : String(err)}` }], details: {}, isError: true }
+      }
+    }
+  })
+
+  pi.registerTool({
+    name: 'register_config_space',
+    label: 'Register Config Space',
+    description: '登记配置空间账本（config-space.json，引擎产物区 Agent 禁手改）：从规格书寄存器/配置章节抽取寄存器、字段、取值域（enum/range/flag）与约束（mutex/requires/illegal），引擎做锚点校验（rtlModule 存在、字段名在该模块 RTL 源码可检索、clauseId 在 requirement-model 存在、非法 domain 与悬空 constraint 引用拒绝）后落盘并自动重建验证态势。rebuild 时引擎按四类配置点（业务/边界/非法/动态）生成 CONFIG_DERIVED 场景候选。规格书缺寄存器章节时不得编造——先转 Spec Gap 阻断。',
+    promptSnippet: 'Register the machine-readable config register space after reading the spec register chapter',
+    promptGuidelines: 'Read the specification register/config chapter first (register names, offsets, field bit ranges, reset values, value encodings, legal/illegal combinations). If the spec has no register chapter, register a Spec Gap instead of inventing registers. Field names must be real RTL identifiers in the anchored module. Constraints must state the expected DUT behavior (error/ignore/truncate). Never edit config-space.json by hand.',
+    parameters: Type.Object({
+      registers: Type.Array(Type.Object({
+        name: Type.String({ minLength: 1, description: '寄存器名（规格书口径）' }),
+        address: Type.Optional(Type.Union([Type.String(), Type.Null()]), { description: '偏移地址，规格未写可省略或传 null' }),
+        rtlModule: Type.String({ minLength: 1, description: '锚定的寄存器模块（如 apb_regs），必须在结构模型中存在' }),
+        fields: Type.Array(Type.Object({
+          name: Type.String({ minLength: 1 }),
+          msb: Type.Integer({ minimum: 0 }),
+          lsb: Type.Integer({ minimum: 0 }),
+          resetValue: Type.Optional(Type.Union([Type.String(), Type.Null()])),
+          domain: Type.Union([
+            Type.Object({ kind: Type.Literal('enum'), values: Type.Array(Type.Object({ value: Type.String({ minLength: 1 }), label: Type.String({ minLength: 1 }) }), { minItems: 1 }) }),
+            Type.Object({ kind: Type.Literal('range'), min: Type.Number(), max: Type.Number() }),
+            Type.Object({ kind: Type.Literal('flag') })
+          ]),
+          clauseId: Type.Optional(Type.Union([Type.String(), Type.Null()]), { description: '规格条款锚点（SPEC-xxx#a），引擎校验存在性' }),
+          description: Type.String({ minLength: 1, maxLength: 120, description: '≤120 字字段语义' })
+        }), { minItems: 1 })
+      }), { minItems: 1 }),
+      constraints: Type.Array(Type.Object({
+        type: Type.Union([Type.Literal('mutex'), Type.Literal('requires'), Type.Literal('illegal')]),
+        fields: Type.Array(Type.String({ minLength: 1 }), { minItems: 1, description: '<register>.<field> 引用，必须已在 registers 声明' }),
+        description: Type.String({ minLength: 1, description: '约束语义与期望行为（报错/忽略/截断）' }),
+        clauseId: Type.Optional(Type.Union([Type.String(), Type.Null()]))
+      }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      onUpdate?.({ content: [{ type: 'text', text: '正在校验配置空间锚点并落盘…' }] })
+      try {
+        const configSpace = registerConfigSpace(ctx.cwd, {
+          registers: params.registers.map((register) => ({ ...register, address: register.address ?? null, fields: register.fields.map((field) => ({ ...field, resetValue: field.resetValue ?? null, clauseId: field.clauseId ?? null })) })),
+          constraints: params.constraints.map((constraint) => ({ ...constraint, clauseId: constraint.clauseId ?? null }))
+        })
+        const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+        return {
+          content: [{ type: 'text', text: `## 配置空间登记\n\n- 寄存器：${configSpace.registers.length}（${configSpace.registers.map((item) => item.name).join('、')}）\n- 字段：${configSpace.registers.reduce((sum, item) => sum + item.fields.length, 0)}\n- 约束：${configSpace.constraints.length}\n- 落盘：verification/intelligence/config-space.json\n- ${rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次登记）：${rebuildError}` : '态势快照已自动重建：四类配置点（业务/边界/非法/动态）已生成 CONFIG_DERIVED 场景候选进入候选池（与普通场景共用执行计划 cap，按需提升）'}` }],
+          details: { registers: configSpace.registers.length, constraints: configSpace.constraints.length },
+          isError: false
+        }
+      } catch (err) {
+        return { content: [{ type: 'text', text: `配置空间登记被拒绝：${err instanceof Error ? err.message : String(err)}` }], details: {}, isError: true }
       }
     }
   })

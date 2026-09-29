@@ -7,12 +7,13 @@
  */
 
 import { spawn } from 'node:child_process'
-import { closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { createHash } from 'node:crypto'
+import { closeSync, createReadStream, existsSync, mkdirSync, openSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { mkdir, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, dirname, extname, join, resolve, sep } from 'node:path'
-import { computeMissingInstallPlan, detectToolchain, downloadFileWithMirrors, fetchWithMirrors, locateTool, mergePathEntries } from '@moonglass/eda-bridge'
-import type { InstallMissingSummary, ToolDetection, ToolInstallJob, ToolInstallResult, WaveformOpenResult } from '@shared/types'
+import { computeMissingInstallPlan, detectToolchain, downloadFileWithMirrors, isCocotbVersionCompatible, locateTool, mergePathEntries, releaseDownloadUrl, releasePageUrl, run, runCocotbSimulation, runFormalVerification, toolEnv, verifyIcarusToolchain, COCOTB_VERSION_RANGE, TOOLCHAIN_MANIFEST, VERIBLE_CANDIDATES, YOSYS_CANDIDATES } from '@moonglass/eda-bridge'
+import type { EnvSelfCheckItem, EnvSelfCheckReport, InstallMissingSummary, ToolDetection, ToolInstallJob, ToolInstallResult, WaveformOpenResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
 import type { ProjectService } from './ProjectService'
 
@@ -28,17 +29,22 @@ export class EdaService implements MoonGlassService {
   private readonly toolchainRoot: string
   private readonly bundledAigvRoot: string
   private readonly detectionCachePath: string
+  private readonly selfCheckRoot: string
   private detectionCache: ToolDetection[] | null = null
   private readonly installJobs = new Map<string, ToolInstallJob>()
-  private static readonly REQUEST_TIMEOUT_MS = 30_000
+  private readonly projects: ProjectService
   private static readonly DOWNLOAD_TIMEOUT_MS = 30 * 60_000
   /** 一键安装缺失工具的编排任务固定 id（复用 installJobs 轮询） */
   static readonly INSTALL_MISSING_JOB_ID = 'install-missing'
 
-  constructor(userDataDir: string, private readonly projects: ProjectService) {
+  // 显式字段赋值而非 TS 参数属性：冒烟脚本在 Node strip-only 模式下直接 import 本文件，
+  // 参数属性语法不被支持（与 ProjectService 同一写法约定）
+  constructor(userDataDir: string, projects: ProjectService) {
+    this.projects = projects
     this.toolchainRoot = join(userDataDir, 'moonglass', 'toolchains')
     this.bundledAigvRoot = join(this.toolchainRoot, 'bundled-aigv', 'aigv-toolchain')
     this.detectionCachePath = join(userDataDir, 'moonglass', 'eda-detection-cache.json')
+    this.selfCheckRoot = join(userDataDir, 'moonglass', 'self-check')
   }
 
   async start(): Promise<void> {
@@ -64,6 +70,149 @@ export class EdaService implements MoonGlassService {
     return tools
   }
 
+  /**
+   * 用户侧环境自检（T6 env doctor）：不依赖任何项目或仓库源码，
+   * 在 <userData>/moonglass/self-check/（每次运行前清空重建，文件名纯 ASCII）下
+   * 逐项执行 5 条最小端到端链路，逐项收敛为 PASS / FAIL / 跳过 + 修复指引。
+   * 执行前经 activateToolchains() 注入自管工具链 PATH；所有工具调用走 toolEnv
+   * （MinGW DLL 隔离、VERILATOR_ROOT 修正），文件一律以 cwd + 相对路径传给工具
+   * （中文用户名下 userData 路径含非 ASCII 时也能跑）。整体可能耗时约 1 分钟，
+   * IPC 侧不设超时。
+   */
+  async runEnvironmentSelfCheck(): Promise<EnvSelfCheckReport> {
+    this.activateToolchains()
+    await rm(this.selfCheckRoot, { recursive: true, force: true })
+    await mkdir(this.selfCheckRoot, { recursive: true })
+    const items: EnvSelfCheckItem[] = [
+      await this.runSelfCheckItem('icarus', 'oss-cad-suite', () => this.checkIcarusMinimal()),
+      await this.runSelfCheckItem('verible', 'verible', () => this.checkVeribleMinimal()),
+      await this.runSelfCheckItem('yosys', 'oss-cad-suite', () => this.checkYosysMinimal()),
+      await this.runSelfCheckItem('sby', 'oss-cad-suite', () => this.checkSbyMinimal()),
+      await this.runSelfCheckItem('cocotb', 'python-cocotb', () => this.checkCocotbMinimal())
+    ]
+    return { items, passedCount: items.filter((item) => item.passed).length, totalCount: items.length, ranAt: new Date().toISOString() }
+  }
+
+  /** 单项检查收敛：检查函数返回 string 为 PASS 明细；返回 { skipped, message } 为工具缺失跳过；抛错为 FAIL */
+  private async runSelfCheckItem(
+    id: EnvSelfCheckItem['id'],
+    installId: string,
+    check: () => Promise<string | { skipped: true; message: string; installId?: string }>
+  ): Promise<EnvSelfCheckItem> {
+    const startedAt = Date.now()
+    try {
+      const result = await check()
+      if (typeof result !== 'string') {
+        return { id, passed: false, skipped: true, message: result.message, durationMs: Date.now() - startedAt, installId: result.installId ?? installId }
+      }
+      return { id, passed: true, message: result, durationMs: Date.now() - startedAt }
+    } catch (error) {
+      return { id, passed: false, message: error instanceof Error ? error.message : String(error), durationMs: Date.now() - startedAt, installId }
+    }
+  }
+
+  /** icarus：locate iverilog → verifyIcarusToolchain 最小编译 + 运行（MOONGLASS_ICARUS_OK 标记） */
+  private async checkIcarusMinimal(): Promise<string | { skipped: true; message: string }> {
+    const iverilog = await locateTool(process.platform === 'win32' ? ['iverilog.exe', 'iverilog'] : ['iverilog'])
+    if (!iverilog) return { skipped: true, message: '未找到 Icarus Verilog（iverilog）；请通过下方安装入口安装 OSS CAD Suite' }
+    const env = toolEnv(iverilog)
+    const version = await run(iverilog, ['-V'], env)
+    await verifyIcarusToolchain(iverilog, this.selfCheckRoot, env)
+    const versionLine = (version.stdout || version.stderr).trim().split(/\r?\n/)[0] ?? ''
+    return `最小编译与运行通过（${versionLine || '版本未知'}）`
+  }
+
+  /** verible：复用安装后自检同款检查（--version + 最小 SV lint）；工具缺失则跳过 */
+  private async checkVeribleMinimal(): Promise<string | { skipped: true; message: string }> {
+    const lintExe = await locateTool(VERIBLE_CANDIDATES)
+    if (!lintExe) return { skipped: true, message: '未找到 Verible（verible-verilog-lint）；请通过下方安装入口安装 Verible' }
+    const versionLine = await this.selfCheckVeribleBinary(lintExe)
+    return `最小 SystemVerilog lint 通过（${versionLine || '版本未知'}）`
+  }
+
+  /** yosys+ABC：最小模块含算术（a - b）触发 ABC 映射，read_verilog + synth -top + stat 全链路；
+   *  以 cwd=工作目录、相对文件名运行，覆盖 yosys-abc 缺失类问题 */
+  private async checkYosysMinimal(): Promise<string | { skipped: true; message: string }> {
+    const yosys = await locateTool(YOSYS_CANDIDATES)
+    if (!yosys) return { skipped: true, message: '未找到 Yosys；请通过下方安装入口安装 OSS CAD Suite' }
+    const env = toolEnv(yosys)
+    const checkDir = join(this.selfCheckRoot, 'yosys')
+    mkdirSync(checkDir, { recursive: true })
+    writeFileSync(join(checkDir, 'min.v'), 'module top(input [7:0] a, input [7:0] b, output [8:0] d);\n  assign d = a - b;\nendmodule\n', 'utf-8')
+    const version = await run(yosys, ['-V'], env)
+    const synth = await run(yosys, ['-p', 'read_verilog min.v; synth -top top; stat'], env, undefined, checkDir, 120_000)
+    if (synth.code !== 0) {
+      throw new Error(`yosys 最小综合失败（退出码 ${synth.code ?? 'null'}）：${(synth.stderr || synth.stdout).trim().slice(-1500) || '无输出'}`)
+    }
+    const versionLine = (version.stdout || version.stderr).trim().split(/\r?\n/)[0] ?? ''
+    return `最小模块综合（含 ABC 映射）通过（${versionLine || '版本未知'}）`
+  }
+
+  /** sby bmc：最小 .sby（bmc 模式 + smtbmc boolector）+ 自反断言模块，
+   *  走 runFormalVerification 既有口径（相对路径、cwd 传递、非 ASCII 编码防线），
+   *  覆盖 sby / MinGW Python / 求解器完整链路（内部超时 15 分钟，足够冷启动） */
+  private async checkSbyMinimal(): Promise<string | { skipped: true; message: string }> {
+    const sby = await locateTool(process.platform === 'win32' ? ['sby.exe', 'sby.cmd', 'sby'] : ['sby'])
+    if (!sby) return { skipped: true, message: '未找到 SymbiYosys（sby）；请通过下方安装入口安装 OSS CAD Suite' }
+    const checkDir = join(this.selfCheckRoot, 'sby')
+    mkdirSync(checkDir, { recursive: true })
+    // 单文件同时作为 RTL 与属性输入：always 时序块内的 immediate assert（Yosys formal 子集内）
+    writeFileSync(join(checkDir, 'top.v'), 'module top(input clk, input rst);\n  reg [3:0] cnt;\n  always @(posedge clk) begin\n    if (rst) cnt <= 4\'d0;\n    else cnt <= cnt + 4\'d1;\n    assert (cnt == cnt);\n  end\nendmodule\n', 'utf-8')
+    const result = await runFormalVerification({
+      workspaceDir: checkDir,
+      top: 'top',
+      rtlFiles: ['top.v'],
+      propertyFiles: ['top.v'],
+      mode: 'bmc',
+      depth: 5,
+      engine: 'boolector',
+      taskName: 'selfcheck'
+    })
+    if (result.status !== 'PASS') {
+      throw new Error(`SymbiYosys 最小 BMC 未通过（状态 ${result.status}）：${result.message}`)
+    }
+    return `最小断言 BMC 通过（engine=smtbmc ${result.engine}，depth=${result.depth}）`
+  }
+
+  /** cocotb+icarus：cocotb 版本范围校验 + runCocotbSimulation 跑 1 断言最小用例
+   *  （runner 生成、pin 版本、JUnit 产出全链路；waves:false + rtlCoverage:false 锁定 icarus 后端） */
+  private async checkCocotbMinimal(): Promise<string | { skipped: true; message: string; installId?: string }> {
+    const python = await locateTool(process.platform === 'win32' ? ['python.exe', 'python'] : ['python3', 'python'])
+    if (!python) return { skipped: true, message: '未找到 Python 3；Cocotb 运行需要 Python，请先安装 Python 3' }
+    const probe = await run(python, ['-c', 'import cocotb; print(cocotb.__version__)'], undefined, undefined, undefined, 30_000)
+    if (probe.code !== 0) {
+      return { skipped: true, message: '当前 Python 未安装 Cocotb；请通过下方安装入口安装 Cocotb' }
+    }
+    const version = probe.stdout.trim().split(/\r?\n/)[0] ?? ''
+    if (!isCocotbVersionCompatible(version)) {
+      throw new Error(`cocotb 版本 ${version || '未知'} 不在支持范围（${COCOTB_VERSION_RANGE}）；请执行：pip install --user --upgrade "cocotb==${TOOLCHAIN_MANIFEST['python-cocotb'].pinnedVersion}"`)
+    }
+    const iverilog = await locateTool(process.platform === 'win32' ? ['iverilog.exe', 'iverilog'] : ['iverilog'])
+    if (!iverilog) return { skipped: true, message: 'Cocotb 仿真依赖 Icarus Verilog（iverilog），未找到；请安装 OSS CAD Suite', installId: 'oss-cad-suite' }
+    const checkDir = join(this.selfCheckRoot, 'cocotb')
+    const tbDir = join(checkDir, 'tb')
+    mkdirSync(tbDir, { recursive: true })
+    writeFileSync(join(checkDir, 'top.v'), 'module top(input clk);\n  reg [3:0] cnt;\n  always @(posedge clk) cnt <= cnt + 4\'d1;\nendmodule\n', 'utf-8')
+    // cocotb 2.x 写法：Timer 的 unit= 单数参数
+    writeFileSync(join(tbDir, 'test_min.py'), 'import cocotb\nfrom cocotb.triggers import Timer\n\n\n@cocotb.test()\nasync def test_min_sanity(dut):\n    await Timer(1, unit="ns")\n    assert True\n', 'utf-8')
+    const result = await runCocotbSimulation({
+      topModule: 'top',
+      rtlFiles: [join(checkDir, 'top.v')],
+      testModule: 'test_min',
+      testDir: tbDir,
+      simulator: 'icarus',
+      waves: false,
+      rtlCoverage: false,
+      buildDir: join(checkDir, 'build'),
+      resultDir: join(checkDir, 'results'),
+      timeoutSec: 120
+    })
+    if (!result.passed) {
+      throw new Error(`cocotb 最小用例未通过：${result.log.slice(-1200)}`)
+    }
+    return `cocotb ${version} + Icarus 最小用例通过（1 个断言，JUnit 已产出）`
+  }
+
   private loadDetectionCache(): void {
     if (!existsSync(this.detectionCachePath)) return
     try {
@@ -73,7 +222,7 @@ export class EdaService implements MoonGlassService {
         arch?: string
         tools?: ToolDetection[]
       }
-      if (cached.version === 2 && cached.platform === process.platform && cached.arch === process.arch && Array.isArray(cached.tools)) {
+      if (cached.version === 3 && cached.platform === process.platform && cached.arch === process.arch && Array.isArray(cached.tools)) {
         this.detectionCache = cached.tools
       }
     } catch (error) {
@@ -85,7 +234,8 @@ export class EdaService implements MoonGlassService {
     try {
       mkdirSync(dirname(this.detectionCachePath), { recursive: true })
       writeFileSync(this.detectionCachePath, JSON.stringify({
-        version: 2,
+        // v3：ToolDetection 增加 versionCompatible/versionHint（cocotb 版本范围校验结果）
+        version: 3,
         platform: process.platform,
         arch: process.arch,
         detectedAt: new Date().toISOString(),
@@ -118,8 +268,8 @@ export class EdaService implements MoonGlassService {
 
   private static installBundleStartMessage(id: string): string {
     if (id === 'python-cocotb') return '正在通过 pip 安装 Cocotb…'
-    if (id === 'verible') return '正在查询 Verible 下载地址…'
-    return '正在查询 OSS CAD Suite 下载地址…'
+    if (id === 'verible') return `正在下载 Verible（固定版本 ${TOOLCHAIN_MANIFEST.verible.pinnedTag}）…`
+    return `正在下载 OSS CAD Suite（固定版本 ${TOOLCHAIN_MANIFEST['oss-cad-suite'].pinnedTag}）…`
   }
 
   startInstallBundle(id: string): ToolInstallJob {
@@ -243,34 +393,33 @@ export class EdaService implements MoonGlassService {
       return { ok: false, message: '当前一键安装暂时仅支持 Windows x64' }
     }
 
+    const pin = TOOLCHAIN_MANIFEST['oss-cad-suite']
     const suiteDir = join(this.toolchainRoot, 'oss-cad-suite')
-    const archivePath = join(this.toolchainRoot, 'oss-cad-suite-windows-x64.tgz')
+    const archivePath = join(this.toolchainRoot, pin.assetName)
     try {
-      // 元数据查询（api.github.com）与资产下载（github.com）都走镜像回退，
-      // 网络受限环境下 github.com 常被重置而镜像可通
-      let release: { assets?: Array<{ name: string; browser_download_url: string }> }
-      try {
-        const meta = await fetchWithMirrors('https://api.github.com/repos/YosysHQ/oss-cad-suite-build/releases/latest', {
-          timeoutMs: EdaService.REQUEST_TIMEOUT_MS
-        })
-        release = await meta.response.json() as typeof release
-      } catch (error) {
-        throw new Error(`GitHub Release 元数据查询失败：${error instanceof Error ? error.message : String(error)}`)
-      }
-      const asset = release.assets?.find((item) => /^oss-cad-suite-windows-x64-.*\.tgz$/i.test(item.name))
-      if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
-
+      // T3：版本钉死——直接下载 pinned release 资产（不再查询 releases/latest），
+      // 镜像回退由 download.ts 继续生效（github.com URL 加镜像前缀）
+      const downloadUrl = releaseDownloadUrl(pin)
       await rm(suiteDir, { recursive: true, force: true })
-      const { channel } = await downloadFileWithMirrors(asset.browser_download_url, archivePath, {
+      const { channel } = await downloadFileWithMirrors(downloadUrl, archivePath, {
         timeoutMs: EdaService.DOWNLOAD_TIMEOUT_MS,
         onChannel: (ch) => this.reportInstallProgress(id, `正在下载 OSS CAD Suite（${ch}），请保持网络连接…`, onProgress)
       })
-      this.reportInstallProgress(id, '下载完成，正在后台解压工具包…', onProgress)
+      this.reportInstallProgress(id, '下载完成，正在校验安装包完整性（sha256）…', onProgress)
+      await this.verifyArchiveSha256(archivePath, pin.sha256)
+      this.reportInstallProgress(id, '校验通过，正在后台解压工具包…', onProgress)
       await this.runProcess(TAR_EXE, ['-xzf', archivePath, '-C', this.toolchainRoot])
       await rm(archivePath, { force: true })
       if (!existsSync(join(suiteDir, 'bin'))) throw new Error('工具包解压完成，但未找到 bin 目录')
+      this.reportInstallProgress(id, '解压完成，正在运行安装后自检…', onProgress)
+      try {
+        await this.selfCheckOssCadSuite(suiteDir)
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new Error(`OSS CAD Suite 安装后自检未通过：${detail}。请在“设置 > 工具链”重试安装，或从 ${releasePageUrl(pin)} 手动下载安装`)
+      }
       this.activateToolchains()
-      return { ok: true, message: `OSS CAD Suite 安装完成（下载自 ${channel}）`, path: suiteDir }
+      return { ok: true, message: `OSS CAD Suite 安装完成（${pin.pinnedTag}，下载自 ${channel}，自检通过）`, path: suiteDir }
     } catch (error) {
       await rm(archivePath, { force: true }).catch(() => {})
       const message = error instanceof Error ? error.message : String(error)
@@ -278,9 +427,46 @@ export class EdaService implements MoonGlassService {
     }
   }
 
+  /** 安装包完整性校验：下载完成后核对 sha256，不匹配立即失败（不进入解压），消息含期望/实际哈希 */
+  private async verifyArchiveSha256(archivePath: string, expectedSha256: string): Promise<void> {
+    const actual = await new Promise<string>((resolvePromise, reject) => {
+      const hash = createHash('sha256')
+      createReadStream(archivePath)
+        .on('error', reject)
+        .on('data', (chunk) => hash.update(chunk))
+        .on('end', () => resolvePromise(hash.digest('hex')))
+    })
+    if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
+      throw new Error(`安装包完整性校验失败（下载损坏或被篡改）：期望 sha256=${expectedSha256}，实际 sha256=${actual}。安装包已拦截、未解压；请重试安装`)
+    }
+  }
+
   /**
-   * 安装 Verible：GitHub Release 的 win64 zip（资产名实际为 verible-v*-win64.zip，
-   * 兼容旧假设 windows-amd64.zip），用系统 bsdtar 解压（libarchive 直接支持 zip）。
+   * OSS CAD Suite 安装后真自检（T3；T6 环境自检复用入口）：
+   * yosys -V / iverilog -V 可执行 + verifyIcarusToolchain 最小编译运行。
+   * 失败抛出指名缺失项的错误。env 走 toolEnv 以获得 MinGW DLL 隔离。
+   */
+  private async selfCheckOssCadSuite(suiteDir: string): Promise<void> {
+    const binDir = join(suiteDir, 'bin')
+    const yosys = join(binDir, process.platform === 'win32' ? 'yosys.exe' : 'yosys')
+    const iverilog = join(binDir, process.platform === 'win32' ? 'iverilog.exe' : 'iverilog')
+    if (!existsSync(yosys)) throw new Error('缺少 yosys（bin 目录下未找到 yosys 可执行文件）')
+    if (!existsSync(iverilog)) throw new Error('缺少 iverilog（bin 目录下未找到 iverilog 可执行文件）')
+    const yosysCheck = await run(yosys, ['-V'], toolEnv(yosys))
+    if (yosysCheck.code !== 0) {
+      throw new Error(`yosys -V 执行失败（退出码 ${yosysCheck.code ?? 'null'}）：${(yosysCheck.stderr || yosysCheck.stdout).trim() || '无输出'}`)
+    }
+    const icarusEnv = toolEnv(iverilog)
+    const iverilogCheck = await run(iverilog, ['-V'], icarusEnv)
+    if (iverilogCheck.code !== 0) {
+      throw new Error(`iverilog -V 执行失败（退出码 ${iverilogCheck.code ?? 'null'}）：${(iverilogCheck.stderr || iverilogCheck.stdout).trim() || '无输出'}`)
+    }
+    await verifyIcarusToolchain(iverilog, join(this.toolchainRoot, '.self-check'), icarusEnv)
+  }
+
+  /**
+   * 安装 Verible：T3 起 pin 到 toolchain-manifest 的具体 release（直链下载 + sha256 校验 +
+   * 安装后真自检），不再查询 releases/latest。用系统 bsdtar 解压（libarchive 直接支持 zip）。
    * zip 内为 verible-v*-win64/bin 结构，解压到 toolchains/verible/ 下，
    * 实际 bin 所在目录由 veribleToolchainDir 发现。
    */
@@ -288,29 +474,20 @@ export class EdaService implements MoonGlassService {
     if (process.platform !== 'win32' || process.arch !== 'x64') {
       return { ok: false, message: '当前一键安装暂时仅支持 Windows x64' }
     }
+    const pin = TOOLCHAIN_MANIFEST.verible
     const veribleDir = join(this.toolchainRoot, 'verible')
-    const archivePath = join(this.toolchainRoot, 'verible-windows-amd64.zip')
+    const archivePath = join(this.toolchainRoot, pin.assetName)
     try {
-      // 元数据查询（api.github.com）与资产下载（github.com）都走镜像回退
-      let release: { assets?: Array<{ name: string; browser_download_url: string }> }
-      try {
-        const meta = await fetchWithMirrors('https://api.github.com/repos/chipsalliance/verible/releases/latest', {
-          timeoutMs: EdaService.REQUEST_TIMEOUT_MS
-        })
-        release = await meta.response.json() as typeof release
-      } catch (error) {
-        throw new Error(`GitHub Release 元数据查询失败：${error instanceof Error ? error.message : String(error)}`)
-      }
-      const asset = release.assets?.find((item) => /^verible-v.*-win64\.zip$/i.test(item.name) || /^verible-v.*-windows-amd64\.zip$/i.test(item.name))
-      if (!asset) throw new Error('最新 Release 中没有 Windows x64 工具包')
-
+      const downloadUrl = releaseDownloadUrl(pin)
       await rm(veribleDir, { recursive: true, force: true })
       await mkdir(veribleDir, { recursive: true })
-      const { channel } = await downloadFileWithMirrors(asset.browser_download_url, archivePath, {
+      const { channel } = await downloadFileWithMirrors(downloadUrl, archivePath, {
         timeoutMs: EdaService.DOWNLOAD_TIMEOUT_MS,
         onChannel: (ch) => this.reportInstallProgress('verible', `正在下载 Verible（${ch}），请保持网络连接…`, onProgress)
       })
-      this.reportInstallProgress('verible', '下载完成，正在后台解压工具包…', onProgress)
+      this.reportInstallProgress('verible', '下载完成，正在校验安装包完整性（sha256）…', onProgress)
+      await this.verifyArchiveSha256(archivePath, pin.sha256)
+      this.reportInstallProgress('verible', '校验通过，正在后台解压工具包…', onProgress)
       await this.runProcess(TAR_EXE, ['-xf', archivePath, '-C', veribleDir])
       await rm(archivePath, { force: true })
       // win64 zip 的 exe 直接在 verible-v*-win64/ 顶层（无 bin/ 子目录）；
@@ -329,13 +506,57 @@ export class EdaService implements MoonGlassService {
       }
       const root = this.veribleToolchainDir()
       if (!root) throw new Error('工具包解压完成，但未找到 bin 目录')
+      this.reportInstallProgress('verible', '解压完成，正在运行安装后自检…', onProgress)
+      try {
+        await this.selfCheckVerible(root)
+      } catch (error) {
+        const detail = error instanceof Error ? error.message : String(error)
+        throw new Error(`Verible 安装后自检未通过：${detail}。请在“设置 > 工具链”重试安装，或从 ${releasePageUrl(pin)} 手动下载安装`)
+      }
       this.activateToolchains()
-      return { ok: true, message: `Verible 安装完成（下载自 ${channel}）`, path: root }
+      return { ok: true, message: `Verible 安装完成（${pin.pinnedTag}，下载自 ${channel}，自检通过）`, path: root }
     } catch (error) {
       await rm(archivePath, { force: true }).catch(() => {})
       const message = error instanceof Error ? error.message : String(error)
       return { ok: false, message }
     }
+  }
+
+  /**
+   * Verible 安装后真自检（T3；T6 环境自检复用入口）：verible-verilog-lint --version 可执行
+   * + 对一个临时内联最小 SV 文件 lint。临时文件放 userData 下纯 ASCII 目录，
+   * 以 cwd 相对路径传参（规避中文用户名路径问题）；env 走 toolEnv 以获得 MinGW DLL 隔离。
+   */
+  private async selfCheckVerible(toolchainDir: string): Promise<void> {
+    const lintExe = join(toolchainDir, 'bin', process.platform === 'win32' ? 'verible-verilog-lint.exe' : 'verible-verilog-lint')
+    if (!existsSync(lintExe)) throw new Error('缺少 verible-verilog-lint（bin 目录下未找到可执行文件）')
+    await this.selfCheckVeribleBinary(lintExe)
+  }
+
+  /**
+   * verible-verilog-lint 可执行文件级自检（安装后自检与 T6 环境自检共用）：
+   * --version 可执行 + 最小 SV 文件 lint。临时文件放 userData 下纯 ASCII 目录，
+   * 以 cwd 相对路径传参（规避中文用户名路径问题）；env 走 toolEnv 以获得 MinGW DLL 隔离。
+   * 返回 --version 首行，供自检报告展示。
+   */
+  private async selfCheckVeribleBinary(lintExe: string): Promise<string> {
+    const env = toolEnv(lintExe)
+    const version = await run(lintExe, ['--version'], env)
+    if (version.code !== 0) {
+      throw new Error(`verible-verilog-lint --version 执行失败（退出码 ${version.code ?? 'null'}）：${(version.stderr || version.stdout).trim() || '无输出'}`)
+    }
+    const checkDir = join(this.toolchainRoot, '.self-check', 'verible')
+    mkdirSync(checkDir, { recursive: true })
+    writeFileSync(join(checkDir, 'smoke.sv'), 'module smoke;\n  logic a;\nendmodule\n', 'utf-8')
+    try {
+      const lint = await run(lintExe, ['smoke.sv'], env, undefined, checkDir)
+      if (lint.code !== 0) {
+        throw new Error(`verible-verilog-lint 最小文件 lint 未通过（退出码 ${lint.code ?? 'null'}）：${(lint.stderr || lint.stdout).trim() || '无输出'}`)
+      }
+    } finally {
+      rmSync(checkDir, { recursive: true, force: true })
+    }
+    return (version.stdout || version.stderr).trim().split(/\r?\n/)[0] ?? ''
   }
 
   /** Verible 解压后 bin 所在的目录（zip 内带 verible-v* 顶层目录，按实际结构适配） */
@@ -357,11 +578,21 @@ export class EdaService implements MoonGlassService {
   private async installCocotb(onProgress?: (message: string) => void): Promise<ToolInstallResult> {
     const python = await locateTool(process.platform === 'win32' ? ['python.exe', 'python', 'python3.exe'] : ['python3', 'python'])
     if (!python) return { ok: false, message: '未找到可用的 Python，请先安装 Python 3' }
+    const pin = TOOLCHAIN_MANIFEST['python-cocotb']
     try {
-      this.reportInstallProgress('python-cocotb', '正在通过 pip 安装或升级 Cocotb 组件…', onProgress)
-      await this.runProcess(python, ['-m', 'pip', 'install', '--user', '--upgrade', 'cocotb', 'cocotb-bus', 'cocotb-coverage'])
+      // T1：cocotb 按 manifest pin 精确版本安装（cocotb-bus/cocotb-coverage 维持不 pin）
+      this.reportInstallProgress('python-cocotb', `正在通过 pip 安装或升级 Cocotb 组件（cocotb==${pin.pinnedVersion}）…`, onProgress)
+      await this.runProcess(python, ['-m', 'pip', 'install', ...pin.pipInstallArgs])
       const check = await this.runProcess(python, ['-c', 'import cocotb; print(cocotb.__version__)'], true)
-      return { ok: true, message: `Cocotb 安装完成，版本 ${check.trim()}`, path: python }
+      const version = check.trim().split(/\r?\n/)[0] ?? ''
+      // 装后版本回显升级为范围校验：不兼容判安装失败，指明实际版本与期望 pin
+      if (!isCocotbVersionCompatible(version)) {
+        return {
+          ok: false,
+          message: `Cocotb 安装后版本校验失败：实际装到 ${version || '未知版本'}，不在支持范围 ${COCOTB_VERSION_RANGE}（期望 pin cocotb==${pin.pinnedVersion}）。请检查 pip 源与缓存后重试，或手动执行：pip install --user --upgrade "cocotb==${pin.pinnedVersion}"`
+        }
+      }
+      return { ok: true, message: `Cocotb 安装完成，版本 ${version}`, path: python }
     } catch (error) {
       return { ok: false, message: `Cocotb 安装失败：${error instanceof Error ? error.message : String(error)}` }
     }

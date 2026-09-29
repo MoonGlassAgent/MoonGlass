@@ -9,8 +9,7 @@ Date: {DATE}
 import cocotb
 from cocotb.triggers import RisingEdge, FallingEdge, Timer, ClockCycles
 from cocotb.clock import Clock
-from cocotb.result import TestSuccess, TestFailure, TestError
-from cocotb.log import SimLog
+import logging
 import random
 
 # 导入验证环境组件
@@ -45,7 +44,7 @@ async def basic_test(dut):
     - 复位后基本读写操作
     - 单个事务传输
     """
-    log = SimLog("cocotb.test_basic")
+    log = logging.getLogger("cocotb.test_basic")
     log.info("Starting basic test")
     
     # 创建环境
@@ -74,15 +73,13 @@ async def basic_test(dut):
     # 等待处理完成
     await env.wait_idle()
     
-    # 检查结果
-    if not env.get_result():
-        raise TestFailure("Basic test failed")
+    # 检查结果 (cocotb 2.x: 用 assert 判定失败)
+    assert env.get_result(), "Basic test failed"
     
     # 打印报告
     env.report()
     
     log.info("Basic test passed")
-    raise TestSuccess()
 
 
 # ============================================================
@@ -100,7 +97,7 @@ async def random_test(dut):
     - 随机地址读写
     - 多次随机事务
     """
-    log = SimLog("cocotb.test_random")
+    log = logging.getLogger("cocotb.test_random")
     log.info("Starting random test")
     
     # 创建环境
@@ -127,12 +124,10 @@ async def random_test(dut):
     await env.wait_idle()
     
     # 检查结果
-    if not env.get_result():
-        raise TestFailure("Random test failed")
+    assert env.get_result(), "Random test failed"
     
     env.report()
     log.info("Random test passed")
-    raise TestSuccess()
 
 
 # ============================================================
@@ -148,7 +143,7 @@ async def boundary_test(dut):
     - 边界数据
     - 特殊值
     """
-    log = SimLog("cocotb.test_boundary")
+    log = logging.getLogger("cocotb.test_boundary")
     log.info("Starting boundary test")
     
     env = {ENV_NAME}(dut)
@@ -177,12 +172,10 @@ async def boundary_test(dut):
     
     await env.wait_idle()
     
-    if not env.get_result():
-        raise TestFailure("Boundary test failed")
+    assert env.get_result(), "Boundary test failed"
     
     env.report()
     log.info("Boundary test passed")
-    raise TestSuccess()
 
 
 # ============================================================
@@ -197,7 +190,7 @@ async def stress_test(dut):
     - 大量连续事务
     - 背对背传输
     """
-    log = SimLog("cocotb.test_stress")
+    log = logging.getLogger("cocotb.test_stress")
     log.info("Starting stress test")
     
     env = {ENV_NAME}(dut)
@@ -218,15 +211,11 @@ async def stress_test(dut):
     # 等待完成
     success = await env.wait_idle(timeout=50000)
     
-    if not success:
-        raise TestFailure("Stress test timeout")
-    
-    if not env.get_result():
-        raise TestFailure("Stress test failed")
+    assert success, "Stress test timeout"
+    assert env.get_result(), "Stress test failed"
     
     env.report()
     log.info("Stress test passed")
-    raise TestSuccess()
 
 
 # ============================================================
@@ -239,7 +228,7 @@ async def regression_test(dut):
     
     依次运行多个测试场景
     """
-    log = SimLog("cocotb.test_regression")
+    log = logging.getLogger("cocotb.test_regression")
     log.info("Starting regression test")
     
     env = {ENV_NAME}(dut)
@@ -294,11 +283,9 @@ async def regression_test(dut):
         status = "PASS" if result else "FAIL"
         log.info(f"  {name}: {status}")
     
-    if not all_passed:
-        raise TestFailure("Regression test failed")
+    assert all_passed, "Regression test failed"
     
     log.info("Regression test passed")
-    raise TestSuccess()
 
 
 # ============================================================
@@ -315,7 +302,7 @@ async def performance_test(dut):
     """
     import time
     
-    log = SimLog("cocotb.test_performance")
+    log = logging.getLogger("cocotb.test_performance")
     log.info("Starting performance test")
     
     env = {ENV_NAME}(dut)
@@ -348,11 +335,9 @@ async def performance_test(dut):
     
     env.report()
     
-    if not env.get_result():
-        raise TestFailure("Performance test failed")
+    assert env.get_result(), "Performance test failed"
     
     log.info("Performance test passed")
-    raise TestSuccess()
 
 
 # ============================================================

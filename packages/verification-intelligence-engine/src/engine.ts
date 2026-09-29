@@ -4,6 +4,8 @@ import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import type {
   Confidence,
   ClosureAssessment,
+  ConfigSpaceFile,
+  ConfigCoverageSummary,
   ExplorationRound,
   ExplorationHistory,
   NegativeSpaceEntry,
@@ -28,6 +30,7 @@ import type {
   ScenarioCoordinates,
   StructuralFact,
   StructuralModel,
+  UtEscalationRecord,
   VerificationScenario,
   VerificationSpaceSnapshot,
   VerificationStateModel,
@@ -405,7 +408,13 @@ function structuralModel(workspace: string): StructuralModel {
   return analyzeStructure({ workspace, files: inputs.designFiles, libraryFiles: inputs.libraryFiles, includeDirs: inputs.includeDirs, defines: inputs.defines, topModule: inputs.topModule, inputSource: inputs.inputSource, rtlHash: rtlHashFromInputs(workspace, inputs), featuresOf })
 }
 
-function buildModuleVerificationStrategy(workspace: string, structure: StructuralModel, risks: RiskMarker[]): ModuleVerificationStrategy {
+/**
+ * 模块验证策略两态化（AIGV 修订 §3.1）：topSet→TOP_SIGNOFF（requiredChecks 沿用原 IP_SIGNOFF 完整清单）；
+ * 其余模块→COVERED_BY_TOP（requiredChecks 收敛为静态检查：编译/elaboration、Lint、可综合性、端口/参数/未驱动检查）；
+ * 已登记 active UT 例外的模块联查覆写为 UT_EXCEPTION（独立定向 Testbench 义务，同原 UNIT_FOCUSED 检查清单）。
+ * 模块角色/风险评分/Oracle 策略推导保留（§2.3：结构模型与风险寄存器改用途为排优先级，不再用于分级建环境）。
+ */
+function buildModuleVerificationStrategy(workspace: string, structure: StructuralModel, risks: RiskMarker[], activeUtExceptionModules: ReadonlySet<string>): ModuleVerificationStrategy {
   const moduleFiles = new Map<string, string>()
   const sourceTexts = new Map<string, string>()
   for (const file of structure.sourceFiles) {
@@ -459,41 +468,35 @@ function buildModuleVerificationStrategy(workspace: string, structure: Structura
           : integration ? 'INTEGRATION'
             : fsms.length || /(?:ctrl|control|arb|sched|manager)/i.test(module) ? 'CONTROL'
               : modelFriendly || /(?:data|pipe|compute|core)/i.test(module) ? 'DATAPATH' : 'UTILITY'
-    const inherentCriticalRole = cdcReset || /(?:ecc|parity)/i.test(semanticName)
-    const interactionCriticalRole = /(?:arb|sched|parser|reorder|outstanding|credit|fifo)/i.test(semanticName) && maxRisk >= 0.62
-    const level: ModuleVerificationPlan['level'] = topSet.has(module) ? 'IP_SIGNOFF'
-      : maxRisk >= 0.68 || inherentCriticalRole || interactionCriticalRole ? 'UNIT_FOCUSED'
-        : fsms.length > 0 || writers.length > 0 || protocols.length > 0 ? 'UNIT_SMOKE' : 'STATIC_ONLY'
+    const level: ModuleVerificationPlan['level'] = topSet.has(module) ? 'TOP_SIGNOFF' : activeUtExceptionModules.has(module) ? 'UT_EXCEPTION' : 'COVERED_BY_TOP'
     const goldenRecommended = modelFriendly && !/(?:sync|reset|rst)/i.test(semanticName)
     const goldenModel: ModuleVerificationPlan['goldenModel'] = goldenRecommended
       ? { recommendation: 'RECOMMENDED', rationale: '该模块具有可独立预测的数据变换、调度、容量或编码语义；参考模型有助于定位首个偏差并加速收敛。' }
-      : level === 'IP_SIGNOFF' || role === 'INTEGRATION'
+      : level === 'TOP_SIGNOFF' || role === 'INTEGRATION'
         ? { recommendation: 'OPTIONAL', rationale: '根据端到端行为是否可低成本独立预测决定；不得为了形式完整而复制 RTL 实现。' }
         : { recommendation: 'NOT_NEEDED', rationale: '当前结构更适合使用静态检查、局部 Assertion 或协议规则判定；后续出现观察缺口时可升级。' }
     const oracleStrategies = new Set<ModuleOracleStrategy>()
-    if (level === 'IP_SIGNOFF') oracleStrategies.add('END_TO_END')
+    if (level === 'TOP_SIGNOFF') oracleStrategies.add('END_TO_END')
     if (protocols.length) oracleStrategies.add('PROTOCOL_CHECKER')
     if (fsms.length || writers.length || cdcReset) oracleStrategies.add('ASSERTION')
     if (goldenModel.recommendation === 'RECOMMENDED') oracleStrategies.add('REFERENCE_MODEL')
-    if (level === 'UNIT_FOCUSED' && (cdcReset || fsms.length > 0)) oracleStrategies.add('FORMAL')
-    if (oracleStrategies.size === 0 && level !== 'STATIC_ONLY') oracleStrategies.add('ASSERTION')
+    if (level === 'UT_EXCEPTION' && (cdcReset || fsms.length > 0)) oracleStrategies.add('FORMAL')
+    if (oracleStrategies.size === 0 && level !== 'COVERED_BY_TOP') oracleStrategies.add('ASSERTION')
     const reasons = [
-      topSet.has(module) ? '项目顶层，承担对外功能与最终签核。' : `子模块，最高结构风险 ${maxRisk.toFixed(3)}。`,
+      topSet.has(module) ? '项目顶层，承担对外功能与最终签核；全部 testcase 面向 TOP。' : activeUtExceptionModules.has(module) ? '已登记 active UT 例外（诊断驱动单独验证），例外 PASS 不替代 TOP 证据。' : '默认经 TOP 场景与全设计静态检查间接验证（TOP 优先，UT 例外）。',
       protocols.length ? `识别到 ${[...new Set(protocols.map((item) => item.protocol))].join('/')} 协议。` : '',
       fsms.length ? `包含 ${fsms.length} 个状态机。` : '',
       cdcReset ? '包含时钟/复位域敏感语义。' : '',
       integration ? `实例化多个子模块，承担集成职责。` : ''
     ].filter(Boolean)
-    const requiredChecks = level === 'STATIC_ONLY'
+    const requiredChecks = level === 'COVERED_BY_TOP'
       ? ['编译/elaboration', 'Lint', '可综合性', '端口/参数/未驱动检查']
-      : level === 'UNIT_SMOKE'
-        ? ['全部静态检查', 'Reset/idle', '一个合法正常事务', '一个关键边界点', '必要局部 Assertion']
-        : level === 'UNIT_FOCUSED'
-          ? ['全部静态检查', '独立定向 Testbench', '模块风险 Scenario', '边界/异常/并发检查', 'Oracle 原始证据']
-          : ['完整 AIGV Intent/Scenario', '端到端回归与覆盖率', 'Multi-Oracle', 'Mutation', 'Residual Risk 与 Sign-off Package']
-    return { module, role, level, riskScore: Number(maxRisk.toFixed(3)), reasons, oracleStrategies: [...oracleStrategies], goldenModel, requiredChecks, standaloneTestbench: level === 'UNIT_FOCUSED' || level === 'IP_SIGNOFF' }
-  }).sort((a, b) => ['IP_SIGNOFF', 'UNIT_FOCUSED', 'UNIT_SMOKE', 'STATIC_ONLY'].indexOf(a.level) - ['IP_SIGNOFF', 'UNIT_FOCUSED', 'UNIT_SMOKE', 'STATIC_ONLY'].indexOf(b.level) || b.riskScore - a.riskScore)
-  const summary: ModuleVerificationStrategy['summary'] = { STATIC_ONLY: 0, UNIT_SMOKE: 0, UNIT_FOCUSED: 0, IP_SIGNOFF: 0 }
+      : level === 'UT_EXCEPTION'
+        ? ['全部静态检查', '独立定向 Testbench', '模块风险 Scenario', '边界/异常/并发检查', 'Oracle 原始证据']
+        : ['完整 AIGV Intent/Scenario', '端到端回归与覆盖率', 'Multi-Oracle', 'Mutation', 'Residual Risk 与 Sign-off Package']
+    return { module, role, level, riskScore: Number(maxRisk.toFixed(3)), reasons, oracleStrategies: [...oracleStrategies], goldenModel, requiredChecks, standaloneTestbench: level === 'UT_EXCEPTION' }
+  }).sort((a, b) => ['TOP_SIGNOFF', 'UT_EXCEPTION', 'COVERED_BY_TOP'].indexOf(a.level) - ['TOP_SIGNOFF', 'UT_EXCEPTION', 'COVERED_BY_TOP'].indexOf(b.level) || b.riskScore - a.riskScore)
+  const summary: ModuleVerificationStrategy['summary'] = { TOP_SIGNOFF: 0, UT_EXCEPTION: 0, COVERED_BY_TOP: 0 }
   for (const plan of plans) summary[plan.level] += 1
   return {
     version: 1,
@@ -503,11 +506,11 @@ function buildModuleVerificationStrategy(workspace: string, structure: Structura
     modules: plans,
     summary,
     policy: [
-      '顶层 IP 执行完整 AIGV 与最终签核。',
-      '高风险子模块执行风险驱动专项验证，普通子模块仅做静态检查或轻量 smoke。',
-      '验证深度由风险决定，Oracle 类型由模块语义决定。',
+      'DUT 默认是整个设计（TOP）：只搭一套 TOP cocotb 环境，全部 testcase 面向 TOP，场景锚定 TOP 接口与规格条款。',
+      '非顶层模块默认 COVERED_BY_TOP，经 TOP 场景与全设计覆盖率间接验证，requiredChecks 收敛为静态检查，不单独排队建环境。',
+      '子模块 UT 仅为诊断驱动的例外：probe 子模块信号仍无法定位时经 register_ut_escalation 登记（ut-escalations.json），策略表显示 UT_EXCEPTION 并单独建 TB；例外 PASS 不替代 TOP 回归证据。',
       'Golden Model 由独立判定、故障定位和收敛收益决定，不与模块大小或验证等级机械绑定。',
-      '顶层证据已充分覆盖的子模块场景不得重复建设；观察不足或缺陷难定位时允许升级验证等级。'
+      '结构模型与风险寄存器用于给 TOP 场景与配置点排优先级，不再用于分级建环境；模块级 Formal 提名维持现状。'
     ]
   }
 }
@@ -673,6 +676,450 @@ function attachConfirmedRootCauses(scenarios: VerificationScenario[], rootCauses
   }
 }
 
+// ==================== AIGV 修订批 1：TOP 优先，UT 例外（§3 UT 例外登记 + §8 迁移） ====================
+
+/** ut-escalations.json 相对工作区路径（证据区，不进 intelligence/ 引擎产物区）。 */
+const UT_ESCALATIONS_RELATIVE_PATH = join('verification', 'results', 'ut-escalations.json')
+/** 例外理由硬约束（§3.2：≤200 字）。 */
+export const UT_ESCALATION_REASON_MAX_LENGTH = 200
+/** 历史环境自动登记的固定理由（§8 迁移）。 */
+const UT_ESCALATION_MIGRATION_REASON = '历史环境自动登记'
+
+function readUtEscalations(workspace: string): UtEscalationRecord[] {
+  const path = join(workspace, UT_ESCALATIONS_RELATIVE_PATH)
+  if (!existsSync(path)) return []
+  try { return (JSON.parse(readFileSync(path, 'utf-8')) as { escalations?: UtEscalationRecord[] }).escalations ?? [] } catch { return [] }
+}
+
+function writeUtEscalations(workspace: string, escalations: UtEscalationRecord[]): void {
+  const path = join(workspace, UT_ESCALATIONS_RELATIVE_PATH)
+  mkdirSync(dirname(path), { recursive: true })
+  writeJsonAtomic(path, { version: 1, escalations })
+}
+
+/** registerUtEscalation 的输入（缺 id/createdAt/status/retiredReason，由引擎派生）。 */
+export interface UtEscalationInput {
+  module: string
+  reason: string
+  /** 可空：允许预防性 UT（§11 决策 1），此时 reason 须写明预防性理由 */
+  failureSignature: string | null
+  /** 可空：关联 root-causes.json 记录（RC-*） */
+  rootCauseId: string | null
+  /** 触发升级的 TOP 场景（SCN-*）；预防性 UT 可为空数组 */
+  topScenarioIds: string[]
+}
+
+export interface UtEscalationResult {
+  record: UtEscalationRecord
+  /** 同模块同 reason 命中已有记录时为 true（幂等复用 id，不产生新记录） */
+  reused: boolean
+}
+
+/**
+ * 登记 UT 例外（§3.2，诊断驱动）：模块名必须在结构模型存在、topScenarioIds 必须存在于
+ * scenario-registry、rootCauseId 非空时必须在 root-causes.json 存在（幻觉引用一律拒绝）。
+ * id = UTX-<sha1(module+reason) 前8位大写>：同模块同 reason 幂等复用；命中 retired 记录时
+ * 重新激活（保留稳定 id，刷新登记字段）。写后由工具层触发 rebuild（参照 recordRootCause 模式）。
+ */
+export function registerUtEscalation(workspaceDir: string, input: UtEscalationInput): UtEscalationResult {
+  const workspace = resolve(workspaceDir)
+  if (!input.module?.trim()) throw new Error('module 不能为空')
+  if (!input.reason?.trim()) throw new Error('reason 不能为空：必须说明为什么 TOP 激励/观测不足以定位（或预防性理由）')
+  if (input.reason.length > UT_ESCALATION_REASON_MAX_LENGTH) throw new Error(`reason 超过 ${UT_ESCALATION_REASON_MAX_LENGTH} 字（当前 ${input.reason.length}）`)
+  // 锚点校验需要最新的结构模型与 scenario-registry：先全量重建（同 registerVerificationIntents 模式）
+  const artifacts = buildVerificationIntelligence(workspace)
+  const structuralModules = new Set<string>()
+  for (const file of artifacts.structuralModel.sourceFiles) {
+    const text = readFileSync(resolve(workspace, file), 'utf-8')
+    for (const match of text.matchAll(/\bmodule\s+([A-Za-z_$][\w$]*)/g)) structuralModules.add(match[1])
+  }
+  structuralModules.delete('$design')
+  if (!structuralModules.has(input.module)) throw new Error(`module 在结构模型中不存在（疑似幻觉模块名，必须核对 structural-model.json）：${input.module}`)
+  const scenarioIds = new Set(artifacts.verificationState.scenarios.map((item) => item.id))
+  const missingScenarios = input.topScenarioIds.filter((id) => !scenarioIds.has(id))
+  if (missingScenarios.length) throw new Error(`topScenarioIds 不存在于 scenario-registry（幻觉引用拒绝）：${missingScenarios.join('、')}`)
+  const rootCauseIds = new Set(readRootCauses(workspace).map((item) => item.id))
+  if (input.rootCauseId && !rootCauseIds.has(input.rootCauseId)) throw new Error(`rootCauseId 不存在于 root-causes.json：${input.rootCauseId}`)
+  const id = `UTX-${createHash('sha1').update(`${input.module}${input.reason}`).digest('hex').slice(0, 8).toUpperCase()}`
+  const existing = readUtEscalations(workspace)
+  const index = existing.findIndex((item) => item.id === id)
+  if (index >= 0 && existing[index].status === 'active') return { record: existing[index], reused: true }
+  const record: UtEscalationRecord = {
+    id,
+    module: input.module.trim(),
+    reason: input.reason.trim(),
+    failureSignature: input.failureSignature?.trim() ? input.failureSignature.trim() : null,
+    rootCauseId: input.rootCauseId?.trim() ? input.rootCauseId.trim() : null,
+    topScenarioIds: [...new Set(input.topScenarioIds)],
+    createdAt: new Date().toISOString(),
+    status: 'active',
+    retiredReason: null
+  }
+  if (index >= 0) existing.splice(index, 1, record)
+  else existing.push(record)
+  writeUtEscalations(workspace, existing)
+  return { record, reused: false }
+}
+
+/**
+ * 退役 UT 例外（§2.2：根因修复且 TOP 回归覆盖后登记 retired 并保留历史）。
+ * 幂等：已是 retired 的返回原记录；id 不存在抛错。
+ */
+export function retireUtEscalation(workspaceDir: string, id: string, reason: string): UtEscalationRecord {
+  const workspace = resolve(workspaceDir)
+  if (!reason?.trim()) throw new Error('retiredReason 不能为空：必须说明退役依据（如根因修复且 TOP 回归已覆盖）')
+  const existing = readUtEscalations(workspace)
+  const record = existing.find((item) => item.id === id)
+  if (!record) throw new Error(`UT 例外不存在：${id}`)
+  if (record.status === 'retired') return record
+  record.status = 'retired'
+  record.retiredReason = reason.trim()
+  writeUtEscalations(workspace, existing)
+  return record
+}
+
+/**
+ * 历史迁移（§8）：rebuild 时扫描 verification/，发现 `<module>_tb` 环境（module ∉ topSet）且
+ * 该模块在任一 scenario_hits.json 有登记 → 自动登记为 active UT 例外（reason=历史环境自动登记，
+ * failureSignature=null）。幂等：该模块已有 active/retired 记录不重复登记。返回是否有新增。
+ */
+function migrateLegacyTestbenches(workspace: string, structure: StructuralModel, topModules: string[], escalations: UtEscalationRecord[]): boolean {
+  const verificationDir = join(workspace, 'verification')
+  if (!existsSync(verificationDir)) return false
+  const structuralModules = new Set<string>()
+  for (const file of structure.sourceFiles) {
+    const text = readFileSync(resolve(workspace, file), 'utf-8')
+    for (const match of text.matchAll(/\bmodule\s+([A-Za-z_$][\w$]*)/g)) structuralModules.add(match[1])
+  }
+  structuralModules.delete('$design')
+  const topSet = new Set(topModules)
+  // 既有登记（active/retired 任一）的模块不重复登记
+  const registeredModules = new Set(escalations.map((item) => item.module))
+  // 模块在任一 scenario_hits.json 的登记口径：hits 文件位于 results/<module>/ 下，
+  // 或登记的 scenario 在 scenario-registry 中锚定该模块（rtlObjects 首段）
+  const hitsRegisteredModules = new Set<string>()
+  const previousRegistry = readPrevious(join(workspace, 'verification', 'intelligence', 'scenario-registry.json'))
+  const scenarioModule = new Map(previousRegistry.map((item) => [item.id, item.rtlObjects[0]?.split('.')[0] ?? '']))
+  for (const file of walk(join(workspace, 'verification', 'results'), (path) => basename(path) === 'scenario_hits.json')) {
+    const relativeSegments = relative(join(workspace, 'verification', 'results'), dirname(file)).split(sep)
+    if (relativeSegments.length > 0 && structuralModules.has(relativeSegments[0])) hitsRegisteredModules.add(relativeSegments[0])
+    try {
+      const data = JSON.parse(readFileSync(file, 'utf-8')) as { scenarios?: Array<{ id?: string }> }
+      for (const item of data.scenarios ?? []) {
+        const module = item.id ? scenarioModule.get(item.id) : undefined
+        if (module && structuralModules.has(module)) hitsRegisteredModules.add(module)
+      }
+    } catch { /* 无效 hits 文件按无登记处理 */ }
+  }
+  let changed = false
+  for (const entry of readdirSync(verificationDir, { withFileTypes: true })) {
+    if (!entry.isDirectory()) continue
+    const match = /^(.+)_tb$/.exec(entry.name)
+    if (!match) continue
+    const module = match[1]
+    if (!structuralModules.has(module) || topSet.has(module)) continue
+    if (registeredModules.has(module) || !hitsRegisteredModules.has(module)) continue
+    escalations.push({
+      id: `UTX-${createHash('sha1').update(`${module}${UT_ESCALATION_MIGRATION_REASON}`).digest('hex').slice(0, 8).toUpperCase()}`,
+      module,
+      reason: UT_ESCALATION_MIGRATION_REASON,
+      failureSignature: null,
+      rootCauseId: null,
+      topScenarioIds: [],
+      createdAt: new Date().toISOString(),
+      status: 'active',
+      retiredReason: null
+    })
+    registeredModules.add(module)
+    changed = true
+  }
+  if (changed) writeUtEscalations(workspace, escalations)
+  return changed
+}
+
+/** active UT 例外模块集合（策略两态联查与场景锚点共用口径）。 */
+function activeUtExceptionModules(escalations: UtEscalationRecord[]): Set<string> {
+  return new Set(escalations.filter((item) => item.status === 'active').map((item) => item.module))
+}
+
+// ==================== AIGV 修订批 1：配置空间模型（§4 config-space.json + 四类配置点） ====================
+
+/** config-space.json 相对工作区路径（引擎产物区，Agent 禁手改）。 */
+const CONFIG_SPACE_RELATIVE_PATH = join('verification', 'intelligence', 'config-space.json')
+/** 配置字段描述硬约束（§4.2：≤120 字）。 */
+export const CONFIG_FIELD_DESCRIPTION_MAX_LENGTH = 120
+
+/** registerConfigSpace 的输入（ConfigSpaceFile 内容，缺 version/generatedAt，由引擎派生）。 */
+export type ConfigSpaceInput = Omit<ConfigSpaceFile, 'version' | 'generatedAt'>
+
+function readConfigSpace(workspace: string): ConfigSpaceFile | undefined {
+  const path = join(workspace, CONFIG_SPACE_RELATIVE_PATH)
+  if (!existsSync(path)) return undefined
+  try { return JSON.parse(readFileSync(path, 'utf-8')) as ConfigSpaceFile } catch { return undefined }
+}
+
+/**
+ * 读取并归一化配置覆盖采集文件（§4.5 消费链路：cocotb 环境回传
+ * verification/results/<topModule>/config-coverage.json，rebuild 时挂到 posture.configCoverage）。
+ * freshness 口径与覆盖率门禁一致：rtlHash 缺失或与当前 RTL 不一致即 stale。
+ * 缺文件/损坏/schema 不符返回 null（posture 不带该字段，页面不渲染配置覆盖区块）。
+ */
+function readConfigCoverage(workspace: string, topModules: string[], currentRtlHash: string): ConfigCoverageSummary | null {
+  for (const topModule of topModules) {
+    const path = join(workspace, 'verification', 'results', topModule, 'config-coverage.json')
+    if (!existsSync(path)) continue
+    let raw: Record<string, unknown>
+    try { raw = JSON.parse(readFileSync(path, 'utf-8')) as Record<string, unknown> } catch { return null }
+    if (!Array.isArray(raw.coverpoints) || !Array.isArray(raw.crosses)) return null
+    const toBuckets = (items: unknown, keyField: 'label' | 'key'): Array<{ label: string; hits: number }> => {
+      if (!Array.isArray(items)) return []
+      return items
+        .filter((item): item is { label?: unknown; key?: unknown; hits?: unknown } => item !== null && typeof item === 'object')
+        .map((item) => ({ label: typeof item[keyField] === 'string' ? item[keyField] : String(item.label ?? item.key ?? ''), hits: typeof item.hits === 'number' && Number.isFinite(item.hits) ? item.hits : 0 }))
+    }
+    const coverpoints = raw.coverpoints
+      .filter((item): item is { id?: unknown; field?: unknown; buckets?: unknown } => item !== null && typeof item === 'object' && typeof (item as { field?: unknown }).field === 'string')
+      .map((item) => {
+        const buckets = toBuckets(item.buckets, 'label')
+        const hitBuckets = buckets.filter((bucket) => bucket.hits > 0).length
+        return { id: typeof item.id === 'string' ? item.id : String(item.field), field: String(item.field), buckets, hitBuckets, bucketCount: buckets.length, hitRate: buckets.length ? hitBuckets / buckets.length : 0, totalHits: buckets.reduce((sum, bucket) => sum + bucket.hits, 0) }
+      })
+    const crosses = raw.crosses
+      .filter((item): item is { id?: unknown; fields?: unknown; bins?: unknown } => item !== null && typeof item === 'object' && Array.isArray((item as { fields?: unknown }).fields))
+      .map((item) => {
+        const bins = toBuckets(item.bins, 'key').map((bin) => ({ key: bin.label, hits: bin.hits }))
+        const hitBins = bins.filter((bin) => bin.hits > 0).length
+        return { id: typeof item.id === 'string' ? item.id : `cross:${(item.fields as unknown[]).join('.')}`, fields: (item.fields as unknown[]).filter((field): field is string => typeof field === 'string'), bins, hitBins, binCount: bins.length, hitRate: bins.length ? hitBins / bins.length : 0, totalHits: bins.reduce((sum, bin) => sum + bin.hits, 0) }
+      })
+    return {
+      generatedAt: typeof raw.generatedAt === 'string' ? raw.generatedAt : '',
+      rtlHash: typeof raw.rtlHash === 'string' ? raw.rtlHash : null,
+      topModule: typeof raw.topModule === 'string' ? raw.topModule : topModule,
+      stale: typeof raw.rtlHash !== 'string' || raw.rtlHash !== currentRtlHash,
+      coverpoints,
+      crosses
+    }
+  }
+  return null
+}
+
+/**
+ * 登记配置空间账本（§4.1：Agent 抽取 + 引擎校验，LLM 提供语义、引擎守门）：
+ * - rtlModule 必须存在于结构模型；
+ * - 字段名必须能在该模块 RTL 源码中检索到（宽松标识符匹配，幻觉引用拒绝）；
+ * - 非法 domain 拒绝（range min>max、enum 空值表）；
+ * - constraint 的 `<register>.<field>` 引用必须指向已声明的寄存器字段；
+ * - clauseId 非空则必须存在于 requirement-model。
+ * 校验通过则落盘 config-space.json；rebuild 由工具层负责（参照 recordRootCause 模式）。
+ */
+export function registerConfigSpace(workspaceDir: string, input: ConfigSpaceInput): ConfigSpaceFile {
+  const workspace = resolve(workspaceDir)
+  if (!Array.isArray(input.registers) || input.registers.length === 0) throw new Error('registers 不能为空：规格书缺寄存器/配置章节时应先转 Spec Gap，禁止编造配置空间')
+  if (!Array.isArray(input.constraints)) throw new Error('constraints 必须为数组（无约束传空数组）')
+  // 锚点校验需要最新的结构模型与 requirement-model：先全量重建（同 registerVerificationIntents 模式）
+  const artifacts = buildVerificationIntelligence(workspace)
+  const moduleFiles = new Map<string, string>()
+  for (const file of artifacts.structuralModel.sourceFiles) {
+    const text = readFileSync(resolve(workspace, file), 'utf-8')
+    for (const match of text.matchAll(/\bmodule\s+([A-Za-z_$][\w$]*)/g)) moduleFiles.set(match[1], file)
+  }
+  moduleFiles.delete('$design')
+  const requirementIds = new Set(artifacts.requirementModel.requirements.map((item) => item.id))
+  const fieldRefs = new Set<string>()
+  for (const register of input.registers) {
+    if (!register.name?.trim()) throw new Error('寄存器 name 不能为空')
+    if (!moduleFiles.has(register.rtlModule)) throw new Error(`rtlModule 在结构模型中不存在（疑似幻觉模块名，必须核对 structural-model.json）：${register.rtlModule}`)
+    if (!Array.isArray(register.fields) || register.fields.length === 0) throw new Error(`寄存器 ${register.name} 至少需要一个字段`)
+    const sourceText = readFileSync(resolve(workspace, moduleFiles.get(register.rtlModule)!), 'utf-8')
+    for (const field of register.fields) {
+      if (!field.name?.trim()) throw new Error(`寄存器 ${register.name} 存在空字段名`)
+      if (!Number.isInteger(field.msb) || !Number.isInteger(field.lsb) || field.msb < field.lsb || field.lsb < 0) throw new Error(`寄存器 ${register.name}.${field.name} 位宽非法（要求整数且 msb ≥ lsb ≥ 0）：msb=${field.msb} lsb=${field.lsb}`)
+      if (field.description.length > CONFIG_FIELD_DESCRIPTION_MAX_LENGTH) throw new Error(`寄存器 ${register.name}.${field.name} 描述超过 ${CONFIG_FIELD_DESCRIPTION_MAX_LENGTH} 字（当前 ${field.description.length}）`)
+      if (field.domain.kind === 'range') {
+        if (!Number.isFinite(field.domain.min) || !Number.isFinite(field.domain.max) || field.domain.min > field.domain.max) throw new Error(`寄存器 ${register.name}.${field.name} 的 range domain 非法（min 必须 ≤ max）：${field.domain.min} > ${field.domain.max}`)
+      } else if (field.domain.kind === 'enum') {
+        if (!field.domain.values.length || field.domain.values.some((item) => !item.value?.trim())) throw new Error(`寄存器 ${register.name}.${field.name} 的 enum domain 非法（values 不能为空且每项 value 非空）`)
+      } else if (field.domain.kind !== 'flag') {
+        throw new Error(`寄存器 ${register.name}.${field.name} 的 domain kind 非法（允许 enum/range/flag）：${String((field.domain as { kind?: string }).kind)}`)
+      }
+      // 宽松标识符匹配：字段名作为整词出现在该模块 RTL 源码中（不靠文本启发式，允许命名变体命中）
+      const identifier = new RegExp(`\\b${field.name.trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`)
+      if (!identifier.test(sourceText)) throw new Error(`字段名 ${register.rtlModule}.${field.name} 在该模块 RTL 源码中检索不到（疑似幻觉字段，必须核对 rtl/${moduleFiles.get(register.rtlModule)}）：${field.name}`)
+      if (field.clauseId && !requirementIds.has(field.clauseId)) throw new Error(`寄存器 ${register.name}.${field.name} 的 clauseId 不存在于 requirement-model：${field.clauseId}`)
+      fieldRefs.add(`${register.name}.${field.name}`)
+    }
+  }
+  for (const constraint of input.constraints) {
+    if (!['mutex', 'requires', 'illegal'].includes(constraint.type)) throw new Error(`constraint type 非法（允许 mutex/requires/illegal）：${String(constraint.type)}`)
+    if (!constraint.description?.trim()) throw new Error('constraint description 不能为空：必须写明约束语义与期望行为（报错/忽略/截断）')
+    if (!Array.isArray(constraint.fields) || constraint.fields.length === 0) throw new Error(`constraint（${constraint.type}）至少引用一个字段`)
+    for (const ref of constraint.fields) {
+      if (!fieldRefs.has(ref)) throw new Error(`constraint 引用不存在的寄存器字段（必须是 <register>.<field> 且已在 registers 声明）：${ref}`)
+    }
+    if (constraint.clauseId && !requirementIds.has(constraint.clauseId)) throw new Error(`constraint 的 clauseId 不存在于 requirement-model：${constraint.clauseId}`)
+  }
+  const configSpace: ConfigSpaceFile = { version: 1, generatedAt: new Date().toISOString(), registers: input.registers, constraints: input.constraints }
+  writeJsonAtomic(join(workspace, CONFIG_SPACE_RELATIVE_PATH), configSpace)
+  return configSpace
+}
+
+/** W2 配置点主题（§4.3：边界/非法/动态属增补批；业务点为 W1/W2 主体，归 basic 波段）。 */
+const CONFIG_POINT_TOPICS = { boundary: '配置边界', illegal: '配置非法组合', dynamic: '忙时配置变更' } as const
+
+/** 配置点场景稳定 ID：sha1('CONFIG\0' + 派生键) 前 8 位大写——同配置点跨 rebuild 复用（幂等）。 */
+function configScenarioId(key: string): string {
+  return `SCN-${createHash('sha1').update(`CONFIG\0${key}`).digest('hex').slice(0, 8).toUpperCase()}`
+}
+
+interface ConfigPointSeed {
+  key: string
+  pointClass: 'business' | 'boundary' | 'illegal' | 'dynamic'
+  title: string
+  trigger: string[]
+  expected: string[]
+  refs: string[]
+  requirementIds: string[]
+  rtlObjects: string[]
+  features: string[]
+  wave: VerificationWave
+  topic?: string
+}
+
+/**
+ * 四类配置点生成（§4.3），剪枝按 §4.4（字段内边界值全量 ≤4/字段；字段间不做全笛卡尔积，
+ * 仅同 constraint / 同 clauseId 功能域的天然组合）：
+ * - 业务点：enum 每值一个代表组合（每字段 ≤8 代表值，其余值留候选池由 Agent 按需登记）；
+ *   flag 全开/全关/典型组合（按组合键去重）；
+ * - 边界点：range 字段 0/min/max/max+1（每字段 ≤4，去重）；
+ * - 非法点：每条 constraint 一个违反组合，expected 必须为规格期望行为（报错/忽略/截断）；
+ * - 动态点：忙时改配/在线切模式（从配置字段 + busy 语义生成，替代 R09/R16 的场景级产出）。
+ */
+function buildConfigPointSeeds(configSpace: ConfigSpaceFile): ConfigPointSeed[] {
+  const seeds: ConfigPointSeed[] = []
+  for (const register of configSpace.registers) {
+    const flagFields = register.fields.filter((field) => field.domain.kind === 'flag')
+    for (const field of register.fields) {
+      const ref = `${register.name}.${field.name}`
+      const requirementIds = field.clauseId ? [field.clauseId] : []
+      if (field.domain.kind === 'enum') {
+        for (const item of field.domain.values.slice(0, 8)) {
+          seeds.push({
+            key: `${ref}=enum:${item.value}`, pointClass: 'business',
+            title: `配置业务点（${ref} = ${item.label || item.value}）`,
+            trigger: ['DUT 完成复位并处于正常空闲状态', `按寄存器手册写入 ${ref} = ${item.value}，其余字段保持复位值`],
+            expected: [`${field.description}（配置生效后 DUT 外部可观察行为符合规格）`],
+            refs: [`${ref}=${item.value}`], requirementIds, rtlObjects: [`${register.rtlModule}.${field.name}`], features: ['configuration'], wave: 'basic'
+          })
+        }
+      } else if (field.domain.kind === 'range') {
+        const { min, max } = field.domain
+        const values = [...new Set([0, min, max, max + 1])]
+        for (const value of values) {
+          seeds.push({
+            key: `${ref}=range:${value}`, pointClass: 'boundary',
+            title: `配置边界点（${ref} = ${value}）`,
+            trigger: ['DUT 完成复位并处于正常空闲状态', `总线 VIP 向 ${register.rtlModule} 写入 ${ref} = ${value}`],
+            expected: [`写入 ${value} 后 DUT 行为符合规格：${field.description}；越界邻值按规格截断/饱和或报错，不得静默损坏在途事务`],
+            refs: [`${ref}=${value}`], requirementIds, rtlObjects: [`${register.rtlModule}.${field.name}`], features: ['configuration'], wave: 'corner', topic: CONFIG_POINT_TOPICS.boundary
+          })
+        }
+      }
+      // 动态点：在线切换模式（enum 字段）与忙时改配（每寄存器首个可写字段）
+      if (field.domain.kind === 'enum') {
+        seeds.push({
+          key: `${ref}=dynamic-switch`, pointClass: 'dynamic',
+          title: `动态配置点（忙时在线切换 ${ref}）`,
+          trigger: ['DUT 处于 busy（在途事务未完成）', `在 busy 期间经总线切换 ${ref} 模式`],
+          expected: [`忙时切换 ${ref} 的更新策略符合规格且不破坏在途事务：${field.description}`],
+          refs: [ref], requirementIds, rtlObjects: [`${register.rtlModule}.${field.name}`], features: ['configuration', 'busy'], wave: 'corner', topic: CONFIG_POINT_TOPICS.dynamic
+        })
+      }
+    }
+    if (flagFields.length) {
+      const combos: Array<{ key: string; label: string; assignments: string[] }> = [
+        { key: 'all-on', label: '全开', assignments: flagFields.map((item) => `${register.name}.${item.name}=1`) },
+        { key: 'all-off', label: '全关', assignments: flagFields.map((item) => `${register.name}.${item.name}=0`) },
+        { key: 'typical', label: '典型', assignments: flagFields.map((item, index) => `${register.name}.${item.name}=${index === 0 ? 1 : 0}`) }
+      ]
+      const seen = new Set<string>()
+      for (const combo of combos) {
+        const comboKey = combo.assignments.join(',')
+        if (seen.has(comboKey)) continue
+        seen.add(comboKey)
+        seeds.push({
+          key: `${register.name}=flags:${combo.key}`, pointClass: 'business',
+          title: `配置业务点（${register.name} 使能${combo.label}：${combo.assignments.join('，')}）`,
+          trigger: ['DUT 完成复位并处于正常空闲状态', `按组合写入 ${register.name} 各 flag 字段（${combo.label}）`],
+          expected: [`${combo.label}组合下 DUT 外部可观察行为符合规格（各 flag 语义见寄存器手册）`],
+          refs: combo.assignments, requirementIds: [...new Set(flagFields.flatMap((item) => item.clauseId ? [item.clauseId] : []))],
+          rtlObjects: [`${register.rtlModule}.${flagFields[0].name}`], features: ['configuration'], wave: 'basic'
+        })
+      }
+    }
+    if (register.fields.length) {
+      const first = register.fields[0]
+      seeds.push({
+        key: `${register.name}=dynamic-busy-write`, pointClass: 'dynamic',
+        title: `动态配置点（busy 期间改写 ${register.name}.${first.name}）`,
+        trigger: ['DUT 处于 busy（在途事务未完成）', `在 busy 期间经总线改写 ${register.name}.${first.name}`],
+        expected: [`忙时改写 ${register.name}.${first.name} 的更新策略符合规格且不破坏在途事务：${first.description}`],
+        refs: [`${register.name}.${first.name}`], requirementIds: first.clauseId ? [first.clauseId] : [],
+        rtlObjects: [`${register.rtlModule}.${first.name}`], features: ['configuration', 'busy'], wave: 'corner', topic: CONFIG_POINT_TOPICS.dynamic
+      })
+    }
+  }
+  for (const constraint of configSpace.constraints) {
+    seeds.push({
+      key: `constraint:${constraint.type}:${constraint.fields.join('+')}`, pointClass: 'illegal',
+      title: `配置非法点（${constraint.type}：${constraint.description.slice(0, 60)}）`,
+      trigger: ['DUT 完成复位并处于正常空闲状态', `构造违反约束的激励组合：${constraint.fields.join(' + ')}（${constraint.type}）`],
+      expected: [`DUT 行为必须符合规格期望（报错/忽略/截断，以规格为准）：${constraint.description}；不得把非法激励当 PASS 放行`],
+      refs: [...constraint.fields, constraint.description],
+      requirementIds: constraint.clauseId ? [constraint.clauseId] : [],
+      rtlObjects: constraint.fields.map((ref) => ref.split('.').slice(0, 2).join('.')),
+      features: ['configuration'], wave: 'corner', topic: CONFIG_POINT_TOPICS.illegal
+    })
+  }
+  return seeds
+}
+
+/**
+ * 配置点场景派生（origin=CONFIG_DERIVED）：与 CLAUSE_DERIVED 同口径——进 scenario-registry
+ * 候选池（PLANNED、priority 恒低于 Coverage Hole 阻断阈值，初始不排队执行，按需提升），
+ * 经 scenario_hits 证据闭环；clauseId 锚点挂规格映射矩阵（§4.6），与普通场景共用执行计划全局 cap。
+ * 无 config-space 时不生成；config-space 删除后派生候选自然退出（每轮按账本重派生，幂等）。
+ */
+function deriveConfigScenarios(configSpace: ConfigSpaceFile, previous: VerificationScenario[], hits: ReturnType<typeof scenarioHits>, structure: StructuralModel): VerificationScenario[] {
+  const previousById = new Map(previous.filter((item) => item.origin === 'CONFIG_DERIVED').map((item) => [item.id, item]))
+  const candidates: VerificationScenario[] = []
+  for (const seed of buildConfigPointSeeds(configSpace)) {
+    const id = configScenarioId(seed.key)
+    const risk = 0.5
+    const interaction = 0.5
+    const coverageGap = 1
+    const confidenceFactor = 0.85
+    const costFactor = 0.9
+    const criticality = 0.8
+    const priority = Number((criticality * risk * interaction * coverageGap * confidenceFactor * costFactor).toFixed(3))
+    const status: ScenarioStatus = 'PLANNED'
+    const fresh: VerificationScenario = {
+      id, origin: 'CONFIG_DERIVED', wave: seed.wave, topic: seed.topic,
+      configPoint: { class: seed.pointClass, refs: seed.refs },
+      title: seed.title,
+      riskIds: [], requirementIds: seed.requirementIds, rtlObjects: seed.rtlObjects, features: seed.features,
+      trigger: seed.trigger, expected: seed.expected, method: 'simulation',
+      status, state: scenarioState(status, [], 0, undefined, 'CURRENT'),
+      coordinates: { feature: seed.features, boundary: [], interaction: [], temporal: [], systemState: [] },
+      rtlHash: structure.rtlHash, risk, interaction, coverageGap, criticality, confidenceFactor, costFactor, priority,
+      reason: `配置空间派生（config-space.json，${seed.pointClass} 类配置点）：${seed.refs.join('、')}；闭环仍只认 scenario_hits 工具登记证据。`,
+      evidence: [], reachCount: 0, coverageDelta: {}, updatedAt: new Date().toISOString()
+    }
+    const merged = previousById.get(id) ? { ...previousById.get(id)!, title: fresh.title, expected: fresh.expected, requirementIds: fresh.requirementIds, rtlObjects: fresh.rtlObjects, features: fresh.features, wave: seed.wave, topic: seed.topic, configPoint: fresh.configPoint } : fresh
+    candidates.push(refreshScenarioWithHits(merged, hits, structure.rtlHash))
+  }
+  return candidates
+}
+
 /**
  * 执行计划（v0.8.6 契约 §4）：排序键 = 波段序（basic→corner→signoff）→ 聚类组 → 组内优先级。
  * 波段执行门（"W1 不满不进 W2"，约束执行不约束登记）：最早存在未闭环场景的波段圈住全部更晚
@@ -764,7 +1211,8 @@ function buildSpecMapping(requirements: RequirementModel, scenarios: Verificatio
   const documentaryCount = requirements.requirements.length - verifiable.length
   const intentByScenarioId = new Map(intents.map((item) => [item.scenarioId, item]))
   // CLAUSE_DERIVED 派生候选同样锚定条款（使被派生条款进入 MAPPED_UNTESTED）；闭环仍只认其 scenario_hits 证据
-  const mappedScenarios = scenarios.filter((item) => item.origin === 'AGENT_INTENT' || item.origin === 'CLAUSE_DERIVED')
+  // CONFIG_DERIVED 配置点候选同口径（§4.6：寄存器章节条款 ↔ 配置点双向指针，由配置点场景 hits 派生条款状态）
+  const mappedScenarios = scenarios.filter((item) => item.origin === 'AGENT_INTENT' || item.origin === 'CLAUSE_DERIVED' || item.origin === 'CONFIG_DERIVED')
   const clauses: SpecClauseMapping[] = verifiable.map((clause) => {
     const parentId = clause.parentId ?? clause.id
     const mapped = mappedScenarios.filter((scenario) => scenario.requirementIds.includes(clause.id) || scenario.requirementIds.includes(parentId))
@@ -980,11 +1428,11 @@ function scenarioState(status: ScenarioStatus, evidence: string[], reachCount: n
   return { lifecycle, reach, judgment, evidence: evidenceState, freshness, closure }
 }
 
-function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string }> {
-  const hits = new Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string }>()
+function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string; failureSummary?: string; failureSignature?: string }> {
+  const hits = new Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string; failureSummary?: string; failureSignature?: string }>()
   for (const file of walk(join(workspace, 'verification', 'results'), (path) => basename(path) === 'scenario_hits.json')) {
     try {
-      const data = JSON.parse(readFileSync(file, 'utf-8')) as { rtlHash?: string; scenarios?: Array<{ id?: string; status?: ScenarioStatus; reached?: boolean; passed?: boolean; assertionPassed?: boolean; reachCount?: number; coverageDelta?: Record<string, number>; evidence?: string[]; rtlHash?: string }> }
+      const data = JSON.parse(readFileSync(file, 'utf-8')) as { rtlHash?: string; scenarios?: Array<{ id?: string; status?: ScenarioStatus; reached?: boolean; passed?: boolean; assertionPassed?: boolean; reachCount?: number; coverageDelta?: Record<string, number>; evidence?: string[]; rtlHash?: string; failureSummary?: string; failureSignature?: string }> }
       for (const item of data.scenarios ?? []) {
         if (!item.id) continue
         const evidence = (item.evidence ?? []).map((path) => resolve(dirname(file), path))
@@ -993,7 +1441,8 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, {
         const status = ['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE'].includes(requestedStatus) && validEvidence.length === 0
           ? 'PARTIAL'
           : requestedStatus
-        hits.set(item.id, { status, evidence: [relative(workspace, file), ...validEvidence.map((path) => relative(workspace, path))], reachCount: Number(item.reachCount ?? (item.reached ? 1 : 0)), assertionPassed: item.assertionPassed ?? item.passed, coverageDelta: Object.fromEntries(Object.entries(item.coverageDelta ?? {}).filter(([, value]) => typeof value === 'number')), rtlHash: item.rtlHash ?? data.rtlHash })
+        // 方案 C 批 1（§3.3）：failureSummary/failureSignature 仅透传（旧数据无字段则缺省），不进 status 派生
+        hits.set(item.id, { status, evidence: [relative(workspace, file), ...validEvidence.map((path) => relative(workspace, path))], reachCount: Number(item.reachCount ?? (item.reached ? 1 : 0)), assertionPassed: item.assertionPassed ?? item.passed, coverageDelta: Object.fromEntries(Object.entries(item.coverageDelta ?? {}).filter(([, value]) => typeof value === 'number')), rtlHash: item.rtlHash ?? data.rtlHash, ...(typeof item.failureSummary === 'string' && item.failureSummary ? { failureSummary: item.failureSummary } : {}), ...(typeof item.failureSignature === 'string' && item.failureSignature ? { failureSignature: item.failureSignature } : {}) })
       }
     } catch { /* 无效反馈由证据审查报告处理 */ }
   }
@@ -1030,7 +1479,16 @@ function refreshScenarioWithHits(item: VerificationScenario, hits: ReturnType<ty
   const evidence = [...new Set(hit?.evidence ?? item.evidence ?? [])]
   const reachCount = hit?.reachCount ?? item.reachCount ?? 0
   const assertionPassed = hit?.assertionPassed ?? item.assertionPassed
-  return { ...item, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? item.coverageDelta ?? {}, updatedAt: new Date().toISOString() }
+  const next: VerificationScenario = { ...item, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? item.coverageDelta ?? {}, updatedAt: new Date().toISOString() }
+  // 方案 C 批 1（§3.3）：失败摘要/指纹透传——hit 有记录时以 hit 为准（PASS 登记已清除旧字段，
+  // 不再回退历史值，避免通过后的场景挂陈旧失败信息）；无 hit 时保留上一轮值。不进 scenarioState 判定。
+  const failureSummary = hit ? hit.failureSummary : item.failureSummary
+  const failureSignature = hit ? hit.failureSignature : item.failureSignature
+  if (failureSummary) next.failureSummary = failureSummary
+  else delete next.failureSummary
+  if (failureSignature) next.failureSignature = failureSignature
+  else delete next.failureSignature
+  return next
 }
 
 /** 条款派生场景 ID：sha1('CLAUSE\0' + clauseId) 前 8 位大写——同条款跨 rebuild 复用同 ID（幂等）。 */
@@ -1096,7 +1554,11 @@ function deriveClauseScenarios(requirements: RequirementModel, base: Verificatio
 function buildScenarios(requirements: RequirementModel, structure: StructuralModel, risks: RiskMarker[], previous: VerificationScenario[], workspace: string): VerificationScenario[] {
   const previousById = new Map(previous.map((item) => [item.id, item]))
   const hits = scenarioHits(workspace, structure.rtlHash)
-  const derived = risks.map((risk) => {
+  // 配置空间账本（§4）：存在时 R09/R16 的场景级产出由配置空间驱动的动态点替代
+  // （风险规则本身保留作风险登记与优先级来源，§4.3）；无账本时维持现行 R09/R16 行为。
+  const configSpace = readConfigSpace(workspace)
+  const scenarioRisks = configSpace ? risks.filter((risk) => risk.taxonomyId !== 'R09' && risk.taxonomyId !== 'R16') : risks
+  const derived = scenarioRisks.map((risk) => {
     const rule = RISK_RULES.find((item) => item.taxonomyId === risk.taxonomyId)!
     const nway = risk.title.startsWith('N-way')
     const stableKey = `${risk.taxonomyId}\0${risk.object}\0${risk.features.sort().join(',')}`
@@ -1122,6 +1584,11 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
     const assertionPassed = hit?.assertionPassed ?? previousItem?.assertionPassed
     const scenario = { id, origin: 'ENGINE_CANDIDATE' as const, wave: deriveWaveForEngineCandidate(nway ? 'formal-candidate' : rule.method), topic: TAXONOMY_TOPICS[risk.taxonomyId], title: `${risk.title}: ${risk.features.join(' × ')}`, riskIds: [risk.id], requirementIds, rtlObjects: [risk.object], features: risk.features, trigger: nway ? risk.features.map((item) => `${item} 在同周期或相邻周期有效`) : rule.trigger, expected: nway ? ['这些共享信号的优先级与更新次数符合规格，无重复累加、丢失或错误裁决'] : rule.expected, method: nway ? 'formal-candidate' as const : rule.method, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash: structure.rtlHash, risk: risk.riskScore, interaction: risk.interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `结构规则 ${risk.taxonomyId} 命中 ${risk.object}；${risk.features.join('、')} 共享控制或时序语义。`, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? previousItem?.coverageDelta ?? {}, updatedAt: new Date().toISOString() } as VerificationScenario
     scenario.coordinates = coordinatesFor(structure, scenario, risk)
+    // 方案 C 批 1（§3.3）：失败摘要/指纹透传（hit 有记录时以 hit 为准，无 hit 保留上一轮值；不进状态派生）
+    const failureSummary = hit ? hit.failureSummary : previousItem?.failureSummary
+    if (failureSummary) scenario.failureSummary = failureSummary
+    const failureSignature = hit ? hit.failureSignature : previousItem?.failureSignature
+    if (failureSignature) scenario.failureSignature = failureSignature
     return scenario
   })
   // AGENT_INTENT 场景以 scenario-registry 为唯一事实源：全量 rebuild 必须把上一轮登记的
@@ -1130,7 +1597,9 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
   const preserved = previous.filter((item) => item.origin === 'AGENT_INTENT' && !derivedIds.has(item.id)).map((item) => refreshScenarioWithHits(item, hits, structure.rtlHash))
   // CLAUSE_DERIVED 派生候选不走保留通道：每轮按条款状态重派生（幂等），previous 仅用于状态合并
   const clauseDerived = deriveClauseScenarios(requirements, [...derived, ...preserved], previous, hits, structure)
-  return [...derived, ...preserved, ...clauseDerived].sort((a, b) => b.priority - a.priority)
+  // CONFIG_DERIVED 配置点候选同口径：每轮按 config-space 账本重派生（幂等），无账本不生成
+  const configDerived = configSpace ? deriveConfigScenarios(configSpace, previous, hits, structure) : []
+  return [...derived, ...preserved, ...clauseDerived, ...configDerived].sort((a, b) => b.priority - a.priority)
 }
 
 function readPrevious(path: string): VerificationScenario[] {
@@ -1180,6 +1649,39 @@ function buildVerificationIntents(structure: StructuralModel, scenarios: Verific
     if ((scenario.origin ?? 'ENGINE_CANDIDATE') === 'AGENT_INTENT') {
       const existing = previousByScenarioId.get(scenario.id)
       if (existing) return { ...existing, evidence: scenario.evidence, status: scenario.status, priority: scenario.priority }
+    }
+    if (scenario.origin === 'CONFIG_DERIVED') {
+      // 配置点候选的 Intent：目标/判定直接引用配置点语义（refs + 期望行为），不套风险交互模板；
+      // 已有 Intent 保留原文（Agent 可经 refine_verification_intents 精炼），仅刷新机器字段
+      const existing = previousByScenarioId.get(scenario.id)
+      if (existing) return { ...existing, evidence: scenario.evidence, status: scenario.status, priority: scenario.priority }
+      const point = scenario.configPoint
+      return {
+        id: `VI-${scenario.id.slice(4)}`, scenarioId: scenario.id,
+        objective: `验证配置点（${point?.class ?? 'business'}）：${scenario.title}`,
+        rationale: scenario.reason,
+        failureMode: `反例：${scenario.expected.join('；')} 不成立（如非法激励被当 PASS 放行、越界值未按规格截断/报错）`,
+        sourceIds: [...scenario.requirementIds],
+        preconditions: scenario.trigger,
+        stimulus: { events: scenario.features, temporalInteractions: [] },
+        observations: scenario.rtlObjects,
+        stimulusProcedure: [
+          `按 config-space.json 写入配置点组合：${point?.refs.join('、') ?? scenario.title}`,
+          ...(point?.class === 'dynamic' ? ['保持 DUT busy（在途事务未完成）期间完成上述写入'] : []),
+          `记录 ${scenario.id} hit、配置序列、关键内部状态和输出响应`
+        ],
+        observationPoints: [...scenario.rtlObjects],
+        expectedResults: scenario.expected,
+        passCriteria: [
+          `Checker/Assertion 必须证明：${scenario.expected.join('；')}`,
+          '场景产生可追踪的 Scenario hit（reached=true 且 passed=true）',
+          ...(point?.class === 'illegal' ? ['非法组合必须校验规格期望行为（报错/忽略/截断），不得把非法激励当 PASS 放行'] : []),
+          '结果必须关联原始日志、结构化 result 与覆盖率'
+        ],
+        boundaries: [], recommendedMethods: ['simulation', 'assertion'],
+        evidence: scenario.evidence, status: scenario.status, priority: scenario.priority,
+        wave: resolveWave(scenario), topic: scenario.topic
+      }
     }
     if (scenario.origin === 'CLAUSE_DERIVED') {
       // 条款派生候选的 Intent：目标/判定直接引用条款文本（可证伪），不套风险交互模板；
@@ -1665,8 +2167,16 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   const requirements = requirementModel(workspace)
   const structure = structuralModel(workspace)
   const risks = deriveRisks(workspace, structure)
-  const moduleVerificationStrategy = buildModuleVerificationStrategy(workspace, structure, risks)
-  const fullScenarioModules = new Set(moduleVerificationStrategy.modules.filter((item) => item.level === 'UNIT_FOCUSED' || item.level === 'IP_SIGNOFF').map((item) => item.module))
+  // UT 例外登记表（§3.2）：rebuild 联查 active 例外 → 策略表 UT_EXCEPTION 覆写 + 场景锚点放开；
+  // 历史迁移（§8）：发现 <module>_tb（module ∉ topSet）且有 scenario_hits 登记的模块自动登记 active 例外（幂等）。
+  let escalations = readUtEscalations(workspace)
+  const provisionalStrategy = buildModuleVerificationStrategy(workspace, structure, risks, activeUtExceptionModules(escalations))
+  migrateLegacyTestbenches(workspace, structure, provisionalStrategy.topModules, escalations)
+  escalations = readUtEscalations(workspace)
+  const utExceptionModules = activeUtExceptionModules(escalations)
+  const moduleVerificationStrategy = buildModuleVerificationStrategy(workspace, structure, risks, utExceptionModules)
+  // 场景锚点迁移（§3.2）：默认只锚 TOP rtlObjects + active UT 例外模块（替代原 fullScenarioModules 判定）
+  const fullScenarioModules = new Set([...moduleVerificationStrategy.topModules, ...utExceptionModules])
   const scenarioRisks = risks.filter((risk) => fullScenarioModules.has(risk.object) || [...fullScenarioModules].some((module) => risk.object.startsWith(`${module}.`)))
   const scenarios = buildScenarios(requirements, structure, scenarioRisks, readPrevious(paths.scenarioRegistry), workspace)
   // 契约 §2.1：confirmed 根因挂到对应 scenario.evidence（并进入 signoff package 证据索引）
@@ -1701,6 +2211,9 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
   for (const scenario of scenarios) statusCounts[scenario.status] = (statusCounts[scenario.status] ?? 0) + 1
   const criticalOpen = scenarios.filter((item) => item.criticality >= 0.8 && !['VERIFIED', 'EXCLUDED', 'WAIVED'].includes(item.state.closure)).map((item) => item.id)
   const structuralSummary = { fsm: structure.stateMachines.length, cfgNodes: structure.controlFlow.nodes.length, dependencies: structure.temporalDependencies.length, cones: structure.conesOfInfluence.length, protocols: structure.protocols.map((item) => ({ protocol: item.protocol, module: item.module })) }
+  // 配置覆盖消费（§4.5）：读 verification/results/<topModule>/config-coverage.json 归一化挂 posture；
+  // 不进闭环阻断（§11 决策 2：先记账后定阈）；缺文件/损坏=无该字段
+  const configCoverage = readConfigCoverage(workspace, moduleVerificationStrategy.topModules, structure.rtlHash)
   const verificationState: VerificationStateModel = { version: 6, generatedAt: new Date().toISOString(), rtlHash: structure.rtlHash, scenarioCount: scenarios.length, statusCounts, criticalOpen, uncoveredRiskCandidates, scenarios, regressions, analyzer: structure.analyzer, interactionGraph, executionPlan, executionClusters, reclusterSuggestions, waveProgress, specMapping, hypotheses, formalResults, specGaps, verificationIntents, coverageHoles, closureAssessment, verificationSpace, explorationRound, explorationHistory, multiOracle, mutationAssessment, residualRiskRegister, signoffPackage, moduleVerificationStrategy, structuralSummary }
   writeJsonAtomic(paths.requirementModel, requirements)
   writeJsonAtomic(paths.structuralModel, structure)
@@ -1753,6 +2266,10 @@ export function buildVerificationIntelligence(workspaceDir: string): Intelligenc
     residualRiskRegister,
     signoffPackage,
     moduleVerificationStrategy,
+    /** UT 例外登记表（§3.2，态势页徽标/悬浮与签核审计数据源；批 3 UI 消费） */
+    utEscalations: escalations,
+    /** 配置覆盖矩阵（§4.5 消费链路；缺文件/损坏时无该字段，页面不渲染配置覆盖区块） */
+    ...(configCoverage ? { configCoverage } : {}),
     structuralSummary,
     analyzer: structure.analyzer
   })
@@ -2332,7 +2849,9 @@ export function buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): s
     `- 状态入口：verification/intelligence/execution-summary.json（日常只读此摘要）`,
     `- scenario_hits 由 run_simulation(scenarioIds=...) 在执行后自动登记，禁止手写或修改 scenario_hits.json`,
     `- 执行派生状态（VERIFIED/FAILED/REACHED/NOT_REACHED/PARTIAL/FORMAL_PROVED/FORMAL_UNREACHABLE）由证据自动派生，不得宣布；判断类裁决只能用 record_scenario_adjudication`,
-    `- 根因结论必须用 record_root_cause 落盘，不靠提示词纪律`
+    `- 根因结论必须用 record_root_cause 落盘，不靠提示词纪律`,
+    `- UT 例外纪律：未经 register_ut_escalation 登记（ut-escalations.json active），禁止为任何子模块单独搭建 Testbench；模块级 TB 仅限已登记 active UT 例外的模块`,
+    `- 配置点场景（origin=CONFIG_DERIVED）按 configPoint.class 执行：非法点（illegal）必须校验规格期望行为（报错/忽略/截断），不得把非法激励当 PASS 放行`
   )
   return sections.join('\n')
 }

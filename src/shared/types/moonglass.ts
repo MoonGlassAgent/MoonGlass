@@ -255,6 +255,10 @@ export interface ToolDetection {
   installUrl?: string
   builtin?: boolean
   source?: 'bundled' | 'managed' | 'system'
+  /** 探测到的版本是否落在 MoonGlass 支持范围内（仅对有版本要求的工具如 cocotb 设置；found 不受影响） */
+  versionCompatible?: boolean
+  /** 版本不兼容时的中文升级指引（主进程/探测侧生成） */
+  versionHint?: string
 }
 
 export interface ToolInstallResult {
@@ -288,6 +292,28 @@ export interface WaveformOpenResult {
   ok: boolean
   viewer?: string
   error?: string
+}
+
+// ==================== 用户侧环境自检（T6 env doctor） ====================
+
+/** 环境自检单项结果：每项对应一条最小端到端链路（编译/综合/形式验证/仿真） */
+export interface EnvSelfCheckItem {
+  id: 'icarus' | 'verible' | 'yosys' | 'sby' | 'cocotb'
+  passed: boolean
+  /** 工具未安装时跳过（passed=false，message 指引安装） */
+  skipped?: boolean
+  /** 中文明细：成功时的版本号/结论，或失败原因 */
+  message: string
+  durationMs: number
+  /** 失败/跳过时指向对应安装 bundle（'oss-cad-suite' | 'verible' | 'python-cocotb'），UI 据此指引安装入口 */
+  installId?: string
+}
+
+export interface EnvSelfCheckReport {
+  items: EnvSelfCheckItem[]
+  passedCount: number
+  totalCount: number
+  ranAt: string
 }
 
 // ==================== 工艺库管理 ====================
@@ -459,6 +485,13 @@ export interface LlmProviderTestResult {
   availableModelCount?: number
   /** 用户配置的每个模型是否存在于 Provider 返回列表 */
   models: LlmModelTestResult[]
+}
+
+/** 阶段产物漂移条目：库记录显示该阶段已完成，但其全部产物路径已从磁盘消失。 */
+export interface ArtifactDriftEntry {
+  phase: Phase
+  /** 已不存在的产物相对路径（相对项目工作目录） */
+  missingPaths: string[]
 }
 
 export type PhaseResetMode = 'archive' | 'purge'

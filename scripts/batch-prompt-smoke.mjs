@@ -66,6 +66,10 @@ if (!prompt.includes('run_simulation(scenarioIds=...)') || !prompt.includes('禁
 if (!prompt.includes('执行派生状态') || !prompt.includes('不得宣布')) throw new Error('纪律约束缺少执行派生状态条款')
 if (!prompt.includes('execution-summary.json')) throw new Error('纪律约束缺少状态入口路径')
 
+// AIGV 修订批 3：UT 例外登记纪律 + 配置点场景执行纪律（§5.2/§5.3 确定性文本）
+if (!prompt.includes('UT 例外纪律') || !prompt.includes('register_ut_escalation') || !prompt.includes('禁止为任何子模块单独搭建 Testbench')) throw new Error('纪律约束缺少 UT 例外登记条款')
+if (!prompt.includes('configPoint.class') || !prompt.includes('illegal') || !prompt.includes('非法激励当 PASS 放行')) throw new Error('纪律约束缺少配置点场景执行条款')
+
 // v0.8.6 聚类组语义段：同模块同 Oracle 域、一个测试文件 N 个 testcase、一次绑定全部 scenarioIds
 if (!prompt.includes(`聚类组语义（${cluster.clusterId}）`)) throw new Error('批次 prompt 缺少聚类组语义段')
 if (!prompt.includes(`模块 ${cluster.module}`) || !prompt.includes(`Oracle 域 ${cluster.oracleDomain}`)) throw new Error('聚类组语义缺少模块/Oracle 域')

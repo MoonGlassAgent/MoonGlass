@@ -13,6 +13,9 @@ Verification Environment Coding Standard
 
 ## 1. 日志规范
 
+> **cocotb 2.x**：`cocotb.log.SimLog` 已移除，日志对象统一通过标准库
+> `logging.getLogger(f"cocotb.{name}")` 获取（文件顶部 `import logging`）。
+
 ### 1.1 日志级别
 
 | 级别 | 使用场景 | 示例 |
@@ -65,19 +68,24 @@ if count <= 5 or count % 50 == 0:
 ### 1.5 测试分隔与结果输出
 
 ```python
+import logging
+
+# cocotb 2.x 已移除 SimLog，使用标准库 logging 获取日志对象
+log = logging.getLogger("cocotb")
+
 def log_test_start(test_name):
-    cocotb.log.info("=" * 80)
-    cocotb.log.info(f"TEST START: {test_name}")
-    cocotb.log.info("=" * 80)
+    log.info("=" * 80)
+    log.info(f"TEST START: {test_name}")
+    log.info("=" * 80)
 
 def log_test_end(test_name, passed, details=None):
-    cocotb.log.info("=" * 80)
+    log.info("=" * 80)
     status = "PASSED" if passed else "FAILED"
-    cocotb.log.info(f"TEST END: {test_name} - {status}")
+    log.info(f"TEST END: {test_name} - {status}")
     if details:
         for key, value in details.items():
-            cocotb.log.info(f"  {key}: {value}")
-    cocotb.log.info("=" * 80)
+            log.info(f"  {key}: {value}")
+    log.info("=" * 80)
 ```
 
 ---
@@ -184,7 +192,7 @@ class MyDriver:
     def __init__(self, dut, name="Driver"):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
 
     async def reset(self):
         """复位驱动器，清除所有控制信号"""
@@ -204,7 +212,7 @@ class MyMonitor:
     def __init__(self, dut, name="Monitor"):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.callbacks = []
 
     async def run(self):
@@ -219,7 +227,7 @@ class MyScoreboard:
     def __init__(self, golden_model, name="Scoreboard"):
         self.golden_model = golden_model
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.matched = 0
         self.mismatched = 0
 
@@ -251,7 +259,7 @@ class MyEnvironment:
     def __init__(self, dut, name="Env"):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
 
         # 创建组件
         self.golden_model = MyGoldenModel()
@@ -265,7 +273,7 @@ class MyEnvironment:
         self.dut.rst_n.value = 0
         await RisingEdge(self.dut.clk)
         # 清除所有输入信号为默认值
-        await Timer(duration_ns, units='ns')
+        await Timer(duration_ns, unit='ns')
         await RisingEdge(self.dut.clk)
         self.dut.rst_n.value = 1
         await RisingEdge(self.dut.clk)
@@ -293,7 +301,7 @@ async def test_feature_x(dut):
     log_test_start(test_name)
 
     # 1. 启动时钟（必须）
-    clock = Clock(dut.clk, 10, units='ns')
+    clock = Clock(dut.clk, 10, unit='ns')
     cocotb.start_soon(clock.start())
 
     # 2. 创建环境（必须）

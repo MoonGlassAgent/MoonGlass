@@ -20,7 +20,8 @@ const api: MoonGlassApi = {
     update: (id, patch) => ipcRenderer.invoke(IPC.Project.Update, id, patch),
     delete: (id) => ipcRenderer.invoke(IPC.Project.Delete, id),
     migrate: (id, destinationPath) => ipcRenderer.invoke(IPC.Project.Migrate, id, destinationPath),
-    generateDashboard: (id) => ipcRenderer.invoke(IPC.Project.GenerateDashboard, id)
+    generateDashboard: (id) => ipcRenderer.invoke(IPC.Project.GenerateDashboard, id),
+    reconcileArtifacts: (projectId) => ipcRenderer.invoke(IPC.Project.ReconcileArtifacts, projectId)
   },
   phase: {
     advance: (projectId: string, to: Phase, options?: { force?: boolean }) =>
@@ -34,8 +35,8 @@ const api: MoonGlassApi = {
     completeProject: (projectId: string) => ipcRenderer.invoke(IPC.Phase.CompleteProject, projectId),
     previewReset: (projectId: string, phase: Phase, mode: PhaseResetMode) =>
       ipcRenderer.invoke(IPC.Phase.PreviewReset, projectId, phase, mode),
-    reset: (projectId: string, phase: Phase, mode: PhaseResetMode) =>
-      ipcRenderer.invoke(IPC.Phase.Reset, projectId, phase, mode)
+    reset: (projectId: string, phase: Phase, mode: PhaseResetMode, options?: { resetDownstream?: boolean }) =>
+      ipcRenderer.invoke(IPC.Phase.Reset, projectId, phase, mode, options)
   },
   eda: {
     detectTools: (force?: boolean) => ipcRenderer.invoke(IPC.Eda.DetectTools, force),
@@ -44,7 +45,8 @@ const api: MoonGlassApi = {
     getInstallStatus: (id: string) => ipcRenderer.invoke(IPC.Eda.GetInstallStatus, id),
     openInstallPage: (url: string) => ipcRenderer.invoke(IPC.Eda.OpenInstallPage, url),
     openWaveform: (projectId: string, relPath: string) =>
-      ipcRenderer.invoke(IPC.Eda.OpenWaveform, projectId, relPath)
+      ipcRenderer.invoke(IPC.Eda.OpenWaveform, projectId, relPath),
+    runEnvironmentSelfCheck: () => ipcRenderer.invoke(IPC.Eda.SelfCheck)
   },
   processLibrary: {
     list: () => ipcRenderer.invoke(IPC.ProcessLibrary.List),
@@ -116,7 +118,15 @@ const api: MoonGlassApi = {
     writeText: (projectId: string, relPath: string, content: string) =>
       ipcRenderer.invoke(IPC.Fs.WriteText, projectId, relPath, content),
     verificationStatus: (projectId: string) => ipcRenderer.invoke(IPC.Fs.VerificationStatus, projectId),
-    openExternal: (projectId: string, relPath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, projectId, relPath)
+    openExternal: (projectId: string, relPath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, projectId, relPath),
+    watchVerification: (projectId: string) => ipcRenderer.invoke(IPC.Fs.WatchVerification, projectId),
+    unwatchVerification: (projectId: string) => ipcRenderer.invoke(IPC.Fs.UnwatchVerification, projectId),
+    onVerificationChanged: (cb: (payload: { projectId: string }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { projectId: string }): void =>
+        cb(payload)
+      ipcRenderer.on(IPC.Fs.VerificationChanged, listener)
+      return () => ipcRenderer.removeListener(IPC.Fs.VerificationChanged, listener)
+    }
   },
   coverage: {
     detail: (projectId: string, relResultDir: string) => ipcRenderer.invoke(IPC.Coverage.Detail, projectId, relResultDir)

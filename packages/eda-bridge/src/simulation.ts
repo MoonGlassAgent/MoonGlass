@@ -356,34 +356,89 @@ function windowsExitCode(code: number | null): string {
     : String(code)
 }
 
-async function checkIcarusToolchain(
+/**
+ * Icarus 工具链最小编译运行自检（仿真前置校验与安装后自检共用，T3/T6 复用入口）：
+ * 编译并运行一个 $display("MOONGLASS_ICARUS_OK") 的最小程序，编译或运行失败即抛错。
+ * 为兼容非 ASCII 工作目录（中文用户名路径），iverilog/vvp 的参数一律传相对路径
+ * （cwd=smokeDir），非 ASCII 仅经 cwd 传递（与 formal.ts 路径编码防线同一口径）。
+ */
+export async function verifyIcarusToolchain(
   iverilogPath: string,
-  buildDir: string,
+  workDir: string,
   env: NodeJS.ProcessEnv,
   signal?: AbortSignal
 ): Promise<void> {
   const vvpPath = join(dirname(iverilogPath), process.platform === 'win32' ? 'vvp.exe' : 'vvp')
   if (!existsSync(vvpPath)) throw new Error(`Icarus 工具链不完整：未找到配套运行器 ${vvpPath}`)
 
-  const smokeDir = join(buildDir, '.moonglass-icarus-check')
+  const smokeDir = join(workDir, '.moonglass-icarus-check')
   const sourcePath = join(smokeDir, 'smoke.v')
   const outputPath = join(smokeDir, 'smoke.vvp')
   mkdirSync(smokeDir, { recursive: true })
   writeFileSync(sourcePath, 'module smoke; initial begin $display("MOONGLASS_ICARUS_OK"); $finish; end endmodule\n', 'utf-8')
   try {
-    const compile = await run(iverilogPath, ['-o', outputPath, sourcePath], env, signal, smokeDir, 15_000)
+    const compile = await run(iverilogPath, ['-o', 'smoke.vvp', 'smoke.v'], env, signal, smokeDir, 15_000)
     if (compile.code !== 0 || !existsSync(outputPath)) {
       throw new Error(`iverilog 最小编译失败，退出码 ${windowsExitCode(compile.code)}：${(compile.stderr || compile.stdout).trim() || '无输出'}`)
     }
-    const execute = await run(vvpPath, [outputPath], env, signal, smokeDir, 15_000)
+    const execute = await run(vvpPath, ['smoke.vvp'], env, signal, smokeDir, 15_000)
     if (execute.code !== 0 || !execute.stdout.includes('MOONGLASS_ICARUS_OK')) {
       throw new Error(`vvp 最小运行失败，退出码 ${windowsExitCode(execute.code)}：${(execute.stderr || execute.stdout).trim() || '无输出'}`)
     }
+  } finally {
+    rmSync(smokeDir, { recursive: true, force: true })
+  }
+}
+
+async function checkIcarusToolchain(
+  iverilogPath: string,
+  buildDir: string,
+  env: NodeJS.ProcessEnv,
+  signal?: AbortSignal
+): Promise<void> {
+  try {
+    await verifyIcarusToolchain(iverilogPath, buildDir, env, signal)
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error)
     throw new Error(`Icarus 工具链自检未通过。MoonGlass 已绑定 ${dirname(iverilogPath)} 并隔离冲突的 MinGW DLL；请在“设置 > 工具链”重新安装 OSS CAD Suite。\n${detail}`)
-  } finally {
-    rmSync(smokeDir, { recursive: true, force: true })
+  }
+}
+
+/** 递归收集目录下的 Python 测试台文件（cocotb 非 ASCII 前置检查用） */
+function collectTbPythonFiles(dir: string): string[] {
+  if (!existsSync(dir)) return []
+  const result: string[] = []
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) result.push(...collectTbPythonFiles(full))
+    else if (/\.py$/i.test(entry.name)) result.push(full)
+  }
+  return result
+}
+
+/**
+ * cocotb 非 ASCII 前置检查（T5.2，对齐 formal.ts:85-87 的路径编码防线口径）：
+ * TB Python 文本内写死的 Windows 绝对路径（[A-Za-z]:\ 或 [A-Za-z]:/ 开头）若含
+ * 非 ASCII 字符，iverilog/MinGW 运行时按 ANSI 处理文件内容必将其损坏——
+ * 进入构建前直接抛错，指明文件与行号。
+ */
+function assertTbNoNonAsciiAbsolutePaths(pythonFiles: string[]): void {
+  const absolutePathPattern = /[A-Za-z]:[\\/][^\s'"`()<>\[\]{},;]*/g
+  for (const file of pythonFiles) {
+    let content: string
+    try {
+      content = readFileSync(file, 'utf-8')
+    } catch {
+      continue // 读不了的文件由后续构建/运行阶段如实报错
+    }
+    const lines = content.split(/\r?\n/)
+    lines.forEach((line, index) => {
+      for (const match of line.matchAll(absolutePathPattern)) {
+        if (/[^\x00-\x7F]/.test(match[0])) {
+          throw new Error(`Cocotb 测试台文件 ${file}:${index + 1} 引用了含非 ASCII 字符的绝对路径（${match[0]}）；iverilog/MinGW 运行时会按 ANSI 损坏该路径，请改用相对路径或纯 ASCII 路径后重试`)
+        }
+      }
+    })
   }
 }
 
@@ -430,6 +485,18 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
   if (!simulatorPath) throw new Error(`未找到 ${simulator === 'icarus' ? 'Icarus Verilog' : 'Verilator'}`)
   for (const file of options.rtlFiles) if (!existsSync(file)) throw new Error(`RTL 文件不存在: ${file}`)
   if (!existsSync(options.testDir)) throw new Error(`Cocotb 测试目录不存在: ${options.testDir}`)
+
+  // T5.2 cocotb 前置非 ASCII 检查：
+  // a) RTL/TB 文件路径自身含非 ASCII → 仅在编译日志提示（cocotb 在中文路径工作区可跑，
+  //    路径经 cwd 传递；真正的炸点是 TB 内写死的绝对路径）；
+  // b) TB Python 文本内的非 ASCII 绝对路径引用 → 直接抛错（见 assertTbNoNonAsciiAbsolutePaths）。
+  const tbPythonFiles = collectTbPythonFiles(options.testDir)
+  assertTbNoNonAsciiAbsolutePaths(tbPythonFiles)
+  const nonAsciiInputs = [...options.rtlFiles, ...tbPythonFiles].filter((file) => /[^\x00-\x7F]/.test(file))
+  const preflightNotes: string[] = []
+  if (nonAsciiInputs.length > 0) {
+    preflightNotes.push(`[note] 以下 RTL/TB 文件路径含非 ASCII 字符：${nonAsciiInputs.join('、')}。cocotb 在中文路径工作区可运行（路径经 cwd 传递），但 TB 内写死的绝对路径会失败（已前置扫描拦截）；若仿真日志出现乱码路径报错，请优先排查路径编码`)
+  }
 
   mkdirSync(options.buildDir, { recursive: true })
   mkdirSync(options.resultDir, { recursive: true })
@@ -528,6 +595,7 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
     compileLogPath,
     [
       `[compile] cocotb runner.build(simulator=${simulator}, sources=${options.rtlFiles.length} 个 RTL 文件, build_dir=${options.buildDir})`,
+      ...preflightNotes,
       ...(options.coverageUpgradeNote
         ? [`[note] 请求 icarus 但 RTL 覆盖率需 verilator 后端：已自动升级 simulator=verilator（icarus 无覆盖率插桩）`]
         : []),

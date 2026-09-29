@@ -13,7 +13,14 @@ Create and maintain the verification documents under `docs/04_verification/`.
    `docs/02_requirements/requirements_traceability.md`, and the relevant files in
    `docs/03_design/`.
 2. Identify every externally observable requirement, corner case, error path,
-   clock/reset behavior, and interface protocol rule.
+   clock/reset behavior, and interface protocol rule. Also read the
+   specification's **register/config chapter** (register names, offsets, field
+   bit ranges, reset values, value encodings, legal/illegal combinations): it
+   is a mandatory input of the baseline plans and of the config-space ledger
+   (see step 7). If the specification has no register chapter, raise a Spec
+   Gap instead of inventing registers — `register_config_space` must be
+   blocked and the gap recorded with `record_scenario_adjudication`
+   (`BLOCKED_BY_SPEC`) until the user completes the spec.
 3. Write the baseline plans:
    - `docs/04_verification/verification_plan.md`
    - `docs/04_verification/test_plan.md`
@@ -41,7 +48,14 @@ Create and maintain the verification documents under `docs/04_verification/`.
    requirement-to-test traceability.
 6. Define stimulus, checker, expected result, coverage target, and pass/fail
    criteria for each test.
-7. Call `build_verification_intelligence`. Review the ranked Scenario Registry,
+7. Register the config space before scenario selection: extract the register
+   model from the spec's register/config chapter and call
+   `register_config_space` (registers, fields with `enum`/`range`/`flag`
+   domains, and constraints with their expected DUT behavior). The engine
+   validates anchors and derives the four config-point classes (business /
+   boundary / illegal / dynamic) as `CONFIG_DERIVED` scenario candidates. If
+   the spec has no register chapter, do not invent one — record a Spec Gap
+   (see step 2). Then call `build_verification_intelligence`. Review the ranked Scenario Registry,
    `module-verification-strategy.json`,
    `verification-intent-registry.json`, `spec-gap-register.json`, and
    `coverage-hole-register.json`. Bind each selected `VI-*` / `SCN-*` to
@@ -61,11 +75,23 @@ Create and maintain the verification documents under `docs/04_verification/`.
    initial state, timed stimulus procedure, boundary values, observation points,
    expected externally visible behavior, checker/pass criteria, and required evidence.
    A taxonomy label such as `Error/Normal Collision` or `error x response` is not an Intent.
-   Treat the configured `topModule` as the final IP signoff scope. Use full AIGV only for
-   `IP_SIGNOFF` and risk-selected `UNIT_FOCUSED` modules. `UNIT_SMOKE` and `STATIC_ONLY`
-   modules must not receive duplicate full Scenario sets. Decide verification depth from
-   risk, and Oracle type from module semantics. Recommend a Golden Model when it improves
-   independent judgment, fault localization, or convergence, regardless of module size.
+   Treat the configured `topModule` as the final IP signoff scope under the
+   TOP-first policy: the DUT is by default the whole design. Build exactly one
+   TOP cocotb environment (`verification/<topModule>_tb/`); all testcases face
+   the TOP and scenarios anchor to TOP interfaces and spec clauses. The
+   strategy file is two-state — `TOP_SIGNOFF` for the top module(s),
+   `COVERED_BY_TOP` for every other module (verified indirectly via TOP
+   scenarios and full-design coverage; no per-module environment is planned).
+   A submodule receives its own testbench only as a diagnostic-driven
+   exception: after the diagnostic ledger reaches L3/L4 and probing submodule
+   signals still cannot localize the failure, register it with
+   `register_ut_escalation` (module, reason, failure signature, root-cause
+   hypothesis); the strategy table then shows `UT_EXCEPTION`. Never build a
+   module testbench without a registered escalation — an exception UT's PASS
+   never replaces TOP regression evidence. Decide verification depth from
+   risk, and Oracle type from module semantics. Recommend a Golden Model when
+   it improves independent judgment, fault localization, or convergence,
+   regardless of module size.
 8. Inspect `verification/intelligence/feature-interaction-graph.json`. When semantic reasoning is useful, call `register_verification_hypotheses`; every hypothesis must cite existing Risk, RTL Object, and Interaction Edge IDs, and every claim must be classified as `SPEC_FACT`, `RTL_FACT`, `INFERENCE`, or `UNKNOWN`.
 9. Call `select_next_verification_batch` with a default batch of at most three Scenarios. Reuse the current execution plan unless specification, RTL, or regression evidence changed. Reuse or implement the named Cocotb sequence, constraints, temporal constraints, scoreboard/assertion checkers, iteration count, and time budget from `scenario-execution-plan.json`.
    For `formal-candidate` scenarios, use the `formal-verification` skill and `run_formal_verification`; do not call bounded PASS a proof.
@@ -130,3 +156,10 @@ MoonGlass does not promise cycle-accurate root-cause localization.
 
 Diagnostic enhancement may add observations, but it must not weaken or rewrite
 the correct expected behavior to match the RTL.
+
+UT exception (TOP-first policy): when the diagnostic ledger has reached L3/L4
+(module-internal state / root-cause candidates) and probing submodule signals
+still cannot localize the failure, register a UT exception with
+`register_ut_escalation` before building any module-level testbench. An
+unregistered module testbench is never allowed; an exception UT's PASS does
+not replace TOP regression evidence.

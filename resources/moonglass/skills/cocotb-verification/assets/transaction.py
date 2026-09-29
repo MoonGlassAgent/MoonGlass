@@ -34,8 +34,8 @@ class {ITEM_NAME}:
     # ============================================================
     def randomize(
         self,
-        addr_range: Tuple[int, int] = (0, {ADDR_WIDTH}'hFFFF),
-        data_range: Tuple[int, int] = (0, {DATA_WIDTH}'hFFFFFFFF),
+        addr_range: Tuple[int, int] = (0, 0xFFFF),
+        data_range: Tuple[int, int] = (0, 0xFFFFFFFF),
         write_weights: Tuple[int, int] = (50, 50)  # (read_weight, write_weight)
     ) -> '{ITEM_NAME}':
         """
@@ -78,12 +78,12 @@ class {ITEM_NAME}:
         if 'addr_in' in constraints:
             self.addr = random.choice(constraints['addr_in'])
         else:
-            self.addr = random.randint(0, {ADDR_WIDTH}'hFFFF) & ~0x3
+            self.addr = random.randint(0, 0xFFFF) & ~0x3
         
         if 'data_in' in constraints:
             self.data = random.choice(constraints['data_in'])
         else:
-            self.data = random.randint(0, {DATA_WIDTH}'hFFFFFFFF)
+            self.data = random.randint(0, 0xFFFFFFFF)
         
         if 'write_only' in constraints and constraints['write_only']:
             self.write = True
@@ -194,7 +194,7 @@ class {ITEM_NAME}Generator:
         for i in range(count):
             trans = {ITEM_NAME}(
                 addr=start_addr + i * step,
-                data=random.randint(0, {DATA_WIDTH}'hFFFFFFFF),
+                data=random.randint(0, 0xFFFFFFFF),
                 write=write,
                 id=self.transaction_id
             )
@@ -243,7 +243,7 @@ class {ITEM_NAME}Generator:
             事务列表
         """
         if burst_data is None:
-            burst_data = [random.randint(0, {DATA_WIDTH}'hFFFFFFFF) for _ in range(burst_len)]
+            burst_data = [random.randint(0, 0xFFFFFFFF) for _ in range(burst_len)]
         
         transactions = []
         for i, data in enumerate(burst_data[:burst_len]):

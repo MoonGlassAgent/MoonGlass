@@ -129,11 +129,21 @@ export const verification = {
   },
   strategy: {
     title: '模块分层验证策略',
-    subtitle: '顶层完整签核，高风险子模块专项验证，普通子模块静态检查或轻量 Smoke；Oracle 与验证深度独立决策',
-    signoff: '签核',
-    focused: '专项',
-    smoke: 'Smoke',
-    static: '静态',
+    subtitle: 'TOP 优先，UT 例外：顶层完整签核，其余模块默认经 TOP 场景间接验证，仅诊断驱动的例外单独建 TB',
+    countTop: '顶层签核',
+    countException: 'UT 例外',
+    countCovered: '顶层覆盖',
+    levelTopSignoff: '顶层签核',
+    levelTopSignoffHint: 'TOP_SIGNOFF：topSet 顶层模块——完整 AIGV Intent/Scenario + 端到端回归与覆盖率 + Multi-Oracle + Mutation + 签核包',
+    levelCovered: '顶层覆盖',
+    levelCoveredHint: 'COVERED_BY_TOP：默认经 TOP 场景与全设计覆盖率间接验证，requiredChecks 收敛为静态检查（编译/Lint/可综合性/端口检查），不单独排队建环境',
+    levelUtException: 'UT 例外',
+    levelUtExceptionHint: 'UT_EXCEPTION：已登记 active UT 例外的模块（诊断驱动单独建 TB）；例外 PASS 不替代 TOP 证据',
+    utExceptionBadgeHint: '已登记 active UT 例外（诊断驱动单独验证）',
+    utExceptionReason: '升级原因：',
+    utExceptionRootCause: '关联根因：',
+    topSignoffStatus: '签核状态：{status}',
+    topSignoffStatusHint: '顶层签核状态取自闭环评估（closureAssessment）',
     colModule: '模块',
     colLevel: '验证等级',
     colRole: '角色/风险',
@@ -232,6 +242,54 @@ export const verification = {
     explorationSaturated: '再跑也挖不出新问题',
     impactUnknown: 'RTL 变了，旧证据可能失效'
   },
+  /** 术语悬浮解释（GlossaryTip）：在概念首次出现处给一句话说明 */
+  glossary: {
+    wave: '波段：按规格条款覆盖率驱动的验证推进阶段，共 W1 基础 / W2 Corner / W3 签核三波',
+    w1: 'W1 基础验证：让每条可验证规格条款都有 happy path 执行证据',
+    w2: 'W2 Corner 波：按主题（错误注入、边界、并发等）验证异常与边界行为',
+    w3: 'W3 签核：覆盖率闭合、Formal、Mutation 与残余风险审批的最终确认',
+    intent: 'Intent：一个可判定通过与否的验证点，含激励步骤、观察点与通过标准',
+    scenario: 'Scenario：验证场景的执行与证据载体，Intent 落实到可运行的测试',
+    multiOracle: 'Multi-Oracle：用多种独立判定来源（Scoreboard、断言、Formal 等）交叉确认结论',
+    primaryAction: '由验证态势推导出的当前最值得做的一件事，点击即交给主 Agent 执行',
+    clarifySpec: '规格语义没说清、场景无法判定通过或失败的点，需要你逐条拍板',
+    approveResidual: '已知没验透的风险点，等你决定补充证据关闭还是具名豁免接受'
+  },
+  /** 验证向导卡（VerificationGuideCard）：任何时刻一个主行动 */
+  guide: {
+    goalLabel: '当前目标',
+    goalW1: '让每条规格条款都有执行证据',
+    goalW2: '把边界与异常行为验透',
+    goalW3: '完成签核门禁与证据审查',
+    goalFallback: '按步骤推进验证闭环',
+    primaryLabel: '主行动',
+    expectedLabel: '预期产出：',
+    otherActions: '其他可做（{count}）',
+    running: 'Agent 执行中，态势更新后这里会自动给出下一步…',
+    noAction: '当前没有推导出的行动，可刷新态势或从专家操作手动推进',
+    outcomeDefault: '执行后验证态势将自动更新，并给出下一步建议',
+    /** 预期产出按行动 id 映射（deriveVerificationActions 的 action.id）；未知 id 用 outcomeDefault */
+    outcomes: {
+      'wave-w1': '剩余规格条款逐条获得 happy path 证据，W1 覆盖计数随之上浮',
+      'wave-w2': '本主题波场景完成执行，未覆盖点按 C1-C6 分类记录',
+      'wave-w3': '签核门禁逐项闭环，产出独立证据审查结论',
+      'clarify-spec': '被阻断场景恢复可裁决状态，规格追踪关系更新',
+      'clarify-spec-docs': '高置信度规格缺口逐条定稿并更新追踪',
+      'fix-regressions': '失败回归定位根因并修复，证据链恢复通过',
+      'fix-formal': 'Formal 阻断消除（缺陷修复或义务调整），签核路径打通',
+      'add-checkers': '已到达场景获得通过/失败判定能力',
+      'run-batch': '本批场景将获得执行证据并更新态势',
+      'refresh-change-impact': '受影响场景完成保守复跑，证据重新绑定当前 RTL',
+      'resolve-oracle-conflicts': '冲突场景得到单一可信判定结论',
+      'complete-oracle-evidence': '关键场景具备两个以上独立判定域',
+      'escape-exploration-stall': '探索恢复语义新增，或明确宣布饱和收手',
+      'run-risk-mutation': '得到风险加权 Mutation 分数，survivor 进入处置清单',
+      'resolve-residual-risks': '剩余风险逐项关闭或进入具名审批',
+      'repair-formal-compatibility': '补强 Formal 产出有效求解结论',
+      'continue-closure': '未闭环 Intent 继续推进并积累证据',
+      'signoff-review': '产出独立签核审查结论与遗留项清单'
+    }
+  },
   l0: {
     headline: '{wave}进行中：{total} 条规格条款已验证 {covered} 条',
     headlineW1: '{wave}进行中：已验证 {covered}/{total}，剩余 {remaining} 条分批推进{batch}',
@@ -241,6 +299,10 @@ export const verification = {
     clarifySpec: '澄清规格（{count} 项）',
     clarifySpecHint: '规格没说清的地方，需要你拍板',
     approveResidual: '审批残余风险豁免（{count} 项）',
+    diagnosticStuck: '这个 bug 需要你参与定位（{case}）',
+    diagnosticStuckHint: '自动诊断连续多次没有进展，需要你判断定位方向',
+    fixNotConverged: '场景 {scenario} 修复未收敛，建议人工介入',
+    fixNotConvergedHint: '同一场景连续两次修复后仍失败，可能需要换思路',
     machineDoing: '机器正在做：',
     machineIdle: '机器当前没有进行中的任务'
   },
@@ -248,6 +310,11 @@ export const verification = {
     technicalDetails: '技术细节',
     expand: '展开',
     collapse: '收起'
+  },
+  l2: {
+    title: '技术细节',
+    count: '{count} 个区块',
+    subtitle: '验证空间、验证策略、指标、风险分布、Intent 与缺口明细（专家向，默认收起）'
   },
   panorama: {
     title: '用例全景',
@@ -272,7 +339,11 @@ export const verification = {
     statusWaived: '⊘ 豁免/不适用',
     statusSpecBlocked: '⛔ 规格未澄清',
     whyNone: '—',
+    viewDiagnosis: '查看诊断',
     whySpecBlocked: '规格没说清，需要澄清',
+    whyConfigPoint: '配置点组合：{refs}',
+    configPointBadge: '配置点',
+    configPointBadgeHint: '由 config-space.json 派生的配置点场景（悬浮显示类别与字段引用）',
     whyWaveGate: '等 W1 基础功能完成',
     whyInPlan: '已排入执行计划，等待执行',
     whyOutOfPlan: '不在本轮执行计划中',
@@ -289,6 +360,26 @@ export const verification = {
     expandAll: '展开全部 {count} 行',
     collapse: '收起',
     empty: '暂无验证点数据'
+  },
+  /** 配置覆盖矩阵（AIGV 修订 §7.2）：config-coverage.json 采集归一化；先记账展示，不定签核阈值 */
+  configCoverage: {
+    title: '配置覆盖',
+    subtitle: '配置空间账本的字段覆盖桶与关键交叉命中率（cocotb 环境回传 config-coverage.json；先记账，签核阈值待定）',
+    freshBadge: '当前 RTL',
+    staleBadge: '旧 RTL 版本',
+    freshHint: 'rtlHash 与当前 RTL 一致，数据新鲜',
+    staleHint: 'rtlHash 与当前 RTL 不一致：采集基于旧 RTL 版本，建议重新回归采集',
+    topModule: 'TOP {module}',
+    coverpointSection: '字段覆盖桶命中率',
+    crossSection: '关键交叉命中率',
+    hitRate: '{rate}（{hit}/{total} 桶）',
+    bucketHint: '{label}：命中 {hits} 次',
+    emptyCoverpoints: '尚未采集字段覆盖桶。',
+    emptyCrosses: '尚未采集关键交叉。',
+    uncoveredSection: '未覆盖配置点（{count}）',
+    uncoveredEmpty: '所有配置点均已有命中。',
+    handoff: '交接 Agent 补覆盖',
+    handoffHint: '让主 Agent 为未覆盖配置点构造面向 TOP 的验证用例（写配置序列 → 业务流量，回传配置覆盖埋点）'
   },
   coverageDetail: {
     title: '覆盖率明细',

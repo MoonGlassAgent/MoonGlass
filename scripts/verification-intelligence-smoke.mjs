@@ -153,12 +153,21 @@ if (!first.verificationState.verificationSpace.snapshotId.startsWith('VSPACE-'))
 if (first.verificationState.explorationRound.selectedScenarioIds.length === 0) throw new Error('Explorer 未生成本轮选择')
 if (!first.verificationState.executionPlan.some((plan) => plan.mandatory)) throw new Error('P0 Scenario 未标记为强制任务')
 if (first.verificationState.closureAssessment.status !== 'NOT_READY') throw new Error('缺少闭环证据时 Closure Engine 不应就绪')
+// ===== AIGV 修订批 1：模块策略两态化（TOP 优先，UT 例外）=====
 const moduleStrategy = first.verificationState.moduleVerificationStrategy
-if (moduleStrategy.topModules[0] !== 'dma_wr_ctrl' || moduleStrategy.modules.find((item) => item.module === 'dma_wr_ctrl')?.level !== 'IP_SIGNOFF') throw new Error('项目顶层未进入 IP_SIGNOFF')
-if (moduleStrategy.modules.find((item) => item.module === 'cdc_sync')?.level !== 'UNIT_FOCUSED') throw new Error('CDC 高风险子模块未进入 UNIT_FOCUSED')
+if (moduleStrategy.topModules[0] !== 'dma_wr_ctrl' || moduleStrategy.modules.find((item) => item.module === 'dma_wr_ctrl')?.level !== 'TOP_SIGNOFF') throw new Error('项目顶层未进入 TOP_SIGNOFF')
+const staticChecks = ['编译/elaboration', 'Lint', '可综合性', '端口/参数/未驱动检查']
+for (const module of ['cdc_sync', 'addr_generator', 'simple_wire']) {
+  const plan = moduleStrategy.modules.find((item) => item.module === module)
+  if (plan?.level !== 'COVERED_BY_TOP') throw new Error(`非顶层模块未进入 COVERED_BY_TOP 默认态：${module}=${plan?.level}`)
+  if (JSON.stringify(plan.requiredChecks) !== JSON.stringify(staticChecks)) throw new Error(`COVERED_BY_TOP requiredChecks 未收敛为静态检查：${module}=${JSON.stringify(plan.requiredChecks)}`)
+  if (plan.standaloneTestbench) throw new Error(`COVERED_BY_TOP 模块不应标记 standaloneTestbench：${module}`)
+}
+if (moduleStrategy.summary.TOP_SIGNOFF !== 1 || moduleStrategy.summary.UT_EXCEPTION !== 0 || moduleStrategy.summary.COVERED_BY_TOP !== moduleStrategy.modules.length - 1) throw new Error(`两态 summary 计数错误：${JSON.stringify(moduleStrategy.summary)}`)
 const addrPlan = moduleStrategy.modules.find((item) => item.module === 'addr_generator')
-if (addrPlan?.level !== 'UNIT_SMOKE' || addrPlan.goldenModel.recommendation !== 'RECOMMENDED' || !addrPlan.oracleStrategies.includes('REFERENCE_MODEL')) throw new Error('Golden Model 未与子模块验证等级独立决策')
-if (moduleStrategy.modules.find((item) => item.module === 'simple_wire')?.level !== 'STATIC_ONLY') throw new Error('简单工具模块未进入 STATIC_ONLY')
+if (addrPlan.goldenModel.recommendation !== 'RECOMMENDED' || !addrPlan.oracleStrategies.includes('REFERENCE_MODEL')) throw new Error('Golden Model 未与模块验证等级独立决策')
+const topPlan = moduleStrategy.modules.find((item) => item.module === 'dma_wr_ctrl')
+if (!topPlan.requiredChecks.includes('Multi-Oracle') || topPlan.standaloneTestbench) throw new Error('TOP_SIGNOFF requiredChecks 应沿用完整签核清单；standaloneTestbench 语义应为 active UT 例外')
 if (first.verificationState.scenarios.some((scenario) => scenario.rtlObjects.includes('addr_generator') || scenario.rtlObjects.includes('simple_wire'))) throw new Error('普通子模块被错误扩展为完整 AIGV Scenario')
 const semanticHole = first.verificationState.coverageHoles[0]
 if (!semanticHole.missingTarget || semanticHole.requiredStimulus.length === 0 || semanticHole.requiredObservation.length === 0 || semanticHole.closureEvidence.length === 0) throw new Error('Coverage Hole 缺少具体闭环语义')

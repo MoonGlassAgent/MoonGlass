@@ -12,9 +12,10 @@ import { copyFileSync, mkdirSync, readFileSync, writeFileSync, existsSync, renam
 import { cp, mkdir, readdir, rename, rm, stat } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, normalize, relative, resolve } from 'node:path'
 import { eq, desc, sql } from 'drizzle-orm'
-import { PHASE_LABELS, PHASE_ORDER, type ChipProject, type Phase, type PhaseResetMode, type PhaseResetPreview, type PhaseResetResult, type PhaseState, type ProjectImportAssessment, type ProjectMigrationResult } from '@shared/types'
+import { PHASE_LABELS, PHASE_ORDER, type ArtifactDriftEntry, type ChipProject, type Phase, type PhaseResetMode, type PhaseResetPreview, type PhaseResetResult, type PhaseState, type ProjectImportAssessment, type ProjectMigrationResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import { createInitialPhases, markPhaseChanged } from './PhaseEngine.ts'
+import { PHASE_ARTIFACT_PATHS, detectArtifactDrift, selectDownstreamResetTargets } from './artifact-drift.ts'
 import { projectWorkspaceDir } from '../core/paths.ts'
 import { chipProjects } from '../data/schema/moonglass.ts'
 import type { DbService } from './DbService.ts'
@@ -179,27 +180,9 @@ export class ProjectService implements MoonGlassService {
   private workspaceWatchers = new Map<string, FSWatcher>()
   private workspaceChangeTimers = new Map<string, NodeJS.Timeout>()
 
-  private static readonly PHASE_OUTPUTS: Record<Phase, string[]> = {
-    REQ_SPEC: [
-      'docs/01_project',
-      'docs/02_requirements',
-      'docs/03_design/interface_spec.md',
-      'docs/03_design/register_map.md'
-    ],
-    ARCH: [
-      'docs/03_design/architecture.md',
-      'docs/03_design/microarchitecture.md',
-      'docs/03_design/clock_reset.md'
-    ],
-    RTL: ['rtl', 'rtlqa/lint', 'rtlqa/cdc'],
-    VERIF: ['docs/04_verification', 'verification'],
-    QA: ['docs/06_validation'],
-    SYNTH: ['docs/05_implementation', 'imp']
-  }
-
   private phaseResetPreview(projectId: string, phase: Phase, mode: PhaseResetMode): PhaseResetPreview {
     const root = resolve(this.workspaceDir(projectId))
-    const paths = ProjectService.PHASE_OUTPUTS[phase].filter((relPath) => existsSync(join(root, relPath)))
+    const paths = PHASE_ARTIFACT_PATHS[phase].filter((relPath) => existsSync(join(root, relPath)))
     let fileCount = 0
     let totalBytes = 0
     const measure = (path: string): void => {
@@ -228,7 +211,14 @@ export class ProjectService implements MoonGlassService {
     return this.phaseResetPreview(projectId, phase, mode)
   }
 
-  resetPhase(projectId: string, phase: Phase, mode: PhaseResetMode): PhaseResetResult {
+  /** 阶段产物漂移对账：库记录显示已完成、但产物路径已全部从磁盘消失的阶段清单。 */
+  reconcileArtifactDrift(projectId: string): ArtifactDriftEntry[] {
+    const project = this.get(projectId)
+    if (!project) throw new Error(`项目不存在: ${projectId}`)
+    return detectArtifactDrift(project.phases, this.workspaceDir(projectId))
+  }
+
+  resetPhase(projectId: string, phase: Phase, mode: PhaseResetMode, options?: { resetDownstream?: boolean }): PhaseResetResult {
     const project = this.get(projectId)
     if (!project) throw new Error(`项目不存在: ${projectId}`)
     const preview = this.phaseResetPreview(projectId, phase, mode)
@@ -251,6 +241,14 @@ export class ProjectService implements MoonGlassService {
       writeFileSync(join(archiveRoot, 'phase-reset-manifest.json'), JSON.stringify({ ...preview, createdAt: new Date().toISOString() }, null, 2), 'utf-8')
     }
     const initial = createInitialPhases()[phase]
+    // 可选：连带清零下游阶段记录（与 purge 对被重置阶段本身的口径一致——
+    // 整体替换为初始 locked 态，status/completedAt/gateCheckResults/deliverables/
+    // changeNotice 一并清除）。只清记录不删下游磁盘文件；currentPhase 不重定位。
+    if (options?.resetDownstream) {
+      for (const downstream of selectDownstreamResetTargets(project.phases, phase)) {
+        project.phases[downstream] = createInitialPhases()[downstream]
+      }
+    }
     if (mode === 'archive') {
       project.currentPhase = phase
       project.phases[phase] = { ...initial, status: 'active', startedAt: new Date().toISOString() }

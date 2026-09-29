@@ -8,9 +8,9 @@ Date: {DATE}
 
 import cocotb
 from cocotb.triggers import RisingEdge, FallingEdge
-from cocotb.log import SimLog
 from typing import List, Callable, Optional
 from collections import deque
+import logging
 
 
 class {MONITOR_NAME}:
@@ -33,7 +33,7 @@ class {MONITOR_NAME}:
         """
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         # 事务存储
         self.transactions: List = []
@@ -260,7 +260,7 @@ class DualMonitor:
     def __init__(self, dut, name: str = "dual_monitor"):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         # 创建输入和输出监控器
         self.input_monitor = {MONITOR_NAME}(dut, f"{name}_input")

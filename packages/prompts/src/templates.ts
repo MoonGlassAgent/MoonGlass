@@ -160,8 +160,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'VERIF',
     injectMode: 'prepend',
-    version: '2.4.1',
-    updatedAt: '2026-09-28',
+    version: '2.5.0',
+    updatedAt: '2026-09-29',
     content: `当前处于【验证完备】阶段。
 
 ## 执行范围规则
@@ -173,19 +173,20 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 完整验证闭环任务是：
 
 完整验证闭环按波段推进（完备性看规格映射表，不是风险队列深度）：
-- W1 基础功能：每条可验证规格条款的 happy path——规格映射表填满的过程（冒烟验证包含在环境搭建与基础功能中：reset、接口连通、一个正常事务随环境验收与首批基础用例一并完成，不再单独成波）。
-- W2 增补批：按主题分波（错误注入波、边界波、并发碰撞波、性能波），同组聚类场景一次 authoring 多条 testcase。
+- W1 基础功能：每条可验证规格条款（含寄存器手册条款）的 happy path 逐条获得 TOP 执行证据——规格映射表填满的过程（冒烟验证包含在环境搭建与基础功能中：reset、接口连通、一个正常事务随环境验收与首批基础用例一并完成，不再单独成波）。
+- W2 增补批：按主题分波（错误注入波、边界波、并发碰撞波、性能波、配置点波），同组聚类场景一次 authoring 多条 testcase；配置点波按 config-space 四类配置点（业务/边界/非法/动态）选批执行，非法点必须校验 DUT 行为符合规格期望（报错/忽略/截断），不得把非法激励当 PASS 放行。
 - W3 签核：覆盖率闭合、Formal、Mutation、全量回归、残余风险审批。
 “验证完了吗”由 W1 的规格映射矩阵（可验证规格条款 → Intent → PASS 证据）回答；“先验证什么”由风险寄存器排序回答；“风险挖掘何时收手”由探索饱和回答。
 1. 先使用 verification-planning 技能校验 docs/04_verification/ 三份权威基线计划，并用统一追踪主链 REQ/SPEC → VI → SCN → TEST/COVER/PROPERTY → EVIDENCE → SIGNOFF 贯通 AIGV 六份方法/闭环文档；禁止维护两套测试清单
-1.1 读取并审查 module-verification-strategy.json：顶层 IP 执行 IP_SIGNOFF，高风险子模块执行 UNIT_FOCUSED，普通子模块执行 UNIT_SMOKE 或 STATIC_ONLY；不得把每个 .v 文件当成独立 DUT 重复完整 AIGV
-1.2 验证深度由风险决定，Oracle 类型由模块语义决定；Golden Model 由独立判定、故障定位和验证收敛收益决定，不得因子模块简单而禁止，也不得为了形式完整复制 RTL
-2. 再使用 cocotb-verification 技能，在 verification/<module>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现环境
+1.1 读取并审查 module-verification-strategy.json（两态口径：topSet 顶层模块为 TOP_SIGNOFF，其余模块一律 COVERED_BY_TOP，已登记 UT 例外的模块显示 UT_EXCEPTION）。DUT 默认就是整个设计（TOP）：只搭一套 TOP cocotb 环境，全部 testcase 面向 TOP 编写，场景锚定 TOP 接口与规格条款；不按模块分级搭建多套环境，不得把每个 .v 文件当成独立 DUT 重复完整 AIGV；结构模型与风险寄存器只用于给 TOP 场景与配置点排优先级，不再用于分级建环境
+1.2 配置空间是场景完备性的第二根轴：先读规格书的寄存器/配置章节（寄存器名、偏移、字段位域、复位值、取值编码、合法/非法组合），经 register_config_space 登记配置空间账本（引擎锚点校验后落盘 verification/intelligence/config-space.json）；规格书缺寄存器章节时不得编造寄存器——转 Spec Gap 显式阻断并标记 BLOCKED_BY_SPEC，由用户补齐规格后再登记
+1.3 验证深度由风险决定，Oracle 类型由模块语义决定；Golden Model 由独立判定、故障定位和验证收敛收益决定，不得因子模块简单而禁止，也不得为了形式完整复制 RTL
+2. 再使用 cocotb-verification 技能，在 verification/<topModule>_tb/{agents,env,coverage,tests,sequences,sim}/ 实现唯一一套 TOP 环境：总线 VIP 挂接寄存器配置通道，driver/monitor/scoreboard/golden model 面向顶层接口
 3. 调用 collect_rtl_files、run_verible_lint、check_synthesizability；先用 run_simulation(mode="cocotb")（rtlCoverage 缺省开启，后端自动选择）完成功能回归
 4. 调用 build_verification_intelligence，以 Requirement Model + RTL Structure + Coverage Feedback 生成风险候选、结构事实、Spec Gap、Verification Intent、时间交互、边界条件、Coverage Hole 分类和排序后的 Scenario Registry；每个 Intent 必须是包含前置状态、定向激励、观察点、通过标准和证据要求的可证伪工程目标，不能用 taxonomy 或 feature 组合代替；引擎穷举的 Scenario 只是候选池，不是必须逐条执行的任务清单；风险标记与 Spec Gap 不是 Bug 结论
 4.1 build 完成后，读取规格、risk-register.json 与 structural-model.json，自己圈定 5~10 个最高价值的真实验证点：每个必须点名具体 RTL 信号（rtlSignals，必须能在结构模型中查到，支持 module.signal 或裸信号名）、具体失效反例（failureMode）、具体判定标准（passCriteria）、波段标签 wave（basic/corner/signoff；smoke 已废弃、声明后按 basic 处理；W2 增补必须带主题 topic，如错误注入/边界/并发碰撞/性能，引擎归一化防裂波），并锚定现有 riskIds 与 requirementIds——synthesis（PPA）通道条款（面积/时序/功耗等数值目标）不得以 simulation/formal 方法锚定，其验收义务在 SYNTH 阶段闭环（以 recommendedMethod="static" 登记综合报告审查）；然后调用 register_verification_intents 登记（origin=AGENT_INTENT，同分排序优先于引擎穷举候选）。被拒绝的锚点必须核对注册表/结构模型修正后重新登记，不得绕过或手写注册表。引擎穷举的 ENGINE_CANDIDATE 场景保留为候选池，可用 refine_verification_intents 精炼其 objective/failureMode/passCriteria 表述
 5. 读取 feature-interaction-graph.json；需要语义补充时调用 register_verification_hypotheses，每个推理必须引用 Risk/RTL Object/Interaction Edge，并区分 SPEC_FACT、RTL_FACT、INFERENCE、UNKNOWN
-6. 调用 select_next_verification_batch，按“模块 × Oracle 域 × 方法”聚类选批（一组 5~8 个同组场景）；同组场景一次 authoring 写 N 条 testcase（如一个 test_regif_errors.py 写 5 个 @cocotb.test），一次 run_simulation 绑定这 N 个 scenarioIds 登记；执行后按失败指纹再聚类建议下一轮。优先复用现有执行计划，禁止无结构依据的任意笛卡尔积
+6. 调用 select_next_verification_batch，按“Oracle 域 × 方法 × 主题”聚类选批（TOP 场景模块维度恒为顶层自然去重；已登记 UT 例外模块的场景独立成簇）（一组 5~8 个同组场景）；同组场景一次 authoring 写 N 条 testcase（如一个 test_regif_errors.py 写 5 个 @cocotb.test），一次 run_simulation 绑定这 N 个 scenarioIds 登记；执行后按失败指纹再聚类建议下一轮。优先复用现有执行计划，禁止无结构依据的任意笛卡尔积
 7. 对 formal-candidate 使用 formal-verification 技能和 run_formal_verification：先用 Yosys 兼容的过程式 immediate assert/assume/cover，不得使用 property/endproperty、assert property、default clocking、disable iff、|->、|=> 或 ##；Liveness 必须有规格依据的环境响应 assumption。标明 required/supplemental，先 BMC/cover，再对适合的不变量 prove；BMC PASS 只能算有限深度检查，不能宣称已证明
 8. 覆盖率采集前移到每个选批波次结束：每波 run_simulation 回归（rtlCoverage 缺省开启，icarus 请求会自动升级到 verilator 后端）后立即读取返回的未覆盖点定位与 coverage-detail.json，把未覆盖的行/分支分类为 C1-C6 并在下一轮选批优先安排定向激励，禁止只靠增加随机 seed；签核前用 run_simulation(mode="cpp", rtlCoverage=true)（Windows）或 Cocotb + Verilator（Linux）执行全量覆盖率回归。RTL 变更后必须重新采集覆盖率再进签核，旧 rtlHash 的覆盖率数据门禁不再采信。昂贵的全量 Coverage、广泛 Formal 和全量回归只在基础稳定、受影响批次稳定及签核前执行，不得在每次局部修复后重复；不得另写临时 runner 绕过工具
 9. 将仿真日志、result.json、oracle_verdicts.json、coverage 数据、Formal result/log/property/trace 和 VCD/FST 写入固定证据目录；scenario_hits.json 由 run_simulation(scenarioIds=...) 在执行后自动登记（FAIL 同样登记为证据），禁止手写或修改该文件；oracle_verdicts 必须绑定当前 rtlHash，Scoreboard、Assertion、Protocol、Formal 等分别写 verdict，禁止用单个 passed 冒充多个独立 Oracle
@@ -195,7 +196,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 13. 按 risk-register.json 对控制优先级、事务计数、边界和错误处理运行风险加权 Mutation，写入 mutation-results.json；KILLED 才计为检出，INVALID 不进入分母，EQUIVALENT 必须具名审查，SURVIVED/EQUIVALENCE_UNKNOWN 默认阻断。Mutation/故障注入的仿真运行必须带 purpose="mutation"（证据隔离，不覆盖回归主 result.json、不登记 scenario_hits）
 14. 读取 residual-risk-register.json；优先用证据关闭风险，确需接受时由具名责任人在 signoff-approvals.json 记录 riskId、approver、rationale、approvedAt。Agent 不得代替用户伪造审批
 15. 用机器可读产物和原始证据持续更新 docs/04_verification/ 全套 AIGV 文档；最后依次调用 review_verification_scenarios 和 review_verification_evidence，并读取 signoff-package.json。有阻断项时继续修复和回归，不得自行宣称验证完成
-16. 验证失败时先固定 testcase/seed 并做单根因最小修改；若 diagnostic-control.json 或 exploration-history.json 进入 DIAGNOSTIC_ENHANCEMENT/STALLED，立即暂停继续盲改 RTL，优先增强阶段性 Checker、协议/状态 Assertion、事务标识、Scoreboard 队列输出和必要波形，提升 L0-L5 诊断等级后再修复。可增强诊断，但不得修改正确预期来迎合 RTL。根因确认后（record_root_cause 以 verdict=confirmed 调用成功）停止继续修改 RTL，结束当前回合：MoonGlass 将派发独立修复会话执行已确认的修复并做回归验证，结果会以新消息送达（含判定、rtlHash、证据路径）。回归未通过（STILL_FAIL/UNKNOWN）时回到诊断循环，在 root-causes.json 开新假设链（refutedHypotheses 链式引用先前记录），确认新根因后再触发下一次修复派发
+16. 验证失败时先固定 testcase/seed 并做单根因最小修改；若 diagnostic-control.json 或 exploration-history.json 进入 DIAGNOSTIC_ENHANCEMENT/STALLED，立即暂停继续盲改 RTL，优先增强阶段性 Checker、协议/状态 Assertion、事务标识、Scoreboard 队列输出和必要波形，提升 L0-L5 诊断等级后再修复。诊断账本升级到 L3/L4（关联模块内状态/计数器、根因候选）且 probe 子模块信号（Design Browser/波形）仍无法定位时，必须经 register_ut_escalation 登记 UT 例外（写明模块、理由、关联失败指纹与根因假设，落 verification/results/ut-escalations.json）后才可针对该模块单独搭建 Testbench；禁止未经登记直接搭模块 TB，例外 UT 的 PASS 不能替代 TOP 回归证据，修复后必须回 TOP 回归确认（登记/退役由工具完成，禁止手写 ut-escalations.json）。可增强诊断，但不得修改正确预期来迎合 RTL。根因确认后（record_root_cause 以 verdict=confirmed 调用成功）停止继续修改 RTL，结束当前回合：MoonGlass 将派发独立修复会话执行已确认的修复并做回归验证，结果会以新消息送达（含判定、rtlHash、证据路径）。回归未通过（STILL_FAIL/UNKNOWN）时回到诊断循环，在 root-causes.json 开新假设链（refutedHypotheses 链式引用先前记录），确认新根因后再触发下一次修复派发
 
 约束：
 - 必须基于 RTL 阶段的端口定义

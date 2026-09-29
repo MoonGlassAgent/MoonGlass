@@ -28,6 +28,9 @@ function extractFunction(declaration) {
 const extracted = [
   extractFunction('function filesHash('),
   extractFunction('function writeJsonAtomic('),
+  extractFunction('function normalizeFailureLines('),
+  extractFunction('function failureSignature('),
+  extractFunction('function failureSummary('),
   extractFunction('export function writeScenarioHits(')
 ].join('\n\n')
 
@@ -42,9 +45,11 @@ const ENGINE_HASH_SENTINEL = 'e'.repeat(64)
 function computeRtlHash() { return ENGINE_HASH_SENTINEL }
 
 ${extracted}
+
+export { failureSignature, failureSummary }
 `, 'utf-8')
 
-const { writeScenarioHits } = await import(pathToFileURL(modulePath).href)
+const { writeScenarioHits, failureSignature, failureSummary } = await import(pathToFileURL(modulePath).href)
 
 const workspace = mkdtempSync(join(tmpdir(), 'moonglass-scenario-hits-ws-'))
 mkdirSync(join(workspace, 'rtl'), { recursive: true })
@@ -136,4 +141,41 @@ hits = readHits()
 entry = hits.scenarios.find((item) => item.id === 'SCN-EEEEEEEE')
 if (!entry || entry.testName !== 'test_dma_scn_eeeeeeee_wrap' || entry.boundBy !== 'testcase-name') throw new Error(`名称解析路径 testName 缺失：${JSON.stringify(entry)}`)
 
-console.log('Scenario hits smoke passed: 首次写入/按ID更新/保留他人条目/FAIL登记/testcase解析/显式优先/未绑定提示/绑定反向指针(单用例精确/多例批次/合并去重/名称解析)')
+// 9. 方案 C 批 1（§3.3）：FAIL 登记携带失败摘要/指纹
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-FFFFFFFF'], passed: false, rtlFiles: [rtlFile], evidence, failureSummary: 'assert data mismatch: got <hex>', failureSignature: 'abc123def456' })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-FFFFFFFF')
+if (!entry || entry.passed !== false) throw new Error('FAIL 登记失败')
+if (entry.failureSummary !== 'assert data mismatch: got <hex>' || entry.failureSignature !== 'abc123def456') throw new Error(`FAIL 未携带失败摘要/指纹：${JSON.stringify(entry)}`)
+
+// 10. PASS 路径不写这两个字段——并清掉上一次 FAIL 留下的旧值
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-FFFFFFFF'], passed: true, rtlFiles: [rtlFile], evidence })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-FFFFFFFF')
+if (!entry || entry.passed !== true) throw new Error('FAIL 后转 PASS 登记失败')
+if ('failureSummary' in entry || 'failureSignature' in entry) throw new Error(`PASS 后仍残留失败字段：${JSON.stringify(entry)}`)
+
+// 11. 旧数据兼容：无新字段的条目按旧口径 FAIL 登记（不带新字段）不报错、字段不凭空出现
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-99999999'], passed: false, rtlFiles: [rtlFile], evidence })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-99999999')
+if (!entry || entry.passed !== false) throw new Error('旧口径 FAIL 登记失败')
+if ('failureSummary' in entry || 'failureSignature' in entry) throw new Error('未提供新字段时不应凭空出现')
+
+// 12. failureSummary/failureSignature 生成算法：与 diagnostic-control 同一归一化（路径/时间/hex/大数字脱敏）
+const failLog = [
+  'INFO: start sim at D:\\proj\\sim_build',
+  '     1200.00ns ERROR: axi burst mismatch exp 0xdeadbeef got 0x1234',
+  'INFO: retry 4096 cycles',
+  'FAIL: test_scn_aaaaaaaa timed out after 50000ns'
+].join('\n')
+const summary = failureSummary(failLog)
+if (summary !== '<time> ERROR: axi burst mismatch exp <hex> got <hex>') throw new Error(`failureSummary 归一化/首个错误行取值错误：${summary}`)
+const signature = failureSignature(failLog)
+if (!/^[0-9a-f]{12}$/.test(signature)) throw new Error(`failureSignature 不是 12 位 hex：${signature}`)
+if (failureSignature(failLog) !== signature) throw new Error('failureSignature 对同一日志不稳定')
+const truncated = failureSummary(`ERROR: ${'x'.repeat(300)}`)
+if (truncated.length !== 160) throw new Error(`failureSummary 未做 160 字硬截断：${truncated.length}`)
+if (failureSummary('INFO: all good\nPASS: ok') !== '') throw new Error('无错误行时 failureSummary 应为空串')
+
+console.log('Scenario hits smoke passed: 首次写入/按ID更新/保留他人条目/FAIL登记/testcase解析/显式优先/未绑定提示/绑定反向指针(单用例精确/多例批次/合并去重/名称解析)/失败摘要指纹(FAIL携带/PASS清除/旧数据兼容/归一化截断)')

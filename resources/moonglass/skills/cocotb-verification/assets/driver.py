@@ -8,10 +8,10 @@ Date: {DATE}
 
 import cocotb
 from cocotb.triggers import RisingEdge, FallingEdge, Timer, Event
-from cocotb.log import SimLog
 from typing import List, Optional, Callable
 from collections import deque
 import asyncio
+import logging
 
 
 class {DRIVER_NAME}:
@@ -34,7 +34,7 @@ class {DRIVER_NAME}:
         """
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         # 事务队列
         self.queue = deque()

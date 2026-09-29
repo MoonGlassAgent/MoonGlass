@@ -14,8 +14,8 @@ Cocotb (Coroutine based Co-simulation TestBench) 是一个基于 Python 的验�
 ## 安装
 
 ```bash
-# 基础安装
-pip install cocotb
+# 基础安装（本项目锁定 cocotb 2.0.1，即 2.x API）
+pip install --user --upgrade "cocotb==2.0.1"
 
 # 覆盖率支持
 pip install cocotb-coverage
@@ -66,14 +66,13 @@ endmodule
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, Timer
-from cocotb.result import TestSuccess, TestFailure
 
 @cocotb.test()
 async def basic_test(dut):
     """基本计数器测试"""
     
     # 启动时钟 (10ns 周期)
-    clock = Clock(dut.clk, 10, units='ns')
+    clock = Clock(dut.clk, 10, unit='ns')
     cocotb.start_soon(clock.start())
 
     # 复位
@@ -99,7 +98,7 @@ async def basic_test(dut):
 @cocotb.test()
 async def reset_test(dut):
     """复位测试"""
-    clock = Clock(dut.clk, 10, units='ns')
+    clock = Clock(dut.clk, 10, unit='ns')
     cocotb.start_soon(clock.start())
     
     # 复位
@@ -168,7 +167,7 @@ from cocotb.triggers import (
 await RisingEdge(dut.clk)           # 等待时钟上升沿
 await FallingEdge(dut.rst_n)        # 等待复位下降沿
 await ClockCycles(dut.clk, 10)      # 等待10个时钟周期
-await Timer(100, units='ns')        # 等待100ns
+await Timer(100, unit='ns')        # 等待100ns
 
 # 组合使用
 await First(RisingEdge(dut.clk), Timer(1000, 'ns'))  # 先到的触发
@@ -180,7 +179,7 @@ await First(RisingEdge(dut.clk), Timer(1000, 'ns'))  # 先到的触发
 from cocotb.clock import Clock
 
 # 创建并启动时钟
-clock = Clock(dut.clk, 10, units='ns')  # 10ns 周期 = 100MHz
+clock = Clock(dut.clk, 10, unit='ns')  # 10ns 周期 = 100MHz
 cocotb.start_soon(clock.start())
 
 # 或者使用 start
@@ -249,20 +248,14 @@ async def expected_fail_test(dut):
 
 ## 结果处理
 
-```python
-from cocotb.result import (
-    TestSuccess,    # 测试成功
-    TestFailure,    # 测试失败
-    TestError,      # 测试错误
-    SimFailure,     # 仿真失败
-)
+cocotb 2.x 已移除 `cocotb.result` 模块（TestSuccess/TestFailure/TestError/SimFailure）。
+测试通过时自然返回即可，失败时使用 `assert` 抛出 AssertionError：
 
+```python
 @cocotb.test()
 async def my_test(dut):
-    if some_condition:
-        raise TestSuccess("All good!")
-    else:
-        raise TestFailure("Something went wrong")
+    assert some_condition, "Something went wrong"
+    # 测试通过：函数自然返回即视为成功，无需显式声明
 ```
 
 ## 断言

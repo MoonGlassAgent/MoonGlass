@@ -9,14 +9,21 @@ Date: {DATE}
 import cocotb
 from cocotb.triggers import RisingEdge, FallingEdge, Timer
 from cocotb.clock import Clock
-from cocotb.log import SimLog
 from typing import Optional, List, Dict
+import logging
 
 # 导入组件 - 根据实际项目调整
 from driver import {DRIVER_NAME}
 from monitor import {MONITOR_NAME}
 from scoreboard import {SCOREBOARD_NAME}
 from coverage import {COVERAGE_NAME}
+
+# 配置覆盖埋点（config-space 账本存在才启用；缺失时自动跳过，不产出 config-coverage.json）
+try:
+    from {CONFIG_COVERAGE_MODULE} import {CONFIG_COVERAGE_NAME}
+    HAS_CONFIG_COVERAGE = True
+except ImportError:
+    HAS_CONFIG_COVERAGE = False
 
 
 class {ENV_NAME}:
@@ -40,7 +47,7 @@ class {ENV_NAME}:
         """
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         # ============================================================
         # 实例化组件
@@ -49,6 +56,18 @@ class {ENV_NAME}:
         self.monitor = {MONITOR_NAME}(dut, f"{name}_monitor")
         self.scoreboard = {SCOREBOARD_NAME}(f"{name}_scoreboard")
         self.coverage = {COVERAGE_NAME}(f"{name}_coverage")
+        
+        # 配置覆盖埋点：读取工作区 verification/intelligence/config-space.json，
+        # 存在才启用；启动合并旧 config-coverage.json，report() 时写回（跨回归累积）
+        self.config_coverage = None
+        if HAS_CONFIG_COVERAGE:
+            try:
+                self.config_coverage = {CONFIG_COVERAGE_NAME}(
+                    f"{name}_config_coverage",
+                    top_module=getattr(dut, '_name', None)
+                )
+            except Exception as error:
+                self.log.warning(f"配置覆盖埋点初始化失败（不阻断仿真）：{error}")
         
         # ============================================================
         # 连接组件
@@ -89,7 +108,7 @@ class {ENV_NAME}:
             period = self.config['clock_period']
         
         self._clock_task = cocotb.start_soon(
-            Clock(self.dut.clk, period, units=units).start()
+            Clock(self.dut.clk, period, unit=units).start()
         )
         self.log.info(f"Clock started: period={period}{units}")
     
@@ -200,6 +219,31 @@ class {ENV_NAME}:
         return True
     
     # ============================================================
+    # 配置覆盖埋点接口（config-space 存在才生效）
+    # ============================================================
+    def record_config(self, register: str, field: str, value) -> None:
+        """
+        记录一次寄存器字段编程（coverpoint + 涉及该字段的 cross）
+        
+        Args:
+            register: 寄存器名（config-space 口径）
+            field: 字段名（或 "<寄存器>.<字段>" 全引用）
+            value: 编程值（enum 传编码值/标签，range/flag 传整数）
+        """
+        if self.config_coverage is not None:
+            self.config_coverage.record(register, field, value)
+    
+    def record_configs(self, values: Dict[str, object]) -> None:
+        """
+        批量记录配置编程（key 为 "<寄存器>.<字段>"）
+        
+        Args:
+            values: { "<寄存器>.<字段>": 取值, ... }
+        """
+        if self.config_coverage is not None:
+            self.config_coverage.record_many(values)
+    
+    # ============================================================
     # 结果检查和报告
     # ============================================================
     def get_result(self) -> bool:
@@ -213,12 +257,15 @@ class {ENV_NAME}:
     
     def get_stats(self) -> Dict:
         """获取统计信息"""
-        return {
+        stats = {
             'driver': self.driver.get_stats(),
             'monitor': self.monitor.get_stats(),
             'scoreboard': self.scoreboard.get_stats(),
             'coverage': self.coverage.get_stats()
         }
+        if self.config_coverage is not None:
+            stats['config_coverage'] = self.config_coverage.get_stats()
+        return stats
     
     def report(self) -> None:
         """生成完整报告"""
@@ -231,11 +278,18 @@ class {ENV_NAME}:
         self.monitor.report()
         self.scoreboard.report()
         self.coverage.report()
+        if self.config_coverage is not None and self.config_coverage.enabled:
+            self.config_coverage.report()
         
         # 总结
         self.log.info(f"\n{'#'*60}")
         self.log.info(f"  Test Result: {'PASS' if self.get_result() else 'FAIL'}")
         self.log.info(f"{'#'*60}")
+        
+        # 配置覆盖落盘（跨回归累积：启动时已合并旧 hits，此处写回；
+        # config-space 账本不存在时埋点未启用，不产出 config-coverage.json）
+        if self.config_coverage is not None and self.config_coverage.enabled:
+            self.config_coverage.write()
 
 
 # ============================================================
@@ -251,7 +305,7 @@ class MultiInterfaceEnv:
     def __init__(self, dut, name: str = "multi_interface_env"):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         # 接口环境字典
         self.interfaces: Dict[str, {ENV_NAME}] = {}

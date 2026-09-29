@@ -2,6 +2,23 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-29：v1.0.0 基线
+
+- **验证策略修订《TOP 优先，UT 例外》**（`docs/AIGV-TOP-FIRST-STRATEGY-ZH-CN.md`）：DUT 默认整个设计（TOP），子模块 UT 改为诊断驱动的例外；配套配置空间模型（寄存器组合账本），"需求→规格→验证"链条顶层闭合。
+- **验证环境零摩擦专项**（T1/T2/T3/T5/T6）：cocotb 2.x 版本治理与模板升级、TB 端口解析修复、安装版本钉死+装后真自检、非 ASCII 路径收尾（SYNTH-D2 证伪，真凶为 SYNTH-D1 已修）、设置页"环境自检"。
+- **易用性收敛**：移除工作区底部工程控制台；验证态势 UX 收敛与引导流。
+- 含 v0.9.10 已基线的：托管 VERIF 断档修复、会话状态徽标、界面重载三层、OpenCode Go、死逻辑检查、EPIPE 防御。
+
+## 2026-09-29：验证环境零摩擦专项（VERIF-ENV-ZERO-FRICTION T1/T2/T3/T5/T6）
+
+- **T1 cocotb 版本治理**：新增 `packages/eda-bridge/src/toolchain-manifest.ts` 作为版本 pin 单一出处（cocotb 锁定 2.0.1，兼容范围 >=2.0.0 <3.0.0）；`detect.ts` 对 cocotb 做版本范围校验（`ToolDetection` 新增 `versionCompatible`/`versionHint`，探测缓存 v2→v3）；cocotb-verification 技能模板 19 个文件全量升 2.x（`cocotb.log.SimLog`→标准 logging、`TestSuccess/TestFailure`→assert/自然返回、`units=`→`unit=`）；`validate_env.py` 新增 compat 检查族（版本校验 + 1.x 习语扫描，TestSuccess 不再当正面证据）；设置页工具行加"版本不兼容"徽标。
+- **T2 generate_tb 端口解析修复**：`moonglass-tools.ts` PORT_DIR 正则方向后跳过 wire/reg/logic/signed 等声明关键字，`input wire en` 不再被解析成名为 `wire` 的端口；新增 `tb-port-parse-smoke`（22 断言）登记 core 套件。
+- **T3 安装版本钉死 + 装后真自检**：OSS CAD Suite pin `2026-09-28`、Verible pin `v0.0-4296-g0f262651`（含 sha256，下载后校验，不匹配即失败）；三类 bundle 装完立即真自检（yosys/iverilog 版本+最小编译运行、verible lint 最小 SV、cocotb 版本范围），自检失败判安装失败并指名缺失项；`checkIcarusToolchain` 最小程序抽出为可复用的 `verifyIcarusToolchain`。
+- **T5 非 ASCII 路径收尾**：SYNTH-D2 五组对照实验**证伪**"ALUMACC 无声中断与路径编码同源"——真凶即 SYNTH-D1（yosys-abc 漏打包），中文路径 cwd+相对路径综合产物与 ASCII 基线逐字节一致（记录见 `用户问题收集/case2/synth-d2-experiment-20260929.md`）；cocotb 仿真前置检查 TB 内非 ASCII 绝对路径引用（抛错指明文件+行号）；用户手册补非 ASCII 路径说明。
+- **T6 用户侧环境自检**：新增 `eda:self-check` IPC 与设置页"环境自检"按钮，主进程内联执行 5 项最小端到端检查（iverilog 编译运行 / verible lint / yosys+ABC 综合 / sby bmc / cocotb+icarus 1 断言），逐项 PASS/FAIL/跳过 + 失败项"前往安装"指引；本机实测 4 PASS + verible 正确 SKIP。
+- T4（cocotb bundled 化）与 T7（Agent shell 工作区围栏）为决策项，待产品侧/主团队拍板后实施。
+- 验证：`pnpm typecheck:root` 维持既有 11 个历史错误零新增；core 28 + integration 7 套件全绿；完整回执见 `docs/VERIF-ENV-ZERO-FRICTION-GUIDE-ZH-CN.md` §6。
+
 ## 2026-09-29：v0.9.10 基线
 
 - **托管 VERIF 断档修复**（e2e 复现确认）：批次循环等待 RTL 修复 settle 后自动续跑；任务会话继承用户模型选择；规划/审查 prompt 收敛边界。e2e 设施 `scripts/e2e-managed-verif.mjs` 入库。
@@ -79,6 +96,12 @@
 - 问题：会话标签栏中已完成的 VERIF 批次会话（"查看"徽标）无关闭按钮，完成记录不断堆积无法清理。
 - 修复：SessionTabs 对未运行中的批次会话渲染 × 关闭按钮（复用既有 closeSession 链路：删除 JSONL + 清理模型登记，运行中批次仍不显示）；主进程 closeSession 增加保护——正在运行的 VERIF 批次会话（activeVerifBatches 命中）拒绝关闭并提示先停止托管，防止编排循环的 settle 等待悬空。
 - 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke` 通过。
+
+## 2026-09-15：移除工作区底部工程控制台
+
+- 用户反馈底部"工程控制台"（问题/运行/验证运行/验证/综合/产物六页签）几乎没有用处，整体删除：BottomPanel 组件、BOTTOM_TABS、bottomH/bottomCollapsed/activeTab 状态与高度持久化、底部调高手柄、面板专属 CSS 与 `workspace.console/problems/runs/verification/synthesis/artifacts` i18n 命名空间（中英同步）。主内容区改为自然占满高度。
+- 甄别保留：`gate`（PhaseBoard/页头横幅）、`verifRunData`（FixWindowBanner）、`handleBasicValidation`（VERIF 操作条）、`verifLog/appendLog`（约 30 处流程调用）、`components/verif-run/` 库（VerificationPosturePage 在用）与 `verifRun.*` 文案。
+- 验证：`pnpm typecheck`、`pnpm build` 通过，全仓零残留引用。注意：`scripts/e2e-managed-verif.mjs:316` 曾读 `.console-row` 作观测，删除后该选择器恒空（不报错），如需观测可改读聊天消息区。
 
 ## 2026-09-15：待确认决策卡集中提升到会话底部
 

@@ -14,8 +14,8 @@ export interface MissingInstallPlan {
   manualGuidance: Array<{ tool: string; installUrl?: string }>
 }
 
-/** 已知可一键安装的 bundle 顺序（串行执行顺序即数组顺序） */
-const INSTALLABLE_BUNDLES = ['oss-cad-suite', 'verible', 'python-cocotb'] as const
+/** 已知可一键安装的 bundle 顺序（串行执行顺序即数组顺序）；与 toolchain-manifest.ts 的键一一对应 */
+export const INSTALLABLE_BUNDLES = ['oss-cad-suite', 'verible', 'python-cocotb'] as const
 
 /**
  * 计算缺失工具的安装计划。

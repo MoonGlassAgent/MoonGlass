@@ -95,6 +95,23 @@ export const settings: SettingsMessages = {
       managed: 'MoonGlass Managed',
       system: 'System'
     },
+    selfCheck: 'Env Self-Check',
+    selfChecking: 'Checking…',
+    selfCheckRunning: 'Running minimal compile / synthesis / formal / simulation checks item by item. This may take about a minute…',
+    selfCheckResult: 'Environment self-check: {passed}/{total} passed ({ranAt})',
+    selfCheckFailed: 'Environment self-check failed: {message}',
+    selfCheckStatusPass: 'PASS',
+    selfCheckStatusFail: 'FAIL',
+    selfCheckStatusSkipped: 'Skipped',
+    selfCheckGoInstall: 'Go to Install',
+    versionIncompatible: 'Incompatible Version',
+    selfCheckItems: {
+      icarus: 'Icarus compile + run',
+      verible: 'Verible minimal lint',
+      yosys: 'Yosys synthesis (incl. ABC)',
+      sby: 'SymbiYosys formal (BMC)',
+      cocotb: 'Cocotb + Icarus simulation'
+    },
     categories: {
       runtime: { label: 'Base Runtime', detail: 'Agent, skill scripts, and dependency management' },
       build: { label: 'Build Environment', detail: 'Version control and local compilation' },

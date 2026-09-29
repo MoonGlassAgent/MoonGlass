@@ -8,10 +8,10 @@ Supports: SPI Mode 0-3, Master/Slave
 
 import cocotb
 from cocotb.triggers import RisingEdge, FallingEdge, Timer
-from cocotb.log import SimLog
 from dataclasses import dataclass
 from typing import Optional, List
 from enum import Enum
+import logging
 
 
 # ============================================================
@@ -84,7 +84,7 @@ class SPIMasterDriver:
         """
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.config = config or SPIConfig()
         
         # 事务队列
@@ -114,7 +114,7 @@ class SPIMasterDriver:
     
     async def _half_clock(self):
         """等待半个时钟周期"""
-        await Timer(int(self.config.half_period_ns), units='ns')
+        await Timer(int(self.config.half_period_ns), unit='ns')
     
     async def transfer(self, mosi_data: int, bits: int = None) -> int:
         """
@@ -241,7 +241,7 @@ class SPIMasterDriver:
                 trans = self.queue.pop(0)
                 await self.transfer_transaction(trans)
             else:
-                await Timer(100, units='ns')
+                await Timer(100, unit='ns')
 
 
 # ============================================================
@@ -255,7 +255,7 @@ class SPISlaveMonitor:
     def __init__(self, dut, name: str = "spi_monitor", config: SPIConfig = None):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.config = config or SPIConfig()
         
         self.transactions: List[SPITransaction] = []
@@ -277,7 +277,7 @@ class SPISlaveMonitor:
             # 等待片选有效
             if cs is not None:
                 while (cs.value == (1 if self.config.cs_active_low else 0)):
-                    await Timer(100, units='ns')
+                    await Timer(100, unit='ns')
             
             # 传输数据
             mosi_data = 0
@@ -289,7 +289,7 @@ class SPISlaveMonitor:
             prev_sclk = cpol
             
             while cs is None or (cs.value == (0 if self.config.cs_active_low else 1)):
-                await Timer(int(self.config.half_period_ns), units='ns')
+                await Timer(int(self.config.half_period_ns), unit='ns')
                 
                 current_sclk = int(sclk.value)
                 
@@ -342,7 +342,7 @@ class SPIScoreboard:
     
     def __init__(self, name: str = "spi_scoreboard"):
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         self.expected: List[int] = []
         self.actual: List[int] = []
@@ -385,7 +385,7 @@ class SPIEnvironment:
     def __init__(self, dut, name: str = "spi_env", config: SPIConfig = None):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.config = config or SPIConfig()
         
         # 组件

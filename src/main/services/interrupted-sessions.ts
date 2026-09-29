@@ -8,8 +8,8 @@
  * 在原会话继续输入即可续跑。
  */
 
-import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
-import { dirname } from 'node:path'
+import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 import type { Phase } from '@shared/types'
 
 /** 单个被应用退出中断的会话记录 */
@@ -37,8 +37,11 @@ export function writeInterruptedSessions(filePath: string, records: InterruptedS
 /**
  * 一次性消费中断会话清单：读取后随即删除文件；
  * 文件不存在或内容损坏时返回空数组（不阻断启动）。
+ *
+ * sessionsRootDir 提供时（pi-sessions 根目录），额外过滤掉会话 JSONL
+ * 已不存在的中断记录——阶段 purge 会删除会话文件，不应再提示"上轮中断"。
  */
-export function consumeInterruptedSessions(filePath: string): InterruptedSessionRecord[] {
+export function consumeInterruptedSessions(filePath: string, sessionsRootDir?: string): InterruptedSessionRecord[] {
   let raw: string
   try {
     raw = readFileSync(filePath, 'utf-8')
@@ -50,12 +53,17 @@ export function consumeInterruptedSessions(filePath: string): InterruptedSession
     const parsed: unknown = JSON.parse(raw)
     if (!Array.isArray(parsed)) return []
     // 逐条校验最小字段，损坏条目丢弃而不整体作废
-    return parsed.filter(
+    const records = parsed.filter(
       (item): item is InterruptedSessionRecord =>
         typeof item === 'object' && item !== null
         && typeof (item as InterruptedSessionRecord).projectId === 'string'
         && typeof (item as InterruptedSessionRecord).sessionName === 'string'
     )
+    if (!sessionsRootDir) return records
+    return records.filter((record) => {
+      const fileName = record.sessionName === 'main' ? 'session.jsonl' : `session-${record.sessionName}.jsonl`
+      return existsSync(join(sessionsRootDir, record.projectId, fileName))
+    })
   } catch {
     return []
   }

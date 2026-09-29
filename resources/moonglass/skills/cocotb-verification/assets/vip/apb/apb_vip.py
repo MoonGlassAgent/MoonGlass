@@ -8,10 +8,10 @@ Supports: APB3, APB4 protocols
 
 import cocotb
 from cocotb.triggers import RisingEdge, FallingEdge, Timer, ReadOnly
-from cocotb.log import SimLog
 from dataclasses import dataclass
 from typing import Optional, List
 from enum import Enum
+import logging
 
 
 # ============================================================
@@ -61,7 +61,7 @@ class APBMasterDriver:
         """
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         self.apb4 = apb4
         
         # 事务队列
@@ -166,7 +166,7 @@ class APBSlaveMonitor:
     def __init__(self, dut, name: str = "apb_monitor"):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         self.transactions: List[APBTransaction] = []
         self.callbacks = []
@@ -217,7 +217,7 @@ class APBScoreboard:
     
     def __init__(self, name: str = "apb_scoreboard"):
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         # 寄存器模型 (简化版)
         self.registers = {}
@@ -266,7 +266,7 @@ class APBEnvironment:
     def __init__(self, dut, name: str = "apb_env", apb4: bool = False):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         # 组件
         self.driver = APBMasterDriver(dut, f"{name}_driver", apb4)
@@ -305,7 +305,7 @@ async def apb_basic_test(dut):
     from cocotb.clock import Clock
     
     # 启动时钟
-    clock = Clock(dut.pclk, 10, units='ns')
+    clock = Clock(dut.pclk, 10, unit='ns')
     cocotb.start_soon(clock.start())
     
     # 创建环境

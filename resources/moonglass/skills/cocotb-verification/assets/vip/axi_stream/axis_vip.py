@@ -8,10 +8,10 @@ Supports: AXI4-Stream protocol
 
 import cocotb
 from cocotb.triggers import RisingEdge, FallingEdge, Timer
-from cocotb.log import SimLog
 from dataclasses import dataclass, field
 from typing import Optional, List
 from enum import Enum
+import logging
 
 
 # ============================================================
@@ -72,7 +72,7 @@ class AXIStreamMasterDriver:
         """
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         self.data_width = data_width
         self.byte_width = data_width // 8
@@ -216,7 +216,7 @@ class AXIStreamSlaveMonitor:
     ):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         self.data_width = data_width
         self.has_keep = has_keep
@@ -294,7 +294,7 @@ class AXIStreamScoreboard:
     
     def __init__(self, name: str = "axis_scoreboard"):
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         self.expected_packets: List[bytes] = []
         self.actual_packets: List[bytes] = []
@@ -342,7 +342,7 @@ class AXIStreamEnvironment:
     def __init__(self, dut, name: str = "axis_env", **kwargs):
         self.dut = dut
         self.name = name
-        self.log = SimLog(f"cocotb.{name}")
+        self.log = logging.getLogger(f"cocotb.{name}")
         
         # 组件
         self.driver = AXIStreamMasterDriver(dut, f"{name}_driver", **kwargs)
@@ -393,7 +393,7 @@ async def axis_basic_test(dut):
     from cocotb.clock import Clock
     
     # 启动时钟
-    clock = Clock(dut.aclk, 10, units='ns')
+    clock = Clock(dut.aclk, 10, unit='ns')
     cocotb.start_soon(clock.start())
     
     # 创建环境

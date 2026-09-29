@@ -9,7 +9,7 @@
 import { randomUUID } from 'node:crypto'
 import { and, eq } from 'drizzle-orm'
 import { existsSync, readFileSync, readdirSync } from 'node:fs'
-import { basename, join, relative, sep } from 'node:path'
+import { basename, dirname, join, relative, sep } from 'node:path'
 import { runLint, runDesignLint, checkSynthesizability, readRtlInputs } from '@moonglass/eda-bridge'
 import { buildVerificationIntelligence, reviewScenarioClosure, reviewSynthesisClauses, computeRtlHash, auditVerificationCompleteness } from '@moonglass/verification-intelligence-engine'
 import {
@@ -396,8 +396,38 @@ async function simPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
   const failed = resultFiles.filter((file) => {
     try { return JSON.parse(readFileSync(file, 'utf-8')).passed !== true } catch { return true }
   })
+  // AIGV 修订 §6 收紧（TOP 优先，UT 例外）：TOP 的 result.json 必须存在且通过，
+  // 每个 active UT 例外模块的 result.json 也必须存在且通过（例外 PASS 不替代 TOP 证据）；
+  // TOP 未识别（manifest 缺失/无法判定）时回退"任意模块证据"口径并在消息中标注
+  const topModule = resolveGateTopModule(ctx.workspaceDir)
+  const utExceptionModules = readActiveUtExceptionModules(ctx.workspaceDir)
+  if (topModule || utExceptionModules.length > 0) {
+    const fileByModule = new Map(resultFiles.map((file) => [basename(dirname(file)), file]))
+    const namedFailures: string[] = []
+    if (topModule) {
+      const topFile = fileByModule.get(topModule)
+      if (!topFile) {
+        namedFailures.push(`TOP 证据缺失：verification/results/${topModule}/result.json 不存在——以 TOP 为 DUT 跑一次回归后再检查`)
+      } else if (failed.includes(topFile)) {
+        namedFailures.push(`TOP 仿真未通过：verification/results/${topModule}/result.json 的 passed != true 或无法解析——以 TOP 为 DUT 重新回归`)
+      }
+    }
+    for (const module of utExceptionModules) {
+      const file = fileByModule.get(module)
+      if (!file) {
+        namedFailures.push(`UT 例外模块证据缺失：verification/results/${module}/result.json 不存在——该模块已登记 active UT 例外（ut-escalations.json），必须单独建 TB 并回归通过`)
+      } else if (failed.includes(file)) {
+        namedFailures.push(`UT 例外模块仿真未通过：verification/results/${module}/result.json 的 passed != true 或无法解析`)
+      }
+    }
+    if (namedFailures.length > 0) {
+      return makeResult(checkId, false, 'error', namedFailures.join('\n'))
+    }
+  }
   if (failed.length === 0) {
-    return makeResult(checkId, true, 'error', `${resultFiles.length} 个仿真结果均通过`)
+    const scope = topModule ? `（TOP ${topModule}${utExceptionModules.length ? `、UT 例外模块 ${utExceptionModules.join('、')}` : ''}）` : ''
+    const fallbackNote = topModule ? '' : 'TOP 未识别，按任意模块证据放行（建议补 design.json）；'
+    return makeResult(checkId, true, 'error', `${fallbackNote}${resultFiles.length} 个仿真结果均通过${scope}`)
   }
   // 列出失败文件与原因（结果未通过 / JSON 无法解析），便于 Agent 定位
   const details = failed.map((file) => {
@@ -415,6 +445,38 @@ async function simPassed(ctx: GateCheckContext, checkId: string): Promise<GateCh
     'error',
     `${failed.length} 个仿真结果失败或无法解析：\n${details.join('\n')}`
   )
+}
+
+/**
+ * sim-passed TOP 判定（AIGV 修订 §6）：与引擎 buildModuleVerificationStrategy 同一来源——
+ * rtl/design.json manifest 的 topModule，且必须是设计文件里真实声明的模块；
+ * manifest 缺失/无法判定时返回 null（门禁回退"任意模块证据"口径并在消息中标注）。
+ */
+function resolveGateTopModule(workspaceDir: string): string | null {
+  try {
+    const manifestPath = join(workspaceDir, 'rtl', 'design.json')
+    if (!existsSync(manifestPath)) return null
+    const manifest = JSON.parse(readFileSync(manifestPath, 'utf-8')) as { topModule?: unknown }
+    if (typeof manifest.topModule !== 'string' || !manifest.topModule.trim()) return null
+    const top = manifest.topModule.trim()
+    const pattern = new RegExp(`\\bmodule\\s+${top.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`)
+    for (const file of collectDesignRtlFiles(workspaceDir)) {
+      if (pattern.test(readFileSync(file, 'utf-8'))) return top
+    }
+    return null
+  } catch { return null }
+}
+
+/** active UT 例外模块清单（§6：读 verification/results/ut-escalations.json；缺文件/损坏=无例外）。 */
+function readActiveUtExceptionModules(workspaceDir: string): string[] {
+  try {
+    const data = JSON.parse(readFileSync(join(workspaceDir, 'verification', 'results', 'ut-escalations.json'), 'utf-8')) as { escalations?: Array<{ module?: unknown; status?: unknown }> }
+    if (!Array.isArray(data.escalations)) return []
+    const modules = data.escalations
+      .filter((item) => item !== null && typeof item === 'object' && item.status === 'active' && typeof item.module === 'string' && item.module.trim().length > 0)
+      .map((item) => (item.module as string).trim())
+    return [...new Set(modules)]
+  } catch { return [] }
 }
 
 function coverageAtLeast(keys: string[], threshold: number) {

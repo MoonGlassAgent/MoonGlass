@@ -177,6 +177,8 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Eda.OpenWaveform, (_e, projectId: string, relPath: string) =>
     eda.openWaveform(projectId, relPath)
   )
+  // 环境自检可能耗时约 1 分钟（cocotb 项含 runner 构建），invoke 不设超时
+  ipcMain.handle(IPC.Eda.SelfCheck, () => eda.runEnvironmentSelfCheck())
 
   // ==================== 工艺库 ====================
   ipcMain.handle(IPC.ProcessLibrary.List, () => processLibraries.list())
@@ -235,10 +237,15 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     projects.previewPhaseReset(projectId, phase, mode)
   )
 
-  ipcMain.handle(IPC.Phase.Reset, async (_e, projectId: string, phase: Phase, mode: PhaseResetMode) => {
+  // 阶段产物漂移对账：库记录 vs 磁盘实况（手动删除产物目录后仍能感知）
+  ipcMain.handle(IPC.Project.ReconcileArtifacts, (_e, projectId: string) =>
+    projects.reconcileArtifactDrift(projectId)
+  )
+
+  ipcMain.handle(IPC.Phase.Reset, async (_e, projectId: string, phase: Phase, mode: PhaseResetMode, options?: { resetDownstream?: boolean }) => {
     await agent.abort(projectId).catch(() => undefined)
     if (mode === 'purge') agent.clearPhaseSessions(projectId, phase)
-    const result = projects.resetPhase(projectId, phase, mode)
+    const result = projects.resetPhase(projectId, phase, mode, options)
     if (mode === 'archive') {
       await agent.ensureSession(projectId)
       await agent.restartSessionFresh(projectId)
@@ -335,6 +342,14 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Fs.VerificationStatus, (_e, projectId: string) =>
     files.verificationRunStatus(projectId)
   )
+
+  ipcMain.handle(IPC.Fs.WatchVerification, (_e, projectId: string) => {
+    files.watchVerification(projectId)
+  })
+
+  ipcMain.handle(IPC.Fs.UnwatchVerification, (_e, projectId: string) => {
+    files.unwatchVerification(projectId)
+  })
 
   ipcMain.handle(IPC.Fs.WriteText, (_e, projectId: string, relPath: string, content: string) =>
     files.writeText(projectId, relPath, content)

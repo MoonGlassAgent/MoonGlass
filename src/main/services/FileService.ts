@@ -5,7 +5,7 @@
  * 供工作区左侧文件树使用。所有路径限制在工作目录内，防目录穿越。
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
 import { join, resolve, sep } from 'node:path'
 import type { FileContentResult, FileTreeNode, VerificationRunStatus } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle'
@@ -14,6 +14,14 @@ import type { ProjectService } from './ProjectService'
 /** 单文件读取上限（超出截断展示） */
 const READ_MAX_BYTES = 256 * 1024
 const JSON_MAX_BYTES = 16 * 1024 * 1024
+
+/** verification/ 目录监视条目：watcher + 推送去抖 + 目录未就绪时的重试定时器 */
+interface VerificationWatchEntry {
+  refs: number
+  watcher: FSWatcher | null
+  debounce: ReturnType<typeof setTimeout> | null
+  retry: ReturnType<typeof setInterval> | null
+}
 
 /** 读取文本文件；失败时返回空串（供尽最大努力的扫描方法使用）。 */
 function safeRead(filePath: string): string {
@@ -140,6 +148,11 @@ function mapTestPlanColumns(headerCells: string[]): { testId: number; tcId: numb
 export class FileService implements MoonGlassService {
   readonly name = 'file-service'
 
+  /** verification/ 目录监视注册表（按项目引用计数；WatcherEntry 见下方接口） */
+  private readonly verificationWatchers = new Map<string, VerificationWatchEntry>()
+  /** 由主进程入口注入的变更推送通道（webContents.send 桥） */
+  private verificationEmitter: ((projectId: string) => void) | null = null
+
   constructor(private readonly projects: ProjectService) {}
 
   start(): void {
@@ -147,7 +160,89 @@ export class FileService implements MoonGlassService {
   }
 
   stop(): void {
-    // 无常驻资源
+    for (const projectId of [...this.verificationWatchers.keys()]) {
+      this.releaseVerificationWatcher(projectId, true)
+    }
+  }
+
+  /** 注入 verification/ 变更推送通道（主进程入口在窗口就绪后调用） */
+  attachVerificationEmitter(emitter: (projectId: string) => void): void {
+    this.verificationEmitter = emitter
+  }
+
+  /**
+   * 开始监视项目 verification/ 目录（幂等、引用计数）。
+   * 仅 .json 变更经 ~800ms 去抖后触发推送：姿态/账本类产物是 UI 自动刷新的依据，
+   * 仿真日志、波形等大文件写入不触发，避免刷屏。verification/ 尚未创建时按 5s 轮询等待其出现。
+   */
+  watchVerification(projectId: string): void {
+    const existing = this.verificationWatchers.get(projectId)
+    if (existing) {
+      existing.refs += 1
+      return
+    }
+    const entry: VerificationWatchEntry = { refs: 1, watcher: null, debounce: null, retry: null }
+    this.verificationWatchers.set(projectId, entry)
+    this.ensureVerificationWatcher(projectId, entry)
+  }
+
+  /** 退订监视（引用计数归零才真正关闭 watcher 与重试定时器） */
+  unwatchVerification(projectId: string): void {
+    this.releaseVerificationWatcher(projectId, false)
+  }
+
+  private ensureVerificationWatcher(projectId: string, entry: VerificationWatchEntry): void {
+    if (!this.verificationWatchers.has(projectId)) return
+    let verificationDir: string
+    try {
+      verificationDir = join(this.projects.workspaceDir(projectId), 'verification')
+    } catch {
+      this.releaseVerificationWatcher(projectId, true)
+      return
+    }
+    if (!existsSync(verificationDir)) {
+      if (!entry.retry) {
+        entry.retry = setInterval(() => {
+          entry.retry = null
+          if (entry.watcher) return
+          this.ensureVerificationWatcher(projectId, entry)
+        }, 5000)
+        entry.retry.unref?.()
+      }
+      return
+    }
+    try {
+      entry.watcher = watch(verificationDir, { recursive: true }, (_event, filename) => {
+        if (filename && !filename.endsWith('.json')) return
+        if (entry.debounce) clearTimeout(entry.debounce)
+        entry.debounce = setTimeout(() => {
+          entry.debounce = null
+          this.verificationEmitter?.(projectId)
+        }, 800)
+      })
+      entry.watcher.on('error', () => {
+        // 目录被删除/重建等场景：关闭后按重试逻辑等待再次出现
+        entry.watcher?.close()
+        entry.watcher = null
+        this.ensureVerificationWatcher(projectId, entry)
+      })
+    } catch {
+      entry.watcher = null
+      this.ensureVerificationWatcher(projectId, entry)
+    }
+  }
+
+  private releaseVerificationWatcher(projectId: string, force: boolean): void {
+    const entry = this.verificationWatchers.get(projectId)
+    if (!entry) return
+    if (!force) {
+      entry.refs -= 1
+      if (entry.refs > 0) return
+    }
+    if (entry.debounce) clearTimeout(entry.debounce)
+    if (entry.retry) clearInterval(entry.retry)
+    entry.watcher?.close()
+    this.verificationWatchers.delete(projectId)
   }
 
   /** 扫描工作目录文件树（跳过隐藏项与 node_modules，目录在前按名称排序） */

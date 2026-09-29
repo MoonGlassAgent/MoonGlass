@@ -37,7 +37,6 @@ endmodule
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, ClockCycles
-from cocotb.result import TestSuccess, TestFailure
 
 class CounterEnv:
     def __init__(self, dut):
@@ -185,7 +184,6 @@ endmodule
 import cocotb
 from cocotb.clock import Clock
 from cocotb.triggers import RisingEdge, FallingEdge
-from cocotb.result import TestSuccess, TestFailure
 from collections import deque
 import random
 

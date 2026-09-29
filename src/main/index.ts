@@ -99,6 +99,9 @@ function createMainWindow(): BrowserWindow {
   services.agent.attachEmitter((projectId, event, sessionName) => {
     if (!wc.isDestroyed()) wc.send(IPC.Agent.Event, { projectId, event, sessionName })
   })
+  services.files.attachVerificationEmitter((projectId) => {
+    if (!wc.isDestroyed()) wc.send(IPC.Fs.VerificationChanged, { projectId })
+  })
 
   // 手动界面重载：Ctrl+Shift+R 只刷新渲染进程，主进程内的 Agent 会话（pi 子进程）不受影响。
   // before-input-event 先于页面按键与菜单加速键派发，preventDefault 同时压住默认菜单的

@@ -15,6 +15,7 @@ import { settings } from './settings.ts'
 import { sidebar } from './sidebar.ts'
 import { theme } from './theme.ts'
 import { verification } from './verification.ts'
+import { verifRun } from './verifRun.ts'
 import { workspace } from './workspace.ts'
 
 export const en: Messages = {
@@ -34,5 +35,6 @@ export const en: Messages = {
   sidebar,
   theme,
   verification,
+  verifRun,
   workspace
 }

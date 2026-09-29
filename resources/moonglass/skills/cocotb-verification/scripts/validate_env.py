@@ -79,6 +79,9 @@ class VerificationValidator:
         # 7. 检查编码规范
         self._check_coding_standard()
 
+        # 8. 检查 cocotb 2.x 兼容性
+        self._check_cocotb_compat()
+
         # 返回是否全部通过（ERROR 级别必须全部通过）
         return all(r.passed for r in self.results if r.severity == 'error')
 
@@ -210,8 +213,9 @@ class VerificationValidator:
                 self._error('tests', f'{rel} 断言', '未找到断言，缺少验证逻辑')
 
             # 检查 Pass/Fail 输出
+            # 注意: cocotb 2.x 已移除结果异常类，其字符串出现属于 1.x 习语，
+            # 由 compat 检查族判错，此处不再作为正面证据
             has_result = ('PASSED' in content or 'FAILED' in content or
-                          'TestSuccess' in content or 'TestFailure' in content or
                           'log_test_end' in content)
             if has_result:
                 self._pass('tests', f'{rel} 结果', '包含 Pass/Fail 输出')
@@ -322,6 +326,56 @@ class VerificationValidator:
             self._pass('coding', 'cocotb.start_soon', '未使用已弃用的 cocotb.fork()')
 
     # ================================================================
+    # cocotb 2.x 兼容性检查
+    # ================================================================
+    def _check_cocotb_compat(self):
+        """检查 cocotb 版本与 1.x 习语残留"""
+        # a. cocotb 版本检查（要求 >=2.0.0 且 <3.0.0）
+        try:
+            from importlib.metadata import version, PackageNotFoundError
+            cocotb_version = version('cocotb')
+        except PackageNotFoundError:
+            self._error('compat', 'cocotb 版本',
+                        '未安装 cocotb，请执行: '
+                        'pip install --user --upgrade "cocotb==2.0.1"')
+            cocotb_version = None
+        except Exception as e:
+            self._warning('compat', 'cocotb 版本', f'无法检测 cocotb 版本: {e}')
+            cocotb_version = None
+
+        if cocotb_version is not None:
+            try:
+                major = int(cocotb_version.split('.')[0])
+            except ValueError:
+                major = -1
+            if major == 2:
+                self._pass('compat', 'cocotb 版本',
+                           f'cocotb {cocotb_version} 满足 >=2.0.0,<3.0.0')
+            else:
+                self._error('compat', 'cocotb 版本',
+                            f'当前版本 {cocotb_version} 不满足 >=2.0.0,<3.0.0，'
+                            f'请执行: pip install --user --upgrade "cocotb==2.0.1"')
+
+        # b. 1.x 习语扫描（cocotb 2.x 已移除/改名）
+        legacy_patterns = [
+            (re.compile(r'cocotb\.result'),
+             'cocotb 2.x 已移除结果异常模块（1.x 习语），请改用 assert / 自然返回'),
+            (re.compile(r'from\s+cocotb\.log\s+import'),
+             'cocotb 2.x 已移除该日志入口（SimLog 已删除），请改用标准库 logging.getLogger'),
+            (re.compile(r'\bunits\s*='),
+             'cocotb 2.x 已将 Clock/Timer 的 units 关键字参数改名为 unit（单数）'),
+        ]
+
+        py_files = list(self.base_path.rglob('*.py'))
+        for py_file in py_files:
+            content = py_file.read_text(encoding='utf-8', errors='ignore')
+            rel = py_file.relative_to(self.base_path)
+            for pattern, message in legacy_patterns:
+                count = len(pattern.findall(content))
+                if count > 0:
+                    self._error('compat', f'{rel}', f'{message}（{count} 处）')
+
+    # ================================================================
     # 结果记录
     # ================================================================
     def _pass(self, category: str, item: str, message: str):
@@ -358,7 +412,7 @@ class VerificationValidator:
 
         # 类别顺序
         cat_order = ['structure', 'files', 'golden_model', 'tests',
-                      'scoreboard', 'makefile', 'coding']
+                      'scoreboard', 'makefile', 'coding', 'compat']
         for cat in cat_order:
             if cat not in categories:
                 continue

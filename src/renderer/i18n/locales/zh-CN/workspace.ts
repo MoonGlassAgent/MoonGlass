@@ -61,6 +61,19 @@ export const workspace = {
     bug: '缺陷修复'
   },
 
+  // 阶段产物漂移对账对话框（记录显示已完成但产物目录已不存在）
+  artifactDrift: {
+    title: '检测到阶段产物与记录不一致',
+    description: '数据库记录显示以下阶段已完成，但对应产物目录已不在磁盘上。请选择处理方式。',
+    entryHint: '记录显示已完成，但产物目录已不存在：{paths}',
+    resetDownstream: '同时重置下游已完成阶段的记录（QA/SYNTH 的结论建立在已删除的证据上）',
+    keepHint: '保持现状后，可以随时通过阶段看板悬停的"清除重置"手动处理；若打算自行恢复产物，Agent 继续原会话即可。',
+    startOver: '从 0 开始',
+    purging: '正在清除…',
+    keep: '保持现状',
+    progress: '正在清除漂移阶段记录（{index}/{total}）…'
+  },
+
   // VERIF 阶段状态条
   verifBar: {
     statusLabel: 'VERIF 状态：',
@@ -75,7 +88,9 @@ export const workspace = {
     corner: '③ 增补验证',
     cornerTitle: '按主题波执行 corner 场景（W2）',
     signoff: '④ 签核',
-    signoffTitle: '覆盖率/Formal/Mutation/残余风险审批（W3）'
+    signoffTitle: '覆盖率/Formal/Mutation/残余风险审批（W3）',
+    expertActions: '专家操作',
+    expertActionsHint: '手动分波段推进验证（面向熟悉波段方法学的用户）；一般走主行动即可'
   },
 
   // SYNTH 阶段操作条
@@ -85,97 +100,9 @@ export const workspace = {
     agentRunning: 'Agent 运行中…'
   },
 
-  // 主区与底部面板选项卡
+  // 主区选项卡
   tabs: {
-    chat: '💬 对话',
-    problems: '问题',
-    runs: '运行',
-    verification: '验证',
-    synthesis: '综合',
-    artifacts: '产物'
-  },
-
-  // 底部工程控制台（跨选项卡共用）
-  console: {
-    title: '工程控制台',
-    maximize: '最大化控制台',
-    expand: '展开控制台',
-    collapse: '收起控制台',
-    trackableArtifacts: '{count} 个可追踪产物',
-    errors: '{count} 错误',
-    warnings: '{count} 警告',
-    askAgentFix: '交给 Agent 修复',
-    openProblemFile: '双击打开问题文件并定位',
-    gateBadge: '门禁',
-    doubleClickOpen: '双击打开'
-  },
-
-  // 问题选项卡
-  problems: {
-    empty: '当前没有已知问题。运行 Lint、验证或综合后，诊断信息会集中显示在这里。'
-  },
-
-  // 运行选项卡
-  runs: {
-    empty: '尚无运行记录。工具启动后，实时状态显示在这里，落盘日志也会自动汇总。'
-  },
-
-  // 验证选项卡（Verification Intelligence 视图）
-  verification: {
-    metricArtifacts: '验证产物',
-    metricCriticalOpen: '关键未闭环',
-    metricFormalEvidence: 'Formal 证据',
-    metricIntents: '验证意图',
-    metricSpecGaps: '规格缺口',
-    viewsAria: '验证智能视图',
-    viewScenario: '风险场景',
-    viewIntent: '验证意图',
-    viewHoles: '覆盖缺口',
-    viewInteraction: '交互图',
-    viewSchedule: '执行队列',
-    viewFormal: 'Formal',
-    analyzer: '分析器：{engine}',
-    analyzerLegacy: '旧版模型',
-    structuralSummary: 'FSM {fsm} · CFG {cfg} · 依赖 {deps} · COI {coi} · 协议 {protocols}',
-    noIntelligence: '尚未生成 Verification Intelligence 模型。',
-    buildIntelligence: '生成智能验证模型',
-    scenarioBoardAria: 'Verification Intelligence Scenario 看板',
-    openScenarioRegistry: '双击打开完整 Scenario Registry',
-    interactionAria: 'Feature Interaction Graph',
-    jumpToEvidence: '双击跳转到结构证据',
-    noInteractions: '当前没有可展示的交互边。',
-    intentAria: 'Verification Intent',
-    openIntentRegistry: '双击打开完整 Verification Intent Registry',
-    boundaryCount: '边界 {count}',
-    noIntents: '尚未生成 Verification Intent。',
-    holesAria: 'Coverage Hole 分类',
-    noHoles: '当前没有待处理的 Coverage Hole。',
-    scheduleAria: '验证执行队列',
-    iterations: '{iterations} 次 · {budget}s',
-    noScheduled: '关键 Scenario 已闭环，当前没有待调度任务。',
-    formalAria: 'Formal 验证证据',
-    openFormalResult: '双击打开 formal-result.json',
-    traceCount: 'trace {count}',
-    noFormal: '尚无 Formal 证据。Formal Candidate 可由主 Agent 使用 SymbiYosys 执行。',
-    openingWaveform: '正在打开 {file}...',
-    waveformOpened: '已用 GTKWave 打开 {file}',
-    waveformFailed: '打开失败: {error}',
-    openWaveformTitle: '使用 GTKWave 打开波形',
-    openWaveform: '打开波形',
-    empty: '暂无验证结果。运行仿真后，result.json、JUnit、覆盖率、日志和波形会出现在 verification/results/。'
-  },
-
-  // 综合选项卡
-  synthesis: {
-    metricArtifacts: '综合产物',
-    metricConstraints: '约束文件',
-    metricReports: '报告',
-    empty: '尚未发现综合产物。运行综合后，这里会汇总 SDC、网表、面积和时序报告。'
-  },
-
-  // 产物选项卡
-  artifacts: {
-    empty: '暂无可追踪产物。工具输出的日志、报告、波形、网表和结果文件会汇总在这里。'
+    chat: '💬 对话'
   },
 
   // 文件查看器工具栏
@@ -247,6 +174,8 @@ export const workspace = {
     signoffStart: '开始 W3 签核...',
     signoffDone: '签核任务已完成',
     phaseResetFailed: '阶段处理失败: {error}',
+    driftPurging: '检测到产物漂移：正在清除 {phase} 的记录（{index}/{total}）…',
+    driftPurged: '已从 0 开始：清除 {count} 个漂移阶段的记录及对应会话',
     archived: '已归档 {phase} 的 {count} 个文件到 {path}，并以空白会话重新开始',
     purged: '已彻底清除 {phase} 的 {count} 个文件及阶段会话；未自动重新开始',
     dashboardGenerated: '总体报告已生成: {path}',
