@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title MoonGlass v0.9.10
+title MoonGlass v0.3
 cd /d "%~dp0"
 
 echo.
@@ -42,14 +42,12 @@ if not exist "node_modules" (
 )
 
 :: 3. 清理旧进程（避免端口冲突）
-:: 不用 /f 强杀：温和关闭让窗口走正常 close 流程——退出守卫（有会话运行时弹确认）
-:: 与中断会话标记（重启后琥珀徽标提示续跑）才能生效；/f 会绕过这一切直接硬杀
 echo [INFO] 清理旧进程...
-taskkill /im electron.exe >nul 2>&1
-timeout /t 2 /nobreak >nul
+taskkill /f /im electron.exe >nul 2>&1
+timeout /t 1 /nobreak >nul
 
 :: 4. 启动
-echo [INFO] 启动 MoonGlass v0.9.10 ...
+echo [INFO] 启动 MoonGlass v0.3 ...
 echo [INFO] 首次加载约需 10-20 秒
 echo [INFO] 关闭软件窗口后，按 Ctrl+C 退出此终端
 echo.
