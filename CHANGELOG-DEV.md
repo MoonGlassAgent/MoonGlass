@@ -2,6 +2,13 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-09-30：v1.1.0 基线
+
+- **验证长程运行循环（VERIF-RUN-LOOP）批 1-4**：外循环 = 规则驱动 + 证据裁决 + 结构化决策层（LLM/工程师双源、单一决策账本）；11 态状态机 + run-loop.json 账本 + 四维预算熔断 + 重启对账；验证运行页签（RunLoopCard）；一键托管 VERIF 改为循环驱动。
+- **PSRAM_CTRL 试跑三连修**：批次瞬时供应商故障自动重试（证据齐全时尾随瞬时错误不推翻判定）；循环僵尸句柄代际守卫与启动对账；循环决策提案弹出真实决策卡。
+- **项目卡片拖拽排序**（localStorage 持久化）。
+- .gitignore 补充 electron-vite 时间戳残留与空占位文件。
+
 ## 2026-09-29：验证运行循环实测三连修（PSRAM_CTRL 试跑反馈）
 
 - **批次瞬时故障自动重试**：PSRAM_CTRL 批次 7 遇 openrouter 空响应（`Provider returned an empty response`）settle、零证据产出被熔断——一次 API 抖动终止了整个验证循环。修复：①`isTransientSessionError` 纯函数分类器（空响应/429/5xx/超时/连接重置，覆盖 humanize 中文文案，verif-batch-verdict.ts）；②证据齐全时尾随瞬时错误不推翻证据判定（证据优先）；③内层批次循环对瞬时故障自动重试同一批次（至多 2 次、不占批次额度），耗尽才熔断。smoke：verif-batch-verdict-smoke 新增 11 条分类断言。
