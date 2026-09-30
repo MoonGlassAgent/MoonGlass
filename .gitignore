@@ -12,3 +12,6 @@ demo-seed/
 green-dist-*/
 .tools-gh-*/
 gh-auth.*.log
+
+electron.vite.config.*.mjs
+绿色版组装

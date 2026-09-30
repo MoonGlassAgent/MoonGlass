@@ -8,17 +8,20 @@ import { Link } from '@tanstack/react-router'
 import { Folder, FolderInput, Pencil, Trash2 } from 'lucide-react'
 import { PHASE_ORDER, type ChipProject, type ProjectSessionActivity } from '@shared/types'
 import { phaseLabel, useTranslation } from '../i18n'
+import type { ManagedRunInfo } from '../store/managedStore'
 
 interface ProjectCardProps {
   project: ChipProject
   /** 项目会话活动聚合（无存活会话且无中断标记时为 undefined，不显示徽标） */
   activity?: ProjectSessionActivity
+  /** 一键托管运行状态（running 时优先于会话徽标显示「托管中」） */
+  managed?: ManagedRunInfo
   onDelete?: (id: string) => void
   onMigrate?: (project: ChipProject) => void
   onEdit?: (project: ChipProject) => void
 }
 
-export function ProjectCard({ project, activity, onDelete, onMigrate, onEdit }: ProjectCardProps): React.JSX.Element {
+export function ProjectCard({ project, activity, managed, onDelete, onMigrate, onEdit }: ProjectCardProps): React.JSX.Element {
   const { t } = useTranslation()
   const resolvedCount = PHASE_ORDER.filter((p) =>
     ['completed', 'skipped'].includes(project.phases[p].status)
@@ -32,7 +35,19 @@ export function ProjectCard({ project, activity, onDelete, onMigrate, onEdit }: 
         <div className="mb-2 flex items-center justify-between">
           <h3 className="font-semibold text-zinc-900">{project.name}</h3>
           <div className="flex shrink-0 items-center gap-1.5">
-            {activity?.running ? (
+            {managed?.running ? (
+              <span
+                className="inline-flex items-center gap-1.5 rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-xs text-sky-700"
+                title={t('projects.managedRunningTooltip', {
+                  phase: managed.phase ? phaseLabel(managed.phase) : '…',
+                  target: phaseLabel(managed.targetPhase),
+                  since: new Date(managed.startedAt).toLocaleString()
+                })}
+              >
+                <span className="size-1.5 animate-pulse rounded-full bg-sky-500" />
+                {t('projects.managedRunning', { phase: managed.phase ? phaseLabel(managed.phase) : '…' })}
+              </span>
+            ) : activity?.running ? (
               <span
                 className="inline-flex items-center gap-1.5 rounded border border-emerald-200 bg-emerald-50 px-2 py-0.5 text-xs text-emerald-700"
                 title={t('projects.sessionRunningTooltip', { sessions: activity.runningSessions.join('、') })}

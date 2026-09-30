@@ -48,6 +48,8 @@ export const projects: ProjectsMessages = {
   sessionRunningTooltip: 'Running sessions: {sessions}',
   sessionIdle: 'Idle · Ready for Input',
   sessionIdleTooltip: 'The current turn is complete; you can continue typing',
+  managedRunning: 'Managed · {phase}',
+  managedRunningTooltip: 'Managed run in progress: current {phase}, target {target} (started {since})',
   // 上轮被应用退出中断（会话历史保留，续跑只需在原会话继续输入）
   sessionInterrupted: 'Interrupted · Ready to Resume',
   sessionInterruptedTooltip: 'Sessions interrupted on last quit: {sessions}; history is preserved, keep typing to resume'
