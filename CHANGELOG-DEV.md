@@ -2,6 +2,20 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-10-05：解析内核重写 + 运行时口径统一 + 验证工作台结论层（v1.1.0 回退后重做）
+
+> 背景：v1.1.1（Codex 轮，验证工作台四期 + verification-work 调度）经评估回退，本轮在 v1.1.0 上重做。
+> 详细实测与审查口径见 `reports/changes-2026-10-05.md` / `reports/merge-request-2026-10-05.md`。
+
+- **解析内核重写**（engine.requirementModel）：表感知解析（定义列/引用列区分）+ 定义优先（ID 的定义以自身文档 ID 列为准）+ 一行一条义务 + 条款正文取验收类列 + 追溯链接（references/citedIn）+ 悬空引用登记（unresolvedReferences）。实测：GMAC 条款 390→186、幻影场景 383→171；小数分频器 71→66 / 59→46。修复"需求文档被整体丢弃、一条行为物化成多个永不可闭环的幻影场景"的根因。
+- **运行时口径**：进展判定只认闭环计数（删除 `|| postureFresh` 假信号——实测 GMAC 连续 17 拍假 advanced，无进展熔断永不触发，循环空烧到墙钟上限）；批次完成判定分离"本批新增证据 / 历史重放"（freshScenarioIds/replayedScenarioIds，complete 语义不变）。
+- **验证工作台结论层**：只读投影契约（verification-workbench.ts）+ 主进程证据核对（证据存在/版本 == 当前 RTL/不晚于态势）+ 结论卡（WorkbenchConclusion）+ IPC `fs:verification-workbench`；两条硬口径：记录通过 ≠ 当前有效通过；缺评估不得推断就绪。
+- **两处虚假绿色移除**：态势页签核状态只认 closureAssessment 三态（缺评估显示"未确认"而非"具备签核条件"）；引导层签核步骤 completed → running（等待人工审查）。
+- **三处缺陷修复**：验证运行页签加 VERIF 阶段守卫；阶段重置前 `stopVerifRunLoopAndWait` 停稳循环再删产物；阶段重置前 `forceReleaseVerificationWatch` 释放目录监视器（Windows fs.watch 持句柄导致 delete-pending 删不掉）。
+- **合并入本轮的审查修复**：启动守卫与 loopId 代际守卫改为写者优先语义（修复"代际不一致时启动无法落新账本"）；账本写失败 fail-closed（启动拒绝+异常熔断事件）；首拍推迟一个微任务；补回并修复 `verif-run-loop-start-smoke`（真实 AgentService 方法 AST 提取测试：W0 派发/重启代际/写失败/账本丢失），登记进 core。
+- 验证：typecheck 5 包全过 + root 11 项基线零新增；core **36** scripts 全绿；build 通过。
+- 已知遗留：真实项目首次重建后旧 scenario_hits 可能偏乐观（建议抽查关键场景）；`assembly_json` 孤儿列；`unresolvedReferences` 未接界面；根类型检查 11 项基线待决策。
+
 ## 2026-09-30：v1.1.0 基线
 
 - **验证长程运行循环（VERIF-RUN-LOOP）批 1-4**：外循环 = 规则驱动 + 证据裁决 + 结构化决策层（LLM/工程师双源、单一决策账本）；11 态状态机 + run-loop.json 账本 + 四维预算熔断 + 重启对账；验证运行页签（RunLoopCard）；一键托管 VERIF 改为循环驱动。
