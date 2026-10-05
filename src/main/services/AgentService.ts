@@ -39,7 +39,7 @@ import { isDiagnosticStalled, isTransientSessionError, judgeBatchCompletion, rea
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixAuditRelativePath, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { appendRtlFixOutcome } from './rtl-fix-outcome-ledger.ts'
-import { readVerifLoopLedger, updateVerifLoopLedger, type VerifBatchLoopLedger } from './verif-loop-ledger.ts'
+import { readScenarioLabels, readVerifLoopLedger, updateVerifLoopLedger, type VerifBatchLoopLedger } from './verif-loop-ledger.ts'
 import {
   applyRunLoopPause,
   applyRunLoopResume,
@@ -1924,9 +1924,11 @@ argument-hint: "<模块名>"
 
       this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 已派发到平行会话 ${sessionName}：${ids.join('、')}` }, sessionName)
       // 方案 C 批 1（§3.2）：批次已派发 → running + currentBatch(dispatched)
+      // 可读性（2026-10-05）：同时写入场景语义标签快照——界面上"这一批在验证什么"要看得懂，
+      // 且快照必须取派发时刻的标题（规格改写后仍还原当时的语义，见 verif-loop-ledger 注释）。
       this.patchVerifLoopLedger(workspace, (ledger) => {
         ledger.state = 'running'
-        ledger.currentBatch = { index: batchIndex, sessionName, scenarioIds: ids, dispatchedAt: new Date().toISOString(), phase: 'dispatched' }
+        ledger.currentBatch = { index: batchIndex, sessionName, scenarioIds: ids, dispatchedAt: new Date().toISOString(), phase: 'dispatched', scenarios: readScenarioLabels(workspace, ids) }
         ledger.circuitBreaker = null
         ledger.rtlFixWait = null
       })
@@ -1972,8 +1974,12 @@ argument-hint: "<模块名>"
       ? (result.verdict.reasons.length > 0 ? result.verdict.reasons.join('；') : '证据齐全：scenario_hits 已登记且 posture 已重建')
       : (result.circuitBreaker ?? result.errorMessage ?? '未知原因')
     this.patchVerifLoopLedger(workspace, (ledger) => {
+      // 历史条目沿用派发时的语义标签快照（不重新读注册表）：历史批次必须还原"当时"的语义，
+      // 而不是被当作"当前"场景说明。快照缺失（旧账本/派发时注册表不可读）时退回按 ID 现查。
+      const dispatched = ledger.currentBatch?.index === batchIndex ? ledger.currentBatch.scenarios : undefined
+      const scenarios = dispatched?.length ? dispatched : readScenarioLabels(workspace, ids)
       ledger.currentBatch = null
-      ledger.history.unshift({ index: batchIndex, scenarioIds: ids, verdict: result.status === 'completed' ? 'completed' : 'circuit-broken', reason: historyReason, settledAt: result.finishedAt })
+      ledger.history.unshift({ index: batchIndex, scenarioIds: ids, verdict: result.status === 'completed' ? 'completed' : 'circuit-broken', reason: historyReason, settledAt: result.finishedAt, scenarios })
     })
     if (!options?.loopManaged) {
       this.writeVerifLoopTerminal(workspace, result.status === 'completed' ? 'completed' : 'circuit-broken',
@@ -1992,7 +1998,8 @@ argument-hint: "<模块名>"
    * follow-up 仍照常送达来源会话。
    */
   async runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number; rtlFixWaitTimeoutMs?: number }): Promise<VerifBatchLoopResult> {
-    const batchSize = Math.max(1, Math.min(12, Math.trunc(options?.batchSize ?? 3)))
+    // 默认批大小随引擎 EXECUTION_BATCH_SIZE 放大（2026-10 实测：环境摘要预装后更大批次摊薄固定探索成本）
+    const batchSize = Math.max(1, Math.min(12, Math.trunc(options?.batchSize ?? 6)))
     const maxBatches = Math.max(1, Math.trunc(options?.maxBatches ?? 20))
     const workspace = this.workspaceDir(projectId)
     const batches: VerifBatchRunResult[] = []

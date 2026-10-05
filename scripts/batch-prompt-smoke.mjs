@@ -33,11 +33,11 @@ writeFileSync(join(root, 'verification', 'results', 'dma', 'result.json'), JSON.
 const artifacts = buildVerificationIntelligence(root)
 const scenarios = artifacts.verificationState.scenarios
 if (scenarios.length < 3) throw new Error(`fixture 场景不足 3 个：${scenarios.length}`)
-// v0.8.6 聚类批次：批次取自当前 cluster 的执行批（同模块同 Oracle 域，2-3 个）
+// v0.8.6 聚类批次：批次取自当前 cluster 的执行批（同模块同 Oracle 域；2026-10 起每批 2-6 个）
 const cluster = artifacts.verificationState.executionClusters[0]
 if (!cluster || !Array.isArray(cluster.executionBatches) || cluster.executionBatches.length === 0) throw new Error('执行计划缺少聚类视图')
 const batchIds = cluster.executionBatches[0]
-if (batchIds.length < 1 || batchIds.length > 3) throw new Error(`执行批超出 2-3 个约束：${batchIds.length}`)
+if (batchIds.length < 1 || batchIds.length > 6) throw new Error(`执行批超出 2-6 个约束：${batchIds.length}`)
 
 // 根因交接数据：第一个场景一条 confirmed + 一条 refuted（链式）
 const refuted = recordRootCause(root, { scenarioId: batchIds[0], hypothesis: '假设：abort 优先级高于 bvalid', verdict: 'refuted', refutedHypotheses: [], failureSignature: 'deadbeef0001', rootCause: '', fix: '', evidence: [] })
@@ -78,5 +78,19 @@ if (!prompt.includes(`内含 ${batchIds.length} 个 testcase`) || !prompt.includ
 // 未知场景 ID 不得静默丢弃
 const withUnknown = buildBatchPrompt(root, ['SCN-FFFFFFFF'])
 if (!withUnknown.includes('SCN-FFFFFFFF') || !withUnknown.includes('不在 scenario-registry')) throw new Error('未知场景 ID 未被显式标注')
+
+// 环境就绪摘要（2026-10 W1 实测：每批重复探索环境 20+ 次，摘要前移到确定性 prompt）：
+// 无 tb 目录时不谎称就绪
+if (!prompt.includes('环境状态：未就绪') || !prompt.includes('先按 module-verification-strategy')) throw new Error('缺环境未就绪指引')
+// 有 tb 目录：结构 + README 摘录 + 免探索纪律
+mkdirSync(join(root, 'verification', 'dma_wr_ctrl_tb', 'env'), { recursive: true })
+mkdirSync(join(root, 'verification', 'dma_wr_ctrl_tb', 'sequences'), { recursive: true })
+writeFileSync(join(root, 'verification', 'dma_wr_ctrl_tb', 'README.md'), 'DMA 验证环境说明：env 内含 driver/monitor/scoreboard。', 'utf-8')
+writeFileSync(join(root, 'verification', 'dma_wr_ctrl_tb', 'env', 'dma_env.py'), '# env', 'utf-8')
+const promptReady = buildBatchPrompt(root, batchIds)
+if (!promptReady.includes('环境就绪摘要（verification/dma_wr_ctrl_tb）')) throw new Error('缺环境就绪摘要段')
+if (!promptReady.includes('env/：dma_env.py') || !promptReady.includes('sequences/')) throw new Error('环境就绪摘要缺目录结构')
+if (!promptReady.includes('DMA 验证环境说明')) throw new Error('环境就绪摘要缺 README 摘录')
+if (!promptReady.includes('禁止 grep/find/ls -R') || !promptReady.includes('免探索纪律')) throw new Error('缺免探索纪律条款')
 
 console.log(`Batch Prompt smoke passed: ${batchIds.length} scenarios, prompt ${prompt.length} chars`)

@@ -410,7 +410,7 @@ if (!planFile.plans.every((plan) => plan.wave && plan.clusterId)) throw new Erro
 if (JSON.stringify(planFile.clusters.flatMap((cluster) => cluster.scenarioIds)) !== JSON.stringify(planFile.plans.map((plan) => plan.scenarioId))) throw new Error('聚类视图与平铺 plans 不一致')
 for (const cluster of planFile.clusters) {
   if (cluster.scenarioIds.length > 8) throw new Error(`authoring 组超过 8 场景上限：${cluster.clusterId}`)
-  for (const batch of cluster.executionBatches) if (batch.length < 1 || batch.length > 3) throw new Error(`执行批超出 2-3 个约束：${cluster.clusterId}`)
+  for (const batch of cluster.executionBatches) if (batch.length < 1 || batch.length > 6) throw new Error(`执行批超出 2-6 个约束：${cluster.clusterId}`)
   const members = cluster.scenarioIds.map((id) => afterCorner.verificationState.scenarios.find((scenario) => scenario.id === id))
   if (new Set(members.map((scenario) => scenario.rtlObjects[0]?.split('.')[0])).size !== 1) throw new Error(`同组场景模块不一致：${cluster.clusterId}`)
 }

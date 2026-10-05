@@ -178,7 +178,9 @@ const MIN_CLAUSE_LENGTH = 8
 
 /** 聚类约束（契约 Q4）：authoring 组上限 8 场景，执行批 2-3 个（一次 run_simulation）。 */
 const CLUSTER_AUTHORING_CAP = 8
-const EXECUTION_BATCH_SIZE = 3
+/** 执行批大小（聚类批内）：环境摘要预装后，同批一次绑定更多场景摊薄每批固定探索成本
+ * （2026-10 实测：W1 每批 3 场景却重读环境/RTL 20+ 次，固定成本占大头；5-8 为实测建议区间） */
+const EXECUTION_BATCH_SIZE = 6
 
 /** Coverage Hole 阻断阈值（priority ≥ 阈值才阻断签核；低于此值的 BLOCKED_BY_SPEC 为"低优先级规格缺口"）。 */
 const COVERAGE_HOLE_BLOCKING_PRIORITY = 0.2
@@ -1312,7 +1314,7 @@ function buildExecutionPlan(scenarios: VerificationScenario[], regressions: Veri
       const scenarioIds = members.slice(chunk * CLUSTER_AUTHORING_CAP, (chunk + 1) * CLUSTER_AUTHORING_CAP).map((item) => item.id)
       const executionBatches: string[][] = []
       for (let index = 0; index < scenarioIds.length; index += EXECUTION_BATCH_SIZE) executionBatches.push(scenarioIds.slice(index, index + EXECUTION_BATCH_SIZE))
-      // 余 1 个的孤儿批并回上一批（保持每批 2-3 个）
+      // 余 1 个的孤儿批并回上一批（保持每批 2-6 个，避免 1 场景批）
       if (executionBatches.length > 1 && executionBatches.at(-1)!.length === 1) {
         const last = executionBatches.at(-1)!
         last.unshift(executionBatches.at(-2)!.pop()!)
@@ -2956,6 +2958,58 @@ export function recordRootCause(workspaceDir: string, input: RootCauseInput): Ro
  * 批次 Intent 详情（objective/failureMode/passCriteria/锚点）+ 从 root-causes.json 按
  * scenarioId 取出的已证伪假设与已确认根因 + 环境路径与纪律约束。
  */
+/** 从 rtl/design.json 读取 manifest 顶层模块名（无 manifest/无字段返回 null）。 */
+function readManifestTopModule(workspace: string): string | null {
+  try {
+    const manifest = JSON.parse(readFileSync(join(workspace, 'rtl', 'design.json'), 'utf-8')) as { topModule?: unknown }
+    return typeof manifest.topModule === 'string' && manifest.topModule ? manifest.topModule : null
+  } catch { return null }
+}
+
+/**
+ * 环境就绪摘要（2026-10 W1 实测病灶：每批会话从零重读环境/RTL 20+ 次，固定探索成本摊不薄）：
+ * tb 目录结构 + README 摘录 + 免探索纪律。环境未搭建时不谎称就绪，改为先搭环境指令。
+ */
+function buildEnvironmentDigest(workspace: string): string[] {
+  const topModule = readManifestTopModule(workspace)
+  const tbDir = topModule ? join(workspace, 'verification', `${topModule}_tb`) : null
+  if (!tbDir || !existsSync(tbDir)) {
+    return [
+      '## 环境状态：未就绪',
+      '',
+      'TOP 验证环境尚未搭建：先按 module-verification-strategy 与 cocotb-verification 技能搭建 verification/<top>_tb（总线 VIP 挂接寄存器配置，driver/monitor/scoreboard/golden model 面向顶层接口），冒烟可编译后再执行本批场景。'
+    ]
+  }
+  const lines: string[] = [
+    `## 环境就绪摘要（verification/${topModule}_tb）`,
+    '',
+    'TOP 验证环境已就绪，结构如下。直接复用既有 env/agents/sequences/scoreboard 扩展用例即可。',
+    '**免探索纪律：环境结构与接口以本摘要为准，禁止 grep/find/ls -R 探索环境目录，禁止通读 RTL 找接口；需要细节时按下述指引直接读指定文件。**',
+    ''
+  ]
+  for (const entry of readdirSync(tbDir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      let children: string[] = []
+      try { children = readdirSync(join(tbDir, entry.name)).slice(0, 12) } catch { children = [] }
+      lines.push(`- ${entry.name}/：${children.join('、')}${children.length >= 12 ? ' …' : ''}`)
+    } else {
+      lines.push(`- ${entry.name}`)
+    }
+  }
+  try {
+    const readme = readFileSync(join(tbDir, 'README.md'), 'utf-8').trim()
+    if (readme) lines.push('', '环境 README（摘录）：', '', readme.slice(0, 1500))
+  } catch { /* 无 README 时跳过 */ }
+  lines.push(
+    '',
+    '细节按需直接读（不要全文件通读）：',
+    '- RTL 顶层端口段：rtl/ 下顶层模块源文件的 module 声明段；元数据 rtl/design.json；清单 rtl/filelist.f',
+    '- 环境组件用法：env/ 与 agents/（driver/monitor/scoreboard 已就绪，直接用）',
+    '- 激励复用：sequences/ 既有序列优先复用，不足再新写'
+  )
+  return lines
+}
+
 export function buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): string {
   const workspace = resolve(workspaceDir)
   const registryPath = join(workspace, 'verification', 'intelligence', 'scenario-registry.json')
@@ -2980,6 +3034,8 @@ export function buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): s
     '',
     '本批次由 MoonGlass 主进程编排派发。逐个完成以下场景的"到达 + 裁决 + 证据"闭环。'
   ]
+  // 环境就绪摘要先于场景详情：把每批固定探索成本前移到确定性 prompt（实测每批重读环境/RTL 20+ 次）
+  sections.push('', ...buildEnvironmentDigest(workspace))
   if (cluster) {
     sections.push(
       '',
@@ -3039,7 +3095,8 @@ export function buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): s
     `- 执行派生状态（VERIFIED/FAILED/REACHED/NOT_REACHED/PARTIAL/FORMAL_PROVED/FORMAL_UNREACHABLE）由证据自动派生，不得宣布；判断类裁决只能用 record_scenario_adjudication`,
     `- 根因结论必须用 record_root_cause 落盘，不靠提示词纪律`,
     `- UT 例外纪律：未经 register_ut_escalation 登记（ut-escalations.json active），禁止为任何子模块单独搭建 Testbench；模块级 TB 仅限已登记 active UT 例外的模块`,
-    `- 配置点场景（origin=CONFIG_DERIVED）按 configPoint.class 执行：非法点（illegal）必须校验规格期望行为（报错/忽略/截断），不得把非法激励当 PASS 放行`
+    `- 配置点场景（origin=CONFIG_DERIVED）按 configPoint.class 执行：非法点（illegal）必须校验规格期望行为（报错/忽略/截断），不得把非法激励当 PASS 放行`,
+    `- 免探索纪律：环境已就绪时禁止 grep/find/ls -R 重新探索环境与 RTL 目录；接口/结构细节按环境就绪摘要的指引直接读指定文件`
   )
   return sections.join('\n')
 }
