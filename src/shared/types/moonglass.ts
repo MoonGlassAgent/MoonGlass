@@ -614,15 +614,27 @@ export interface ProjectSessionActivity {
 
 /** VERIF 批次完成判定（上下文治理第 3 批，决策 4：绑定工具登记证据，不读会话文本） */
 export interface VerifBatchVerdict {
-  /** 全齐：所有场景已登记 scenario_hits 且 posture 晚于批次开始 */
+  /**
+   * 批次会话契约是否完成：全部场景有登记，且态势在批次开始后重建。
+   * 语义边界——complete ≠ 场景通过 ≠ 验证进展 ≠ 签核；它只说明本批会话按约定交付了登记与态势。
+   */
   complete: boolean
   /** 未在任何 verification/results/&#42;&#42;/scenario_hits.json 中登记的场景 ID */
   missingScenarioIds: string[]
+  /**
+   * 本批窗口内取得登记的场景（本批新增执行证据）。与 replayedScenarioIds 互补；旧数据可能缺失。
+   */
+  freshScenarioIds?: string[]
+  /**
+   * 仅有早于本批开始的登记的场景：本批未产生新的执行证据，只是重放了历史登记。
+   * 这是"空转批次"的可观测信号，供展示层与进展判定使用；旧数据可能缺失。
+   */
+  replayedScenarioIds?: string[]
   /** verification-posture.json 的 generatedAt；不存在或不可解析为 null */
   postureGeneratedAt: string | null
   /** posture 是否晚于批次开始时间 */
   postureFresh: boolean
-  /** 结构化缺失说明（供熔断报告） */
+  /** 结构化缺失说明（供熔断报告与展示层） */
   reasons: string[]
 }
 

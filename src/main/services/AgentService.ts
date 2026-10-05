@@ -2530,18 +2530,22 @@ argument-hint: "<模块名>"
    * 代际守卫：账本 loopId 与当前获准代际不符 → 跳过写入返回 false（残留循环不得写账）；
    * 无代际登记（如重启后 IPC 直接操作）不守卫。拍循环据此抛 RunLoopSupersededError 静默退出。
    */
-  private patchRunLoopLedger(workspace: string, mutate: (ledger: VerifRunLoopLedger) => void): boolean {
+  /**
+   * 循环账本原子更新（写者优先代际守卫 + 失败即抛）。
+   * - 代际守卫：writerLoopId（拍循环/其辅助函数携带）与当前获准代际不符 → 跳过写入返回 false
+   *  （残留循环不得写账）；不带 writerLoopId 的调用方（启动/恢复/停止等 IPC 权威意图）不守卫。
+   * - 写失败：抛错（账本即循环的唯一状态面，静默失败会让循环变成不可问责的黑盒；
+   *  启动路径因此 fail-closed——账本写不进去就拒绝启动）。
+   */
+  private patchRunLoopLedger(workspace: string, mutate: (ledger: VerifRunLoopLedger) => void, writerLoopId?: string): boolean {
+    const authorizedLoopId = this.verifRunLoopGeneration.get(workspace)
+    if (writerLoopId && authorizedLoopId && authorizedLoopId !== writerLoopId) return false
     try {
-      const authorizedLoopId = this.verifRunLoopGeneration.get(workspace)
-      if (authorizedLoopId) {
-        const onDisk = readVerifRunLoopLedger(workspace)
-        if (isRunLoopSuperseded(onDisk, authorizedLoopId)) return false
-      }
       updateVerifRunLoopLedger(workspace, mutate)
       return true
     } catch (error) {
-      console.error('[agent-service] run-loop.json 落盘失败（不影响循环编排）', error)
-      return true
+      const reason = error instanceof Error ? error.message : String(error)
+      throw new Error(`账本写入失败：${reason}`)
     }
   }
 
@@ -2651,9 +2655,35 @@ argument-hint: "<模块名>"
     }
   }
 
-  /** 起循环进程并登记运行句柄（start/resume 共用）；循环异常由拍循环自身兜成熔断，不经此处抛出。 */
+  /**
+   * 停止验证运行循环并等待其真正退出。
+   *
+   * 会删除 verification/ 的调用方（阶段重置/清理产物）必须用这个版本，而不是只置停止标记：
+   * 置标记是异步生效的，进行中的一拍可能在产物已被删除之后才落盘；而 updateVerifRunLoopLedger
+   * 在账本缺失时会新建账本并重建目录（僵尸循环的既有已知来源），于是刚清理掉的
+   * verification/results/run-loop.json 会被"写回来"，用户看到的现象就是"产物全删了、
+   * 重新开始验证，却仍从上次中断处继续"。
+   *
+   * 返回 true 表示循环已退出（含本就无句柄）；false 表示超时仍在收尾。
+   */
+  async stopVerifRunLoopAndWait(projectId: string, timeoutMs = 15_000): Promise<boolean> {
+    const handle = this.verifRunLoops.get(projectId)
+    await this.stopVerifRunLoop(projectId)
+    if (!handle) return true
+    let timer: NodeJS.Timeout | undefined
+    const exited = await Promise.race([
+      handle.promise.then(() => true, () => true),
+      new Promise<boolean>((resolve) => { timer = setTimeout(() => resolve(false), timeoutMs); timer.unref?.() })
+    ])
+    if (timer) clearTimeout(timer)
+    if (!exited) console.warn(`[agent-service] 验证运行循环未在 ${timeoutMs}ms 内退出；清理产物可能与其写入存在竞争`)
+    return exited
+  }
+
+  /** 起循环进程并登记运行句柄（start/resume 共用）；循环异常由拍循环自身兜成熔断，不经此处抛出。
+   *  首拍推迟一个微任务：start/resume 的调用方先拿到运行句柄；首拍前的账本/标记变更都能被首拍读到。 */
   private kickRunLoop(projectId: string, options: ResolvedRunLoopOptions, loopId: string): void {
-    const promise = this.runVerifRunLoopBeats(projectId, options, loopId)
+    const promise = Promise.resolve().then(() => this.runVerifRunLoopBeats(projectId, options, loopId))
     this.verifRunLoops.set(projectId, { promise, loopId })
     void promise.catch((error) => console.error('[agent-service] 验证运行循环进程异常（应由拍循环兜底为熔断）', error))
   }
@@ -2668,10 +2698,18 @@ argument-hint: "<模块名>"
     const workspace = this.workspaceDir(projectId)
     /** 本代际的写账入口：被新循环取代时抛 RunLoopSupersededError（catch 中静默退出） */
     const patchOwn = (mutate: (ledger: VerifRunLoopLedger) => void): void => {
-      if (!this.patchRunLoopLedger(workspace, mutate)) throw new RunLoopSupersededError()
+      if (!this.patchRunLoopLedger(workspace, mutate, loopId)) throw new RunLoopSupersededError()
     }
     try {
       for (;;) {
+        // 先读账本：缺失/不可读优先于停止/暂停标记处理（阶段重置的正常路径在删除前已停稳循环，
+        // 走到这里属异常——磁盘故障/外部破坏），发熔断事件告知界面后退出（此时写账已无意义）
+        const ledgerBefore = readVerifRunLoopLedger(workspace)
+        if (!ledgerBefore) {
+          this.emit(projectId, { type: 'status', message: '验证运行循环异常熔断：循环账本不可读取（verification/results/run-loop.json 缺失或损坏），请检查磁盘后重新启动' })
+          return
+        }
+        if (isRunLoopSuperseded(ledgerBefore, loopId)) return // 代际不符：已被新循环取代，静默退出
         if (this.verifRunLoopStopRequested.has(projectId)) {
           patchOwn((ledger) => {
             ledger.state = 'stopped'
@@ -2688,9 +2726,6 @@ argument-hint: "<模块名>"
           this.startRunLoopEvidencePoller(projectId)
           return
         }
-        const ledgerBefore = readVerifRunLoopLedger(workspace)
-        if (!ledgerBefore) return // 账本被外部删除：循环静默退出
-        if (isRunLoopSuperseded(ledgerBefore, loopId)) return // 代际不符：已被新循环取代，静默退出
         // ── 决策层优先（批 3 §3.2/§3.3）：账本中 approved 未执行决策先于规则推导与空转熔断
         //    （人已接管方向；磁盘账本口径，decide 批准/工程师指令注入后拍循环顶部拾取）──
         const pendingDecision = nextRunnableDecision(workspace)
@@ -2701,7 +2736,7 @@ argument-hint: "<模块名>"
           if (budgetCheck.reason === 'rule-stall') {
             // 批 3 §3.2：规则空转不直接熔断——派决策升级会话归因+提案；
             // settle 后有新提案 → paused-human(llm-decision-pending)，无提案 → paused-breaker(rule-stall)
-            const escalationOutcome = await this.dispatchRunLoopEscalation(projectId, workspace, 'rule-stall', budgetCheck.detail)
+            const escalationOutcome = await this.dispatchRunLoopEscalation(projectId, workspace, 'rule-stall', budgetCheck.detail, loopId)
             if (escalationOutcome !== 'paused') continue // stopped/resumed：顶部 stopped 统一处理 / 立即续跑执行已批准决策
             return
           }
@@ -2722,7 +2757,7 @@ argument-hint: "<模块名>"
           if (this.verifRunLoopStopRequested.has(projectId)) continue // 顶部统一处理 stopped
           if (waitOutcome === 'timeout') {
             // 批 3 §3.2：非预算类熔断先派决策升级会话（trigger=breaker-recovery），提案待人审
-            const breakerOutcome = await this.enterRunLoopBreaker(projectId, workspace, 'rtl-fix-wait-timeout', `等待 RTL 修复 settle 超时（${Math.round(RTL_FIX_WAIT_TIMEOUT_MS / 60_000)} 分钟）`)
+            const breakerOutcome = await this.enterRunLoopBreaker(projectId, workspace, 'rtl-fix-wait-timeout', `等待 RTL 修复 settle 超时（${Math.round(RTL_FIX_WAIT_TIMEOUT_MS / 60_000)} 分钟）`, loopId)
             if (breakerOutcome === 'resumed') continue // 升级期间登记的已批准决策：立即续跑执行
             return // paused/stopped：终态已落盘（stopped 由 enterRunLoopBreaker 写账）
           }
@@ -2753,10 +2788,13 @@ argument-hint: "<模块名>"
             ledger.current = null
           })
           const decisionAfter = readRunLoopPosture(workspace)
-          const decisionPostureFresh = decisionAfter.generatedAt !== null && decisionAfter.generatedAt > dispatchedAt
-          const decisionAdvanced = judgeRunLoopAdvanced(posture.state, decisionAfter.state) || decisionPostureFresh
+          // 进展只认闭环计数（judgeRunLoopAdvanced 已把"态势从无到有"算作规划拍进展）。
+          // 态势重建时间**不是**验证进展：任何引擎重建（登记裁决、登记证据、重算映射）都会刷新
+          // generatedAt，旧实现据此把连续空转的每一拍都判为 advanced，使"连续无进展熔断"永不触发
+          // —— 实测 GMAC 连续 17 拍 advanced=true 而 newlyClosedScenarioIds 恒为空，循环只能烧到墙钟上限。
+          const decisionAdvanced = judgeRunLoopAdvanced(posture.state, decisionAfter.state)
           const decisionFailed = sessionResult.verdict.startsWith('会话异常')
-          this.recordRunLoopBeatResult(projectId, workspace, beatNo, `决策 ${pendingDecision.id}：${sessionResult.verdict}`, decisionAdvanced, posture.state, decisionAfter.state, sessionResult.tokensUsed, pendingDecision.id, decisionFailed ? 'failed' : decisionAdvanced ? 'advanced' : 'no-progress')
+          this.recordRunLoopBeatResult(projectId, workspace, beatNo, `决策 ${pendingDecision.id}：${sessionResult.verdict}`, decisionAdvanced, posture.state, decisionAfter.state, sessionResult.tokensUsed, pendingDecision.id, decisionFailed ? 'failed' : decisionAdvanced ? 'advanced' : 'no-progress', loopId)
           continue
         }
         // ── 规则层拍决策（LLM 决策层批 3 的触发条件全部由本层确定性判定）──
@@ -2782,7 +2820,7 @@ argument-hint: "<模块名>"
           const after = readRunLoopPosture(workspace)
           // 规划拍的推进判定：态势从无到有即 advanced（本拍派发前 posture 必为 null）
           const advanced = after.state !== null
-          this.recordRunLoopBeatResult(projectId, workspace, ledgerBefore.beat + 1, `规划会话：${sessionResult.verdict}`, advanced, posture.state, after.state, sessionResult.tokensUsed, ruleDecision.id, advanced ? 'advanced' : 'no-progress')
+          this.recordRunLoopBeatResult(projectId, workspace, ledgerBefore.beat + 1, `规划会话：${sessionResult.verdict}`, advanced, posture.state, after.state, sessionResult.tokensUsed, ruleDecision.id, advanced ? 'advanced' : 'no-progress', loopId)
           continue
         }
         if (plan.kind === 'no-action') {
@@ -2834,15 +2872,15 @@ argument-hint: "<模块名>"
           tokensUsed = sessionResult.tokensUsed
         }
         if (this.verifRunLoopStopRequested.has(projectId)) continue
-        // ── 证据判定（瞬态 judging）：闭环计数对比（§4.2 多信号防误判）+ posture 时间戳新鲜度 ──
+        // ── 证据判定（瞬态 judging）：闭环计数对比（§4.2 多信号防误判）──
+        // 注：不再把 posture 时间戳当作第二进展信号，理由同决策拍（见上）。
         patchOwn((ledger) => {
           ledger.state = 'judging'
           ledger.current = null
         })
         const after = readRunLoopPosture(workspace)
-        const postureFresh = after.generatedAt !== null && after.generatedAt > dispatchedAt
-        const advanced = judgeRunLoopAdvanced(posture.state, after.state) || postureFresh
-        this.recordRunLoopBeatResult(projectId, workspace, beatNo, `${action.title}：${verdict}`, advanced, posture.state, after.state, tokensUsed, ruleDecision.id, advanced ? 'advanced' : 'no-progress')
+        const advanced = judgeRunLoopAdvanced(posture.state, after.state)
+        this.recordRunLoopBeatResult(projectId, workspace, beatNo, `${action.title}：${verdict}`, advanced, posture.state, after.state, tokensUsed, ruleDecision.id, advanced ? 'advanced' : 'no-progress', loopId)
         // ── signoff-review 出口（§4.1）：settle 后规则层再推导仍指向签核（闭环未被审查推翻）
         //    → 证据裁决通过 → gate-check；审查登记了新失败证据时下一拍自然转修复类动作 ──
         if (actionKind === 'signoff-review') {
@@ -2861,8 +2899,13 @@ argument-hint: "<模块名>"
       }
       const message = error instanceof Error ? error.message : String(error)
       console.error('[agent-service] 验证运行循环异常熔断', error)
-      this.patchRunLoopLedger(workspace, (ledger) =>
-        applyRunLoopPause(ledger, { kind: 'breaker', reason: 'loop-error', detail: message, since: new Date().toISOString() }))
+      // 账本不可写（磁盘故障等）时尽力落盘失败仅保留 UI 通知，不再因写失败二次抛出
+      try {
+        this.patchRunLoopLedger(workspace, (ledger) =>
+          applyRunLoopPause(ledger, { kind: 'breaker', reason: 'loop-error', detail: message, since: new Date().toISOString() }), loopId)
+      } catch (writeError) {
+        console.error('[agent-service] 异常熔断落盘失败（仅保留 UI 通知）', writeError)
+      }
       this.emit(projectId, { type: 'status', message: `验证运行循环异常熔断：${message}` })
     } finally {
       // 只清理本代际句柄：被取代的僵尸不得移除新循环的运行登记
@@ -2910,13 +2953,14 @@ argument-hint: "<模块名>"
     after: GuidanceState | null,
     tokensUsed = 0,
     decisionId = '',
-    decisionOutcome: 'advanced' | 'no-progress' | 'failed' | null = null
+    decisionOutcome: 'advanced' | 'no-progress' | 'failed' | null = null,
+    loopId = ''
   ): void {
     // 代际守卫：回填被跳过即已被新循环取代，抛 superseded 终止本拍后续动作
     if (!this.patchRunLoopLedger(workspace, (ledger) => {
       recordRunLoopBeat(ledger, { beat: beatNo, summary: summary.slice(0, 200), decisionId, verdict: advanced ? 'advanced' : 'no-progress', advanced }, tokensUsed)
       ledger.wave = deriveRunLoopWave(after) ?? deriveRunLoopWave(before) ?? ledger.wave
-    })) throw new RunLoopSupersededError()
+    }, loopId)) throw new RunLoopSupersededError()
     if (decisionId) {
       try {
         recordDecisionOutcome(workspace, decisionId, decisionOutcome ?? (advanced ? 'advanced' : 'no-progress'))
@@ -2944,7 +2988,8 @@ argument-hint: "<模块名>"
     workspace: string,
     trigger: RunLoopEscalationTrigger,
     detail: string,
-    fallbackBreakerReason?: string
+    fallbackBreakerReason?: string,
+    loopId = ''
   ): Promise<'paused' | 'resumed' | 'stopped'> {
     const fallbackReason = fallbackBreakerReason ?? trigger
     const beforeDecisions = readDecisionLedger(workspace)?.decisions ?? []
@@ -2952,7 +2997,7 @@ argument-hint: "<模块名>"
     if (!this.patchRunLoopLedger(workspace, (ledger) => {
       ledger.state = 'running'
       ledger.current = { kind: 'escalation', actionId: null, sessionName: '', dispatchedAt: new Date().toISOString(), source: 'llm', decisionId: '' }
-    })) throw new RunLoopSupersededError()
+    }, loopId)) throw new RunLoopSupersededError()
     this.emit(projectId, { type: 'status', message: `验证运行循环决策升级：${detail}（派发归因提案会话，trigger=${trigger}）` })
     let sessionResult: { verdict: string; tokensUsed: number }
     try {
@@ -2961,7 +3006,7 @@ argument-hint: "<模块名>"
       // 升级会话自身派发失败：不再向上抛（避免触发 loop-error 递归），直接熔断待人
       const message = error instanceof Error ? error.message : String(error)
       this.patchRunLoopLedger(workspace, (ledger) =>
-        applyRunLoopPause(ledger, { kind: 'breaker', reason: fallbackReason, detail: `${detail}；决策升级会话派发失败：${message}`, since: new Date().toISOString() }))
+        applyRunLoopPause(ledger, { kind: 'breaker', reason: fallbackReason, detail: `${detail}；决策升级会话派发失败：${message}`, since: new Date().toISOString() }), loopId)
       this.emit(projectId, { type: 'status', message: `验证运行循环熔断（${fallbackReason}）：决策升级会话派发失败` })
       return this.verifRunLoopStopRequested.has(projectId) ? 'stopped' : 'paused'
     }
@@ -2969,7 +3014,7 @@ argument-hint: "<模块名>"
     this.patchRunLoopLedger(workspace, (ledger) => {
       ledger.budget.tokensUsed += Math.max(0, Math.trunc(sessionResult.tokensUsed) || 0)
       ledger.current = null
-    })
+    }, loopId)
     if (this.verifRunLoopStopRequested.has(projectId)) return 'stopped'
     const afterDecisions = readDecisionLedger(workspace)?.decisions ?? []
     const newProposed = findNewProposedDecisions(beforeDecisions, afterDecisions)
@@ -2983,7 +3028,7 @@ argument-hint: "<模块名>"
           detail: `决策升级会话已提交 ${newProposed.length} 条提案（${trigger}），请在决策卡片中批准或否决`,
           pendingItems: newProposed.map((item) => `[${item.id}] ${item.rationale}（动作：${item.action.kind === 'derived' ? item.action.actionId : '自定义指令'}）`),
           since: new Date().toISOString()
-        }))
+        }), loopId)
       this.emit(projectId, { type: 'status', message: `验证运行循环暂停待人：LLM 决策提案 ${newProposed.map((item) => item.id).join('、')} 待审批（llm-decision-pending）` })
       this.startRunLoopEvidencePoller(projectId)
       return 'paused'
@@ -2993,12 +3038,12 @@ argument-hint: "<模块名>"
       this.patchRunLoopLedger(workspace, (ledger) => {
         ledger.state = 'running'
         ledger.current = null
-      })
+      }, loopId)
       this.emit(projectId, { type: 'status', message: '决策升级期间登记了已批准决策，验证运行循环直接续跑执行' })
       return 'resumed'
     }
     this.patchRunLoopLedger(workspace, (ledger) =>
-      applyRunLoopPause(ledger, { kind: 'breaker', reason: fallbackReason, detail: `${detail}；决策升级会话未产出提案`, since: new Date().toISOString() }))
+      applyRunLoopPause(ledger, { kind: 'breaker', reason: fallbackReason, detail: `${detail}；决策升级会话未产出提案`, since: new Date().toISOString() }), loopId)
     this.emit(projectId, { type: 'status', message: `验证运行循环熔断（${fallbackReason}）：决策升级会话未产出提案` })
     return 'paused'
   }
@@ -3010,20 +3055,20 @@ argument-hint: "<模块名>"
    * 升级期间出现已批准决策 → resumed（调用方 continue 立即续跑执行）。
    * loop-error 异常兜底不走高风险升级（拍循环 catch 内直接熔断）。
    */
-  private async enterRunLoopBreaker(projectId: string, workspace: string, reason: string, detail: string): Promise<'paused' | 'resumed' | 'stopped'> {
+  private async enterRunLoopBreaker(projectId: string, workspace: string, reason: string, detail: string, loopId = ''): Promise<'paused' | 'resumed' | 'stopped'> {
     if (isDirectBreakerReason(reason)) {
       if (!this.patchRunLoopLedger(workspace, (ledger) =>
-        applyRunLoopPause(ledger, { kind: 'breaker', reason, detail, since: new Date().toISOString() }))) throw new RunLoopSupersededError()
+        applyRunLoopPause(ledger, { kind: 'breaker', reason, detail, since: new Date().toISOString() }), loopId)) throw new RunLoopSupersededError()
       this.emit(projectId, { type: 'status', message: `验证运行循环熔断（${reason}）：${detail}` })
       return 'paused'
     }
-    const outcome = await this.dispatchRunLoopEscalation(projectId, workspace, 'breaker-recovery', `${reason}：${detail}`, reason)
+    const outcome = await this.dispatchRunLoopEscalation(projectId, workspace, 'breaker-recovery', `${reason}：${detail}`, reason, loopId)
     if (outcome === 'stopped') {
       this.patchRunLoopLedger(workspace, (ledger) => {
         ledger.state = 'stopped'
         ledger.current = null
         ledger.pause = null
-      })
+      }, loopId)
       this.emit(projectId, { type: 'status', message: '验证运行循环已停止' })
     }
     return outcome
@@ -3086,12 +3131,12 @@ argument-hint: "<模块名>"
    * IPC gateCheck 同口径）。通过 → completed（不自动推进阶段：方向盘在人，§7.2）；
    * 失败 → paused-human（gate-blocked，带失败清单，待人处置后证据变化自动续跑）。
    */
-  private async runRunLoopGateCheck(projectId: string, workspace: string): Promise<'completed' | 'blocked' | 'running'> {
+  private async runRunLoopGateCheck(projectId: string, workspace: string, loopId = ''): Promise<'completed' | 'blocked' | 'running'> {
     // 代际守卫：首写即检查（false=已被新循环取代），僵尸循环不得进入门禁判定
     if (!this.patchRunLoopLedger(workspace, (ledger) => {
       ledger.state = 'gate-check'
       ledger.current = { kind: 'gate-check', actionId: null, sessionName: '', dispatchedAt: new Date().toISOString(), source: 'rule', decisionId: '' }
-    })) throw new RunLoopSupersededError()
+    }, loopId)) throw new RunLoopSupersededError()
     this.emit(projectId, { type: 'status', message: '验证运行循环进入门禁检查（VERIF → QA）' })
     const project = this.projects.get(projectId)
     if (!project) return 'running'
@@ -3104,7 +3149,7 @@ argument-hint: "<模块名>"
         ledger.state = 'completed'
         ledger.current = null
         ledger.pause = null
-      })
+      }, loopId)
       this.emit(projectId, { type: 'status', message: '验证运行循环完成：VERIF → QA 门禁通过。请在阶段看板确认推进到 QA。' })
       return 'completed'
     }
@@ -3115,7 +3160,7 @@ argument-hint: "<模块名>"
         detail: `VERIF → QA 门禁失败 ${failed.length} 项：${failed.map((item) => `${item.checkName}（${item.message}）`).join('；')}`,
         pendingItems: failed.map((item) => item.checkName),
         since: new Date().toISOString()
-      }))
+      }), loopId)
     this.emit(projectId, { type: 'status', message: `验证运行循环暂停待人：门禁未通过（${failed.length} 项失败）` })
     this.startRunLoopEvidencePoller(projectId)
     return 'blocked'
