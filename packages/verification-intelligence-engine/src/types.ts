@@ -428,6 +428,14 @@ export interface RequirementFact {
   parentId?: string
   /** 条款分类理由（documentary 命中说明 / verifiable 的 channel 分类说明，确定性规则命中理由） */
   classificationReason?: string
+  /**
+   * 本条陈述所在行引用的其他条款 ID（追溯链接，例如模块规格行的"关联需求 ID"列）。
+   * 引用不构成义务：REQ-\* 的义务由 product_requirements.md 的 ID 列定义，SPEC-\* 由
+   * module_specification.md 的 ID 列定义；此字段仅用于双向追溯展示。
+   */
+  references?: string[]
+  /** 本条款 ID 在别处被引用的位置（引用列 / 括号引用 / 标题），供追溯反查 */
+  citedIn?: SourceReference[]
   source: SourceReference
 }
 
@@ -436,6 +444,11 @@ export interface RequirementModel {
   generatedAt: string
   requirements: RequirementFact[]
   unknowns: Array<{ id: string; text: string; source: SourceReference }>
+  /**
+   * 只被引用、从未在任何文档 ID 列中被定义的条款 ID。
+   * 保持可追溯（悬空引用本身是规格缺口信息），但不作为验证义务进入映射矩阵。
+   */
+  unresolvedReferences?: Array<{ id: string; source: SourceReference }>
   sourceFiles: string[]
 }
 
@@ -691,6 +704,13 @@ export interface VerificationScenario {
   failureSignature?: string
   coverageDelta: Record<string, number>
   updatedAt: string
+  /**
+   * 最近一次规格裁决时间（recordScenarioAdjudication 写入）。
+   * updatedAt 每次重建都会刷新，不能代表裁决时刻；本字段只记录裁决动作本身，
+   * 供 refreshScenarioWithHits 判定"裁决是否晚于已有证据"——晚于则裁决生效，
+   * 历史 hit 只保留执行事实，不得回写覆盖裁决结论。旧数据无此字段按未裁决处理。
+   */
+  adjudicatedAt?: string
 }
 
 export interface VerificationStateModel {

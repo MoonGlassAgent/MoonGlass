@@ -49,7 +49,8 @@ import type {
   SpecClauseChannel,
   SpecMappingMatrix,
   ScenarioCluster,
-  ReclusterSuggestion
+  ReclusterSuggestion,
+  SourceReference
 } from './types.ts'
 import { analyzeStructure } from './structural-analyzer.ts'
 
@@ -294,40 +295,195 @@ function classifyClause(text: string): { clauseKind: 'verifiable' | 'documentary
   return { clauseKind: 'verifiable', channel, classificationReason: `验收通道=${channel}：${reason}` }
 }
 
+/** 条款 ID 提取（String.match 带 /g 不保留 lastIndex，可安全复用）。 */
+const SPEC_ID_PATTERN = /\b(?:REQ|SPEC)-[A-Z0-9_-]+\b/g
+const specIdsIn = (text: string): string[] => text.match(SPEC_ID_PATTERN) ?? []
+
+/**
+ * 规格文档角色。追溯矩阵是纯链接表（需求↔规格↔设计↔用例的双向映射），
+ * 其中的 ID 全部是引用，不定义任何义务——否则一份 265 行的追溯表会凭 ID 出现
+ * 次数虚增数十条本不存在的条款。
+ */
+type SpecDocRole = 'requirements' | 'module-spec' | 'traceability' | 'design' | 'other'
+
+function specDocRole(file: string): SpecDocRole {
+  const base = basename(file).toLowerCase()
+  if (/traceab|追溯/.test(base)) return 'traceability'
+  if (/module[_s]?spec/.test(base)) return 'module-spec'
+  if (/product[_s]?requirements|^requirements\./.test(base)) return 'requirements'
+  if (/architecture|interface[_s]?spec|register[_s]?map|microarchitecture|clock[_s]?reset|design/.test(base)) return 'design'
+  return 'other'
+}
+
+/**
+ * 文件自身的 ID 命名空间：模块规格定义 SPEC-\*，产品需求定义 REQ-\*。
+ * 定义列里出现**别的**命名空间，说明该列是"关联/追溯"性质——即便表头没写明，
+ * 也不得据此在该文档里重复定义对方文档的义务。
+ */
+function specOwnPrefix(role: SpecDocRole): 'SPEC' | 'REQ' | null {
+  if (role === 'module-spec') return 'SPEC'
+  if (role === 'requirements') return 'REQ'
+  return null
+}
+
+/** markdown 表格行 → 单元格（去首尾竖线）。 */
+function splitTableRow(line: string): string[] {
+  return line.trim().replace(/^\|/, '').replace(/\|$/, '').split('|').map((cell) => cell.trim())
+}
+
+/** 表格分隔行（|---|---|）。 */
+function isTableSeparator(cells: string[]): boolean {
+  return cells.length > 0 && cells.every((cell) => /^:?-{2,}:?$/.test(cell.replace(/\s+/g, '')))
+}
+
+/**
+ * 定义列判定：表头名恰好是 ID 列。`规格 ID`/`需求 ID`/`条款 ID`/`ID` 命中；
+ * `关联需求 ID`/`追溯规格 ID` 因带限定词不命中——它们承载的是引用而非定义。
+ */
+function isDefinitionColumn(header: string): boolean {
+  const normalized = header.replace(/\s+/g, '').replace(/[（）()]/g, '').replace(/\\/g, '')
+  return /^(?:规格|需求|条款|场景|spec|requirement|scenario)?ID$/i.test(normalized)
+}
+
+/** 单元格是否"除 ID 外无实义内容"（关联需求 ID 列、纯 ID 清单）。 */
+function isIdOnlyCell(cell: string): boolean {
+  if (!cell) return false
+  return cell.replace(SPEC_ID_PATTERN, '').replace(/[\s,，、;；/|]+/g, '').length === 0
+}
+
+/**
+ * 一次 ID 出现。score 决定该次出现能否成为条款定义：
+ * 表格定义列（3）> 列表/段落独立陈述（2）> 表格引用列与括号内引用（1）> 标题（0）。
+ * 只有 score ≥ 2 的出现才产生义务；其余作为追溯链接保留。
+ */
+interface SpecIdOccurrence {
+  id: string
+  score: number
+  /** 该次出现所属陈述的正文（表格行取义务列拼接；非表格行取整行） */
+  text: string
+  /** 整行内容（仅表格行）：分类与特征提取口径，见 requirementModel 注释 */
+  rowText?: string
+  references: string[]
+  priority?: RequirementFact['priority']
+  source: SourceReference
+}
+
+/** 验收类列：条款可判定内容所在列（通过标准/验收标准/关键约束/检查点/预期）。 */
+const ACCEPTANCE_COLUMN = /验收|通过标准|检查点|覆盖点|约束|预期|期望|acceptance|pass\s*criteria/i
+
+/**
+ * 需求/规格模型构建（表感知，定义优先）。
+ *
+ * 契约（2026-10-05）：一条义务 = 文档 ID 列里的一条陈述。
+ * - **一行一条义务**：同一行的多个 ID 是同一陈述的别名，不各自复制一份文本；
+ * - **定义优先**：一个 ID 的定义是它出现在**自身文档 ID 列**的那一次出现，
+ *   而不是它第一次被提到的那一次（追溯引用不得遮蔽正式定义）；
+ * - **追溯只做链接**：引用列/括号引用/标题里的 ID 记为 references 与 citedIn，不生成义务；
+ * - 条款正文只由文本列组成，不含 ID 字符串与表格分隔符，保证界面上可读、可追随。
+ */
 function requirementModel(workspace: string): RequirementModel {
   const files = walk(join(workspace, 'docs'), (file) => /\.(?:md|txt)$/i.test(file) && /(?:02_requirements|03_design)/i.test(file))
-  const requirements: RequirementFact[] = []
+  const occurrences: SpecIdOccurrence[] = []
   const unknowns: RequirementModel['unknowns'] = []
-  const seen = new Set<string>()
+  /** 每个 ID 被引用的位置（含引用列、括号引用、标题），供追溯反查 */
+  const citedIn = new Map<string, SourceReference[]>()
+  const addCitation = (id: string, source: SourceReference): void => {
+    const list = citedIn.get(id) ?? []
+    if (!list.some((item) => item.file === source.file && item.line === source.line)) list.push(source)
+    citedIn.set(id, list)
+  }
   for (const file of files) {
-    const text = readFileSync(file, 'utf-8')
-    for (const [index, line] of text.split(/\r?\n/).entries()) {
-      const ids = line.match(/\b(?:REQ|SPEC)-[A-Z0-9_-]+\b/g) ?? []
-      for (const id of ids) {
-        if (seen.has(id)) continue
-        seen.add(id)
-        const lineText = line.replace(/^\s*[-|#]+\s*/, '').trim().slice(0, 500)
-        const priority = /\bP[012]\b/.exec(line)?.[0] as RequirementFact['priority']
-        const source = { file: relative(workspace, file), line: index + 1 }
-        for (const clause of splitClauses(id, lineText)) {
-          // TBD 条款不进入验证矩阵（2026-09-08 契约）：待定项不是可验证义务，不生成
-          // RequirementFact（该行仍经下方 unknowns 追踪，规格缺口可见）；文本固化为
-          // 确定条款后，下次重建自动作为新条款进入 RTL 评审与验证矩阵。
-          // 判定时剥掉条款 ID——ID 片段（如 SPEC-TBD-001 里的 TBD）不构成内容待定。
-          if (TBD_PATTERN.test(clause.text.replace(/\b(?:REQ|SPEC)-[A-Z0-9_-]+\b/g, ''))) continue
-          const classification = classifyClause(clause.text)
-          requirements.push({ id: clause.clauseId, text: clause.text, features: featuresOf(clause.text), priority, kind: 'SPEC_FACT', clauseKind: classification.clauseKind, channel: classification.channel, parentId: clause.parentId, classificationReason: classification.classificationReason, source })
-        }
-      }
+    const role = specDocRole(file)
+    const ownPrefix = specOwnPrefix(role)
+    const relFile = relative(workspace, file)
+    const lines = readFileSync(file, 'utf-8').split(/\r?\n/)
+    /** 当前表格的表头单元格；遇到非表格行即作废 */
+    let headerCells: string[] | null = null
+    for (const [index, line] of lines.entries()) {
       const trimmed = line.trim()
+      const source: SourceReference = { file: relFile, line: index + 1 }
+      // TBD 追踪（与旧实现同口径）：剥掉 REQ/SPEC ID 后仍含待定措辞、且不含消解标记的行计为未知项
       const isStructural = trimmed.startsWith('|') || trimmed.startsWith('#') || trimmed.startsWith('```')
-      // 缺陷 DEFECT-PACK-001#11：与 TBD_PATTERN 同口径剥掉 REQ/SPEC ID 后，行内仍含消解语义
-      // 标记（已关闭/RESOLVED/DEC-* 等）的是结论文本，不计入 unknowns/规格缺口
-      const stripped = line.replace(/\b(?:REQ|SPEC)-[A-Z0-9_-]+\b/g, '')
-      if (!isStructural && TBD_PATTERN.test(stripped) && !TBD_RESOLUTION_PATTERN.test(stripped)) unknowns.push({ id: `UNK-${unknowns.length + 1}`, text: line.trim().slice(0, 500), source: { file: relative(workspace, file), line: index + 1 } })
+      const stripped = line.replace(SPEC_ID_PATTERN, '')
+      if (!isStructural && TBD_PATTERN.test(stripped) && !TBD_RESOLUTION_PATTERN.test(stripped)) unknowns.push({ id: `UNK-${unknowns.length + 1}`, text: trimmed.slice(0, 500), source })
+
+      if (trimmed.startsWith('|')) {
+        const cells = splitTableRow(trimmed)
+        if (isTableSeparator(cells)) continue
+        if (!headerCells) { headerCells = cells; continue }
+        // 追溯矩阵：整表都是链接，不产生义务
+        if (role === 'traceability') { for (const id of specIdsIn(trimmed)) addCitation(id, source); continue }
+        const definitionColumns = new Set(headerCells.map((header, i) => (isDefinitionColumn(header) ? i : -1)).filter((i) => i >= 0))
+        const defined: string[] = []
+        const references: string[] = []
+        for (const [column, cell] of cells.entries()) {
+          for (const id of specIdsIn(cell)) {
+            const ownNamespace = !ownPrefix || id.startsWith(`${ownPrefix}-`)
+            if (definitionColumns.has(column) && ownNamespace) defined.push(id)
+            else { references.push(id); addCitation(id, source) }
+          }
+        }
+        if (!defined.length) continue
+        const contentColumns = headerCells.map((header, i) => (definitionColumns.has(i) || isIdOnlyCell(cells[i] ?? '') ? -1 : i)).filter((i) => i >= 0)
+        const acceptanceColumns = contentColumns.filter((i) => ACCEPTANCE_COLUMN.test(headerCells?.[i] ?? ''))
+        // 义务正文优先取验收类列——接口名/方向/位宽/时钟域等是字段值而非可判定断言，
+        // 把它们拼进正文只会生成无法验证的"义务"并永久停在未闭环。
+        // 单元格之间用 ｜ 连接而非 ；：； 是断言分隔符，用它拼接会把字段边界误判成断言边界。
+        const textOf = (columns: number[]): string => [...new Set(columns.map((i) => cells[i] ?? '').filter(Boolean))].join('｜').trim().slice(0, 500)
+        const obligationText = textOf(acceptanceColumns.length ? acceptanceColumns : contentColumns)
+        if (!obligationText) continue
+        // 分类与特征提取按整行内容：验收通道（PPA/静态）是整行的属性，只看验收列会漏判
+        // 形如"输入时钟频率 200MHz"的量值措辞，使 PPA 条款误入 VERIF 完备性分母。
+        const rowText = textOf(contentColumns)
+        const priority = /\bP[012]\b/.exec(line)?.[0] as RequirementFact['priority']
+        // 契约：一行一条义务。同行其余同命名空间 ID 视为该陈述的别名，不另立义务。
+        for (const id of defined) occurrences.push({ id, score: 3, text: obligationText, rowText, references: references.filter((item) => item !== id), priority, source })
+        continue
+      }
+
+      headerCells = null
+      if (/^#{1,6}\s/.test(trimmed)) { for (const id of specIdsIn(trimmed)) addCitation(id, source); continue }
+      if (trimmed.startsWith('```')) continue
+      // 非表格行：括号内的 ID 是引用；其余位置的 ID 作为独立陈述（较低优先级）候选
+      const bracketed = new Set<string>()
+      for (const match of trimmed.matchAll(/[（(\[][^）)\]]*[）)\]]/g)) for (const id of specIdsIn(match[0])) bracketed.add(id)
+      const ids = specIdsIn(trimmed)
+      if (!ids.length) continue
+      const body = trimmed.replace(SPEC_ID_PATTERN, '').replace(/[（(\[][^）)\]]*[）)\]]/g, '').replace(/^[\s>*+-]+/, '').trim()
+      const priority = /\bP[012]\b/.exec(line)?.[0] as RequirementFact['priority']
+      const statements = ids.filter((id) => !bracketed.has(id))
+      for (const id of ids) if (bracketed.has(id)) addCitation(id, source)
+      if (!statements.length || body.length < MIN_CLAUSE_LENGTH) continue
+      for (const id of statements) occurrences.push({ id, score: 2, text: body.slice(0, 500), references: ids.filter((item) => item !== id), priority, source })
     }
   }
-  return { version: 1, generatedAt: new Date().toISOString(), requirements, unknowns, sourceFiles: files.map((file) => relative(workspace, file)) }
+
+  // 定义优先：每个 ID 取其得分最高的那次出现；同分取先出现者（文件与行序稳定）
+  const best = new Map<string, SpecIdOccurrence>()
+  for (const occurrence of occurrences) {
+    const current = best.get(occurrence.id)
+    if (!current || occurrence.score > current.score) best.set(occurrence.id, occurrence)
+  }
+  const requirements: RequirementFact[] = []
+  const unresolvedReferences: NonNullable<RequirementModel['unresolvedReferences']> = []
+  for (const [id, occurrence] of best) {
+    // 仅在引用列/括号里出现过、从未被定义的 ID：保持可追溯，但不作为验证义务
+    if (occurrence.score < 2) { unresolvedReferences.push({ id, source: occurrence.source }); continue }
+    const extras = { ...(occurrence.references.length ? { references: [...new Set(occurrence.references)] } : {}), ...(citedIn.has(id) ? { citedIn: citedIn.get(id) } : {}) }
+    // 分类与特征按整行口径（见 requirementModel 注释）；断言级拆分只影响正文粒度
+    const rowText = occurrence.rowText ?? occurrence.text
+    const classification = classifyClause(rowText)
+    const features = featuresOf(rowText)
+    for (const clause of splitClauses(id, occurrence.text)) {
+      // TBD 条款不进入验证矩阵（2026-09-08 契约）：待定项不是可验证义务，不生成
+      // RequirementFact（该行仍经 unknowns 追踪，规格缺口可见）；文本固化为
+      // 确定条款后，下次重建自动作为新条款进入 RTL 评审与验证矩阵。
+      // 判定时剥掉条款 ID——ID 片段（如 SPEC-TBD-001 里的 TBD）不构成内容待定。
+      if (TBD_PATTERN.test(clause.text.replace(SPEC_ID_PATTERN, ''))) continue
+      requirements.push({ id: clause.clauseId, text: clause.text, features, priority: occurrence.priority, kind: 'SPEC_FACT', clauseKind: classification.clauseKind, channel: classification.channel, parentId: clause.parentId, classificationReason: classification.classificationReason, source: occurrence.source, ...extras })
+    }
+  }
+  return { version: 1, generatedAt: new Date().toISOString(), requirements, unknowns, unresolvedReferences, sourceFiles: files.map((file) => relative(workspace, file)) }
 }
 
 // design.json 语义与 packages/eda-bridge/src/rtl-files.ts 的 readRtlInputs 对齐的精简内联实现。
@@ -1428,10 +1584,28 @@ function scenarioState(status: ScenarioStatus, evidence: string[], reachCount: n
   return { lifecycle, reach, judgment, evidence: evidenceState, freshness, closure }
 }
 
-function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string; failureSummary?: string; failureSignature?: string }> {
-  const hits = new Map<string, { status: ScenarioStatus; evidence: string[]; reachCount: number; assertionPassed?: boolean; coverageDelta: Record<string, number>; rtlHash?: string; failureSummary?: string; failureSignature?: string }>()
+/**
+ * 执行证据 hit（scenario_hits.json / Formal 结果归一化）。
+ * observedAt 为证据落盘时间（毫秒），用于与规格裁决时间比较先后——不得用场景的
+ * updatedAt（每次重建都会刷新）代替，否则裁决会在重建后被自己"变新"而永久压住新证据。
+ */
+interface ScenarioHit {
+  status: ScenarioStatus
+  evidence: string[]
+  reachCount: number
+  assertionPassed?: boolean
+  coverageDelta: Record<string, number>
+  rtlHash?: string
+  failureSummary?: string
+  failureSignature?: string
+  observedAt: number
+}
+
+function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, ScenarioHit> {
+  const hits = new Map<string, ScenarioHit>()
   for (const file of walk(join(workspace, 'verification', 'results'), (path) => basename(path) === 'scenario_hits.json')) {
     try {
+      const observedAt = statSync(file).mtimeMs
       const data = JSON.parse(readFileSync(file, 'utf-8')) as { rtlHash?: string; scenarios?: Array<{ id?: string; status?: ScenarioStatus; reached?: boolean; passed?: boolean; assertionPassed?: boolean; reachCount?: number; coverageDelta?: Record<string, number>; evidence?: string[]; rtlHash?: string; failureSummary?: string; failureSignature?: string }> }
       for (const item of data.scenarios ?? []) {
         if (!item.id) continue
@@ -1442,7 +1616,7 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, {
           ? 'PARTIAL'
           : requestedStatus
         // 方案 C 批 1（§3.3）：failureSummary/failureSignature 仅透传（旧数据无字段则缺省），不进 status 派生
-        hits.set(item.id, { status, evidence: [relative(workspace, file), ...validEvidence.map((path) => relative(workspace, path))], reachCount: Number(item.reachCount ?? (item.reached ? 1 : 0)), assertionPassed: item.assertionPassed ?? item.passed, coverageDelta: Object.fromEntries(Object.entries(item.coverageDelta ?? {}).filter(([, value]) => typeof value === 'number')), rtlHash: item.rtlHash ?? data.rtlHash, ...(typeof item.failureSummary === 'string' && item.failureSummary ? { failureSummary: item.failureSummary } : {}), ...(typeof item.failureSignature === 'string' && item.failureSignature ? { failureSignature: item.failureSignature } : {}) })
+        hits.set(item.id, { status, evidence: [relative(workspace, file), ...validEvidence.map((path) => relative(workspace, path))], reachCount: Number(item.reachCount ?? (item.reached ? 1 : 0)), assertionPassed: item.assertionPassed ?? item.passed, coverageDelta: Object.fromEntries(Object.entries(item.coverageDelta ?? {}).filter(([, value]) => typeof value === 'number')), rtlHash: item.rtlHash ?? data.rtlHash, observedAt, ...(typeof item.failureSummary === 'string' && item.failureSummary ? { failureSummary: item.failureSummary } : {}), ...(typeof item.failureSignature === 'string' && item.failureSignature ? { failureSignature: item.failureSignature } : {}) })
       }
     } catch { /* 无效反馈由证据审查报告处理 */ }
   }
@@ -1458,10 +1632,15 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, {
     // BUG-AIGV-001 D2/R4：陈旧 Formal 结果（rtlHash 与当前 RTL 不一致）不得覆盖同场景的当前 hit
     const stale = Boolean(result.rtlHash && currentRtlHash && result.rtlHash !== currentRtlHash)
     if (existing && (!decisive || stale)) continue
-    hits.set(result.scenarioId, { status, evidence: [...new Set([...(existing?.evidence ?? []), result.resultFile, ...result.propertyFiles, ...result.traces])], reachCount: result.outcome === 'COVERED' || result.outcome === 'PROVEN' ? Math.max(1, existing?.reachCount ?? 0) : existing?.reachCount ?? 0, assertionPassed: result.outcome === 'COUNTEREXAMPLE' ? false : result.outcome === 'PROVEN' ? true : existing?.assertionPassed, coverageDelta: existing?.coverageDelta ?? {}, rtlHash: result.rtlHash ?? existing?.rtlHash })
+    let observedAt = existing?.observedAt ?? 0
+    try { observedAt = statSync(result.resultFile).mtimeMs } catch { /* 结果文件不可读时沿用已有时间 */ }
+    hits.set(result.scenarioId, { status, evidence: [...new Set([...(existing?.evidence ?? []), result.resultFile, ...result.propertyFiles, ...result.traces])], reachCount: result.outcome === 'COVERED' || result.outcome === 'PROVEN' ? Math.max(1, existing?.reachCount ?? 0) : existing?.reachCount ?? 0, assertionPassed: result.outcome === 'COUNTEREXAMPLE' ? false : result.outcome === 'PROVEN' ? true : existing?.assertionPassed, coverageDelta: existing?.coverageDelta ?? {}, rtlHash: result.rtlHash ?? existing?.rtlHash, observedAt })
   }
   return hits
 }
+
+/** 执行派生状态：只能由仿真/Formal 证据自动派生，recordScenarioAdjudication 拒绝宣布。 */
+const EXECUTION_DERIVED_STATUS: ScenarioStatus[] = ['VERIFIED', 'FAILED', 'REACHED', 'NOT_REACHED', 'PARTIAL', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE']
 
 /**
  * 用最新 hit 证据刷新上一轮回存场景的状态（AGENT_INTENT 保留与 CLAUSE_DERIVED 幂等合并共用）：
@@ -1469,7 +1648,14 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, {
  */
 function refreshScenarioWithHits(item: VerificationScenario, hits: ReturnType<typeof scenarioHits>, rtlHash: string): VerificationScenario {
   const hit = hits.get(item.id)
-  let status = hit?.status ?? item.status
+  // 规格裁决与执行事实分开表达（2026-10-05）：recordScenarioAdjudication 写入的非执行派生状态
+  // 带 adjudicatedAt 时间戳。该裁决若晚于证据落盘时间，则裁决结论生效——历史 hit 仍保留其执行
+  // 事实（evidence/failureSummary 照常透传，失败不被涂改），但不得回写覆盖裁决状态。
+  // 反之，裁决之后新产生的证据（observedAt 更新）正常刷新状态，保证重验的有效性。
+  const adjudicatedAt = Date.parse(item.adjudicatedAt ?? '')
+  const decisionIsNewer = Number.isFinite(adjudicatedAt) && adjudicatedAt > (hit?.observedAt ?? 0)
+  const keepDecision = Boolean(hit) && decisionIsNewer && !EXECUTION_DERIVED_STATUS.includes(item.status)
+  let status = keepDecision ? item.status : (hit?.status ?? item.status)
   const rtlChanged = Boolean(item.rtlHash && item.rtlHash !== rtlHash)
   // BUG-AIGV-001 D2/R4：hit 自身 rtlHash 陈旧即判 IMPACT_UNKNOWN 并触发降级，不回退历史 state
   const staleHit = Boolean(hit && hit.rtlHash && hit.rtlHash !== rtlHash)
@@ -2379,10 +2565,9 @@ export function recordScenarioAdjudication(workspaceDir: string, adjudications: 
   const updated: string[] = []
   const missing: string[] = []
   const rejected: Array<{ scenarioId: string; reason: string }> = []
-  const EXECUTION_DERIVED: ScenarioStatus[] = ['VERIFIED', 'FAILED', 'REACHED', 'NOT_REACHED', 'PARTIAL', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE']
   const approvals = readRiskApprovals(workspace)
   const acceptable = adjudications.filter((item) => {
-    if (EXECUTION_DERIVED.includes(item.status)) {
+    if (EXECUTION_DERIVED_STATUS.includes(item.status)) {
       rejected.push({ scenarioId: item.scenarioId, reason: `执行派生状态 ${item.status} 由 run_simulation / run_formal_verification 的证据自动派生，不可宣布` })
       return false
     }
@@ -2396,16 +2581,19 @@ export function recordScenarioAdjudication(workspaceDir: string, adjudications: 
     try {
       const registry = JSON.parse(readFileSync(registryPath, 'utf-8')) as { scenarios?: Array<Record<string, unknown>> }
       const byId = new Map(acceptable.filter((item) => item.scenarioId).map((item) => [item.scenarioId, item]))
+      const adjudicatedAt = new Date().toISOString()
       for (const scenario of registry.scenarios ?? []) {
         const id = String(scenario.id ?? '')
         const adjudication = byId.get(id)
         if (!adjudication) continue
         scenario.status = adjudication.status
+        // 裁决时刻单独登记：updatedAt 会被每次重建刷新，不能作为裁决时序依据
+        scenario.adjudicatedAt = adjudicatedAt
         if (adjudication.evidence?.length) {
           const existing = Array.isArray(scenario.evidence) ? (scenario.evidence as string[]) : []
           scenario.evidence = [...new Set([...existing, ...adjudication.evidence])]
         }
-        scenario.updatedAt = new Date().toISOString()
+        scenario.updatedAt = adjudicatedAt
         updated.push(id)
       }
       writeJsonAtomic(registryPath, registry)
