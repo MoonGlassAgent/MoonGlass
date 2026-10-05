@@ -115,6 +115,7 @@ export type GuidanceMessageKey =
   | 'verification.stepDetails.waitReview'
   | 'verification.stepDetails.waitClosure'
   | 'verification.stepDetails.clausesPassed'
+  | 'verification.stepDetails.clausesPassedStale'
   | 'verification.stepDetails.waves'
   | 'verification.stepDetails.passed'
 
@@ -662,7 +663,11 @@ export function deriveVerificationSteps(state: GuidanceState | null, tr: Guidanc
 function waveDetail(wave: WaveProgressEntry, tr: GuidanceTranslate): string {
   if (wave.id === 'W1' && wave.specClauseTotal !== undefined) {
     const covered = wave.specClauseCovered ?? 0
-    return tr('verification.stepDetails.clausesPassed', { covered, total: wave.specClauseTotal, remaining: Math.max(0, wave.specClauseTotal - covered) })
+    const stale = wave.stalePassedCount ?? 0
+    const remaining = Math.max(0, wave.specClauseTotal - covered)
+    // 陈旧通过透出（RTL 修复致证据过期降级时）：明确"待回归"而非看起来像归零
+    if (stale > 0) return tr('verification.stepDetails.clausesPassedStale', { covered, total: wave.specClauseTotal, remaining, stale })
+    return tr('verification.stepDetails.clausesPassed', { covered, total: wave.specClauseTotal, remaining })
   }
   if (wave.id === 'W2' && wave.topics?.length) {
     return tr('verification.stepDetails.waves', { count: wave.topics.length, topics: wave.topics.map((topic) => `${topic.name} ${topic.passedCount}/${topic.scenarioCount}`).join(tr('verification.guidance.listJoin')) })

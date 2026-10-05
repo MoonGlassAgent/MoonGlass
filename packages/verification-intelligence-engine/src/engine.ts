@@ -1380,12 +1380,16 @@ function buildSpecMapping(requirements: RequirementModel, scenarios: Verificatio
         : mapped.some((scenario) => scenario.state.judgment === 'PASS' && scenario.state.freshness === 'CURRENT') ? 'PASSED'
           : mapped.every((scenario) => scenario.state.closure === 'WAIVED') ? 'WAIVED'
             : 'MAPPED_UNTESTED'
+    // 陈旧通过透出（2026-10 实测：RTL 修复致全量证据过期后"已验证归零"误导用户）：
+    // 映射场景存在 judgment=PASS 但 freshness≠CURRENT → 曾通过待回归；status 仍按陈旧防线保持 MAPPED_UNTESTED
+    const stalePassed = status === 'MAPPED_UNTESTED' && mapped.some((scenario) => scenario.state.judgment === 'PASS' && scenario.state.freshness !== 'CURRENT')
     const channel = clause.channel ?? 'simulation'
     return {
       clauseId: clause.id,
       parentId,
       text: clause.text,
       status,
+      ...(stalePassed ? { stalePassed: true } : {}),
       channel,
       acceptancePhase: channel === 'synthesis' ? 'SYNTH' : undefined,
       intentIds: mapped.map((scenario) => intentByScenarioId.get(scenario.id)?.id ?? '').filter(Boolean),
@@ -1403,7 +1407,8 @@ function buildSpecMapping(requirements: RequirementModel, scenarios: Verificatio
   const synthesisClauses = clauses.filter((clause) => clause.channel === 'synthesis')
   const synthesisClauseClosed = synthesisClauses.filter((clause) => clause.status === 'PASSED' || clause.status === 'WAIVED').length
   const blockedBySpecCount = scenarios.filter((item) => item.status === 'BLOCKED_BY_SPEC').length
-  return { version: 1, generatedAt: new Date().toISOString(), clauseTotal: verifClauses.length, documentaryCount, coveredClause: verifClauses.filter((clause) => clause.status === 'PASSED').length, channels, synthesisClauseTotal: synthesisClauses.length, synthesisClauseClosed, statusCounts, blockedBySpecCount, clauses }
+  const stalePassedCount = verifClauses.filter((clause) => clause.stalePassed).length
+  return { version: 1, generatedAt: new Date().toISOString(), clauseTotal: verifClauses.length, documentaryCount, coveredClause: verifClauses.filter((clause) => clause.status === 'PASSED').length, stalePassedCount, channels, synthesisClauseTotal: synthesisClauses.length, synthesisClauseClosed, statusCounts, blockedBySpecCount, clauses }
 }
 
 /**
@@ -1444,7 +1449,7 @@ function buildWaveProgress(scenarios: VerificationScenario[], specMapping: SpecM
   }
   const signoff = byWave.get('signoff') ?? []
   return [
-    { id: 'W1', wave: 'basic', label: '基础功能', status: w1Status, scenarioCount: basic.length, passedCount: basic.filter(passed).length, specClauseTotal: specMapping.clauseTotal, specClauseCovered: specMapping.coveredClause },
+    { id: 'W1', wave: 'basic', label: '基础功能', status: w1Status, scenarioCount: basic.length, passedCount: basic.filter(passed).length, specClauseTotal: specMapping.clauseTotal, specClauseCovered: specMapping.coveredClause, stalePassedCount: specMapping.stalePassedCount ?? 0 },
     { id: 'W2', wave: 'corner', label: '增补', status: statusOf(corner), scenarioCount: corner.length, passedCount: corner.filter(passed).length, topics: [...topicMap.values()] },
     { id: 'W3', wave: 'signoff', label: '签核', status: closure === 'READY_FOR_HUMAN_SIGNOFF' ? 'done' : closure === 'CONDITIONALLY_READY' ? 'in-progress' : signoff.length ? 'in-progress' : 'pending', scenarioCount: signoff.length, passedCount: signoff.filter(passed).length }
   ]

@@ -336,6 +336,8 @@ export const verification: VerificationMessages = {
     headline: '{wave} in progress: {covered} of {total} spec clauses verified',
     headlineW1: '{wave} in progress: {covered}/{total} verified, {remaining} remaining in batches{batch}',
     headlineW1Batch: ' (batch {current} of {total})',
+    /** Stale-pass surfacing: "awaiting regression" suffix on the L0 headline */
+    staleSuffix: ' ({stale} previously passed, awaiting regression)',
     needYou: 'Needs You',
     nothingForYou: 'Nothing is waiting on you right now',
     clarifySpec: 'Clarify spec ({count})',
@@ -609,6 +611,8 @@ export const verification: VerificationMessages = {
     waitReview: 'Waiting for independent evidence review',
     waitClosure: 'Waiting for prior closure',
     clausesPassed: '{covered}/{total} verified, {remaining} remaining',
+    /** Stale-pass surfacing (evidence expired after RTL fixes): say "needs regression" instead of looking like a reset */
+    clausesPassedStale: '{covered}/{total} verified, {remaining} remaining ({stale} previously passed, awaiting regression)',
     waves: '{count} waves: {topics}',
     passed: '{passed}/{total} passed'
   }

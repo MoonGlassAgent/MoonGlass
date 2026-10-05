@@ -49,6 +49,26 @@ assert.equal(stale.evidence.status, 'stale')
 assert.ok(stale.issues.includes('evidence-stale'))
 assert.equal(stale.signoff.status, 'not-ready')
 
+// ── 3b. 陈旧通过透出（stalePassed）：曾 PASS 但证据被 RTL 变更作废 → 计入待重验而非"已映射未验证" ──
+const stalePassedPosture = posture({
+  specMapping: {
+    clauseTotal: 4, coveredClause: 1, documentaryCount: 0, stalePassedCount: 2,
+    clauses: [
+      clause('SPEC-A', 'PASSED', [HIT]),
+      { ...clause('SPEC-C', 'MAPPED_UNTESTED', []), stalePassed: true },
+      { ...clause('SPEC-D', 'MAPPED_UNTESTED', []), stalePassed: true },
+      clause('SPEC-E', 'MAPPED_UNTESTED', [])
+    ]
+  }
+})
+const stalePassed = buildVerificationWorkbench(stalePassedPosture, RTL, evidenceCurrent, 'posture')
+assert.equal(stalePassed.clauses.validPassed, 1)
+assert.equal(stalePassed.clauses.needsRevalidation, 2, 'stalePassed 条款必须计入待重验')
+assert.equal(stalePassed.clauses.mappedUntested, 1, 'stalePassed 不得再计入已映射未验证（防双计）')
+assert.equal(stalePassed.clauses.passed, 3, '记录通过 = 当前有效 + 待重验')
+assert.equal(stalePassed.clauses.unknown, 0, 'stalePassed 不得落入 unknown')
+assert.equal(stalePassed.clauseDetails.find((c) => c.id === 'SPEC-C')?.stalePassed, true)
+
 // ── 4. 态势版本落后于当前 RTL：整体判过期 ──
 const staleSnapshot = buildVerificationWorkbench(posture({ rtlHash: 'RTL-OLD' }), RTL, evidenceCurrent, 'posture')
 assert.ok(staleSnapshot.issues.includes('snapshot-stale'))

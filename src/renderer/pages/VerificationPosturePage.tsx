@@ -667,10 +667,13 @@ export function VerificationPosturePage(): React.JSX.Element {
     const currentIndex = batches.findIndex((batch) => batch.some((id) => closureOf.get(id) === 'OPEN'))
     return { current: currentIndex === -1 ? batches.length : currentIndex + 1, total: batches.length }
   }, [state, scenarioRows])
+  const l0StaleSuffix = (state?.specMapping?.stalePassedCount ?? 0) > 0
+    ? t('verification.l0.staleSuffix', { stale: state!.specMapping!.stalePassedCount! })
+    : ''
   const l0Headline = currentWave && state?.specMapping
     ? currentWave.id === 'W1' && state.specMapping.clauseTotal > state.specMapping.coveredClause
-      ? t('verification.l0.headlineW1', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal, remaining: state.specMapping.clauseTotal - state.specMapping.coveredClause, batch: w1Batch ? t('verification.l0.headlineW1Batch', { current: w1Batch.current, total: w1Batch.total }) : '' })
-      : t('verification.l0.headline', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal })
+      ? t('verification.l0.headlineW1', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal, remaining: state.specMapping.clauseTotal - state.specMapping.coveredClause, batch: w1Batch ? t('verification.l0.headlineW1Batch', { current: w1Batch.current, total: w1Batch.total }) : '' }) + l0StaleSuffix
+      : t('verification.l0.headline', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal }) + l0StaleSuffix
     : `${signoff.label}：${signoff.detail}`
   const l0Pending = useMemo(() => {
     if (!state) return []

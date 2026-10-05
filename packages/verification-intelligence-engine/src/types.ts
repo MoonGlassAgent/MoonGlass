@@ -533,6 +533,8 @@ export interface WaveProgressItem {
   specClauseTotal?: number
   /** 仅 W1：有 PASS 证据的条款数 */
   specClauseCovered?: number
+  /** 仅 W1：曾通过但证据陈旧（待回归）的条款数 */
+  stalePassedCount?: number
   /** 仅 W2：按归一化主题聚合的增补批进度 */
   topics?: Array<{ name: string; scenarioCount: number; passedCount: number }>
 }
@@ -545,6 +547,9 @@ export interface SpecClauseMapping {
   parentId: string
   text: string
   status: SpecClauseStatus
+  /** 曾通过但证据陈旧：映射场景存在 judgment=PASS 且 freshness≠CURRENT 的 hit
+   * （RTL 修复后旧 PASS 过期降级时透出"待回归"，区别于从未验证；status 仍按陈旧防线保持 MAPPED_UNTESTED） */
+  stalePassed?: boolean
   /** 验收通道；旧数据无此字段按 simulation 处理。synthesis 条款标注 SYNTH 阶段验收，不进 VERIF 完备性分母 */
   channel?: SpecClauseChannel
   /** synthesis 通道条款的验收阶段标注（展示层直接消费） */
@@ -564,6 +569,8 @@ export interface SpecMappingMatrix {
   documentaryCount: number
   /** VERIF 通道中有 PASS 证据的条款数 */
   coveredClause: number
+  /** VERIF 通道中"曾通过但证据陈旧（待回归）"的条款数（RTL 修复致旧 PASS 过期时透出，区别于从未验证） */
+  stalePassedCount?: number
   /** 按验收通道的可验证条款分布（全矩阵口径） */
   channels: Record<SpecClauseChannel, number>
   /** synthesis 通道条款总数（SYNTH 阶段验收，单列，不进 VERIF 分母） */

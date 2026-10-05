@@ -23,6 +23,8 @@ export interface VerificationClauseDetail {
   status: 'unmapped' | 'mappedUntested' | 'failed' | 'passed' | 'waived' | 'unknown'
   /** 是否当前有效通过（历史通过为 false） */
   validPassed: boolean
+  /** 曾通过但证据陈旧（待回归）；引擎 stalePassed 透出 */
+  stalePassed?: boolean
   scenarioIds: string[]
   intentIds: string[]
   evidence: string[]
@@ -133,9 +135,10 @@ export function buildVerificationWorkbench(
   const newer = refs.filter((ref) => Number.isFinite(snapshotTime) && (evidence[ref]?.modifiedAt ?? 0) > snapshotTime + 1000)
   const clauseDetails: VerificationClauseDetail[] = []
   for (const clause of relevant) {
-    const key = ({ UNMAPPED: 'unmapped', MAPPED_UNTESTED: 'mappedUntested', FAILED: 'failed', PASSED: 'passed', WAIVED: 'waived' } as const)[String(clause.status) as 'PASSED']
+    // 陈旧通过（引擎透出 stalePassed）：曾 PASS 但证据被 RTL 变更作废——归入"待重验"而不是"已映射未验证"，防止双计
+    const isStalePassed = clause.stalePassed === true && clause.status !== 'PASSED'
+    const key = isStalePassed ? null : ({ UNMAPPED: 'unmapped', MAPPED_UNTESTED: 'mappedUntested', FAILED: 'failed', PASSED: 'passed', WAIVED: 'waived' } as const)[String(clause.status) as 'PASSED']
     if (key) clauses[key] += 1
-    else clauses.unknown += 1
     let validPassed = false
     if (clause.status === 'PASSED') {
       const proof = strings(clause.evidence).map(normalizeRef)
@@ -145,12 +148,17 @@ export function buildVerificationWorkbench(
       if (valid) clauses.validPassed += 1
       else clauses.needsRevalidation += 1
       validPassed = valid
+    } else if (isStalePassed) {
+      clauses.needsRevalidation += 1
     }
     clauseDetails.push({
-      id: str(clause.clauseId), parentId: str(clause.parentId), text: str(clause.text), status: key ?? 'unknown', validPassed,
+      id: str(clause.clauseId), parentId: str(clause.parentId), text: str(clause.text), status: key ?? (isStalePassed ? 'mappedUntested' : 'unknown'), validPassed,
+      stalePassed: clause.stalePassed === true,
       scenarioIds: strings(clause.scenarioIds), intentIds: strings(clause.intentIds), evidence: strings(clause.evidence)
     })
   }
+  // 记录通过（含历史）= 当前有效 + 曾通过待重验；陈旧通过经 stalePassed 透出后必须计入
+  clauses.passed = clauses.validPassed + clauses.needsRevalidation
   // 分母对账：明细条数与 clauseTotal 不一致时明确标记，不静默使用不可靠的分母
   if (clauses.total === null || relevant.length !== clauses.total) {
     issues.push('mapping-incomplete')

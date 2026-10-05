@@ -341,6 +341,8 @@ export const verification = {
     headline: '{wave}进行中：{total} 条规格条款已验证 {covered} 条',
     headlineW1: '{wave}进行中：已验证 {covered}/{total}，剩余 {remaining} 条分批推进{batch}',
     headlineW1Batch: '（当前第 {current} 批/共 {total} 批）',
+    /** 陈旧通过透出：L0 头条的"待回归"后缀 */
+    staleSuffix: '（其中 {stale} 条曾通过、待回归）',
     needYou: '需要你做的事',
     nothingForYou: '当前没有等你处理的事',
     clarifySpec: '澄清规格（{count} 项）',
@@ -614,6 +616,8 @@ export const verification = {
     waitReview: '等待独立证据审查',
     waitClosure: '等待前序闭环',
     clausesPassed: '已验证 {covered}/{total}，剩余 {remaining} 条',
+    /** 陈旧通过透出（RTL 修复致证据过期降级时）：明确"待回归"而非看起来像归零 */
+    clausesPassedStale: '已验证 {covered}/{total}，剩余 {remaining} 条（其中 {stale} 条曾通过、待回归）',
     waves: '{count} 波：{topics}',
     passed: '{passed}/{total} 通过'
   }

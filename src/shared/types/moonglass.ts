@@ -804,6 +804,8 @@ export interface WaveProgressEntry {
   /** W1 专用：可验证规格条款总数 / 已覆盖数 */
   specClauseTotal?: number
   specClauseCovered?: number
+  /** W1 专用：曾通过但证据陈旧（待回归）的条款数；引擎透出，区别于从未验证 */
+  stalePassedCount?: number
   /** W2 专用：增补波主题列表 */
   topics?: Array<{ name: string; scenarioCount: number; passedCount: number }>
 }
@@ -812,12 +814,14 @@ export interface WaveProgressEntry {
 export interface SpecMapping {
   clauseTotal: number
   coveredClause: number
+  /** 曾通过但证据陈旧（待回归）的条款数（引擎透出，区别于从未验证） */
+  stalePassedCount?: number
   /** 文档性条款数（不参与完备性分母） */
   documentaryCount?: number
   /** 无映射条款（execution-summary 精简形状） */
   unmappedClause?: Array<{ specId: string; clause: string }>
   /** 全量条款映射（posture/state 完整形状，状态机 UNMAPPED/MAPPED_UNTESTED/PASSED/FAILED/WAIVED） */
-  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[]; channel?: string }>
+  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[]; channel?: string; stalePassed?: boolean }>
 }
 
 /** Pi 当前会话累计用量；不同 Provider 可能省略费用或上下文估算。 */

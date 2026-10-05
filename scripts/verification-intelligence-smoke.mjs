@@ -254,6 +254,15 @@ const afterRtlChange = buildVerificationIntelligence(root)
 if (!afterRtlChange.verificationState.scenarios.some((scenario) => scenario.state.freshness === 'IMPACT_UNKNOWN')) throw new Error('RTL 变化后旧证据未进入 IMPACT_UNKNOWN')
 if (afterRtlChange.verificationState.closureAssessment.status !== 'NOT_READY') throw new Error('影响未知的 Scenario 不得签核')
 if (afterRtlChange.verificationState.explorationHistory.saturation.status !== 'NOT_ENOUGH_ROUNDS') throw new Error('RTL 变化后旧 Snapshot 饱和结论未失效')
+// 陈旧通过透出（2026-10：RTL 变更致证据过期时）：曾 PASSED 条款 status 按陈旧防线保持 MAPPED_UNTESTED，
+// 但以 stalePassed 透出"曾通过待回归"（区别于从未验证——工作台据此计入待重验而非映射未验证）
+const staleMapping = afterRtlChange.verificationState.specMapping
+if (staleMapping.statusCounts.PASSED !== 0) throw new Error('陈旧证据不得保持 PASSED')
+if ((staleMapping.stalePassedCount ?? 0) !== 5) throw new Error(`5 条曾通过条款应透出 stalePassedCount=5：${staleMapping.stalePassedCount}`)
+const staleClauses = staleMapping.clauses.filter((item) => item.stalePassed)
+if (staleClauses.length !== 5 || staleClauses.some((item) => item.status !== 'MAPPED_UNTESTED')) throw new Error('stalePassed 条款的 status 必须保持 MAPPED_UNTESTED（陈旧防线）')
+const w1Stale = afterRtlChange.verificationState.waveProgress.find((item) => item.id === 'W1')
+if ((w1Stale?.stalePassedCount ?? 0) !== 5) throw new Error('W1 waveProgress 未透出 stalePassedCount')
 for (let index = 0; index < 4; index++) recordExplorationRound(root, afterRtlChange.verificationState.scenarios.slice(0, 1).map((scenario) => scenario.id))
 const stalled = buildVerificationIntelligence(root)
 if (stalled.verificationState.explorationHistory.saturation.status !== 'STALLED') throw new Error('关键缺口连续无新增未进入 STALLED')
