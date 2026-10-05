@@ -2,7 +2,7 @@
 // 直接转译 src/main/services/verif-batch-verdict.ts 测试（与 agent-run-watchdog-smoke 同模式）
 import assert from 'node:assert/strict'
 import ts from 'typescript'
-import { mkdtempSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { mkdtempSync, mkdirSync, readFileSync, utimesSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pathToFileURL } from 'node:url'
@@ -64,6 +64,43 @@ writeFileSync(
   JSON.stringify({ scenarios: [{ id: 'SCN-CCCCCCCC' }] })
 )
 assert.equal(judgeBatchCompletion(workspace, ['scn-cccccccc'], batchStartedAt).missingScenarioIds.length, 0)
+
+// ── 口径分离（2026-10-05）：本批新增证据 vs 历史证据重放 ──
+// 上面的 SCN-AAAAAAAA / SCN-CCCCCCCC 登记文件落盘晚于 batchStartedAt → 属本批新增证据
+const freshVerdict = judgeBatchCompletion(workspace, ['SCN-AAAAAAAA'], batchStartedAt)
+assert.deepEqual(freshVerdict.freshScenarioIds, ['SCN-AAAAAAAA'])
+assert.deepEqual(freshVerdict.replayedScenarioIds, [])
+
+// 把登记文件回拨到批次开始之前 → 同一场景变成"历史证据重放"，本批无新增执行证据
+const replayedDir = join(workspace, 'verification', 'results', 'replayed')
+mkdirSync(replayedDir, { recursive: true })
+const replayedFile = join(replayedDir, 'scenario_hits.json')
+writeFileSync(replayedFile, JSON.stringify({ scenarios: [{ id: 'SCN-DDDDDDDD', reached: true, passed: false }] }))
+const past = new Date(Date.parse(batchStartedAt) - 3600_000)
+utimesSync(replayedFile, past, past)
+
+const replayed = judgeBatchCompletion(workspace, ['SCN-DDDDDDDD'], batchStartedAt)
+// complete 仍成立：批次会话契约的要求是"有登记 + 态势已重建"，不因重放而变（诊断类批次按约定交付即为完成）
+assert.equal(replayed.complete, true)
+assert.equal(replayed.missingScenarioIds.length, 0)
+assert.deepEqual(replayed.replayedScenarioIds, ['SCN-DDDDDDDD'])
+assert.deepEqual(replayed.freshScenarioIds, [])
+assert.ok(replayed.reasons.some((reason) => reason.includes('未取得新增执行证据')), '空转批次必须给出结构化说明')
+
+// 部分新增 + 部分重放：reasons 只点出重放的那些，不误报整批无证据
+const partial = judgeBatchCompletion(workspace, ['SCN-AAAAAAAA', 'SCN-DDDDDDDD'], batchStartedAt)
+assert.deepEqual(partial.freshScenarioIds, ['SCN-AAAAAAAA'])
+assert.deepEqual(partial.replayedScenarioIds, ['SCN-DDDDDDDD'])
+assert.ok(partial.reasons.some((reason) => reason.includes('仅有历史登记') && !reason.includes('未取得新增执行证据')))
+
+// 同一场景在多个文件中登记时取最新一份：旧文件回拨不影响"本批新增"的判定
+const bothDir = join(workspace, 'verification', 'results', 'both')
+mkdirSync(bothDir, { recursive: true })
+const bothFile = join(bothDir, 'scenario_hits.json')
+writeFileSync(bothFile, JSON.stringify({ scenarios: [{ id: 'SCN-DDDDDDDD' }] }))
+const latest = judgeBatchCompletion(workspace, ['SCN-DDDDDDDD'], batchStartedAt)
+assert.deepEqual(latest.freshScenarioIds, ['SCN-DDDDDDDD'], '较新的登记应覆盖较旧的一份')
+assert.deepEqual(latest.replayedScenarioIds, [])
 
 // 批次选择：计划文件缺失返回 null（由编排层重建后重读）；存在时取前 limit 个
 assert.equal(readExecutionPlanBatch(workspace, 3), null)

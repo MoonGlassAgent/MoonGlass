@@ -26,7 +26,9 @@ const failed = { ...state, regressions: [{ passed: false, testsTotal: 12, covera
 if (deriveVerificationActions(failed)[0]?.id !== 'fix-regressions') throw new Error('失败证据没有最高行动优先级')
 
 const closed = { ...state, criticalOpen: [], verificationIntents: [{ ...state.verificationIntents[0], status: 'VERIFIED', evidence: ['result.xml'] }], coverageHoles: [] }
-if (deriveVerificationSteps(closed).at(-1)?.status !== 'completed') throw new Error('完整证据未进入签核完成状态')
+// 口径修正（2026-10-05）：闭环条件满足只表示"可以进入人工审查"，不等于"签核已完成"。
+// 旧断言要求此处为 completed，等于在没有人工签核的情况下显示"签核完成"——已改为 running。
+if (deriveVerificationSteps(closed).at(-1)?.status !== 'running') throw new Error('闭环完成后签核步骤应为"等待审查"（running），不得标为已完成')
 
 const supplementalError = { ...closed, formalResults: [{ status: 'ERROR', mode: 'bmc', obligation: 'supplemental', classification: 'C6_FRONTEND_COMPATIBILITY' }] }
 if (deriveVerificationSteps(supplementalError).find((item) => item.id === 'formal')?.status === 'blocked') throw new Error('补强 Formal 工具错误不应单独阻断签核')
