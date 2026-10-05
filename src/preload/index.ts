@@ -125,6 +125,7 @@ const api: MoonGlassApi = {
     writeText: (projectId: string, relPath: string, content: string) =>
       ipcRenderer.invoke(IPC.Fs.WriteText, projectId, relPath, content),
     verificationStatus: (projectId: string) => ipcRenderer.invoke(IPC.Fs.VerificationStatus, projectId),
+    verificationWorkbench: (projectId: string) => ipcRenderer.invoke(IPC.Fs.VerificationWorkbench, projectId),
     openExternal: (projectId: string, relPath: string) => ipcRenderer.invoke(IPC.Fs.OpenExternal, projectId, relPath),
     watchVerification: (projectId: string) => ipcRenderer.invoke(IPC.Fs.WatchVerification, projectId),
     unwatchVerification: (projectId: string) => ipcRenderer.invoke(IPC.Fs.UnwatchVerification, projectId),

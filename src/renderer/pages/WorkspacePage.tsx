@@ -40,6 +40,8 @@ import { FileTree } from '../components/FileTree'
 import { CodeViewer, fileLanguage } from '../components/CodeViewer'
 import { MarkdownPreview } from '../components/MarkdownPreview'
 import { VerificationGuideCard } from '../components/VerificationGuideCard'
+import { WorkbenchConclusion } from '../components/WorkbenchConclusion'
+import type { VerificationWorkbenchSnapshot } from '@shared/verification-workbench'
 import {
   FixWindowBanner,
   RunLoopCard,
@@ -104,6 +106,8 @@ const WAVE_GLOSSARY_KEYS: Record<string, MessageKey> = {
 function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasic, onCorner, onSignoff }: { projectId: string; agentStreaming: boolean; onAction: (prompt: string) => void; onPlanEnv: () => void; onBasic: () => void; onCorner: () => void; onSignoff: () => void }): React.JSX.Element {
   const { t } = useTranslation()
   const [state, setState] = useState<GuidanceState | null>(null)
+  // 验证结论快照（P1）：主进程侧核对当前 RTL 版本与证据文件，与向导卡共用同一次重载
+  const [conclusion, setConclusion] = useState<VerificationWorkbenchSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
   // 防重入：进行中的加载不重复进入，期间到达的变更推送合并为一次尾随重载
   const loadingRef = useRef(false)
@@ -122,6 +126,10 @@ function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasi
       try { data = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-state.json') as GuidanceState | null } catch { data = null }
     }
     setState(data)
+    // 结论快照单独取：IPC 失败时置 null（界面显示"暂不可用"），与"尚未生成"区分
+    try {
+      setConclusion(await window.moonglass.fs.verificationWorkbench(projectId))
+    } catch { setConclusion(null) }
     loadingRef.current = false
     setLoading(false)
     if (pendingReloadRef.current) { pendingReloadRef.current = false; void load() }
@@ -146,6 +154,9 @@ function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasi
         <button onClick={onCorner} disabled={agentStreaming} title={t('workspace.verifBar.cornerTitle')} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-violet-700 hover:bg-violet-50 disabled:opacity-50">{t('workspace.verifBar.corner')}</button>
         <button onClick={onSignoff} disabled={agentStreaming} title={t('workspace.verifBar.signoffTitle')} className="px-2.5 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">{t('workspace.verifBar.signoff')}</button>
       </div>} />
+    {/* 验证结论（P1）：条款计数（记录通过 vs 当前有效通过）+ 证据有效性 + 签核状态；
+        只读投影，缺评估/证据过期时显示"未确认"而非绿色就绪 */}
+    <WorkbenchConclusion snapshot={conclusion} />
   </div>
 }
 
@@ -267,6 +278,13 @@ export function WorkspacePage(): React.JSX.Element {
   const [sidebarW, setSidebarW] = useState(200)
 
   const [mainTab, setMainTab] = useState<MainTab>('chat')
+  // 「验证运行」只在 VERIF 阶段存在：非该阶段隐藏页签，并把选中回退到对话，
+  // 避免在其它阶段停留在一个空的验证运行面板上（阶段切换不清空 openFiles 等其它页签）。
+  const showVerifRun = project?.currentPhase === 'VERIF'
+  const visibleMainTab = mainTab === 'verifrun' && !showVerifRun ? 'chat' : mainTab
+  useEffect(() => {
+    if (!showVerifRun) setMainTab((tab) => (tab === 'verifrun' ? 'chat' : tab))
+  }, [showVerifRun])
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
   const [treeTick, setTreeTick] = useState(0)
   const [verifLog, setVerifLog] = useState<string[]>([])
@@ -1385,14 +1403,16 @@ export function WorkspacePage(): React.JSX.Element {
               >
                 {t('workspace.tabs.chat')}
               </button>
-              <button
-                onClick={() => setMainTab('verifrun')}
-                className={`shrink-0 rounded-t px-3 py-1.5 text-xs ${
-                  mainTab === 'verifrun' ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
-                }`}
-              >
-                {t('workspace.tabs.verifRun')}
-              </button>
+              {showVerifRun && (
+                <button
+                  onClick={() => setMainTab('verifrun')}
+                  className={`shrink-0 rounded-t px-3 py-1.5 text-xs ${
+                    visibleMainTab === 'verifrun' ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
+                  }`}
+                >
+                  {t('workspace.tabs.verifRun')}
+                </button>
+              )}
               <SessionTabs projectId={project.id} onActivate={() => setMainTab('chat')} />
               {openFiles.map((f) => (
                 <span
@@ -1411,13 +1431,13 @@ export function WorkspacePage(): React.JSX.Element {
 
             {/* 内容区 */}
             <div className="workspace-content flex-1 min-h-0">
-              <div className={mainTab === 'chat' ? 'h-full' : 'hidden'}>
+              <div className={visibleMainTab === 'chat' ? 'h-full' : 'hidden'}>
                 <ChatPanel projectId={project.id} phase={project.currentPhase} loopDecisions={verifRunData?.decisions ?? []} onLoopDecision={handleRunLoopDecide} />
               </div>
 
               {/* 验证运行页签（方案 C + 外层循环批 4）：外层循环卡置顶，批次进度/修复卡在下；
                   手动动作（开始基础验证）与自动循环互斥（§7.2 方向盘唯一） */}
-              <div className={mainTab === 'verifrun' ? 'h-full overflow-y-auto p-3' : 'hidden'}>
+              <div className={visibleMainTab === 'verifrun' ? 'h-full overflow-y-auto p-3' : 'hidden'}>
                 <div className="space-y-3">
                   <RunLoopCard
                     runLoop={verifRunData?.runLoop ?? null}

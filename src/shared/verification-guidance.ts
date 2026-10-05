@@ -650,7 +650,10 @@ export function deriveVerificationSteps(state: GuidanceState | null, tr: Guidanc
     { id: 'risk', label: tr('verification.stepLabels.risk'), status: closure === 100 ? 'completed' : intents.length ? 'running' : 'pending', detail: tr('verification.stepDetails.intentClosure', { closed, total: intents.length }) },
     { id: 'coverage', label: tr('verification.stepLabels.coverage'), status: blockingHoles === 0 && intents.length ? 'completed' : blockingHoles ? 'blocked' : 'pending', detail: blockingHoles ? tr('verification.stepDetails.blocking', { count: blockingHoles }) : tr('verification.stepDetails.noBlocking') },
     { id: 'formal', label: tr('verification.stepLabels.formal'), status: formalFailed ? 'blocked' : supplementalFormalErrors ? 'running' : s.formalResults.length ? 'completed' : 'pending', detail: formalFailed ? tr('verification.stepDetails.formalFailed', { count: formalFailed }) : supplementalFormalErrors ? tr('verification.stepDetails.formalToolLimited', { count: supplementalFormalErrors }) : s.formalResults.length ? tr('verification.stepDetails.formalEvidence', { count: s.formalResults.length }) : tr('verification.stepDetails.formalRun') },
-    { id: 'signoff', label: tr('verification.stepLabels.signoff'), status: closure === 100 && regressionsPassed && blockingHoles === 0 && formalFailed === 0 ? 'completed' : 'pending', detail: closure === 100 && blockingHoles === 0 ? tr('verification.stepDetails.waitReview') : tr('verification.stepDetails.waitClosure') }
+    // 签核步骤只有"人已签核"才算 completed。闭环条件满足只意味着可以进入人工审查，
+    // 因此状态是 running（等待审查），不是 completed——旧实现把它标成 completed 而 detail
+    // 同时写"等待审查"，等于在没有签核的情况下显示"签核已完成"（界面结论不可信来源之一）。
+    { id: 'signoff', label: tr('verification.stepLabels.signoff'), status: closure === 100 && regressionsPassed && blockingHoles === 0 && formalFailed === 0 ? 'running' : 'pending', detail: closure === 100 && blockingHoles === 0 ? tr('verification.stepDetails.waitReview') : tr('verification.stepDetails.waitClosure') }
   ]
   return steps
 }

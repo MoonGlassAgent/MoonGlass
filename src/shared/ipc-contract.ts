@@ -126,6 +126,8 @@ export const IPC = {
     WriteText: 'fs:write-text',
     OpenExternal: 'fs:open-external',
     VerificationStatus: 'fs:verification-status',
+    /** 验证工作台结论快照（只读投影：条款计数 + 证据有效性 + 签核状态，主进程侧核对当前 RTL 版本） */
+    VerificationWorkbench: 'fs:verification-workbench',
     /** 订阅/退订项目 verification/ 目录监视（引用计数；仅 .json 变更触发推送） */
     WatchVerification: 'fs:watch-verification',
     UnwatchVerification: 'fs:unwatch-verification',
@@ -291,6 +293,11 @@ export interface MoonGlassApi {
     writeText(projectId: string, relPath: string, content: string): Promise<boolean>
     /** 读取验证环境与用例执行状态（环境是否搭建、已执行/未完成用例及 pass/fail）。 */
     verificationStatus(projectId: string): Promise<import('./types/moonglass').VerificationRunStatus>
+    /**
+     * 验证工作台结论快照：区分"记录通过"与"当前有效通过"，标注证据缺失/过期/待重验，
+     * 并在缺少评估时给出 unknown 而不是"零 blocker 即就绪"。只读，不触发调度。
+     */
+    verificationWorkbench(projectId: string): Promise<import('./verification-workbench').VerificationWorkbenchSnapshot | null>
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
     /** 在系统浏览器/默认程序中打开项目文件；路径必须相对项目工作区。 */
     openExternal(projectId: string, relPath: string): Promise<boolean>

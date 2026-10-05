@@ -12,6 +12,8 @@ import type { ApplicationServices } from './core/application'
 import { pathToFileURL } from 'node:url'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
 import { GATE_RULES } from './services/PhaseEngine'
+import { currentRtlHashOf, readWorkbenchEvidence, readWorkbenchSource } from './services/verification-evidence-reader'
+import { buildVerificationWorkbench, workbenchEvidenceRefs } from '@shared/verification-workbench'
 
 export function registerIpcHandlers(services: ApplicationServices): void {
   const { projects, phaseEngine, python, eda, llm, agent, files, coverage, designBrowser, processLibraries, ipLibraries } = services
@@ -243,7 +245,19 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   )
 
   ipcMain.handle(IPC.Phase.Reset, async (_e, projectId: string, phase: Phase, mode: PhaseResetMode, options?: { resetDownstream?: boolean }) => {
+    // 阶段重置会连 verification/ 一起清除（PHASE_ARTIFACT_PATHS 含 run-loop.json 与 decision-ledger.json）。
+    // 若该项目的验证运行循环仍在内存中存活，它下一拍就会把刚清理的账本重新写回（账本缺失时
+    // updateVerifRunLoopLedger 会新建并重建目录），用户看到的现象是"产物已全删、重新进入验证，
+    // 却仍从上次中断处继续"。必须先停稳循环再清产物。
+    // abort 只停批次编排（stopVerifBatches），不含运行循环，故这里单独停止并等待退出。
+    await agent.stopVerifRunLoopAndWait(projectId).catch((error) => {
+      console.warn('[ipc] 阶段重置前停止验证运行循环失败（继续执行重置）', error)
+    })
     await agent.abort(projectId).catch(() => undefined)
+    // 释放 verification/ 目录监视器：Windows 上 fs.watch(recursive) 持有目录句柄，不释放时
+    // 目录删除只能进入 delete pending（目录项仍在但无法打开、rmSync 完不成），账本随之残留，
+    // 重新进入验证阶段就会继续显示上一轮状态。渲染端订阅会在目录重建后自动恢复。
+    files.forceReleaseVerificationWatch(projectId)
     if (mode === 'purge') agent.clearPhaseSessions(projectId, phase)
     const result = projects.resetPhase(projectId, phase, mode, options)
     if (mode === 'archive') {
@@ -353,6 +367,20 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Fs.VerificationStatus, (_e, projectId: string) =>
     files.verificationRunStatus(projectId)
   )
+
+  // 验证工作台结论（P1）：主进程侧核对当前 RTL 版本与证据文件，渲染端只做展示。
+  // 只读：不写任何项目产物、不触发调度；姿态不可用时返回 null（渲染端据此显示"未生成"，
+  // 而不是"零 blocker 即就绪"）。
+  ipcMain.handle(IPC.Fs.VerificationWorkbench, (_e, projectId: string) => {
+    const workspace = projects.workspaceDir(projectId)
+    const { raw, source } = readWorkbenchSource(workspace)
+    const rtlHash = currentRtlHashOf(workspace)
+    // 无姿态/不可解析时返回"无数据"快照，而不是 null：null 留给 IPC 层失败，
+    // 二者在界面上的含义不同（"尚未生成" vs "读取失败"），不能混为一谈。
+    if (raw === null) return buildVerificationWorkbench({}, rtlHash, {}, null)
+    const refs = workbenchEvidenceRefs(raw)
+    return buildVerificationWorkbench(raw, rtlHash, readWorkbenchEvidence(workspace, refs), source)
+  })
 
   ipcMain.handle(IPC.Fs.WatchVerification, (_e, projectId: string) => {
     files.watchVerification(projectId)

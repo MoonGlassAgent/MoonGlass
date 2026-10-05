@@ -610,13 +610,19 @@ export function VerificationPosturePage(): React.JSX.Element {
     return { intents: intents.length, closed, closure: intents.length ? Math.round(closed * 100 / intents.length) : 0, failedFormal, failedRegression, blockingHoles, highGaps, blockers }
   }, [state])
 
+  // 签核结论推导：只认显式评估结果（closureAssessment.status 的三态）。
+  // 缺失或无法识别的评估一律"未确认"——旧实现用 summary.blockers === 0 推断"具备签核条件"（绿色），
+  // 让"没有评估且没有阻断记录"看起来像"验证已通过"，是界面结论不可信的直接来源。
+  // 派生阻断记录仍然算阻断（bad），但"零阻断 + 无评估"绝不能再被判成就绪。
+  const closureAssessment = state?.closureAssessment
+  const closureStatus = closureAssessment?.status
   const signoff = !state ? { label: t('verification.signoff.noDataLabel'), detail: t('verification.signoff.noDataDetail'), tone: 'warn' as const }
-    : state.closureAssessment?.status === 'READY_FOR_HUMAN_SIGNOFF' ? { label: t('verification.signoff.awaitingHumanLabel'), detail: t('verification.signoff.awaitingHumanDetail'), tone: 'good' as const }
-      : state.closureAssessment?.status === 'CONDITIONALLY_READY' ? { label: t('verification.signoff.conditionalLabel'), detail: t('verification.signoff.conditionalDetail', { count: state.closureAssessment.residualRisks.length + state.closureAssessment.warnings.length }), tone: 'warn' as const }
-        : state.closureAssessment?.status === 'NOT_READY' ? { label: t('verification.signoff.notReadyLabel'), detail: t('verification.signoff.notReadyDetail', { count: state.closureAssessment.blockers.length }), tone: 'bad' as const }
-    : summary.intents === 0 ? { label: t('verification.signoff.staleModelLabel'), detail: t('verification.signoff.staleModelDetail'), tone: 'warn' as const }
-      : summary.blockers === 0 ? { label: t('verification.signoff.readyLabel'), detail: t('verification.signoff.readyDetail'), tone: 'good' as const }
-      : { label: t('verification.signoff.notReadyLabel'), detail: t('verification.signoff.blockedDetail', { count: summary.blockers }), tone: 'bad' as const }
+    : closureStatus === 'READY_FOR_HUMAN_SIGNOFF' ? { label: t('verification.signoff.awaitingHumanLabel'), detail: t('verification.signoff.awaitingHumanDetail'), tone: 'good' as const }
+      : closureStatus === 'CONDITIONALLY_READY' ? { label: t('verification.signoff.conditionalLabel'), detail: t('verification.signoff.conditionalDetail', { count: (closureAssessment?.residualRisks.length ?? 0) + (closureAssessment?.warnings.length ?? 0) }), tone: 'warn' as const }
+        : closureStatus === 'NOT_READY' ? { label: t('verification.signoff.notReadyLabel'), detail: t('verification.signoff.notReadyDetail', { count: closureAssessment?.blockers.length ?? 0 }), tone: 'bad' as const }
+          : summary.intents === 0 ? { label: t('verification.signoff.staleModelLabel'), detail: t('verification.signoff.staleModelDetail'), tone: 'warn' as const }
+            : summary.blockers > 0 ? { label: t('verification.signoff.notReadyLabel'), detail: t('verification.signoff.blockedDetail', { count: summary.blockers }), tone: 'bad' as const }
+              : { label: t('verification.signoff.unconfirmedLabel'), detail: t('verification.signoff.unconfirmedDetail'), tone: 'warn' as const }
 
   // locale 变化时引导文案需重新推导（t 读取当前语言）
   const actions = useMemo(() => state ? deriveVerificationActions(state) : [], [state, locale])

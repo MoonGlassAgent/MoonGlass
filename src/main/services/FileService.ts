@@ -191,6 +191,18 @@ export class FileService implements MoonGlassService {
     this.releaseVerificationWatcher(projectId, false)
   }
 
+  /**
+   * 强制释放监视，不看引用计数。供"即将删除 verification/ 目录"的调用方（阶段重置）使用。
+   *
+   * Windows 上 fs.watch(recursive) 通过 ReadDirectoryChangesW 持有目录句柄；句柄未释放时
+   * 目录删除只能进入 delete pending 状态——目录项仍在父目录索引中（existsSync 为真），但任何
+   * 打开操作都被拒绝，且 rmSync 无法完成。用户看到的现象是"产物删不掉、账本残留，重新进入
+   * 验证阶段仍从上一轮状态继续"。渲染端的订阅会在目录重新出现后按既有重试逻辑自动恢复。
+   */
+  forceReleaseVerificationWatch(projectId: string): void {
+    this.releaseVerificationWatcher(projectId, true)
+  }
+
   private ensureVerificationWatcher(projectId: string, entry: VerificationWatchEntry): void {
     if (!this.verificationWatchers.has(projectId)) return
     let verificationDir: string
