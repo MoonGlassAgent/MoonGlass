@@ -380,11 +380,11 @@ export function noProgressStreak(lastBeats: VerifRunLoopBeatEntry[]): number {
 export function checkRunLoopBudget(ledger: VerifRunLoopLedger, noProgressLimit: number, nowIso: string): RunLoopBudgetStatus {
   const streak = noProgressStreak(ledger.lastBeats)
   if (streak >= noProgressLimit) {
-    return { exceeded: true, reason: 'rule-stall', detail: `连续 ${streak} 拍无进展（上限 ${noProgressLimit} 拍）` }
+    return { exceeded: true, reason: 'rule-stall', detail: `连续 ${streak} 步无进展（上限 ${noProgressLimit} 步）` }
   }
   const budget = ledger.budget
   if (budget.beats >= budget.maxBeats) {
-    return { exceeded: true, reason: 'max-beats', detail: `拍数 ${budget.beats}/${budget.maxBeats}` }
+    return { exceeded: true, reason: 'max-beats', detail: `循环步数 ${budget.beats}/${budget.maxBeats}` }
   }
   if (budget.tokensUsed >= budget.maxTokens) {
     return { exceeded: true, reason: 'max-tokens', detail: `token ${budget.tokensUsed}/${budget.maxTokens}` }
@@ -526,7 +526,7 @@ export function runLoopEscalationTitle(trigger: RunLoopEscalationTrigger): strin
  */
 export function buildRunLoopEscalationPrompt(trigger: RunLoopEscalationTrigger, detail: string): string {
   const background = trigger === 'rule-stall'
-    ? '规则层已连续多拍无进展（规则空转），循环升级至决策层，请你归因停滞原因并提出下一步方向。'
+    ? '规则层已连续多步无进展（规则空转），循环升级至决策层，请你归因停滞原因并提出下一步方向。'
     : '循环已熔断暂停，升级至决策层，请你归因熔断原因并提出恢复方案。'
   return [
     '你是 MoonGlass 验证运行循环的决策升级会话：只做归因与提案，不执行验证工作（仿真/Formal/批次由批次会话承担，禁止代跑）。',

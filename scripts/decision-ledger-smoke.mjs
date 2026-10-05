@@ -201,7 +201,8 @@ assert.equal(validateDecisionForApproval(makeDecision({
 // E9. 预算三维度超限 → 拒绝
 const beatsOut = createRunLoopLedger(baseOptions, NOW, true)
 beatsOut.budget.beats = beatsOut.budget.maxBeats
-assert.ok(validateDecisionForApproval(goodDerived, beatsOut.budget, NOW).reason.includes('拍数'))
+// 拒绝原因用界面术语「循环步数」（2026-10-05 术语统一：界面不再用自造的"拍"）
+assert.ok(validateDecisionForApproval(goodDerived, beatsOut.budget, NOW).reason.includes('循环步数'))
 const tokensOut = createRunLoopLedger(baseOptions, NOW, true)
 tokensOut.budget.tokensUsed = tokensOut.budget.maxTokens
 assert.ok(validateDecisionForApproval(goodDerived, tokensOut.budget, NOW).reason.includes('token'))

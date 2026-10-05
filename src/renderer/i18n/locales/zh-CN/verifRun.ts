@@ -1,6 +1,10 @@
 /**
  * 验证运行中心（VerifRunPanel / 根因链 / 诊断时间线）文案。
  * 批次进度、修复卡片、修复窗口横幅、根因链视图、诊断账本时间线。
+ *
+ * 术语：循环「步」= 循环完成一次「读态势 → 推导动作 → 派发执行 → 判定结果」的完整回合
+ * （内部与账本字段仍称 beat；界面统一称"步"，不再使用自造的"拍"）。
+ * 注意一「步」不等于一件事：批次类动作的一步内部可含多批（默认最多 20 批）。
  */
 export const verifRun = {
   tabTitle: '验证运行',
@@ -33,9 +37,9 @@ export const verifRun = {
     empty: '尚未启动自动验证循环',
     wave: '当前波段 {wave}',
     waveNone: '当前波段 —',
-    beat: '第 {n} 拍',
+    beat: '第 {n} 步',
     currentTitle: '当前动作',
-    noCurrent: '本拍尚未派发动作',
+    noCurrent: '本步尚未派发动作',
     sessionLabel: '会话 {name}',
     state: {
       idle: '空闲',
@@ -55,7 +59,7 @@ export const verifRun = {
       llm: 'LLM',
       human: '人工'
     },
-    beatsBudget: '拍数',
+    beatsBudget: '循环步数',
     tokensBudget: 'Token',
     wallBudget: '墙钟',
     minutesSuffix: ' 分钟',
@@ -63,7 +67,7 @@ export const verifRun = {
     pauseBreakerTitle: '已熔断',
     pauseSince: '自 {time}',
     pendingTitle: '待办项',
-    beatsTitle: '最近节拍（新在前，绿点=推进）',
+    beatsTitle: '最近步骤（新在前，绿点=推进）',
     decisionsTitle: '决策请示',
     proposedEmpty: '暂无待裁决的决策提案',
     /** 会话底部循环请示区的副标题提示 */
@@ -92,15 +96,15 @@ export const verifRun = {
     forceRestart: '强制停止并重启',
     startDialog: {
       title: '启动自动验证循环',
-      description: '循环按拍自动推导并执行验证动作（规划/批次/修复/签核/门禁），需要人工时结构化暂停、答完自动续跑。预算是无人值守的硬护栏，超限即熔断。',
-      maxBeats: '拍数上限',
-      maxBeatsHint: '最多自动执行的拍数（默认 50）',
+      description: '循环逐步自动推导并执行验证动作（规划/批次/修复/签核/门禁），需要人工时结构化暂停、答完自动续跑。预算是无人值守的硬护栏，超限即熔断。',
+      maxBeats: '循环步数上限',
+      maxBeatsHint: '最多自动执行多少步；每步 = 一次验证动作派发（批次类动作的一步内部可含多批），默认 50',
       maxTokens: 'Token 上限',
       maxTokensHint: '本次循环累计 token 上限（默认 5,000,000）',
       maxWallMinutes: '墙钟上限（分钟）',
       maxWallMinutesHint: '循环最长运行时间（默认 240 分钟）',
-      noProgressLimit: '连续无进展上限（拍）',
-      noProgressLimitHint: '连续多少拍无进展即熔断升级（默认 3）',
+      noProgressLimit: '连续无进展上限（步）',
+      noProgressLimitHint: '连续多少步无进展即熔断升级（默认 3）',
       confirm: '启动'
     }
   },

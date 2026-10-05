@@ -191,7 +191,7 @@ export const workspace = {
     managedTaskSessionFailed: '一键托管：开启任务会话失败，沿用当前会话：{error}',
     managedChangeFailed: '一键托管：{phase} 变更响应异常，记录风险并继续：{error}',
     managedRunLoopStarted: '一键托管：验证运行循环已启动（默认预算），等待循环跑到终态或暂停…',
-    managedRunLoopCompleted: '一键托管：验证运行循环已完成（{beats} 拍），继续托管推进门禁/QA',
+    managedRunLoopCompleted: '一键托管：验证运行循环已完成（{beats} 步），继续托管推进门禁/QA',
     managedRunLoopHalted: '一键托管：验证运行循环停在「{state}」（{reason}），托管停止；请前往"验证运行"页签处置，恢复循环后可手动推进',
     managedRunLoopStopFailed: '停止验证运行循环失败：{error}',
     runLoopStarted: '验证运行循环已启动',

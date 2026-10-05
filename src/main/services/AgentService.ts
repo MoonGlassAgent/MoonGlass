@@ -888,7 +888,10 @@ argument-hint: "<模块名>"
         '--mode', 'rpc',
         '-a', // 信任项目目录（.pi/APPEND_SYSTEM.md 生效的前提）
         '--session', sessionFile,
-        '--name', `${projectName} / ${phase}`,
+        // 既有会话文件以其磁盘 session_info 标签为名（任务会话自定义名不被默认名覆盖——
+        // pi 启动时会把 --name 追加为新 session_info，listSessions 按最后一条取名）；
+        // 仅全新会话用「项目 / 阶段」默认名
+        '--name', this.storedSessionLabel(sessionFile) ?? `${projectName} / ${phase}`,
         '-e', join(this.bridgeDir, 'moonglass-providers.ts'),
         '-e', join(this.bridgeDir, 'moonglass-tools.ts') // Phase 4：芯片专用工具集
       ],
@@ -1634,7 +1637,8 @@ argument-hint: "<模块名>"
     }
 
     const targetFile = resolve(join(this.sessionDir(projectId), `session-${logicalSessionName}.jsonl`))
-    if (!existsSync(targetFile)) throw new Error(`[agent-service] 会话文件不存在: ${targetFile}`)
+    // 文件不存在时容许切换：spawn 路径会由 pi 自动创建空白会话（closeSession 关闭当前活动会话
+    // 时依赖此行为切回主会话——主会话文件可能从未产生或已被留存扫描清理）
     if (resolve(current.currentSessionFile) === targetFile) {
       this.modelStore.setActiveSession(projectId, current.activeSessionName)
       return {
@@ -1716,7 +1720,13 @@ argument-hint: "<模块名>"
     const dir = resolve(this.sessionDir(projectId))
     const targetFile = resolve(dir, `session-${sessionName}.jsonl`)
     if (dirname(targetFile) !== dir) throw new Error('会话路径越界')
-    if (!existsSync(targetFile)) throw new Error(`会话文件不存在: ${targetFile}`)
+    if (!existsSync(targetFile)) {
+      // 幂等关闭：文件已被归档/清理时关闭视为成功——仅清理模型登记；
+      // 若它是当前活动会话，兜底切回阶段主会话（不存在则由 switchSession 新建空白会话）
+      this.modelStore.delete(projectId, sessionNameFromFile(targetFile))
+      if (resolve(session.currentSessionFile) === targetFile) return this.switchSession(projectId, phaseMainName)
+      return this.ensureSession(projectId)
+    }
     // 正在运行的 VERIF 批次会话由编排循环托管：直接删除会让批次 settle 等待悬空，必须先停止托管
     const activeBatch = this.activeVerifBatches.get(projectId)
     if (activeBatch && resolve(activeBatch.currentSessionFile) === targetFile) {
@@ -2585,7 +2595,7 @@ argument-hint: "<模块名>"
     this.verifRunLoopGeneration.set(workspace, initial.loopId)
     this.emit(projectId, {
       type: 'status',
-      message: `验证运行循环已启动（预算：拍数 ≤${resolved.maxBeats}，token ≤${resolved.maxTokens}，墙钟 ≤${resolved.maxWallMinutes} 分钟，连续无进展 ≤${resolved.noProgressLimit} 拍）`
+      message: `验证运行循环已启动（预算：循环步数 ≤${resolved.maxBeats}，token ≤${resolved.maxTokens}，墙钟 ≤${resolved.maxWallMinutes} 分钟，连续无进展 ≤${resolved.noProgressLimit} 步）`
     })
     this.kickRunLoop(projectId, resolved, initial.loopId)
   }
@@ -2594,7 +2604,7 @@ argument-hint: "<模块名>"
   async pauseVerifRunLoop(projectId: string): Promise<void> {
     if (this.verifRunLoops.has(projectId)) {
       this.verifRunLoopPauseRequested.add(projectId)
-      this.emit(projectId, { type: 'status', message: '验证运行循环将在当前拍完成后暂停' })
+      this.emit(projectId, { type: 'status', message: '验证运行循环将在当前步完成后暂停' })
       return
     }
     const ledger = readVerifRunLoopLedger(this.workspaceDir(projectId))
@@ -2628,7 +2638,7 @@ argument-hint: "<模块名>"
     })
     this.stopRunLoopEvidencePoller(projectId)
     this.patchRunLoopLedger(workspace, (current) => applyRunLoopResume(current))
-    this.emit(projectId, { type: 'status', message: '验证运行循环已恢复，重新推导下一拍' })
+    this.emit(projectId, { type: 'status', message: '验证运行循环已恢复，重新推导下一步' })
     // 恢复沿用账本原代际：循环重启对账/暂停均不改 loopId，只有 startVerifRunLoop 开新代际
     this.verifRunLoopGeneration.set(workspace, ledger.loopId)
     this.kickRunLoop(projectId, options, ledger.loopId)
@@ -2780,7 +2790,7 @@ argument-hint: "<模块名>"
             ledger.current = { kind: 'task-session', actionId: pendingDecision.action.actionId, sessionName: '', dispatchedAt, source: pendingDecision.source, decisionId: pendingDecision.id }
           })
           const sourceLabel = pendingDecision.source === 'human' ? '工程师' : 'LLM'
-          this.emit(projectId, { type: 'status', message: `验证运行循环 第 ${beatNo} 拍：决策 ${pendingDecision.id}（来源：${sourceLabel}，trigger=${pendingDecision.trigger}）` })
+          this.emit(projectId, { type: 'status', message: `验证运行循环 第 ${beatNo} 步：决策 ${pendingDecision.id}（来源：${sourceLabel}，trigger=${pendingDecision.trigger}）` })
           const sessionResult = await this.dispatchRunLoopTaskSession(projectId, `循环决策 ${pendingDecision.id}`, pendingDecision.action.prompt)
           if (this.verifRunLoopStopRequested.has(projectId)) continue
           patchOwn((ledger) => {
@@ -2814,7 +2824,7 @@ argument-hint: "<模块名>"
             ledger.wave = 'W0'
             ledger.current = { kind: 'task-session', actionId: null, sessionName: '', dispatchedAt: new Date().toISOString(), source: 'rule', decisionId: ruleDecision.id }
           })
-          this.emit(projectId, { type: 'status', message: `验证运行循环 第 ${ledgerBefore.beat + 1} 拍：基线规划与环境准备（无可用态势，来源：规则）` })
+          this.emit(projectId, { type: 'status', message: `验证运行循环 第 ${ledgerBefore.beat + 1} 步：基线规划与环境准备（无可用态势，来源：规则）` })
           const sessionResult = await this.dispatchRunLoopTaskSession(projectId, '验证规划与环境准备', VERIF_RUN_LOOP_PLANNING_PROMPT)
           if (this.verifRunLoopStopRequested.has(projectId)) continue
           const after = readRunLoopPosture(workspace)
@@ -2849,7 +2859,7 @@ argument-hint: "<模块名>"
           actionId: action.id,
           prompt: action.prompt,
           expectedOutput: '闭环计数改善（open intents/阻断 holes/条款覆盖/回归失败任一信号）',
-          stopCriteria: '拍 settle 且证据判定完成',
+          stopCriteria: '本步 settle 且证据判定完成',
           rationale: `${action.title}（规则自动）`
         })
         patchOwn((ledger) => {
@@ -2857,7 +2867,7 @@ argument-hint: "<模块名>"
           ledger.wave = deriveRunLoopWave(posture.state)
           ledger.current = { kind: actionKind, actionId: action.id, sessionName: '', dispatchedAt, source: 'rule', decisionId: ruleDecision.id }
         })
-        this.emit(projectId, { type: 'status', message: `验证运行循环 第 ${beatNo} 拍：${action.title}（${action.id}，来源：规则）` })
+        this.emit(projectId, { type: 'status', message: `验证运行循环 第 ${beatNo} 步：${action.title}（${action.id}，来源：规则）` })
         // ── 派发 + settle：批次类委托既有内层循环（自带批次判定/熔断/修复门控），其余派任务会话 ──
         let verdict: string
         let tokensUsed = 0
@@ -2971,7 +2981,7 @@ argument-hint: "<模块名>"
     const counts = closureCountsOf(after)
     this.emit(projectId, {
       type: 'status',
-      message: `验证运行循环 第 ${beatNo} 拍完成：${advanced ? '有进展' : '无进展'}（open intents ${counts.openIntents}，阻断 holes ${counts.blockingHoles}，条款覆盖 ${counts.coveredClauses}，回归失败 ${counts.failedRegressions}）`
+      message: `验证运行循环 第 ${beatNo} 步完成：${advanced ? '有进展' : '无进展'}（open intents ${counts.openIntents}，阻断 holes ${counts.blockingHoles}，条款覆盖 ${counts.coveredClauses}，回归失败 ${counts.failedRegressions}）`
     })
   }
 
@@ -3105,7 +3115,7 @@ argument-hint: "<模块名>"
       this.emit(projectId, { type: 'status', message: `循环决策 ${decisionId} 已批准${promptOverride ? '（已按修改后的指令执行）' : ''}，循环将拾取执行` })
       const transition = planDecideRunLoopTransition(readVerifRunLoopLedger(workspace), 'approved')
       if (transition.kind === 'approve-and-resume') {
-        this.emit(projectId, { type: 'status', message: `验证运行循环恢复：下一拍执行已批准决策 ${decisionId}` })
+        this.emit(projectId, { type: 'status', message: `验证运行循环恢复：下一步执行已批准决策 ${decisionId}` })
         await this.resumeVerifRunLoop(projectId)
       }
       return

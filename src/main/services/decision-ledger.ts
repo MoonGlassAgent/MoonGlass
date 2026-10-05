@@ -228,7 +228,7 @@ export function validateDecisionForApproval(
     return { ok: false, reason: `custom 类动作 actionId 必须为 null（当前 ${action.actionId}）` }
   }
   if (budget) {
-    if (budget.beats >= budget.maxBeats) return { ok: false, reason: `拍数预算已超限（${budget.beats}/${budget.maxBeats}）` }
+    if (budget.beats >= budget.maxBeats) return { ok: false, reason: `循环步数预算已超限（${budget.beats}/${budget.maxBeats}）` }
     if (budget.tokensUsed >= budget.maxTokens) return { ok: false, reason: `token 预算已超限（${budget.tokensUsed}/${budget.maxTokens}）` }
     const startedAt = Date.parse(budget.startedAt)
     if (Number.isFinite(startedAt)) {

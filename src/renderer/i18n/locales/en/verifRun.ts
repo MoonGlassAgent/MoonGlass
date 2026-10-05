@@ -2,6 +2,11 @@ import type { Messages } from '../zh-CN/index.ts'
 
 /**
  * 验证运行中心（VerifRunPanel / 根因链 / 诊断时间线）文案（英文）。
+ *
+ * Terminology: a loop "step" is one full round of read posture → derive action →
+ * dispatch → judge result. The ledger field is still named `beat`; the UI says
+ * "step". One step is not one unit of work: a batch-loop step may contain several
+ * batches (up to 20 by default).
  */
 export const verifRun: Messages['verifRun'] = {
   tabTitle: 'Verification Runs',
@@ -34,9 +39,9 @@ export const verifRun: Messages['verifRun'] = {
     empty: 'Autonomous verification loop not started yet',
     wave: 'Wave {wave}',
     waveNone: 'Wave —',
-    beat: 'Beat {n}',
+    beat: 'Step {n}',
     currentTitle: 'Current action',
-    noCurrent: 'No action dispatched this beat',
+    noCurrent: 'No action dispatched this step',
     sessionLabel: 'Session {name}',
     state: {
       idle: 'Idle',
@@ -56,7 +61,7 @@ export const verifRun: Messages['verifRun'] = {
       llm: 'LLM',
       human: 'Human'
     },
-    beatsBudget: 'Beats',
+    beatsBudget: 'Loop steps',
     tokensBudget: 'Tokens',
     wallBudget: 'Wall clock',
     minutesSuffix: ' min',
@@ -64,7 +69,7 @@ export const verifRun: Messages['verifRun'] = {
     pauseBreakerTitle: 'Circuit broken',
     pauseSince: 'Since {time}',
     pendingTitle: 'Pending items',
-    beatsTitle: 'Recent beats (newest first; green = advanced)',
+    beatsTitle: 'Recent steps (newest first; green = advanced)',
     decisionsTitle: 'Decisions',
     proposedEmpty: 'No pending decision proposals',
     /** Subtitle hint for the loop decision section pinned at the bottom of the chat */
@@ -93,15 +98,15 @@ export const verifRun: Messages['verifRun'] = {
     forceRestart: 'Force stop & restart',
     startDialog: {
       title: 'Start Autonomous Verification Loop',
-      description: 'The loop derives and executes verification actions beat by beat (planning / batches / fixes / sign-off / gate), pausing structurally when human input is needed and resuming once answered. Budgets are hard guardrails for unattended runs; exceeding them trips the circuit breaker.',
-      maxBeats: 'Max beats',
-      maxBeatsHint: 'Maximum automatically executed beats (default 50)',
+      description: 'The loop derives and executes verification actions step by step (planning / batches / fixes / sign-off / gate), pausing structurally when human input is needed and resuming once answered. Budgets are hard guardrails for unattended runs; exceeding them trips the circuit breaker.',
+      maxBeats: 'Max loop steps',
+      maxBeatsHint: 'How many steps the loop may execute automatically; each step is one verification action dispatch (a batch-loop step may contain several batches). Default 50.',
       maxTokens: 'Max tokens',
       maxTokensHint: 'Cumulative token budget for this loop (default 5,000,000)',
       maxWallMinutes: 'Max wall clock (minutes)',
       maxWallMinutesHint: 'Longest total runtime of the loop (default 240 min)',
-      noProgressLimit: 'No-progress limit (beats)',
-      noProgressLimitHint: 'Consecutive beats without progress before the breaker trips (default 3)',
+      noProgressLimit: 'No-progress limit (steps)',
+      noProgressLimitHint: 'Consecutive steps without progress before the breaker trips (default 3)',
       confirm: 'Start'
     }
   },

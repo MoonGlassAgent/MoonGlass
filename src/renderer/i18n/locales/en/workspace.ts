@@ -172,7 +172,7 @@ export const workspace: WorkspaceMessages = {
     managedTaskSessionFailed: 'Managed run: failed to start task session, continuing in the current session: {error}',
     managedChangeFailed: 'Managed run: change response for {phase} failed, risk recorded, continuing: {error}',
     managedRunLoopStarted: 'Managed run: verification run loop started (default budgets); waiting for a terminal or paused state…',
-    managedRunLoopCompleted: 'Managed run: verification run loop completed ({beats} beats); continuing to gate / QA',
+    managedRunLoopCompleted: 'Managed run: verification run loop completed ({beats} steps); continuing to gate / QA',
     managedRunLoopHalted: 'Managed run: verification run loop halted at "{state}" ({reason}); managed run stopped. Go to the "Verification Runs" tab to handle it, then resume the loop and advance manually',
     managedRunLoopStopFailed: 'Failed to stop the verification run loop: {error}',
     runLoopStarted: 'Verification run loop started',
