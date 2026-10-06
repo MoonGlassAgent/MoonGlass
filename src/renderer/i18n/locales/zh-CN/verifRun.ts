@@ -88,6 +88,8 @@ export const verifRun = {
       none: '未回填'
     },
     start: '启动自动验证',
+    /** 终态（已停止/已完成）的再启动入口：开新循环，预填上轮预算 */
+    restart: '重新启动循环',
     pause: '暂停',
     resume: '继续',
     stop: '停止',

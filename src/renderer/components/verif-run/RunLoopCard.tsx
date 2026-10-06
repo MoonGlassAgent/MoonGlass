@@ -227,8 +227,10 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
   const stateMeta = STATE_META[state]
   const startedAtMs = runLoop ? Date.parse(runLoop.budget.startedAt) : NaN
   const wallUsed = Number.isFinite(startedAtMs) ? Math.max(0, Math.floor((now - startedAtMs) / 60_000)) : 0
-  // 未运行（无账本或 idle 初态）→ 启动入口；执行中各态 → 暂停/停止；暂停态 → 继续/停止（§7.2 方向盘唯一）
+  // 未运行（无账本或 idle 初态）→ 启动入口；终态（已停止/已完成）→ 重新启动入口（预填上轮预算）；
+  // 执行中各态 → 暂停/停止；暂停态 → 继续/停止（§7.2 方向盘唯一）
   const startable = !runLoop || state === 'idle'
+  const restartable = state === 'stopped' || state === 'completed'
   const pausable = state === 'planning' || state === 'running' || state === 'judging' || state === 'repairing' || state === 'signoff-review' || state === 'gate-check'
   const resumable = state === 'paused-human' || state === 'paused-breaker'
   const proposed = decisions.filter((decision) => decision.status === 'proposed')
@@ -313,6 +315,9 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
       {startable && <button type="button" onClick={() => setDialogMode('start')} className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">
         <Play size={13} />{t('verifRun.loop.start')}
       </button>}
+      {restartable && <button type="button" onClick={() => setDialogMode('start')} className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">
+        <Play size={13} />{t('verifRun.loop.restart')}
+      </button>}
       {pausable && <button type="button" onClick={() => void run('pause', onPause)} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50">
         <OctagonPause size={13} />{t('verifRun.loop.pause')}
       </button>}
@@ -353,7 +358,7 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
 
     {dialogMode !== null && <BudgetDialog
       mode={dialogMode}
-      initial={dialogMode === 'resume' && runLoop ? {
+      initial={runLoop ? {
         maxBeats: runLoop.budget.maxBeats,
         maxTokens: runLoop.budget.maxTokens,
         maxWallMinutes: runLoop.budget.maxWallMinutes,

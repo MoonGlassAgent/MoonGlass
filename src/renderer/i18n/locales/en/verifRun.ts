@@ -90,6 +90,8 @@ export const verifRun: Messages['verifRun'] = {
       none: 'Not recorded'
     },
     start: 'Start Autonomous Verification',
+    /** Re-entry from a terminal state (stopped/completed): start a new loop, prefilled with the previous budget */
+    restart: 'Restart loop',
     pause: 'Pause',
     resume: 'Resume',
     stop: 'Stop',
