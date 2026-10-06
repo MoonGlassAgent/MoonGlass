@@ -705,7 +705,7 @@ export interface VerifRunLoopPause {
   since: string
 }
 
-/** 预算水位（§6：拍数/token/墙钟；连续无进展拍数由 lastBeats 前导 advanced=false 计数推导） */
+/** 预算水位（§6：循环步数/token/墙钟；连续无进展步数由 lastBeats 前导 advanced=false 计数推导） */
 export interface VerifRunLoopBudget {
   beats: number
   maxBeats: number
@@ -713,6 +713,10 @@ export interface VerifRunLoopBudget {
   maxTokens: number
   startedAt: string
   maxWallMinutes: number
+  /** 连续无进展步数熔断阈值（入账本：继续时不再丢回默认值；旧账本缺失按默认解释） */
+  noProgressLimit?: number
+  /** 墙钟累计基数（分钟）：手动继续开窗重置前滚入的历史时长；墙钟预算比较的是当前窗口（now - startedAt） */
+  wallResetBase?: number
 }
 
 /** 最近拍摘要（新在前，滚动 ≤20 条） */

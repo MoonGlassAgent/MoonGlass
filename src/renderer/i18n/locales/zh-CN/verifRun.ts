@@ -106,7 +106,16 @@ export const verifRun = {
       noProgressLimit: '连续无进展上限（步）',
       noProgressLimitHint: '连续多少步无进展即熔断升级（默认 3）',
       confirm: '启动'
-    }
+    },
+    resumeDialog: {
+      title: '继续自动验证循环',
+      description: '可在此调大预算上限后继续。循环步数/token 计数从当前值继续累计（不归零）；墙钟从继续时刻重新开窗（无人值守时长重新计）。上限若不大于当前消耗会被拒绝。',
+      confirm: '继续'
+    },
+    /** 继续对话框顶部琥珀提示行：当前消耗（墙钟为本窗口已运行时长） */
+    consumption: '当前消耗：已 {beats} 步 · token {tokens} · 本窗口已运行 {minutes} 分钟',
+    /** 墙钟预设 chip 标签（值用分钟）：{n} 小时 */
+    presetHours: '{n} 小时'
   },
   fix: {
     title: 'RTL 修复',

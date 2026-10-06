@@ -108,7 +108,16 @@ export const verifRun: Messages['verifRun'] = {
       noProgressLimit: 'No-progress limit (steps)',
       noProgressLimitHint: 'Consecutive steps without progress before the breaker trips (default 3)',
       confirm: 'Start'
-    }
+    },
+    resumeDialog: {
+      title: 'Resume Autonomous Verification Loop',
+      description: 'Raise the budget limits here before resuming. Step/token counts keep accumulating from their current values (no reset); the wall clock re-opens from the moment you resume (unattended duration restarts). Limits not above the current consumption will be rejected.',
+      confirm: 'Resume'
+    },
+    /** Amber consumption line at the top of the resume dialog (wall clock = elapsed time in the current window) */
+    consumption: 'Current consumption: {beats} steps · {tokens} tokens · {minutes} min elapsed this window',
+    /** Wall-clock preset chip label (values are minutes): {n}h */
+    presetHours: '{n}h'
   },
   fix: {
     title: 'RTL Fix',

@@ -820,8 +820,8 @@ export function WorkspacePage(): React.JSX.Element {
     await window.moonglass.agent.pauseVerifRunLoop(projectId)
     void loadVerifRun()
   }
-  const handleRunLoopResume = async (): Promise<void> => {
-    await window.moonglass.agent.resumeVerifRunLoop(projectId)
+  const handleRunLoopResume = async (options?: VerifRunLoopStartOptions): Promise<void> => {
+    await window.moonglass.agent.resumeVerifRunLoop(projectId, options)
     void loadVerifRun()
   }
   const handleRunLoopStop = async (): Promise<void> => {

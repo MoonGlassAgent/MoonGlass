@@ -175,7 +175,8 @@ LLM 影响循环走向的唯一通道：经工具落盘成结构化记录（决�
   pause: { kind: 'human'|'breaker', reason: string, detail: string,
            pendingItems: string[], since: string } | null,
   budget: { beats: number, maxBeats: number, tokensUsed: number, maxTokens: number,
-            startedAt: string, maxWallMinutes: number },
+            startedAt: string, maxWallMinutes: number, noProgressLimit?: number,
+            wallResetBase?: number },
   lastBeats: [{ beat: number, summary: string, decisionId: string,
                 verdict: string, advanced: boolean }]   // ≤20，新在前
 }
@@ -250,6 +251,6 @@ LLM 影响循环走向的唯一通道：经工具落盘成结构化记录（决�
 ## 13. 待决策问题
 
 1. 委托模式的默认白名单范围（本方案默认仅顾问模式，委托需显式开启）。
-2. 预算默认值（拍数 50 / 墙钟 4 小时 / 无进展 3 拍）是否合适，实测后调。
+2. 预算默认值（循环步数 50 / 墙钟 4 小时 / 无进展 3 步）是否合适，实测后调。**实测反馈已落地（2026-10-06）**：预算吃满后直接"继续"会立即再次熔断——现支持在继续对话框抬高上限（步数/token 校验须严格大于当前消耗，计数不归零）；**墙钟在手动继续时开窗重置**（墙钟预算是"无人值守时长"上限，人工继续本身就是值守；历史时长滚入 `wallResetBase`），证据触发的自动续跑不重置；noProgressLimit 入账本；对话框加常用值预设 chip 并明确"可直接键入"。
 3. 循环是否对"快速综合通道"（跳过 VERIF/QA）开放——本方案默认不开放。
 4. `paused-human` 是否需要桌面通知（os notification）提醒用户回来处置。

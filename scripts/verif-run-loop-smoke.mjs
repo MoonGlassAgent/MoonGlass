@@ -20,6 +20,7 @@ const {
   RUN_LOOP_DECISION_PENDING_REASON,
   VERIF_RUN_LOOP_LAST_BEATS_LIMIT,
   VERIF_RUN_LOOP_PLANNING_PROMPT,
+  applyRunLoopBudgetOverrides,
   applyRunLoopPause,
   applyRunLoopResume,
   buildRunLoopEscalationPrompt,
@@ -40,10 +41,13 @@ const {
   readVerifRunLoopLedger,
   reconcileRunLoopAfterRestart,
   recordRunLoopBeat,
+  resetRunLoopWallClock,
   resolveRunLoopStartOptions,
+  runLoopConsumption,
   runLoopEscalationTitle,
   runLoopTranslate,
   updateVerifRunLoopLedger,
+  validateRunLoopBudgetOverrides,
   writeVerifRunLoopLedger
 } = await import('../src/main/services/verif-run-loop.ts')
 
@@ -458,4 +462,44 @@ assert.equal(isRunLoopSuperseded({ ...ledgerA, loopId: 'LOOP-A' }, 'LOOP-B'), tr
 assert.equal(isRunLoopSuperseded({ ...ledgerA, loopId: '' }, 'LOOP-B'), false)
 assert.equal(isRunLoopSuperseded({ ...ledgerA, loopId: 'LOOP-A' }, ''), false)
 
-console.log('verif-run-loop-smoke: OK（拍决策映射/派发映射/预算四分支/无进展熔断/推进判定/暂停恢复/账本归一+截断/重启对账/态势回退/证据指纹/批3升级prompt+直接熔断白名单+decide迁移/决策账本入证据指纹/loopId代际守卫+启动守卫对账）')
+// ── M 段：继续时抬高预算上限 + 手动继续墙钟开窗重置（实测：预算吃满直接继续会立即再次熔断）──
+// M1. noProgressLimit/wallResetBase 入账本并存活读写往返
+const budgetLedger = createRunLoopLedger(resolveRunLoopStartOptions({ noProgressLimit: 7 }), NOW, false)
+assert.equal(budgetLedger.budget.noProgressLimit, 7)
+assert.equal(budgetLedger.budget.wallResetBase, 0)
+const wsBudget = join(dir, 'ws-budget')
+mkdirSync(join(wsBudget, 'verification', 'results'), { recursive: true })
+writeVerifRunLoopLedger(wsBudget, budgetLedger)
+assert.equal(readVerifRunLoopLedger(wsBudget).budget.noProgressLimit, 7)
+// M2. 旧账本缺新字段 → 归一化为默认值
+const legacyBudgetPayload = JSON.parse(JSON.stringify(budgetLedger))
+delete legacyBudgetPayload.budget.noProgressLimit
+delete legacyBudgetPayload.budget.wallResetBase
+writeFileSync(join(wsBudget, 'verification', 'results', 'run-loop.json'), JSON.stringify(legacyBudgetPayload), 'utf-8')
+const legacyRead = readVerifRunLoopLedger(wsBudget)
+assert.equal(legacyRead.budget.noProgressLimit, DEFAULT_NO_PROGRESS_LIMIT)
+assert.equal(legacyRead.budget.wallResetBase, 0)
+// M3. 消耗量折算：步数/token 取账本值，墙钟按当前窗口折分钟
+const consumed = { ...budgetLedger, budget: { ...budgetLedger.budget, beats: 50, tokensUsed: 3_000_000, startedAt: '2026-10-05T10:00:00.000Z' } }
+assert.deepEqual(runLoopConsumption(consumed, '2026-10-05T14:30:00.000Z'), { beats: 50, tokensUsed: 3_000_000, elapsedMinutes: 270 })
+// M4. 上限校验：步数/token 等于或低于当前消耗一律拒绝；未提供维度跳过
+assert.equal(validateRunLoopBudgetOverrides(consumed, { maxBeats: 50 }, '2026-10-05T14:30:00.000Z').ok, false)
+assert.equal(validateRunLoopBudgetOverrides(consumed, { maxTokens: 2_999_999 }, '2026-10-05T14:30:00.000Z').ok, false)
+assert.equal(validateRunLoopBudgetOverrides(consumed, { maxBeats: 200, maxTokens: 20_000_000, maxWallMinutes: 480 }, '2026-10-05T14:30:00.000Z').ok, true)
+assert.equal(validateRunLoopBudgetOverrides(consumed, undefined, '2026-10-05T14:30:00.000Z').ok, true)
+// M5. 手动继续的墙钟开窗重置：历史滚入 wallResetBase，窗口归零，重置后墙钟上限任意正值可过校验
+const resetLedger = JSON.parse(JSON.stringify(consumed))
+resetRunLoopWallClock(resetLedger, '2026-10-05T14:30:00.000Z')
+assert.equal(resetLedger.budget.wallResetBase, 270)
+assert.equal(resetLedger.budget.startedAt, '2026-10-05T14:30:00.000Z')
+assert.equal(runLoopConsumption(resetLedger, '2026-10-05T14:45:00.000Z').elapsedMinutes, 15)
+assert.equal(validateRunLoopBudgetOverrides(resetLedger, { maxWallMinutes: 240 }, '2026-10-05T14:30:00.000Z').ok, true)
+// M6. applyRunLoopBudgetOverrides：写回提供的字段、未提供的保持原值、计数不归零
+const appliedLedger = JSON.parse(JSON.stringify(consumed))
+applyRunLoopBudgetOverrides(appliedLedger, { maxBeats: 200, noProgressLimit: 5 })
+assert.equal(appliedLedger.budget.maxBeats, 200)
+assert.equal(appliedLedger.budget.noProgressLimit, 5)
+assert.equal(appliedLedger.budget.maxTokens, consumed.budget.maxTokens)
+assert.equal(appliedLedger.budget.beats, 50)
+
+console.log('verif-run-loop-smoke: OK（拍决策映射/派发映射/预算四分支/无进展熔断/推进判定/暂停恢复/账本归一+截断/重启对账/态势回退/证据指纹/批3升级prompt+直接熔断白名单+decide迁移/决策账本入证据指纹/loopId代际守卫+启动守卫对账/预算抬高校验+noProgressLimit与墙钟开窗重置入账本）')

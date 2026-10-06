@@ -108,7 +108,9 @@ function normalizeBudget(value: unknown): VerifRunLoopBudget {
     tokensUsed: numberOf(budget.tokensUsed, 0),
     maxTokens: numberOf(budget.maxTokens, DEFAULT_MAX_TOKENS),
     startedAt: typeof budget.startedAt === 'string' ? budget.startedAt : '',
-    maxWallMinutes: numberOf(budget.maxWallMinutes, DEFAULT_MAX_WALL_MINUTES)
+    maxWallMinutes: numberOf(budget.maxWallMinutes, DEFAULT_MAX_WALL_MINUTES),
+    noProgressLimit: numberOf(budget.noProgressLimit, DEFAULT_NO_PROGRESS_LIMIT),
+    wallResetBase: numberOf(budget.wallResetBase, 0)
   }
 }
 
@@ -236,10 +238,85 @@ export function createRunLoopLedger(options: ResolvedRunLoopOptions, now: string
       tokensUsed: 0,
       maxTokens: options.maxTokens,
       startedAt: now,
-      maxWallMinutes: options.maxWallMinutes
+      maxWallMinutes: options.maxWallMinutes,
+      noProgressLimit: options.noProgressLimit,
+      wallResetBase: 0
     },
     lastBeats: []
   }
+}
+
+/**
+ * 手动继续时的墙钟开窗重置（实测反馈口径：墙钟预算是"无人值守时长"上限，
+ * 用户点继续本身就是值守行为 → 重置开窗；累计已运行时间滚入 wallResetBase 保留，
+ * 步数/token 是资源消耗不归零）。证据触发的自动续跑不调用本函数（非人工值守）。
+ */
+export function resetRunLoopWallClock(ledger: VerifRunLoopLedger, now: string): void {
+  const startedMs = Date.parse(ledger.budget.startedAt)
+  const nowMs = Date.parse(now)
+  const elapsedMinutes = Number.isFinite(startedMs) && Number.isFinite(nowMs)
+    ? Math.max(0, Math.floor((nowMs - startedMs) / 60_000))
+    : 0
+  ledger.budget.wallResetBase = (ledger.budget.wallResetBase ?? 0) + elapsedMinutes
+  ledger.budget.startedAt = now
+}
+
+/** 账本已消耗量（继续时抬高上限的校验基线；墙钟按当前窗口折算分钟）。 */
+export interface RunLoopConsumption {
+  beats: number
+  tokensUsed: number
+  elapsedMinutes: number
+}
+
+export function runLoopConsumption(ledger: VerifRunLoopLedger, now: string): RunLoopConsumption {
+  const startedMs = Date.parse(ledger.budget.startedAt)
+  const nowMs = Date.parse(now)
+  const elapsedMinutes = Number.isFinite(startedMs) && Number.isFinite(nowMs)
+    ? Math.max(0, Math.floor((nowMs - startedMs) / 60_000))
+    : 0
+  return { beats: ledger.budget.beats, tokensUsed: Math.round(ledger.budget.tokensUsed), elapsedMinutes }
+}
+
+/**
+ * 继续时抬高预算上限的校验：提供的步数/token 维度必须严格大于当前消耗（资源消耗不归零，
+ * 否则会立即再次熔断）；墙钟维度在手动继续时已开窗重置，校验调用方应传重置后的账本。
+ * 未提供的维度不校验（沿用账本原值）。返回 ok=false 时 reason 已含当前消耗数字，可直接展示。
+ */
+export function validateRunLoopBudgetOverrides(
+  ledger: VerifRunLoopLedger,
+  overrides: VerifRunLoopStartOptions | undefined,
+  now: string
+): { ok: true } | { ok: false; reason: string } {
+  const provided = (value: number | undefined): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : null
+  const consumption = runLoopConsumption(ledger, now)
+  const beats = provided(overrides?.maxBeats)
+  if (beats !== null && beats <= consumption.beats) {
+    return { ok: false, reason: `循环步数上限 ${beats} 未超过当前消耗 ${consumption.beats} 步，继续后会立即再次熔断；请调大步数上限` }
+  }
+  const tokens = provided(overrides?.maxTokens)
+  if (tokens !== null && tokens <= consumption.tokensUsed) {
+    return { ok: false, reason: `token 上限 ${tokens} 未超过当前消耗 ${consumption.tokensUsed}，继续后会立即再次熔断；请调大 token 上限` }
+  }
+  const wallMinutes = provided(overrides?.maxWallMinutes)
+  if (wallMinutes !== null && wallMinutes <= consumption.elapsedMinutes) {
+    return { ok: false, reason: `墙钟上限 ${wallMinutes} 分钟未超过当前窗口已运行 ${consumption.elapsedMinutes} 分钟，继续后会立即再次熔断；请调大墙钟上限` }
+  }
+  return { ok: true }
+}
+
+/** 把通过校验的上限写回账本（含 noProgressLimit；未提供的字段保持原值；计数不归零）。 */
+export function applyRunLoopBudgetOverrides(ledger: VerifRunLoopLedger, overrides: VerifRunLoopStartOptions | undefined): void {
+  const provided = (value: number | undefined): number | null =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? Math.trunc(value) : null
+  const beats = provided(overrides?.maxBeats)
+  if (beats !== null) ledger.budget.maxBeats = beats
+  const tokens = provided(overrides?.maxTokens)
+  if (tokens !== null) ledger.budget.maxTokens = tokens
+  const wallMinutes = provided(overrides?.maxWallMinutes)
+  if (wallMinutes !== null) ledger.budget.maxWallMinutes = wallMinutes
+  const noProgress = provided(overrides?.noProgressLimit)
+  if (noProgress !== null) ledger.budget.noProgressLimit = noProgress
 }
 
 // ==================== 态势读取（渲染端同源口径：posture 优先，缺 verificationIntents 回退 state.json） ====================

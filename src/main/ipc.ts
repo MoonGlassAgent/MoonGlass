@@ -347,7 +347,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     agent.startVerifRunLoop(projectId, options)
   )
   ipcMain.handle(IPC.Agent.PauseVerifRunLoop, (_e, projectId: string) => agent.pauseVerifRunLoop(projectId))
-  ipcMain.handle(IPC.Agent.ResumeVerifRunLoop, (_e, projectId: string) => agent.resumeVerifRunLoop(projectId))
+  ipcMain.handle(IPC.Agent.ResumeVerifRunLoop, (_e, projectId: string, options?: VerifRunLoopStartOptions) => agent.resumeVerifRunLoop(projectId, options))
   ipcMain.handle(IPC.Agent.StopVerifRunLoop, (_e, projectId: string) => agent.stopVerifRunLoop(projectId))
   ipcMain.handle(IPC.Agent.DecideVerifRunDecision, (_e, projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string) =>
     agent.decideVerifRunDecision(projectId, decisionId, verdict, editedPrompt)

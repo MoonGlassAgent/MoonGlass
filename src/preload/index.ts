@@ -105,7 +105,7 @@ const api: MoonGlassApi = {
     startVerifRunLoop: (projectId: string, options?: VerifRunLoopStartOptions) =>
       ipcRenderer.invoke(IPC.Agent.StartVerifRunLoop, projectId, options),
     pauseVerifRunLoop: (projectId: string) => ipcRenderer.invoke(IPC.Agent.PauseVerifRunLoop, projectId),
-    resumeVerifRunLoop: (projectId: string) => ipcRenderer.invoke(IPC.Agent.ResumeVerifRunLoop, projectId),
+    resumeVerifRunLoop: (projectId: string, options?: VerifRunLoopStartOptions) => ipcRenderer.invoke(IPC.Agent.ResumeVerifRunLoop, projectId, options),
     stopVerifRunLoop: (projectId: string) => ipcRenderer.invoke(IPC.Agent.StopVerifRunLoop, projectId),
     decideVerifRunDecision: (projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string) =>
       ipcRenderer.invoke(IPC.Agent.DecideVerifRunDecision, projectId, decisionId, verdict, editedPrompt),

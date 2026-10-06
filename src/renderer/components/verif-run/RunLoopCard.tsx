@@ -5,8 +5,9 @@
  * - 状态区：11 态徽标 + 当前波段 + 第 n 拍 + 当前动作（来源徽标 规则=蓝 / LLM=紫 / 人工=绿）
  *   + 预算水位条（拍数/token/墙钟）+ 暂停原因卡（human/breaker + pendingItems）+
  *   lastBeats 迷你时间线（advanced 绿点 / no-progress 灰点）。
- * - 控制区：未运行 → "启动自动验证"（启动对话框：四项预算 + 默认值 + 说明）；运行中 →
- *   暂停/停止；暂停 → 继续/停止。按钮经集成方回调走 IPC，失败以卡内错误条提示。
+ * - 控制区：未运行 → "启动自动验证"（预算对话框 start 模式：四项预算 + 默认值 + 预设 chip +
+ *   说明）；运行中 → 暂停/停止；暂停 → 继续（预算对话框 resume 模式：预填账本当前上限、
+ *   可抬高后继续，顶部琥珀行显示当前消耗）/停止。按钮经集成方回调走 IPC，失败以卡内错误条提示。
  * - 决策区：decision-ledger 中 status='proposed' 的请示卡片（批准/否决），
  *   已执行决策历史（来源徽标 + outcome 徽标，折叠）。
  *
@@ -36,8 +37,8 @@ export interface RunLoopCardProps {
   onStart: (options: VerifRunLoopStartOptions) => Promise<void>
   /** 暂停循环（当前拍完成后转 paused） */
   onPause: () => Promise<void>
-  /** 恢复循环（清暂停重新推导下一拍） */
-  onResume: () => Promise<void>
+  /** 恢复循环（可带抬高后的预算上限；墙钟从继续时刻重新开窗） */
+  onResume: (options?: VerifRunLoopStartOptions) => Promise<void>
   /** 停止循环（终态） */
   onStop: () => Promise<void>
   /** 裁决决策提案（批准/否决；editedPrompt 批 3 决策层接入后支持改写） */
@@ -81,13 +82,24 @@ function BudgetBar({ label, used, max, suffix }: { label: string; used: number; 
   </div>
 }
 
-/** 启动对话框：四项预算输入（留空/非法回落主进程默认值）；"已在运行"错误给强制停止重启逃生门。 */
-function StartDialog({ onSubmit, onStop, onClose }: { onSubmit: (options: VerifRunLoopStartOptions) => Promise<void>; onStop: () => Promise<void>; onClose: () => void }): React.JSX.Element {
+/** 预算对话框：start=启动（四项预算，留空/非法回落主进程默认值）；"已在运行"错误给强制停止重启逃生门；
+ * resume=预填账本当前上限、可抬高后继续（主进程校验上限须严格大于当前消耗），顶部琥珀行显示当前消耗。 */
+function BudgetDialog({ mode, initial, consumption, onSubmit, onStop, onClose }: {
+  mode: 'start' | 'resume'
+  initial?: { maxBeats?: number; maxTokens?: number; maxWallMinutes?: number; noProgressLimit?: number }
+  consumption?: { beats: number; tokensUsed: number; elapsedMinutes: number } | null
+  onSubmit: (options: VerifRunLoopStartOptions) => Promise<void>
+  onStop: () => Promise<void>
+  onClose: () => void
+}): React.JSX.Element {
   const { t } = useTranslation()
-  const [maxBeats, setMaxBeats] = useState(String(RUN_LOOP_DEFAULT_MAX_BEATS))
-  const [maxTokens, setMaxTokens] = useState(String(RUN_LOOP_DEFAULT_MAX_TOKENS))
-  const [maxWallMinutes, setMaxWallMinutes] = useState(String(RUN_LOOP_DEFAULT_MAX_WALL_MINUTES))
-  const [noProgressLimit, setNoProgressLimit] = useState(String(3))
+  // resume 模式预填账本当前上限；缺省/非法回落启动默认值
+  const initialText = (value: number | undefined, fallback: number): string =>
+    typeof value === 'number' && Number.isFinite(value) && value > 0 ? String(Math.trunc(value)) : String(fallback)
+  const [maxBeats, setMaxBeats] = useState(() => initialText(initial?.maxBeats, RUN_LOOP_DEFAULT_MAX_BEATS))
+  const [maxTokens, setMaxTokens] = useState(() => initialText(initial?.maxTokens, RUN_LOOP_DEFAULT_MAX_TOKENS))
+  const [maxWallMinutes, setMaxWallMinutes] = useState(() => initialText(initial?.maxWallMinutes, RUN_LOOP_DEFAULT_MAX_WALL_MINUTES))
+  const [noProgressLimit, setNoProgressLimit] = useState(() => initialText(initial?.noProgressLimit, 3))
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
   // 正整数解析；留空/非法一律省略该字段，由主进程回落默认值（§6）
@@ -101,11 +113,23 @@ function StartDialog({ onSubmit, onStop, onClose }: { onSubmit: (options: VerifR
     maxWallMinutes: positive(maxWallMinutes),
     noProgressLimit: positive(noProgressLimit)
   })
-  const fields: Array<{ key: MessageKey; hintKey: MessageKey; value: string; set: (text: string) => void }> = [
-    { key: 'verifRun.loop.startDialog.maxBeats', hintKey: 'verifRun.loop.startDialog.maxBeatsHint', value: maxBeats, set: setMaxBeats },
-    { key: 'verifRun.loop.startDialog.maxTokens', hintKey: 'verifRun.loop.startDialog.maxTokensHint', value: maxTokens, set: setMaxTokens },
-    { key: 'verifRun.loop.startDialog.maxWallMinutes', hintKey: 'verifRun.loop.startDialog.maxWallMinutesHint', value: maxWallMinutes, set: setMaxWallMinutes },
-    { key: 'verifRun.loop.startDialog.noProgressLimit', hintKey: 'verifRun.loop.startDialog.noProgressLimitHint', value: noProgressLimit, set: setNoProgressLimit }
+  const fields: Array<{ key: MessageKey; hintKey: MessageKey; value: string; set: (text: string) => void; presets: Array<{ label: string; value: number }> }> = [
+    {
+      key: 'verifRun.loop.startDialog.maxBeats', hintKey: 'verifRun.loop.startDialog.maxBeatsHint', value: maxBeats, set: setMaxBeats,
+      presets: [50, 100, 200, 500].map((n) => ({ label: String(n), value: n }))
+    },
+    {
+      key: 'verifRun.loop.startDialog.maxTokens', hintKey: 'verifRun.loop.startDialog.maxTokensHint', value: maxTokens, set: setMaxTokens,
+      presets: [5, 10, 20, 50].map((n) => ({ label: `${n}M`, value: n * 1_000_000 }))
+    },
+    {
+      key: 'verifRun.loop.startDialog.maxWallMinutes', hintKey: 'verifRun.loop.startDialog.maxWallMinutesHint', value: maxWallMinutes, set: setMaxWallMinutes,
+      presets: [120, 240, 480, 720].map((min) => ({ label: t('verifRun.loop.presetHours', { n: min / 60 }), value: min }))
+    },
+    {
+      key: 'verifRun.loop.startDialog.noProgressLimit', hintKey: 'verifRun.loop.startDialog.noProgressLimitHint', value: noProgressLimit, set: setNoProgressLimit,
+      presets: [3, 5, 10].map((n) => ({ label: String(n), value: n }))
+    }
   ]
   const submit = async (): Promise<void> => {
     setBusy(true)
@@ -119,7 +143,7 @@ function StartDialog({ onSubmit, onStop, onClose }: { onSubmit: (options: VerifR
       setBusy(false)
     }
   }
-  // 逃生门：主进程报"已在运行"（残留句柄，账本缺失/终态）→ 先停止再重启
+  // 逃生门：主进程报"已在运行"（残留句柄，账本缺失/终态）→ 先停止再重启（仅 start 模式）
   const forceRestart = async (): Promise<void> => {
     setBusy(true)
     setError(null)
@@ -133,35 +157,53 @@ function StartDialog({ onSubmit, onStop, onClose }: { onSubmit: (options: VerifR
       setBusy(false)
     }
   }
+  const resume = mode === 'resume'
+  const titleKey: MessageKey = resume ? 'verifRun.loop.resumeDialog.title' : 'verifRun.loop.startDialog.title'
+  const descKey: MessageKey = resume ? 'verifRun.loop.resumeDialog.description' : 'verifRun.loop.startDialog.description'
+  const confirmKey: MessageKey = resume ? 'verifRun.loop.resumeDialog.confirm' : 'verifRun.loop.startDialog.confirm'
   return <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-6">
     <section className="w-full max-w-lg rounded-md border border-zinc-300 bg-white shadow-2xl">
       <header className="border-b border-zinc-200 px-5 py-4">
-        <h2 className="text-base font-semibold text-zinc-900">{t('verifRun.loop.startDialog.title')}</h2>
-        <p className="mt-1 text-xs leading-5 text-zinc-500">{t('verifRun.loop.startDialog.description')}</p>
+        <h2 className="text-base font-semibold text-zinc-900">{t(titleKey)}</h2>
+        <p className="mt-1 text-xs leading-5 text-zinc-500">{t(descKey)}</p>
       </header>
+      {resume && consumption && <div className="mx-5 mt-4 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-700">
+        {t('verifRun.loop.consumption', { beats: consumption.beats, tokens: consumption.tokensUsed, minutes: consumption.elapsedMinutes })}
+      </div>}
       <div className="grid grid-cols-2 gap-4 p-5">
         {fields.map((field) => <label key={field.key} className="block text-xs font-medium text-zinc-700">
           {t(field.key)}
           <input
             type="number"
             min={1}
+            inputMode="numeric"
             value={field.value}
             onChange={(event) => field.set(event.target.value)}
             className="mt-1 w-full rounded border border-zinc-300 bg-white px-3 py-2 font-mono text-sm"
           />
+          <span className="mt-1 flex flex-wrap gap-1">
+            {field.presets.map((preset) => <button
+              key={`${field.key}-${preset.value}`}
+              type="button"
+              onClick={() => field.set(String(preset.value))}
+              className="rounded border border-zinc-200 bg-zinc-50 px-1.5 py-0.5 text-[10px] font-mono text-zinc-600 hover:border-emerald-300 hover:bg-emerald-50 hover:text-emerald-700"
+            >
+              {preset.label}
+            </button>)}
+          </span>
           <span className="mt-1 block text-[10px] font-normal leading-4 text-zinc-400">{t(field.hintKey)}</span>
         </label>)}
       </div>
       {error && <div className="mx-5 mb-3 rounded border border-red-200 bg-red-50 px-3 py-2 text-xs text-red-700">
         <p>{error}</p>
-        {error.includes('已在运行') && <button type="button" onClick={() => void forceRestart()} disabled={busy} className="mt-2 inline-flex items-center gap-1.5 rounded border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50">
+        {!resume && error.includes('已在运行') && <button type="button" onClick={() => void forceRestart()} disabled={busy} className="mt-2 inline-flex items-center gap-1.5 rounded border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-100 disabled:opacity-50">
           {t('verifRun.loop.forceRestart')}
         </button>}
       </div>}
       <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-3">
         <button type="button" onClick={onClose} disabled={busy} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 disabled:opacity-50">{t('common.cancel')}</button>
         <button type="button" onClick={() => void submit()} disabled={busy} className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-emerald-500 disabled:opacity-50">
-          <Play size={12} />{busy ? t('verifRun.loop.deciding') : t('verifRun.loop.startDialog.confirm')}
+          <Play size={12} />{busy ? t('verifRun.loop.deciding') : t(confirmKey)}
         </button>
       </footer>
     </section>
@@ -171,8 +213,8 @@ function StartDialog({ onSubmit, onStop, onClose }: { onSubmit: (options: VerifR
 /** 外层循环卡（§7.1 看状态/做控制/收请示 三合一）。 */
 export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, onStop, onDecide }: RunLoopCardProps): React.JSX.Element {
   const { t } = useTranslation()
-  const [startDialogOpen, setStartDialogOpen] = useState(false)
-  const [busy, setBusy] = useState<null | 'pause' | 'resume' | 'stop'>(null)
+  const [dialogMode, setDialogMode] = useState<null | 'start' | 'resume'>(null)
+  const [busy, setBusy] = useState<null | 'pause' | 'stop'>(null)
   const [error, setError] = useState<string | null>(null)
   // 墙钟水位随时间推进：30s 自刷新（账本文件变化时集成方也会触发重载）
   const [now, setNow] = useState(() => Date.now())
@@ -192,7 +234,7 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
   const proposed = decisions.filter((decision) => decision.status === 'proposed')
   const history = decisions.filter((decision) => decision.status !== 'proposed')
 
-  const run = async (key: 'pause' | 'resume' | 'stop', action: () => Promise<void>): Promise<void> => {
+  const run = async (key: 'pause' | 'stop', action: () => Promise<void>): Promise<void> => {
     setBusy(key)
     setError(null)
     try {
@@ -268,13 +310,13 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
     </>}
 
     <div className="mt-3 flex flex-wrap gap-2 border-t border-zinc-100 pt-3">
-      {startable && <button type="button" onClick={() => setStartDialogOpen(true)} className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">
+      {startable && <button type="button" onClick={() => setDialogMode('start')} className="inline-flex items-center gap-1.5 rounded bg-emerald-600 px-3 py-1.5 text-xs font-medium text-white hover:bg-emerald-500">
         <Play size={13} />{t('verifRun.loop.start')}
       </button>}
       {pausable && <button type="button" onClick={() => void run('pause', onPause)} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded border border-amber-300 bg-white px-3 py-1.5 text-xs font-medium text-amber-700 hover:bg-amber-50 disabled:opacity-50">
         <OctagonPause size={13} />{t('verifRun.loop.pause')}
       </button>}
-      {resumable && <button type="button" onClick={() => void run('resume', onResume)} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded border border-emerald-300 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
+      {resumable && <button type="button" onClick={() => setDialogMode('resume')} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded border border-emerald-300 bg-white px-3 py-1.5 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
         <Play size={13} />{t('verifRun.loop.resume')}
       </button>}
       {(pausable || resumable) && <button type="button" onClick={() => void run('stop', onStop)} disabled={busy !== null} className="inline-flex items-center gap-1.5 rounded border border-red-300 bg-white px-3 py-1.5 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50">
@@ -309,6 +351,22 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
       </details>}
     </div>
 
-    {startDialogOpen && <StartDialog onSubmit={onStart} onStop={onStop} onClose={() => setStartDialogOpen(false)} />}
+    {dialogMode !== null && <BudgetDialog
+      mode={dialogMode}
+      initial={dialogMode === 'resume' && runLoop ? {
+        maxBeats: runLoop.budget.maxBeats,
+        maxTokens: runLoop.budget.maxTokens,
+        maxWallMinutes: runLoop.budget.maxWallMinutes,
+        noProgressLimit: runLoop.budget.noProgressLimit
+      } : undefined}
+      consumption={dialogMode === 'resume' && runLoop ? {
+        beats: runLoop.budget.beats,
+        tokensUsed: Math.round(runLoop.budget.tokensUsed),
+        elapsedMinutes: wallUsed
+      } : null}
+      onSubmit={dialogMode === 'resume' ? onResume : onStart}
+      onStop={onStop}
+      onClose={() => setDialogMode(null)}
+    />}
   </section>
 }

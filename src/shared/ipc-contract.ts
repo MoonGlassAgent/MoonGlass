@@ -274,7 +274,8 @@ export interface MoonGlassApi {
     startVerifRunLoop(projectId: string, options?: VerifRunLoopStartOptions): Promise<void>
     pauseVerifRunLoop(projectId: string): Promise<void>
     /** 恢复：清暂停并重新推导续跑（paused-human/paused-breaker 态） */
-    resumeVerifRunLoop(projectId: string): Promise<void>
+    /** 恢复循环；可传 options 抬高预算上限（须严格大于当前消耗，计数不归零）；手动继续时墙钟开窗重置 */
+    resumeVerifRunLoop(projectId: string, options?: VerifRunLoopStartOptions): Promise<void>
     stopVerifRunLoop(projectId: string): Promise<void>
     /** 循环决策层（批 3，§3.3）：工程师对挂起的 LLM 提案给出批准/否决，可附修改后的指令；
      *  批准后循环拾取执行（合法性校验不过 → 记 rejected 并抛错） */

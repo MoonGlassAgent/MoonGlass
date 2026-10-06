@@ -41,6 +41,7 @@ import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag
 import { appendRtlFixOutcome } from './rtl-fix-outcome-ledger.ts'
 import { readScenarioLabels, readVerifLoopLedger, updateVerifLoopLedger, type VerifBatchLoopLedger } from './verif-loop-ledger.ts'
 import {
+  applyRunLoopBudgetOverrides,
   applyRunLoopPause,
   applyRunLoopResume,
   buildRunLoopEscalationPrompt,
@@ -60,9 +61,11 @@ import {
   readVerifRunLoopLedger,
   reconcileRunLoopAfterRestart,
   recordRunLoopBeat,
+  resetRunLoopWallClock,
   resolveRunLoopStartOptions,
   runLoopEscalationTitle,
   updateVerifRunLoopLedger,
+  validateRunLoopBudgetOverrides,
   RUN_LOOP_DECISION_PENDING_REASON,
   RunLoopSupersededError,
   VERIF_RUN_LOOP_PLANNING_PROMPT,
@@ -2624,10 +2627,11 @@ argument-hint: "<模块名>"
 
   /**
    * 恢复：清暂停并起新循环进程，首拍重新读态势推导（显式"继续"与证据触发恢复同口径，§5.2/§5.3）。
-   * 预算沿用账本原值（墙钟从原始 startedAt 继续累计，不重置——调整预算需停止后以新选项重启，批 4 UI 暴露）；
-   * noProgressLimit 账本未存（§9.1 schema），恢复时取默认值。
+   * - options：继续时可抬高预算上限（须严格大于当前消耗，校验不过即抛错；计数不归零）；
+   * - source='user'（手动继续/批准决策）时墙钟开窗重置：墙钟预算是"无人值守时长"上限，
+   *   人工继续本身就是值守 → 重置开窗，历史时长滚入 wallResetBase；证据触发的自动续跑不重置。
    */
-  async resumeVerifRunLoop(projectId: string): Promise<void> {
+  async resumeVerifRunLoop(projectId: string, options?: VerifRunLoopStartOptions, source: 'user' | 'evidence' = 'user'): Promise<void> {
     const project = this.projects.get(projectId)
     if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
     if (this.verifRunLoops.has(projectId)) throw new Error('验证运行循环已在运行')
@@ -2638,17 +2642,30 @@ argument-hint: "<模块名>"
       throw new Error(`当前状态（${ledger.state}）不可恢复；仅暂停/熔断状态可继续`)
     }
     if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法恢复验证运行循环')
-    const options = resolveRunLoopStartOptions({
-      maxBeats: ledger.budget.maxBeats,
-      maxTokens: ledger.budget.maxTokens,
-      maxWallMinutes: ledger.budget.maxWallMinutes
+    // 校验用"重置后"的候选账本：手动继续的墙钟开窗重置后，墙钟上限按新窗口校验
+    const candidate: VerifRunLoopLedger = JSON.parse(JSON.stringify(ledger)) as VerifRunLoopLedger
+    if (source === 'user') resetRunLoopWallClock(candidate, new Date().toISOString())
+    const check = validateRunLoopBudgetOverrides(candidate, options, new Date().toISOString())
+    if (!check.ok) throw new Error(check.reason)
+    const applied = resolveRunLoopStartOptions({
+      maxBeats: options?.maxBeats ?? ledger.budget.maxBeats,
+      maxTokens: options?.maxTokens ?? ledger.budget.maxTokens,
+      maxWallMinutes: options?.maxWallMinutes ?? ledger.budget.maxWallMinutes,
+      noProgressLimit: options?.noProgressLimit ?? ledger.budget.noProgressLimit
     })
     this.stopRunLoopEvidencePoller(projectId)
-    this.patchRunLoopLedger(workspace, (current) => applyRunLoopResume(current))
-    this.emit(projectId, { type: 'status', message: '验证运行循环已恢复，重新推导下一步' })
+    this.patchRunLoopLedger(workspace, (current) => {
+      applyRunLoopBudgetOverrides(current, options)
+      if (source === 'user') resetRunLoopWallClock(current, new Date().toISOString())
+      applyRunLoopResume(current)
+    })
+    this.emit(projectId, {
+      type: 'status',
+      message: `验证运行循环已恢复，重新推导下一步（上限：循环步数 ≤${applied.maxBeats}，token ≤${applied.maxTokens}，墙钟 ≤${applied.maxWallMinutes} 分钟，连续无进展 ≤${applied.noProgressLimit} 步${source === 'user' ? '；墙钟已重新开窗' : ''}）`
+    })
     // 恢复沿用账本原代际：循环重启对账/暂停均不改 loopId，只有 startVerifRunLoop 开新代际
     this.verifRunLoopGeneration.set(workspace, ledger.loopId)
-    this.kickRunLoop(projectId, options, ledger.loopId)
+    this.kickRunLoop(projectId, applied, ledger.loopId)
   }
 
   /** 停止：拍间隙置 stopped 终态；repairing 态的修复等待一并打断（与 stopVerifBatches 同口径）。 */
@@ -3206,7 +3223,7 @@ argument-hint: "<模块名>"
       if (fingerprint === lastFingerprint) return
       lastFingerprint = fingerprint
       this.emit(projectId, { type: 'status', message: '检测到验证证据变化，验证运行循环自动续跑' })
-      void this.resumeVerifRunLoop(projectId).catch((error) =>
+      void this.resumeVerifRunLoop(projectId, undefined, 'evidence').catch((error) =>
         console.warn('[agent-service] 证据触发的循环恢复失败', error))
     }, RUN_LOOP_EVIDENCE_POLL_INTERVAL_MS)
     timer.unref?.()
