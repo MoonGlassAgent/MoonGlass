@@ -13,6 +13,25 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 
+/**
+ * 批次语义标签：批次里每个场景"在验证什么"的**派发时快照**。
+ *
+ * 为什么快照而不是渲染时现查注册表：
+ * 1. 历史正确性——场景标题由条款文本派生，规格改写后会变；把当前标题贴到历史批次上，
+ *    等于用今天的语义解释当时的执行（违反"不将当前场景说明当作历史预期快照"的既有口径）；
+ * 2. 账本自描述——场景闭环后会移出执行计划，注册表里仍可查但语义上下文已变，
+ *    快照保证历史批次永久可读；
+ * 3. 开销——注册表随项目规模增长（实测 318 场景 ≈ 517 KB），渲染端每次 verification
+ *    变更都拉整份不可取；派发时按需取 3~12 条即可。
+ */
+export interface VerifScenarioLabel {
+  id: string
+  /** 场景标题（注册表 title）；取不到时为空串，界面按"无标题快照"处理，不静默隐藏 */
+  title: string
+  /** 锚定的规格条款 ID（如 REQ-FUNC-002#d），供追溯 */
+  requirementIds: string[]
+}
+
 /** 当前批次（循环内正在执行的批次；无则为 null） */
 export interface VerifLoopCurrentBatch {
   /** 第 n 批（本次循环序号） */
@@ -22,6 +41,8 @@ export interface VerifLoopCurrentBatch {
   dispatchedAt: string
   /** dispatched=批次会话已派发、执行中；settling=会话已结束、完成判定进行中 */
   phase: 'dispatched' | 'settling'
+  /** 语义标签快照（派发时写入；旧账本无此字段） */
+  scenarios?: VerifScenarioLabel[]
 }
 
 /** 本次循环已完成批次的历史条目（新记录在前，滚动 ≤ VERIF_LOOP_HISTORY_LIMIT 条） */
@@ -33,6 +54,8 @@ export interface VerifLoopHistoryEntry {
   /** 完成判定细节（缺哪个 scenario 登记）或熔断原因 */
   reason: string
   settledAt: string
+  /** 语义标签快照（沿用派发时的那一份，保证历史解释与执行时一致；旧账本无此字段） */
+  scenarios?: VerifScenarioLabel[]
 }
 
 export type VerifLoopState = 'idle' | 'running' | 'awaiting-rtl-fix' | 'circuit-broken' | 'completed' | 'stopped'
@@ -63,15 +86,61 @@ function normalizeState(value: unknown): VerifLoopState {
   return value === 'running' || value === 'awaiting-rtl-fix' || value === 'circuit-broken' || value === 'completed' || value === 'stopped' ? value : 'idle'
 }
 
+/** 标题长度上限：正常标题由条款文本派生（引擎侧已截断至 500），此处再加一道防御 */
+export const VERIF_SCENARIO_TITLE_MAX = 300
+
+/** 语义标签归一：缺失/空数组返回 undefined（旧账本不因此产生空数组噪声）。 */
+function normalizeScenarioLabels(value: unknown): VerifScenarioLabel[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const labels = value
+    .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+    .map((item) => ({
+      id: String(item.id ?? ''),
+      title: String(item.title ?? '').trim().slice(0, VERIF_SCENARIO_TITLE_MAX),
+      requirementIds: Array.isArray(item.requirementIds) ? item.requirementIds.map(String).filter(Boolean) : []
+    }))
+    .filter((label) => label.id)
+  return labels.length > 0 ? labels : undefined
+}
+
+/**
+ * 读取指定场景的语义标签快照（批次派发时调用一次，随账本落盘）。
+ *
+ * 只为账本可读性服务，因此**只读、失败降级**：注册表缺失/损坏/ID 未命中一律不抛错——
+ * 批次派发不能因为"标签没取到"而失败。未命中的 ID 仍返回条目（title 为空串），
+ * 界面据此显示"无标题快照"，而不是让场景从列表里静默消失。
+ */
+export function readScenarioLabels(workspace: string, ids: readonly string[]): VerifScenarioLabel[] {
+  const byId = new Map<string, { title: string; requirementIds: string[] }>()
+  try {
+    const data = JSON.parse(readFileSync(join(workspace, 'verification', 'intelligence', 'scenario-registry.json'), 'utf-8')) as { scenarios?: unknown }
+    if (Array.isArray(data.scenarios)) {
+      for (const item of data.scenarios) {
+        if (typeof item !== 'object' || item === null) continue
+        const scenario = item as Record<string, unknown>
+        const id = typeof scenario.id === 'string' ? scenario.id : ''
+        if (!id) continue
+        byId.set(id, {
+          title: typeof scenario.title === 'string' ? scenario.title.trim().slice(0, VERIF_SCENARIO_TITLE_MAX) : '',
+          requirementIds: Array.isArray(scenario.requirementIds) ? scenario.requirementIds.map(String).filter(Boolean) : []
+        })
+      }
+    }
+  } catch { /* 注册表不可读：全部按无标题快照处理 */ }
+  return ids.map((id) => ({ id, title: byId.get(id)?.title ?? '', requirementIds: byId.get(id)?.requirementIds ?? [] }))
+}
+
 function normalizeCurrentBatch(value: unknown): VerifLoopCurrentBatch | null {
   if (typeof value !== 'object' || value === null) return null
   const batch = value as Record<string, unknown>
+  const scenarios = normalizeScenarioLabels(batch.scenarios)
   return {
     index: Number(batch.index ?? 0) || 0,
     sessionName: String(batch.sessionName ?? ''),
     scenarioIds: Array.isArray(batch.scenarioIds) ? batch.scenarioIds.map(String) : [],
     dispatchedAt: String(batch.dispatchedAt ?? ''),
-    phase: batch.phase === 'settling' ? 'settling' : 'dispatched'
+    phase: batch.phase === 'settling' ? 'settling' : 'dispatched',
+    ...(scenarios ? { scenarios } : {})
   }
 }
 
@@ -79,13 +148,17 @@ function normalizeHistory(value: unknown): VerifLoopHistoryEntry[] {
   if (!Array.isArray(value)) return []
   return value
     .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
-    .map((item) => ({
-      index: Number(item.index ?? 0) || 0,
-      scenarioIds: Array.isArray(item.scenarioIds) ? item.scenarioIds.map(String) : [],
-      verdict: item.verdict === 'completed' ? 'completed' as const : 'circuit-broken' as const,
-      reason: String(item.reason ?? ''),
-      settledAt: String(item.settledAt ?? '')
-    }))
+    .map((item) => {
+      const scenarios = normalizeScenarioLabels(item.scenarios)
+      return {
+        index: Number(item.index ?? 0) || 0,
+        scenarioIds: Array.isArray(item.scenarioIds) ? item.scenarioIds.map(String) : [],
+        verdict: item.verdict === 'completed' ? 'completed' as const : 'circuit-broken' as const,
+        reason: String(item.reason ?? ''),
+        settledAt: String(item.settledAt ?? ''),
+        ...(scenarios ? { scenarios } : {})
+      }
+    })
     .slice(0, VERIF_LOOP_HISTORY_LIMIT)
 }
 

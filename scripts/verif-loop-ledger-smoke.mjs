@@ -19,7 +19,7 @@ const compile = (sourcePath, outfile) => {
   writeFileSync(path, compiled.outputText, 'utf8')
   return pathToFileURL(path).href
 }
-const { readVerifLoopLedger, updateVerifLoopLedger, VERIF_LOOP_HISTORY_LIMIT } = await import(compile('src/main/services/verif-loop-ledger.ts', 'verif-loop-ledger.mjs'))
+const { readVerifLoopLedger, updateVerifLoopLedger, readScenarioLabels, VERIF_LOOP_HISTORY_LIMIT, VERIF_SCENARIO_TITLE_MAX } = await import(compile('src/main/services/verif-loop-ledger.ts', 'verif-loop-ledger.mjs'))
 const { readRtlFixOutcomeLedger, appendRtlFixOutcome, RTL_FIX_OUTCOME_LIMIT } = await import(compile('src/main/services/rtl-fix-outcome-ledger.ts', 'rtl-fix-outcome-ledger.mjs'))
 
 const workspace = join(dir, 'ws')
@@ -119,6 +119,57 @@ assert.deepEqual(normalized.history, [])
 assert.equal(normalized.currentBatch, null)
 assert.equal(normalized.circuitBreaker, null)
 
+// A12-A15. 场景语义标签快照（可读性，2026-10-05）：批次里"在验证什么"随账本落盘，
+//          历史批次不依赖当前注册表；取不到标签一律降级，绝不因此让派发失败。
+mkdirSync(join(workspace, 'verification', 'intelligence'), { recursive: true })
+writeFileSync(join(workspace, 'verification', 'intelligence', 'scenario-registry.json'), JSON.stringify({
+  scenarios: [
+    { id: 'SCN-AAAAAAAA', title: '基础功能（REQ-FUNC-002#d）：相邻帧间隔 ≥ 96 bit time', requirementIds: ['REQ-FUNC-002#d'] },
+    { id: 'SCN-BBBBBBBB', title: '', requirementIds: [] }
+  ]
+}), 'utf-8')
+
+// A12. 按 ID 取标签；标题为空的场景仍返回条目（界面显示"无标题快照"，不静默隐藏）
+const labels = readScenarioLabels(workspace, ['SCN-AAAAAAAA', 'SCN-BBBBBBBB', 'SCN-MISSING1'])
+assert.deepEqual(labels.map((label) => label.id), ['SCN-AAAAAAAA', 'SCN-BBBBBBBB', 'SCN-MISSING1'])
+assert.ok(labels[0].title.includes('相邻帧间隔'))
+assert.deepEqual(labels[0].requirementIds, ['REQ-FUNC-002#d'])
+assert.equal(labels[1].title, '')
+assert.equal(labels[2].title, '', 'ID 未命中返回空标题而不是抛错')
+assert.deepEqual(labels[2].requirementIds, [])
+
+// A13. 注册表缺失（新工程/未生成态势）不抛错，全部降级为空标题
+const emptyWorkspace = join(dir, 'ws-no-registry')
+mkdirSync(emptyWorkspace, { recursive: true })
+assert.deepEqual(readScenarioLabels(emptyWorkspace, ['SCN-AAAAAAAA']), [{ id: 'SCN-AAAAAAAA', title: '', requirementIds: [] }])
+
+// A14. 账本往返保留快照：currentBatch 写入 → 收尾搬进 history（沿用派发时那一份）
+updateVerifLoopLedger(workspace, (l) => {
+  l.currentBatch = { index: 9, sessionName: 'phase-verif--batch-9', scenarioIds: ['SCN-AAAAAAAA'], dispatchedAt: new Date().toISOString(), phase: 'dispatched', scenarios: [labels[0]] }
+})
+assert.equal(readVerifLoopLedger(workspace).currentBatch.scenarios[0].id, 'SCN-AAAAAAAA')
+updateVerifLoopLedger(workspace, (l) => {
+  l.history.unshift({ index: 9, scenarioIds: ['SCN-AAAAAAAA'], verdict: 'completed', reason: '证据齐全', settledAt: new Date().toISOString(), scenarios: l.currentBatch.scenarios })
+  l.currentBatch = null
+})
+assert.ok(readVerifLoopLedger(workspace).history[0].scenarios[0].title.includes('相邻帧间隔'))
+
+// A15. 旧账本（无 scenarios 字段）归一为 undefined，不产生空数组噪声；超长标题截断
+const loopPath = join(workspace, 'verification', 'results', 'verif-batch-loop.json')
+writeFileSync(loopPath, JSON.stringify({
+  state: 'running',
+  currentBatch: { index: 1, sessionName: 's', scenarioIds: ['SCN-X'], dispatchedAt: '', phase: 'dispatched' },
+  history: [{ index: 1, scenarioIds: ['SCN-X'], verdict: 'completed', reason: '', settledAt: '' }]
+}), 'utf-8')
+const legacy = readVerifLoopLedger(workspace)
+assert.equal(legacy.currentBatch.scenarios, undefined)
+assert.equal(legacy.history[0].scenarios, undefined)
+writeFileSync(loopPath, JSON.stringify({
+  state: 'running',
+  currentBatch: { index: 1, sessionName: 's', scenarioIds: ['SCN-X'], dispatchedAt: '', phase: 'dispatched', scenarios: [{ id: 'SCN-X', title: 'x'.repeat(500), requirementIds: [] }] }
+}), 'utf-8')
+assert.equal(readVerifLoopLedger(workspace).currentBatch.scenarios[0].title.length, VERIF_SCENARIO_TITLE_MAX)
+
 // ── B. 修复判定账本（§3.1，追加式）──
 
 const record = (suffix, judgment) => ({
@@ -164,4 +215,4 @@ outcomes = readOutcomeFile()
 assert.equal(outcomes.outcomes.length, 1)
 assert.equal(outcomes.outcomes[0].judgment, 'UNKNOWN')
 
-console.log('verif-loop-ledger-smoke: OK（批次循环 dispatched→completed/circuit-broken/stopped/awaiting-rtl-fix + history≤20；修复账本三判定落盘 + ≤50 条 + 容错）')
+console.log('verif-loop-ledger-smoke: OK（批次循环 dispatched→completed/circuit-broken/stopped/awaiting-rtl-fix + history≤20 + 场景语义标签快照与降级；修复账本三判定落盘 + ≤50 条 + 容错）')
