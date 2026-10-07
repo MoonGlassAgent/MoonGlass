@@ -9,7 +9,9 @@ import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, renameS
 import { createHash } from 'node:crypto'
 import { basename, delimiter, dirname, join, relative, resolve } from 'node:path'
 import {
+  ensureVerilatorShim,
   locateTool,
+  resolveSimStallMs,
   run,
   toolEnv,
   VERILATOR_CANDIDATES
@@ -153,6 +155,18 @@ export interface VerilatorSimResult {
   waveformAbortedReason?: 'size-limit'
   /** 外部自带 C++ TB（无 TB 内熔断标记）波形已超限但未能受控停止的诚实标记 */
   waveformOverLimitUncontrolled?: boolean
+  /**
+   * 停滞终止（挂死防护，区别于普通失败与 wall-clock 超时）：仿真进程 stdout/stderr
+   * 连续 stallThresholdMs 毫秒无任何输出，被强制终止整个进程树。诚实失败语义。
+   */
+  stalled?: boolean
+  /** 本次生效的停滞阈值（毫秒）；未触发停滞检测时无此字段 */
+  stallThresholdMs?: number
+  /**
+   * 覆盖率升级失败回退留痕（仅 icarus 请求自动升级 verilator 失败后出现）：
+   * 说明本次已回退 icarus 完成功能回归、无 RTL 覆盖率证据——零覆盖率不得伪装成普通成功。
+   */
+  coverageUpgradeFallback?: string
   /** 缺陷 DEFECT-PACK-001#17：本次失败结果写入前被旁路归档的既有成功 result.json 路径（未归档时无此字段） */
   archivedResultPath?: string
 }
@@ -446,27 +460,53 @@ function assertTbNoNonAsciiAbsolutePaths(pythonFiles: string[]): void {
  *
  * RTL 覆盖率仅 verilator 后端可采集（icarus 无插桩）。rtlCoverage 缺省开启且指定 icarus
  * 时，先尝试升级到 verilator；若本机 cocotb+verilator 构建阶段失败（工具链不可用），
- * 自动回退 icarus 完成功能回归——覆盖率升级不得打断功能验证，回痕写入返回日志。
+ * 自动回退 icarus 完成功能回归——回退在返回日志与 result.json（coverageUpgrade 字段）
+ * 双重留痕：零 RTL 覆盖率证据不得伪装成普通成功。
  */
 export async function runCocotbSimulation(options: CocotbSimOptions): Promise<VerilatorSimResult> {
   if ((options.simulator ?? 'icarus') === 'icarus' && options.rtlCoverage !== false && (await locateTool(VERILATOR_CANDIDATES))) {
     let upgraded: VerilatorSimResult & { buildStageFailed?: boolean }
+    let upgradeFailureReason: string | null = null
     try {
       upgraded = await runCocotbSimulationOnce({ ...options, simulator: 'verilator', coverageUpgradeNote: true })
     } catch (error) {
-      // verilator 工具链前置校验失败（缺 g++/make）：同样走 icarus 回退
+      // verilator 工具链前置校验失败（缺 g++/make、verilator shim 不可用/缺 verilator_bin.exe）：
+      // 同样走 icarus 回退，失败原因留痕
       const message = error instanceof Error ? error.message : String(error)
-      if (!message.includes('Verilator Windows 仿真需要')) throw error
+      if (!message.includes('Verilator Windows 仿真需要') && !message.includes('cocotb verilator 后端不可用')) throw error
       upgraded = { buildStageFailed: true } as VerilatorSimResult & { buildStageFailed?: boolean }
+      upgradeFailureReason = message
     }
     if (!upgraded.buildStageFailed) {
       const { buildStageFailed: _ignored, ...result } = upgraded
       return result
     }
+    // verilator 构建阶段失败（含停滞终止在构建阶段）：取失败输出尾部作原因，随后回退 icarus
+    if (!upgradeFailureReason && upgraded.log) {
+      const tail = upgraded.log.replace(/\s+/g, ' ').trim().slice(-400)
+      if (tail) upgradeFailureReason = `verilator 构建失败输出尾部：…${tail}`
+    }
     const fallback = await runCocotbSimulationOnce({ ...options, simulator: 'icarus', rtlCoverage: false })
+    // 诚实记录：把“覆盖率升级 verilator 失败、已回退 icarus（本次无 RTL 覆盖率）”写进
+    // result.json，与“覆盖率采到 0%/未采集”明确区分，防止批次证据链把零覆盖率当普通成功。
+    const note = '[note] RTL 覆盖率需 verilator 后端，但本机 cocotb+verilator 构建失败，已回退 icarus 完成功能回归（本次无 RTL 覆盖率）'
+    try {
+      const previous = readResult(fallback.resultPath)
+      writeFileSync(fallback.resultPath, JSON.stringify({
+        ...previous,
+        coverageUpgrade: {
+          attempted: true,
+          backend: 'verilator',
+          outcome: 'failed-fell-back-icarus',
+          reason: upgradeFailureReason,
+          failedAt: new Date().toISOString()
+        }
+      }, null, 2), 'utf-8')
+    } catch { /* result.json 回写失败不阻断已完成的 icarus 回归结论 */ }
     return {
       ...fallback,
-      log: `[note] RTL 覆盖率需 verilator 后端，但本机 cocotb+verilator 构建失败，已回退 icarus 完成功能回归（本次无 RTL 覆盖率）\n${fallback.log}`
+      coverageUpgradeFallback: note,
+      log: `${note}${upgradeFailureReason ? `（原因：${upgradeFailureReason}）` : ''}\n${fallback.log}`
     }
   }
   return runCocotbSimulationOnce(options)
@@ -542,6 +582,14 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
 
   const env = toolEnv(simulatorPath)
   if (compilerPath) env.PATH = `${dirname(compilerPath)}${delimiter}${env.PATH ?? ''}`
+  // cocotb verilator 后端（Windows）：PATH 前置 verilator shim，保证 cocotb 的 Makefile/runner
+  // 按名字解析 verilator 时拿到可执行的 verilator_bin.exe（本机 oss-cad-suite 的 perl wrapper
+  // 缺 Pod::Usage 起不来，且 shutil.which 按 PATHEXT 会跳过无扩展名脚本命中其他坏 wrapper）。
+  // 缺 verilator_bin.exe 时明确抛错（升级路径决定回退 icarus；显式 verilator 请求如实报错）。
+  if (simulator === 'verilator' && process.platform === 'win32') {
+    const shim = ensureVerilatorShim(simulatorPath)
+    env.PATH = `${shim.dir}${delimiter}${env.PATH ?? ''}`
+  }
   env.PYTHONPATH = `${resolve(options.testDir)}${delimiter}${env.PYTHONPATH ?? ''}`
   env.COCOTB_RESULTS_FILE = resultsXml
   env.MOONGLASS_FUNCTIONAL_COVERAGE_FILE = functionalCoveragePath
@@ -577,13 +625,21 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
     env,
     guardAbort.signal,
     resolve(options.testDir),
-    options.timeoutSec === undefined ? 0 : Math.max(1, options.timeoutSec) * 1000
+    options.timeoutSec === undefined ? 0 : Math.max(1, options.timeoutSec) * 1000,
+    // 停滞检测（挂死防护，非 wall-clock 上限）：连续无输出即终止整个进程树并标记 stalled
+    resolveSimStallMs()
   )
   waveformMonitor?.stop()
   // 熔断是否实际生效以“进程被终止”为准：若触发时仿真已自然结束（退出码 0，
   // 例如 FST 缓冲区仅在收尾 flush 才超阈值），诚实降级为“超限未实际终止”，不假装熔断成功。
   const waveformAbortedEffective = waveformAborted && execution.code !== 0
   const waveformOverLimitUncontrolled = waveformAborted && !waveformAbortedEffective
+  // 停滞终止是否实际生效以“进程被终止”为准：触发瞬间进程恰好自然退出（退出码 0）时
+  // 诚实降级，不误报 stalled。
+  const stalledEffective = execution.stalled === true && execution.code !== 0
+  const stallBanner = stalledEffective
+    ? `[moonglass] 停滞保护终止：仿真进程连续 ${execution.stallMs ?? '?'} 毫秒无任何输出，已终止整个进程树（stalled，挂死防护，区别于 wall-clock 超时与普通失败）\n`
+    : ''
   const output = [execution.stdout, execution.stderr].filter(Boolean).join('\n')
   const marker = output.indexOf('__MOONGLASS_BUILD_DONE__')
   // 缺陷 DEFECT-PACK-001#10：cocotb 的编译发生在 runner.build() 阶段（icarus 由其内部
@@ -605,7 +661,7 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
     ].join('\n'),
     'utf-8'
   )
-  writeFileSync(simulationLogPath, simSegment.trim() ? simSegment : output, 'utf-8')
+  writeFileSync(simulationLogPath, stallBanner + (simSegment.trim() ? simSegment : output), 'utf-8')
   // 缺陷 DEFECT-PACK-001#10：compileExitCode 反映本次真实编译步骤结果——build 完成标记
   // 出现即编译成功（0）；未出现说明进程未走完编译阶段，记真实进程退出码。不得从
   // previous 继承历史失败退出码（曾出现 84/84 PASS 的回归携带 compileExitCode: 2）。
@@ -622,7 +678,8 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
   const testsFailed = (xml.match(/<(?:failure|error)\b/g) ?? []).length
   const testsSkipped = (xml.match(/<skipped\b/g) ?? []).length
   const testsPassed = Math.max(0, testsTotal - testsFailed - testsSkipped)
-  const passed = execution.code === 0 && testsPassed > 0 && testsFailed === 0
+  // 停滞终止是诚实失败：被停滞保护杀掉的运行绝不判 PASS（即使退出码恰为 0）
+  const passed = !stalledEffective && execution.code === 0 && testsPassed > 0 && testsFailed === 0
   const coverage = rtlCoverage && existsSync(coverageDataPath) && statSync(coverageDataPath).mtimeMs > coverageMtimeBefore
     ? parseVerilatorCoverage(coverageDataPath)
     : {}
@@ -669,6 +726,8 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
     waveformAborted: waveformAbortedEffective,
     waveformAbortedReason: waveformAbortedEffective ? 'size-limit' : null,
     waveformOverLimitUncontrolled,
+    stalled: stalledEffective,
+    stallThresholdMs: execution.stallMs ?? null,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     lineCoverage: mergedCoverage.lineCoverage,
     branchCoverage: mergedCoverage.branchCoverage,
@@ -689,6 +748,8 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
     waveformAborted: waveformAbortedEffective || undefined,
     waveformAbortedReason: waveformAbortedEffective ? 'size-limit' : undefined,
     waveformOverLimitUncontrolled: waveformOverLimitUncontrolled || undefined,
+    stalled: stalledEffective || undefined,
+    stallThresholdMs: execution.stallMs,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     coverageDataPath: freshCoverageData ? coverageDataPath : undefined,
     coverageReportPath,
@@ -845,7 +906,7 @@ export async function runVerilatorSimulation(
     : undefined
   // 陈旧 coverage.dat 防线：与 cocotb 路径同口径——只有本次仿真重写过的 coverage.dat 才解析
   const coverageMtimeBefore = existsSync(coverageDataPath) ? statSync(coverageDataPath).mtimeMs : 0
-  const { stdout: runOut, stderr: runErr, code: runCode } = await run(
+  const { stdout: runOut, stderr: runErr, code: runCode, stalled, stallMs } = await run(
     binExe,
     // 缺陷 DEFECT-PACK-001#6：仿真以 resultDir 为 cwd，覆盖率文件用纯文件名——
     // Verilated 运行时（mingw/ANSI fopen）同样无法处理非 ASCII 绝对路径
@@ -853,22 +914,30 @@ export async function runVerilatorSimulation(
     verilatorEnv,
     signal,
     resultDir,
-    0
+    0,
+    // 停滞检测（挂死防护，非 wall-clock 上限）：仿真可执行文件连续无输出即终止并标记 stalled
+    resolveSimStallMs()
   )
   // 外部 TB 只监控不干预：收尾采样也回调，捕捉最后间隔内的超限
   waveformMonitor?.stop(true)
 
+  // 停滞终止是否实际生效以“进程被终止”为准：触发瞬间进程恰好自然退出（退出码 0）时
+  // 诚实降级，不误报 stalled；被停滞保护杀掉的运行绝不判 PASS。
+  const stalledEffective = stalled === true && runCode !== 0
+  const stallBanner = stalledEffective
+    ? `[moonglass] 停滞保护终止：仿真进程连续 ${stallMs ?? '?'} 毫秒无任何输出，已终止整个进程树（stalled，挂死防护，区别于 wall-clock 超时与普通失败）\n`
+    : ''
   const log = [runOut, runErr].filter(Boolean).join('\n')
   // TB 内熔断触发时会在日志打印停止令牌；据此在 result.json 留痕，PASS/FAIL 语义不变。
   const waveformAborted = tbHasWaveformGuard && log.includes(WAVEFORM_GUARD_STOP_TOKEN)
   writeFileSync(
     simulationLogPath,
-    [`[executable] ${binExe}`, `[exitCode] ${runCode}`, '', runOut, runErr].join('\n'),
+    [stallBanner, `[executable] ${binExe}`, `[exitCode] ${runCode}`, '', runOut, runErr].join('\n'),
     'utf-8'
   )
   const vcdPath = trace ? join(resultDir, `${topModule}.vcd`) : null
   const resolvedVcd = vcdPath && existsSync(vcdPath) ? vcdPath : null
-  const passed = runCode === 0 || runCode === null
+  const passed = !stalledEffective && (runCode === 0 || runCode === null)
   const coverage = rtlCoverage && existsSync(coverageDataPath) && statSync(coverageDataPath).mtimeMs > coverageMtimeBefore
     ? parseVerilatorCoverage(coverageDataPath)
     : {}
@@ -898,6 +967,8 @@ export async function runVerilatorSimulation(
     waveformAborted,
     waveformAbortedReason: waveformAborted ? 'size-limit' : null,
     waveformOverLimitUncontrolled,
+    stalled: stalledEffective,
+    stallThresholdMs: stallMs ?? null,
     compileLogPath,
     simulationLogPath,
     rtlCompileLogPath: compileLogPath,
@@ -923,6 +994,8 @@ export async function runVerilatorSimulation(
     waveformAborted: waveformAborted || undefined,
     waveformAbortedReason: waveformAborted ? 'size-limit' : undefined,
     waveformOverLimitUncontrolled: waveformOverLimitUncontrolled || undefined,
+    stalled: stalledEffective || undefined,
+    stallThresholdMs: stallMs,
     coverage: hasMergedCoverage ? mergedCoverage : undefined,
     coverageDataPath: freshCoverageData ? coverageDataPath : undefined,
     coverageReportPath,

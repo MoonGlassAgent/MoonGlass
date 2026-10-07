@@ -20,10 +20,13 @@ from transaction import {ITEM_NAME}, {ITEM_NAME}Generator
 # ============================================================
 # 测试配置
 # ============================================================
+# default_timeout 是 @cocotb.test 的仿真时间超时兜底（cocotb 2.x 的 timeout_time/timeout_unit），
+# 缺省 5000 us = 5_000_000 ns——对真实项目可辩护的默认值；长用例按测试用更大的
+# timeout_time（如 stress 的 *5）或自定义 timeout_unit 覆盖，不要用"无超时"写挂死用例。
 TEST_CONFIG = {
     'clock_period': 10,     # 时钟周期 (ns)
     'reset_cycles': 10,     # 复位周期数
-    'default_timeout': 1000 # 默认超时 (us)
+    'default_timeout': 5000 # 默认超时 (us) = 5_000_000 ns
 }
 
 

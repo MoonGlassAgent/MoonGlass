@@ -353,7 +353,8 @@ gtkwave dump.vcd
 
 1. Create new test file in `tests/` directory
 2. Import environment and components
-3. Use `@cocotb.test()` decorator
+3. Use `@cocotb.test()` decorator — 必须带 timeout_time/timeout_unit 仿真超时兜底
+   （模板缺省 5000 us = 5_000_000 ns；长用例按测试放大覆盖，禁止无超时的挂死用例）
 4. Add to Makefile
 
 ## References

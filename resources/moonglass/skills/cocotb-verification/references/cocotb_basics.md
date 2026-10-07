@@ -229,7 +229,7 @@ import cocotb
     expect_error=Exception,           # 预期的错误
     skip=False,                        # 是否跳过
     stage=0,                           # 测试阶段
-    timeout_time=1000,                 # 超时时间
+    timeout_time=5000,                 # 超时时间（模板缺省 5000 us = 5_000_000 ns；长用例按测试覆盖）
     timeout_unit='us'                  # 超时单位
 )
 async def my_test(dut):

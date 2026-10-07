@@ -289,6 +289,10 @@ class MyEnvironment:
 
 ## 5. 测试用例标准
 
+每个 `@cocotb.test` 必须带仿真时间超时兜底（cocotb 2.x `timeout_time`/`timeout_unit`）：
+技能模板的缺省为 5000 us（= 5_000_000 ns，对真实项目可辩护）；长用例按测试放大或自定义
+单位覆盖——禁止写无超时的挂死用例（运行侧另有连续无输出的停滞保护作为最后防线）。
+
 ```python
 @cocotb.test(timeout_time=5000, timeout_unit='us')
 async def test_feature_x(dut):
