@@ -14,7 +14,7 @@ const compiled = ts.transpileModule(source, {
   compilerOptions: { module: ts.ModuleKind.ESNext, target: ts.ScriptTarget.ES2022 }
 })
 writeFileSync(outfile, compiled.outputText, 'utf8')
-const { judgeBatchCompletion, isDiagnosticStalled, isTransientSessionError, readExecutionPlanBatch } = await import(pathToFileURL(outfile))
+const { judgeBatchCompletion, isDiagnosticStalled, isTransientSessionError, readExecutionPlanBatch, applyScenarioAvoidance, consecutiveCircuitBreakCount, SCENARIO_AVOIDANCE_STREAK_THRESHOLD } = await import(pathToFileURL(outfile))
 
 const workspace = join(dir, 'ws')
 mkdirSync(join(workspace, 'verification', 'results', 'dma'), { recursive: true })
@@ -145,10 +145,55 @@ assert.equal(isTransientSessionError('模型服务限流，请稍后重试或切
 assert.equal(isTransientSessionError('fetch failed'), true)
 assert.equal(isTransientSessionError('socket hang up'), true)
 assert.equal(isTransientSessionError('request timed out after 30000ms'), true)
+// 中文挂起口径（实测 '[pi-rpc] 等待 Agent 事件超时' 曾不被识别 → 批次挂起 60 分钟不重试）
+assert.equal(isTransientSessionError('[pi-rpc] 等待 Agent 事件超时'), true)
+assert.equal(isTransientSessionError('等待 Agent 事件超时（60000ms）'), true)
+assert.equal(isTransientSessionError('模型服务无响应，连接已断开'), true)
+assert.equal(isTransientSessionError('请求超时，请稍后重试'), true)
 assert.equal(isTransientSessionError(''), false)
 assert.equal(isTransientSessionError(null), false)
 assert.equal(isTransientSessionError('cocotb 编译失败：语法错误'), false)
 assert.equal(isTransientSessionError('API Key 无效或无权限访问该模型（401）'), false)
 assert.equal(isTransientSessionError('模型服务余额不足或套餐已过期（402）'), false)
+
+// ── 批次选择避让（4a，实测 DEC_Visinex：同一对场景 novelty=0 连续 4 轮选中→失败→熔断→再选）──
+// history 新在前；verdict 口径：circuit-broken/no-evidence 计次，completed 清零
+const pairHistory = [
+  { scenarioIds: ['SCN-AAAAAAAA', 'SCN-BBBBBBBB'], verdict: 'circuit-broken' },
+  { scenarioIds: ['SCN-AAAAAAAA', 'SCN-BBBBBBBB'], verdict: 'no-evidence' },
+  { scenarioIds: ['SCN-AAAAAAAA', 'SCN-BBBBBBBB'], verdict: 'completed' },
+  { scenarioIds: ['SCN-AAAAAAAA', 'SCN-BBBBBBBB'], verdict: 'circuit-broken' }
+]
+// 连续熔断次数：自最新向旧计，遇 completed 清零隔断；不涉及该场景的条目不影响
+assert.equal(SCENARIO_AVOIDANCE_STREAK_THRESHOLD, 2)
+assert.equal(consecutiveCircuitBreakCount(pairHistory, 'SCN-AAAAAAAA'), 2)
+assert.equal(consecutiveCircuitBreakCount(pairHistory, 'SCN-BBBBBBBB'), 2)
+assert.equal(consecutiveCircuitBreakCount(pairHistory, 'scn-aaaaaaaa'), 2, '场景 ID 大小写归一比较')
+assert.equal(consecutiveCircuitBreakCount(pairHistory, 'SCN-CCCCCCCC'), 0)
+// 最新一条涉及该场景的条目是 completed → 连续计数清零
+assert.equal(consecutiveCircuitBreakCount([{ scenarioIds: ['SCN-AAAAAAAA'], verdict: 'completed' }, ...pairHistory], 'SCN-AAAAAAAA'), 0)
+// 单次熔断（streak=1）不避让，避免抖动误伤
+assert.equal(consecutiveCircuitBreakCount([{ scenarioIds: ['SCN-DDDDDDDD'], verdict: 'circuit-broken' }], 'SCN-DDDDDDDD'), 1)
+// 其他场景的条目不影响本场景计数（交错批次）
+assert.equal(consecutiveCircuitBreakCount([
+  { scenarioIds: ['SCN-AAAAAAAA'], verdict: 'circuit-broken' },
+  { scenarioIds: ['SCN-EEEEEEEE'], verdict: 'completed' },
+  { scenarioIds: ['SCN-AAAAAAAA'], verdict: 'no-evidence' }
+], 'SCN-AAAAAAAA'), 2)
+
+// 连续熔断降级：≥2 的场景自本批降级，本批只取未熔断/低熔断场景（保持原相对顺序）
+assert.deepEqual(
+  applyScenarioAvoidance(['SCN-AAAAAAAA', 'SCN-CCCCCCCC', 'SCN-BBBBBBBB', 'SCN-DDDDDDDD'], pairHistory),
+  ['SCN-CCCCCCCC', 'SCN-DDDDDDDD']
+)
+// 全部被熔断场景占满 → 原样返回（交外层 rule-stall 升级）
+assert.deepEqual(applyScenarioAvoidance(['SCN-AAAAAAAA', 'SCN-BBBBBBBB'], pairHistory), ['SCN-AAAAAAAA', 'SCN-BBBBBBBB'])
+// 无熔断场景 → 原样返回
+assert.deepEqual(applyScenarioAvoidance(['SCN-CCCCCCCC', 'SCN-DDDDDDDD'], pairHistory), ['SCN-CCCCCCCC', 'SCN-DDDDDDDD'])
+// 聚类内执行语义：输出恒为输入子集（只减不增、不跨批拼凑），大小写/空白归一且去重
+const avoided = applyScenarioAvoidance(['scn-aaaaaaaa', ' SCN-CCCCCCCC ', 'SCN-CCCCCCCC'], pairHistory)
+assert.deepEqual(avoided, ['SCN-CCCCCCCC'])
+assert.ok(avoided.every((id) => ['SCN-AAAAAAAA', 'SCN-CCCCCCCC'].includes(id)))
+assert.equal(applyScenarioAvoidance([], pairHistory).length, 0)
 
 console.log('verif-batch-verdict-smoke: OK')

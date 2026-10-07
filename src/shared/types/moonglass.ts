@@ -646,9 +646,15 @@ export interface VerifBatchRunResult {
   scenarioIds: string[]
   startedAt: string
   finishedAt: string
-  status: 'completed' | 'circuit-broken' | 'error'
+  /**
+   * completed=证据齐；circuit-broken=熔断（会话异常 / watchdog / 证据缺失 / 诊断停滞）；
+   * no-evidence=会话正常 settle 但无执行证据（场景无需执行 / 会话纯分析，属合法出口而非故障，
+   * 循环内记入 verif-batch-loop.json 的 deferredScenarioIds 延后重选，不熔断停止循环）；
+   * error=批次派发异常
+   */
+  status: 'completed' | 'circuit-broken' | 'no-evidence' | 'error'
   verdict: VerifBatchVerdict
-  /** 熔断原因（watchdog / diagnostic-control 无进展 / 证据缺失 / 会话异常） */
+  /** 熔断原因（watchdog / diagnostic-control 无进展 / 证据缺失 / 会话异常）；no-evidence 时为 null */
   circuitBreaker: string | null
   errorMessage: string | null
   /** 批次会话 JSONL 的归档文件路径；延迟归档下仅当该批次超出保留窗口被真正归档时才有值 */

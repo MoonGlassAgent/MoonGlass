@@ -35,7 +35,7 @@ import type { LlmProviderService } from './LlmProviderService.ts'
 import type { AgentModelStore } from './AgentModelStore.ts'
 import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
-import { isDiagnosticStalled, isTransientSessionError, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
+import { applyScenarioAvoidance, isDiagnosticStalled, isTransientSessionError, judgeBatchBreakers, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixAuditRelativePath, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { appendRtlFixOutcome } from './rtl-fix-outcome-ledger.ts'
@@ -1948,18 +1948,27 @@ argument-hint: "<模块名>"
       // 证据齐全时尾随瞬时错误不推翻证据判定（证据优先）；证据缺失时熔断消息保留，
       // 由 runVerifBatches 识别 errorMessage 自动重试同一批次
       const transientSessionError = isTransientSessionError(run.errorMessage)
-      const breakers: string[] = []
-      if (run.errorMessage && !(verdict.complete && transientSessionError)) breakers.push(`批次会话异常：${run.errorMessage}`)
-      if (run.watchdogAbort) breakers.push(`watchdog 熔断：${run.watchdogAbort}`)
-      if (this.verifBatchStopRequested.has(projectId)) breakers.push('用户停止托管')
-      if (!verdict.complete) breakers.push(`证据缺失：${verdict.reasons.join('；')}`)
-      if (isDiagnosticStalled(diagnosticBefore, diagnosticAfter)) breakers.push('diagnostic-control 进入 DIAGNOSTIC_ENHANCEMENT 且本批诊断等级无进展')
-      if (breakers.length === 0) {
+      // 状态归类（决策 4/7 熔断口径 + 4b 无执行批次合法出口的单一事实，纯函数）：
+      // 会话正常 settle 但证据缺失 → no-evidence（场景无需执行/纯分析会话，三重闩锁之二实测），
+      // 不熔断；其余证据缺失组合维持既有熔断条件，证据绑定哲学不变
+      const breakJudgment = judgeBatchBreakers({
+        evidenceComplete: verdict.complete,
+        evidenceReasons: verdict.reasons,
+        errorMessage: run.errorMessage,
+        transientSessionError,
+        watchdogAbort: run.watchdogAbort,
+        userStopped: this.verifBatchStopRequested.has(projectId),
+        diagnosticStalled: isDiagnosticStalled(diagnosticBefore, diagnosticAfter)
+      })
+      if (breakJudgment.status === 'completed') {
         const trailingTransient = verdict.complete && transientSessionError ? `（尾随瞬时故障不推翻证据：${run.errorMessage}）` : ''
         this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 正常完成（证据齐）${trailingTransient}：${ids.join('、')}` }, sessionName)
         result = finish({ status: 'completed', verdict, circuitBreaker: null, errorMessage: null }, sessionName)
+      } else if (breakJudgment.status === 'no-evidence') {
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 会话正常结束但未取得执行证据（${verdict.reasons.join('；')}）：场景可能无需执行或会话为纯分析，记 no-evidence 并在本循环内延后重选：${ids.join('、')}` }, sessionName)
+        result = finish({ status: 'no-evidence', verdict, circuitBreaker: null, errorMessage: null }, sessionName)
       } else {
-        const circuitBreaker = breakers.join('；')
+        const circuitBreaker = breakJudgment.circuitBreaker ?? '未知原因'
         this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 熔断：${circuitBreaker}` }, sessionName)
         result = finish({ status: 'circuit-broken', verdict, circuitBreaker, errorMessage: run.errorMessage }, sessionName)
       }
@@ -1975,18 +1984,22 @@ argument-hint: "<模块名>"
     // 单次派发（非循环驱动）顺带写终态，循环驱动时终态由 runVerifBatches 统一写
     const historyReason = result.status === 'completed'
       ? (result.verdict.reasons.length > 0 ? result.verdict.reasons.join('；') : '证据齐全：scenario_hits 已登记且 posture 已重建')
-      : (result.circuitBreaker ?? result.errorMessage ?? '未知原因')
+      : result.status === 'no-evidence'
+        ? `无执行证据（会话正常结束，场景可能无需执行）：${result.verdict.reasons.join('；') || '未知原因'}`
+        : (result.circuitBreaker ?? result.errorMessage ?? '未知原因')
     this.patchVerifLoopLedger(workspace, (ledger) => {
       // 历史条目沿用派发时的语义标签快照（不重新读注册表）：历史批次必须还原"当时"的语义，
       // 而不是被当作"当前"场景说明。快照缺失（旧账本/派发时注册表不可读）时退回按 ID 现查。
       const dispatched = ledger.currentBatch?.index === batchIndex ? ledger.currentBatch.scenarios : undefined
       const scenarios = dispatched?.length ? dispatched : readScenarioLabels(workspace, ids)
       ledger.currentBatch = null
-      ledger.history.unshift({ index: batchIndex, scenarioIds: ids, verdict: result.status === 'completed' ? 'completed' : 'circuit-broken', reason: historyReason, settledAt: result.finishedAt, scenarios })
+      ledger.history.unshift({ index: batchIndex, scenarioIds: ids, verdict: result.status === 'completed' ? 'completed' : result.status === 'no-evidence' ? 'no-evidence' : 'circuit-broken', reason: historyReason, settledAt: result.finishedAt, scenarios })
     })
     if (!options?.loopManaged) {
+      // no-evidence 无对应终态枚举（状态机保持渲染端兼容）：按未交付证据落 circuit-broken，
+      // reason 明确"会话正常结束"，与真熔断（会话异常/watchdog）区分
       this.writeVerifLoopTerminal(workspace, result.status === 'completed' ? 'completed' : 'circuit-broken',
-        result.status === 'completed' ? null : { reason: historyReason, detail: `批次 ${sessionName} 未正常完成` })
+        result.status === 'completed' ? null : { reason: historyReason, detail: result.status === 'no-evidence' ? `批次 ${sessionName} 会话正常结束但未取得执行证据` : `批次 ${sessionName} 未正常完成` })
     }
     return result
   }
@@ -1994,7 +2007,9 @@ argument-hint: "<模块名>"
   /**
    * VERIF 批次编排循环：select_next_verification_batch 等价的主进程选择
    * （复用 scenario-execution-plan.json，缺失时重建引擎产物）→ 逐批 runVerifBatch。
-   * 批次熔断（证据缺失 / watchdog / DIAGNOSTIC_ENHANCEMENT 无进展）即停止后续批次。
+   * 批次熔断（会话异常 / watchdog / 证据缺失且会话非正常 settle / DIAGNOSTIC_ENHANCEMENT 无进展）
+   * 即停止后续批次；no-evidence（会话正常 settle 但无执行证据，4b 合法出口）不停止——
+   * 场景记入 deferredScenarioIds 本循环内延后重选，继续派发下一批。
    * M4 §5.2 + 托管 VERIF 断档修复（e2e 实测 2026-09-28）：RTL 修复进行中时不再直接
    * circuit-break，而是等待修复会话 settle（超时上限 RTL_FIX_WAIT_TIMEOUT_MS，可被
    * 用户停止打断）后继续选批循环——托管与手动两条路径都自动续跑，修复结果的
@@ -2008,13 +2023,15 @@ argument-hint: "<模块名>"
     const batches: VerifBatchRunResult[] = []
     let transientRetries = 0
     this.verifBatchStopRequested.delete(projectId)
-    // 方案 C 批 1（§3.2）：循环开始重置状态文件（上次循环终态保留到此刻被覆盖）
+    // 方案 C 批 1（§3.2）：循环开始重置状态文件（上次循环终态保留到此刻被覆盖）；
+    // deferredScenarioIds 同口径清空——"本次循环内不再选中"不跨循环生效（4b 无证据出口）
     this.patchVerifLoopLedger(workspace, (ledger) => {
       ledger.state = 'running'
       ledger.currentBatch = null
       ledger.circuitBreaker = null
       ledger.rtlFixWait = null
       ledger.history = []
+      ledger.deferredScenarioIds = []
     })
     for (let index = 0; index < maxBatches; index += 1) {
       if (this.verifBatchStopRequested.has(projectId)) {
@@ -2062,9 +2079,18 @@ argument-hint: "<模块名>"
         this.writeVerifLoopTerminal(workspace, 'circuit-broken', { reason: '批次选择失败', detail: message })
         return { batches, stoppedBy: 'error', message }
       }
+      // 4b：本循环内已延后（no-evidence）的场景不再选中——从本批滤除；全部待执行场景均被
+      // 延后的情形自然走 exhausted 出口结束循环，不空转派发
+      const deferredIds = new Set((readVerifLoopLedger(workspace)?.deferredScenarioIds ?? []).map((id) => id.toUpperCase()))
+      const selectionExhaustedByDeferral = scenarioIds.length > 0 && deferredIds.size > 0
+      if (deferredIds.size > 0) scenarioIds = scenarioIds.filter((id) => !deferredIds.has(id.trim().toUpperCase()))
       if (scenarioIds.length === 0) {
         this.writeVerifLoopTerminal(workspace, 'completed')
-        return { batches, stoppedBy: 'exhausted', message: '场景执行队列已空：没有待执行的 Scenario' }
+        return {
+          batches,
+          stoppedBy: 'exhausted',
+          message: selectionExhaustedByDeferral ? '剩余待执行场景均已因无执行证据延后，本循环不再派发' : '场景执行队列已空：没有待执行的 Scenario'
+        }
       }
       let result: VerifBatchRunResult
       try {
@@ -2075,6 +2101,18 @@ argument-hint: "<模块名>"
         return { batches, stoppedBy: 'error', message }
       }
       batches.push(result)
+      // 4b 无执行批次合法出口（三重闩锁之二实测）：no-evidence 不是故障——不熔断停止循环。
+      // 批次场景记入 deferredScenarioIds（本循环内不再选中，见选批过滤），继续派发下一批；
+      // 批次拍按无进展处理，外层循环的 rule-stall 升级自然兜底
+      if (result.status === 'no-evidence') {
+        this.patchVerifLoopLedger(workspace, (ledger) => {
+          const existing = new Set(ledger.deferredScenarioIds ?? [])
+          for (const id of result.scenarioIds) existing.add(id.toUpperCase())
+          ledger.deferredScenarioIds = [...existing]
+        })
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${result.sessionName} 无执行证据（场景可能无需执行/会话纯分析）：${result.scenarioIds.join('、')} 已记入延后队列，本循环不再选中，继续派发下一批` })
+        continue
+      }
       if (result.status !== 'completed') {
         // 瞬时供应商故障（空响应/限流/5xx/超时等）自动重试同一批次，至多 2 次不占批次额度；
         // 重试耗尽或非瞬时原因才熔断——一次 API 抖动不该终止整个验证循环
@@ -2112,6 +2150,8 @@ argument-hint: "<模块名>"
    * 返回当前 cluster 的下一个执行批（2-3 个场景，同模块同 Oracle 域，一次 run_simulation 绑定）；
    * 无聚类视图（旧版计划文件）时回退平铺 plans 前 limit 个。缺失/损坏时重建引擎产物后重读
    * （对齐 select_next_verification_batch 默认路径）。
+   * 选批后应用连续熔断避让（4a，实测 DEC_Visinex 同对场景 novelty=0 连续 4 轮选中→熔断→再选）：
+   * 在各自聚类批内降级，不跨批拼凑；全部被熔断场景占满时原样返回，交外层 rule-stall 升级。
    */
   private selectVerifBatchScenarioIds(workspace: string, limit: number): string[] {
     let ids = this.readClusterBatch(workspace, limit) ?? readExecutionPlanBatch(workspace, limit)
@@ -2120,7 +2160,10 @@ argument-hint: "<模块名>"
       ids = this.readClusterBatch(workspace, limit) ?? readExecutionPlanBatch(workspace, limit)
       if (ids === null) throw new Error('scenario-execution-plan.json 缺失且重建后仍不可读，请先完成验证规划')
     }
-    // 与 pi 工具一致：登记探索轮次，供饱和度（STALLED）检测
+    // 4a 避让：从循环账本 history（新在前）推导各场景最近连续熔断次数（circuit-broken/no-evidence
+    // 计次，completed 清零），≥2 的场景自本批降级（输出恒为本批子集，聚类归属语义不变）
+    if (ids.length > 0) ids = applyScenarioAvoidance(ids, readVerifLoopLedger(workspace)?.history ?? [])
+    // 与 pi 工具一致：登记探索轮次，供饱和度（STALLED）检测（登记实际派发的批次）
     if (ids.length > 0) recordExplorationRound(workspace, ids)
     return ids
   }
@@ -3128,7 +3171,17 @@ argument-hint: "<模块名>"
     if (verdict === 'approved') {
       const candidate: VerifRunDecision = promptOverride ? { ...decision, action: { ...decision.action, prompt: promptOverride } } : decision
       const runLoop = readVerifRunLoopLedger(workspace)
-      const check = validateDecisionForApproval(candidate, runLoop?.budget ?? null, new Date().toISOString())
+      // 任务 2（实测两项目 8 条合规提案被误杀：墙钟 253/240 时批准直接被拒并记 rejected）：
+      // 批准/否决是人工值守手势，与手动"继续"同权——校验用应用了墙钟开窗重置的候选 budget
+      // （步数/token 维度不变，仍按真实消耗校验，只豁免墙钟维度）；approve-and-resume 路径的
+      // resumeVerifRunLoop(source='user') 随后会真正落盘同一口径的开窗重置，两处一致
+      let budget = runLoop?.budget ?? null
+      if (runLoop) {
+        const candidateLoop: VerifRunLoopLedger = JSON.parse(JSON.stringify(runLoop)) as VerifRunLoopLedger
+        resetRunLoopWallClock(candidateLoop, new Date().toISOString())
+        budget = candidateLoop.budget
+      }
+      const check = validateDecisionForApproval(candidate, budget, new Date().toISOString())
       if (!check.ok) {
         markDecisionStatus(workspace, decisionId, 'rejected')
         this.emit(projectId, { type: 'status', message: `循环决策 ${decisionId} 未通过合法性校验，已记为 rejected：${check.reason}` })

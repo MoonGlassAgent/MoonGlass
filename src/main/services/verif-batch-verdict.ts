@@ -181,11 +181,118 @@ const TRANSIENT_SESSION_ERROR_PATTERNS: RegExp[] = [
   /rate.?limit|overloaded|temporarily unavailable|service unavailable|bad gateway|gateway/i,
   /timed?\s*out|etimedout|esockettimedout|econnreset|econnrefused|socket hang up|fetch failed|network error/i,
   /模型服务暂时不可用/,
-  /模型服务限流/
+  /模型服务限流/,
+  // pi-rpc 等待挂起类中文口径（实测：'[pi-rpc] 等待 Agent 事件超时' 曾不被识别为瞬时故障，
+  // 批次挂起 60 分钟不重试）。只作用于会话级 errorMessage，不经工具日志文本
+  /等待\s*Agent\s*事件/,
+  /超时/,
+  /无响应/
 ]
 
 /** 错误文本是否为瞬时供应商/网络故障（可重试）；空/null 不算。 */
 export function isTransientSessionError(errorMessage: string | null | undefined): boolean {
   const text = (errorMessage ?? '').trim()
   return text.length > 0 && TRANSIENT_SESSION_ERROR_PATTERNS.some((pattern) => pattern.test(text))
+}
+
+// ==================== 批次选择避让（实测 DEC_Visinex：同一对场景 novelty=0 连续 4 轮选中→失败→熔断→再选） ====================
+
+/** 避让推导所需的最小 history 条目形状（与 verif-loop-ledger 的 VerifLoopHistoryEntry 结构兼容）。 */
+export interface ScenarioAvoidanceHistoryEntry {
+  scenarioIds: readonly string[]
+  verdict: string
+}
+
+/** 连续熔断回避阈值：同一场景最近连续熔断/无证据 ≥2 次才降级避让（单次失败不给避让，避免抖动误伤）。 */
+export const SCENARIO_AVOIDANCE_STREAK_THRESHOLD = 2
+
+/**
+ * 场景的"最近连续熔断次数"：自最新 history 条目向旧遍历（history 新在前），
+ * 只统计涉及该场景的条目——circuit-broken / no-evidence 各计 1 次；
+ * 遇 completed（同 id 批次证据齐）清零并停止（更老历史已被本次闭环隔断）；
+ * 不涉及该场景的条目不影响该场景的连续计数。场景 ID 大小写归一比较。
+ */
+export function consecutiveCircuitBreakCount(
+  history: readonly ScenarioAvoidanceHistoryEntry[],
+  scenarioId: string
+): number {
+  const id = scenarioId.trim().toUpperCase()
+  if (!id) return 0
+  let streak = 0
+  for (const entry of history) {
+    const involves = entry.scenarioIds.some((item) => item.trim().toUpperCase() === id)
+    if (!involves) continue
+    if (entry.verdict === 'completed') break
+    if (entry.verdict === 'circuit-broken' || entry.verdict === 'no-evidence') streak += 1
+  }
+  return streak
+}
+
+/**
+ * 批次选择避让（聚类批内执行，不跨批拼凑）：对选批结果应用 history 推导的连续熔断降级——
+ * - 连续熔断/无证据 ≥2 的场景排后：本批只取未熔断/低熔断场景（保持原相对顺序）；
+ * - 取不足（本批全部被熔断场景占满）时回补原样返回，交给外层 rule-stall 升级；
+ * - 无熔断场景时原样返回。
+ * 输出恒为输入子集（保持聚类归属语义：同批仍同模块/同 Oracle 域），只减不增。
+ */
+export function applyScenarioAvoidance(
+  ids: readonly string[],
+  history: readonly ScenarioAvoidanceHistoryEntry[]
+): string[] {
+  const unique = [...new Set(ids.map((id) => id.trim().toUpperCase()).filter(Boolean))]
+  if (unique.length === 0) return []
+  const broken = unique.filter((id) => consecutiveCircuitBreakCount(history, id) >= SCENARIO_AVOIDANCE_STREAK_THRESHOLD)
+  // 无避让对象 / 全部被熔断场景占满（取不足再回补）：原样返回
+  if (broken.length === 0 || broken.length === unique.length) return unique
+  const brokenSet = new Set(broken)
+  return unique.filter((id) => !brokenSet.has(id))
+}
+
+// ==================== 批次运行状态归类（决策 4 熔断口径 + 4b 无执行批次合法出口的单一事实） ====================
+
+/** 批次 settle 后的会话事实输入（证据判定的结构化结果，不读会话文本）。 */
+export interface BatchBreakerInput {
+  /** judgeBatchCompletion 的 complete：登记 + posture 重建时间戳全齐 */
+  evidenceComplete: boolean
+  /** 证据缺失的结构化说明（verdict.reasons），仅用于熔断消息拼接 */
+  evidenceReasons: readonly string[]
+  /** 批次会话级异常消息（null=正常 settle） */
+  errorMessage: string | null
+  /** isTransientSessionError(errorMessage)：瞬时故障不推翻证据，且触发自动重试 */
+  transientSessionError: boolean
+  /** watchdog 熔断原因（null=未熔断） */
+  watchdogAbort: string | null
+  /** 用户停止托管 */
+  userStopped: boolean
+  /** isDiagnosticStalled：DIAGNOSTIC_ENHANCEMENT 且本批诊断等级无进展 */
+  diagnosticStalled: boolean
+}
+
+export interface BatchBreakerVerdict {
+  /**
+   * completed=证据齐（尾随瞬时故障不推翻证据）；circuit-broken=熔断类；
+   * no-evidence=会话正常 settle（无异常/watchdog/用户停止/诊断停滞）但证据缺失——
+   * 场景无需执行/会话纯分析是合法结果（三重闩锁之二实测），不熔断，循环内延后重选
+   */
+  status: 'completed' | 'circuit-broken' | 'no-evidence'
+  /** circuit-broken 时的熔断原因串（'；'连接）；其余状态为 null */
+  circuitBreaker: string | null
+}
+
+/**
+ * 批次 settle 后的状态归类：先按决策 4/7 口径组熔断原因（与历史实现逐条一致），
+ * 再在熔断分支前区分 no-evidence 合法出口——只豁免"会话正常结束 + 证据缺失"这一组合，
+ * 其余熔断条件（会话异常/watchdog/用户停止/诊断停滞）一律不动，证据绑定哲学不变。
+ */
+export function judgeBatchBreakers(input: BatchBreakerInput): BatchBreakerVerdict {
+  const breakers: string[] = []
+  if (input.errorMessage && !(input.evidenceComplete && input.transientSessionError)) breakers.push(`批次会话异常：${input.errorMessage}`)
+  if (input.watchdogAbort) breakers.push(`watchdog 熔断：${input.watchdogAbort}`)
+  if (input.userStopped) breakers.push('用户停止托管')
+  if (!input.evidenceComplete) breakers.push(`证据缺失：${input.evidenceReasons.join('；')}`)
+  if (input.diagnosticStalled) breakers.push('diagnostic-control 进入 DIAGNOSTIC_ENHANCEMENT 且本批诊断等级无进展')
+  if (breakers.length === 0) return { status: 'completed', circuitBreaker: null }
+  const settledCleanly = !input.errorMessage && !input.watchdogAbort && !input.userStopped && !input.diagnosticStalled
+  if (!input.evidenceComplete && settledCleanly) return { status: 'no-evidence', circuitBreaker: null }
+  return { status: 'circuit-broken', circuitBreaker: breakers.join('；') }
 }

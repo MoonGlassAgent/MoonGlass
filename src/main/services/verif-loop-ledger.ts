@@ -49,9 +49,13 @@ export interface VerifLoopCurrentBatch {
 export interface VerifLoopHistoryEntry {
   index: number
   scenarioIds: string[]
-  /** 批次 error 状态按熔断类归并（与 runVerifBatches 的停止口径一致） */
-  verdict: 'completed' | 'circuit-broken'
-  /** 完成判定细节（缺哪个 scenario 登记）或熔断原因 */
+  /**
+   * 批次状态按结果归并（与 runVerifBatches 的停止口径一致）：
+   * completed=证据齐；circuit-broken=熔断类（会话异常/watchdog/证据缺失/诊断停滞）；
+   * no-evidence=会话正常 settle 但无执行证据（合法出口，循环内延后重选，不停止循环）
+   */
+  verdict: 'completed' | 'circuit-broken' | 'no-evidence'
+  /** 完成判定细节（缺哪个 scenario 登记）、无证据说明或熔断原因 */
   reason: string
   settledAt: string
   /** 语义标签快照（沿用派发时的那一份，保证历史解释与执行时一致；旧账本无此字段） */
@@ -71,6 +75,12 @@ export interface VerifBatchLoopLedger {
   /** 等修复暂停（state=awaiting-rtl-fix 时有值） */
   rtlFixWait: { rootCauseId: string; since: string } | null
   history: VerifLoopHistoryEntry[]
+  /**
+   * 本循环内"无执行证据"（no-evidence）批次延后、不再参与选批的场景 ID（大写去重）。
+   * 合法出口而非故障：循环继续派发其他批次；新循环开始（running 重置）时清空。
+   * 旧账本无此字段，读取归一为 undefined（不因此产生空数组噪声）。
+   */
+  deferredScenarioIds?: string[]
 }
 
 export const VERIF_LOOP_HISTORY_LIMIT = 20
@@ -144,6 +154,10 @@ function normalizeCurrentBatch(value: unknown): VerifLoopCurrentBatch | null {
   }
 }
 
+function normalizeHistoryVerdict(value: unknown): VerifLoopHistoryEntry['verdict'] {
+  return value === 'completed' ? 'completed' as const : value === 'no-evidence' ? 'no-evidence' as const : 'circuit-broken' as const
+}
+
 function normalizeHistory(value: unknown): VerifLoopHistoryEntry[] {
   if (!Array.isArray(value)) return []
   return value
@@ -153,13 +167,20 @@ function normalizeHistory(value: unknown): VerifLoopHistoryEntry[] {
       return {
         index: Number(item.index ?? 0) || 0,
         scenarioIds: Array.isArray(item.scenarioIds) ? item.scenarioIds.map(String) : [],
-        verdict: item.verdict === 'completed' ? 'completed' as const : 'circuit-broken' as const,
+        verdict: normalizeHistoryVerdict(item.verdict),
         reason: String(item.reason ?? ''),
         settledAt: String(item.settledAt ?? ''),
         ...(scenarios ? { scenarios } : {})
       }
     })
     .slice(0, VERIF_LOOP_HISTORY_LIMIT)
+}
+
+/** 延后场景归一：大写去重去空；缺失/空数组返回 undefined（旧账本不因此产生空数组噪声）。 */
+function normalizeDeferredScenarioIds(value: unknown): string[] | undefined {
+  if (!Array.isArray(value)) return undefined
+  const ids = [...new Set(value.map((id) => String(id).trim().toUpperCase()).filter(Boolean))]
+  return ids.length > 0 ? ids : undefined
 }
 
 /** 读取状态文件；不存在/损坏返回 null（调用方按无循环记录处理）。缺字段归一为默认值。 */
@@ -174,6 +195,7 @@ export function readVerifLoopLedger(workspace: string): VerifBatchLoopLedger | n
   const data = raw as Record<string, unknown>
   const breaker = typeof data.circuitBreaker === 'object' && data.circuitBreaker !== null ? data.circuitBreaker as Record<string, unknown> : null
   const wait = typeof data.rtlFixWait === 'object' && data.rtlFixWait !== null ? data.rtlFixWait as Record<string, unknown> : null
+  const deferredScenarioIds = normalizeDeferredScenarioIds(data.deferredScenarioIds)
   return {
     version: 1,
     updatedAt: typeof data.updatedAt === 'string' ? data.updatedAt : '',
@@ -181,7 +203,8 @@ export function readVerifLoopLedger(workspace: string): VerifBatchLoopLedger | n
     currentBatch: normalizeCurrentBatch(data.currentBatch),
     circuitBreaker: breaker ? { reason: String(breaker.reason ?? ''), detail: String(breaker.detail ?? '') } : null,
     rtlFixWait: wait ? { rootCauseId: String(wait.rootCauseId ?? ''), since: String(wait.since ?? '') } : null,
-    history: normalizeHistory(data.history)
+    history: normalizeHistory(data.history),
+    ...(deferredScenarioIds ? { deferredScenarioIds } : {})
   }
 }
 
