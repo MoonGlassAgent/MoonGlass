@@ -21,6 +21,8 @@
 // ============================================================
 
 import type {
+  RunLoopForecast,
+  VerifRunClosurePlan,
   VerifRunLoopBeatEntry,
   VerifRunLoopBudget,
   VerifRunLoopCurrent,
@@ -133,6 +135,24 @@ function normalizeRunLoopBeatEntries(value: unknown): VerifRunLoopBeatEntry[] {
     .slice(0, 20)
 }
 
+/** closurePlan（战略层）归一化：缺失/损坏返回 null；criteria 坏条目丢弃，非法策略归一为 normal。 */
+function normalizeRunLoopClosurePlan(value: unknown): VerifRunClosurePlan | null {
+  const plan = asRecord(value)
+  if (!plan) return null
+  const criteria = (Array.isArray(plan.criteria) ? plan.criteria : [])
+    .map(asRecord)
+    .filter((item): item is Record<string, unknown> => item !== null)
+    .map((item) => ({ id: asString(item.id), met: item.met === true }))
+  return {
+    wave: asString(plan.wave),
+    strategy: plan.strategy === 'converge-first' || plan.strategy === 'deep-dive' || plan.strategy === 'steady-regression' ? plan.strategy : 'normal',
+    strategySince: asString(plan.strategySince),
+    criteria,
+    metCount: asNumber(plan.metCount),
+    totalCount: asNumber(plan.totalCount)
+  }
+}
+
 /** run-loop.json 归一化；非对象返回 null（按无循环记录处理，与主进程读取方同口径）。 */
 export function normalizeRunLoopLedger(raw: unknown): VerifRunLoopLedger | null {
   const data = asRecord(raw)
@@ -147,7 +167,43 @@ export function normalizeRunLoopLedger(raw: unknown): VerifRunLoopLedger | null 
     current: normalizeRunLoopCurrent(data.current),
     pause: normalizeRunLoopPause(data.pause),
     budget: normalizeRunLoopBudget(data.budget),
-    lastBeats: normalizeRunLoopBeatEntries(data.lastBeats)
+    lastBeats: normalizeRunLoopBeatEntries(data.lastBeats),
+    // 战略层 closurePlan（可选字段）：无计划/损坏归一为 undefined（shared 类型口径），读取处 ?? null
+    closurePlan: normalizeRunLoopClosurePlan(data.closurePlan) ?? undefined,
+    // 战略层进展预测（可选字段）：结构由 shared RunLoopForecast 约束，缺省/损坏归一为 undefined
+    forecast: normalizeRunLoopForecast(data.forecast) ?? undefined
+  }
+}
+
+/** forecast（战略层）归一化：缺失/损坏返回 null；数值字段非法一律 null，非法 binding/confidence 回落。 */
+function normalizeRunLoopForecast(value: unknown): RunLoopForecast | null {
+  const forecast = asRecord(value)
+  if (!forecast) return null
+  const num = (field: unknown): number | null => {
+    const parsed = Number(field)
+    return Number.isFinite(parsed) && parsed >= 0 ? parsed : null
+  }
+  const eta = asRecord(forecast.etaHours)
+  const projection = asRecord(forecast.budgetProjection)
+  const projectionOf = (key: 'steps' | 'tokens' | 'wallMinutes'): { projectedClauses: number } | null => {
+    const entry = asRecord(projection?.[key])
+    const value = num(entry?.projectedClauses)
+    return entry && value !== null ? { projectedClauses: value } : null
+  }
+  const steps = projectionOf('steps')
+  const tokens = projectionOf('tokens')
+  const wallMinutes = projectionOf('wallMinutes')
+  const binding = forecast.binding
+  const confidence = forecast.confidence
+  return {
+    covered: num(forecast.covered),
+    total: num(forecast.total),
+    ratePerHour: num(forecast.ratePerHour),
+    recentAdvanceRatio: num(forecast.recentAdvanceRatio) ?? 0,
+    etaHours: eta ? { low: num(eta.low) ?? 0, high: num(eta.high) ?? 0 } : null,
+    budgetProjection: projection && steps && tokens && wallMinutes ? { steps, tokens, wallMinutes } : null,
+    binding: binding === 'sufficient' || binding === 'tight' || binding === 'insufficient' ? binding : 'unknown',
+    confidence: confidence === 'medium' ? 'medium' : 'low'
   }
 }
 
@@ -202,6 +258,19 @@ export function normalizeDecisionLedger(raw: unknown): VerifRunDecisionEntryView
 
 export type VerifLoopState = 'idle' | 'running' | 'awaiting-rtl-fix' | 'circuit-broken' | 'completed' | 'stopped'
 
+/**
+ * 批次语义标签视图：批次里每个场景在验证什么的**派发时快照**（主进程写入，见
+ * `src/main/services/verif-loop-ledger.ts` 的 readScenarioLabels）。
+ * 旧账本无此字段，界面按"无标题快照"显示场景 ID，不用当前注册表回填历史语义。
+ */
+export interface VerifScenarioLabelView {
+  id: string
+  /** 场景标题；空串表示快照缺失（注册表当时不可读或 ID 未命中） */
+  title: string
+  /** 锚定的规格条款 ID（如 REQ-FUNC-002#d） */
+  requirementIds: string[]
+}
+
 /** 当前批次（循环内正在执行的批次；无则为 null） */
 export interface VerifLoopCurrentBatch {
   /** 第 n 批（本次循环序号） */
@@ -211,6 +280,8 @@ export interface VerifLoopCurrentBatch {
   dispatchedAt: string
   /** dispatched=批次会话已派发、执行中；settling=会话已结束、完成判定进行中 */
   phase: 'dispatched' | 'settling'
+  /** 语义标签快照（旧账本缺失） */
+  scenarios?: VerifScenarioLabelView[]
 }
 
 /** 本次循环已完成批次的历史条目（新记录在前，≤20 条） */
@@ -221,6 +292,8 @@ export interface VerifLoopHistoryEntry {
   /** 完成判定细节（缺哪个 scenario 登记）或熔断原因 */
   reason: string
   settledAt: string
+  /** 语义标签快照（旧账本缺失） */
+  scenarios?: VerifScenarioLabelView[]
 }
 
 /** 批次循环状态视图（verif-batch-loop.json） */
@@ -382,17 +455,35 @@ export function normalizeVerifBatchLoop(raw: unknown): VerifBatchLoopView | null
   const batch = asRecord(data.currentBatch)
   const breaker = asRecord(data.circuitBreaker)
   const wait = asRecord(data.rtlFixWait)
+  const labelsOf = (value: unknown): VerifScenarioLabelView[] | undefined => {
+    if (!Array.isArray(value)) return undefined
+    const labels = value
+      .map(asRecord)
+      .filter((item): item is Record<string, unknown> => item !== null)
+      .map((item) => ({
+        id: asString(item.id),
+        title: asString(item.title),
+        requirementIds: asStringArray(item.requirementIds)
+      }))
+      .filter((label) => label.id)
+    return labels.length > 0 ? labels : undefined
+  }
   const history = (Array.isArray(data.history) ? data.history : [])
     .map(asRecord)
     .filter((item): item is Record<string, unknown> => item !== null)
-    .map((item) => ({
-      index: asNumber(item.index),
-      scenarioIds: asStringArray(item.scenarioIds),
-      verdict: item.verdict === 'completed' ? 'completed' as const : 'circuit-broken' as const,
-      reason: asString(item.reason),
-      settledAt: asString(item.settledAt)
-    }))
+    .map((item) => {
+      const scenarios = labelsOf(item.scenarios)
+      return {
+        index: asNumber(item.index),
+        scenarioIds: asStringArray(item.scenarioIds),
+        verdict: item.verdict === 'completed' ? 'completed' as const : 'circuit-broken' as const,
+        reason: asString(item.reason),
+        settledAt: asString(item.settledAt),
+        ...(scenarios ? { scenarios } : {})
+      }
+    })
     .slice(0, 20)
+  const currentScenarios = batch ? labelsOf(batch.scenarios) : undefined
   return {
     updatedAt: asString(data.updatedAt),
     state: normalizeLoopState(data.state),
@@ -401,7 +492,8 @@ export function normalizeVerifBatchLoop(raw: unknown): VerifBatchLoopView | null
       sessionName: asString(batch.sessionName),
       scenarioIds: asStringArray(batch.scenarioIds),
       dispatchedAt: asString(batch.dispatchedAt),
-      phase: batch.phase === 'settling' ? 'settling' : 'dispatched'
+      phase: batch.phase === 'settling' ? 'settling' : 'dispatched',
+      ...(currentScenarios ? { scenarios: currentScenarios } : {})
     } : null,
     circuitBreaker: breaker ? { reason: asString(breaker.reason), detail: asString(breaker.detail) } : null,
     rtlFixWait: wait ? { rootCauseId: asString(wait.rootCauseId), since: asString(wait.since) } : null,

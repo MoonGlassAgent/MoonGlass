@@ -17,6 +17,14 @@
 import { useEffect, useState } from 'react'
 import { OctagonPause, Play, Repeat, Square } from 'lucide-react'
 import type { VerifRunLoopLedger, VerifRunLoopStartOptions, VerifRunLoopState } from '@shared/types'
+import {
+  buildRunSummary,
+  computeBudgetWarning,
+  type RunBudgetDimension,
+  type RunLoopForecast,
+  type RunSummaryTone,
+  type RunSummaryTranslate
+} from '@shared/run-summary'
 import { useTranslation, type MessageKey } from '../../i18n'
 import { DECISION_SOURCE_META, ProposedDecisionCard } from './ProposedDecisionCard'
 import {
@@ -29,10 +37,15 @@ import {
 } from './types'
 
 export interface RunLoopCardProps {
-  /** 外层循环账本（run-loop.json 归一化结果；null=无循环记录/未加载） */
+  /** 外层循环账本（run-loop.json 归一化结果；null=无循环记录/未加载；closurePlan 随账本透传） */
   runLoop: VerifRunLoopLedger | null
   /** 决策账本条目（decision-ledger.json 归一化结果，新在前） */
   decisions: VerifRunDecisionEntryView[]
+  /**
+   * 预测（战略层摘要输入；主进程产出，本批渲染端只接 prop 缺省 null）。
+   * 数值字段均可 null/缺省，摘要生成器负责归一。
+   */
+  forecast?: RunLoopForecast | null
   /** 启动循环（四项预算均可选；缺省走主进程默认值） */
   onStart: (options: VerifRunLoopStartOptions) => Promise<void>
   /** 暂停循环（当前拍完成后转 paused） */
@@ -65,6 +78,21 @@ const OUTCOME_META: Record<VerifRunDecisionOutcome, { labelKey: MessageKey; cls:
   advanced: { labelKey: 'verifRun.loop.outcome.advanced', cls: 'bg-emerald-100 text-emerald-700' },
   'no-progress': { labelKey: 'verifRun.loop.outcome.no-progress', cls: 'bg-zinc-100 text-zinc-600' },
   failed: { labelKey: 'verifRun.loop.outcome.failed', cls: 'bg-red-100 text-red-700' }
+}
+
+/** 摘要语气着色（normal 灰 / strategy 蓝 / warning 琥珀 / blocked 红） */
+const SUMMARY_TONE_CLS: Record<RunSummaryTone, string> = {
+  normal: 'text-zinc-600',
+  strategy: 'text-sky-700',
+  warning: 'text-amber-700',
+  blocked: 'text-red-700'
+}
+
+/** 预算琥珀警示的维度名 key */
+const BUDGET_DIM_LABEL_KEYS: Record<RunBudgetDimension, MessageKey> = {
+  steps: 'verifRun.loop.summary.dimSteps',
+  tokens: 'verifRun.loop.summary.dimTokens',
+  wall: 'verifRun.loop.summary.dimWall'
 }
 
 /** 单条预算水位条：≥100% 红、≥85% 琥珀、其余 emerald；max<=0 时按 0% 渲染 */
@@ -211,7 +239,7 @@ function BudgetDialog({ mode, initial, consumption, onSubmit, onStop, onClose }:
 }
 
 /** 外层循环卡（§7.1 看状态/做控制/收请示 三合一）。 */
-export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, onStop, onDecide }: RunLoopCardProps): React.JSX.Element {
+export function RunLoopCard({ runLoop, decisions, forecast = null, onStart, onPause, onResume, onStop, onDecide }: RunLoopCardProps): React.JSX.Element {
   const { t } = useTranslation()
   const [dialogMode, setDialogMode] = useState<null | 'start' | 'resume'>(null)
   const [busy, setBusy] = useState<null | 'pause' | 'stop'>(null)
@@ -236,6 +264,24 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
   const proposed = decisions.filter((decision) => decision.status === 'proposed')
   const history = decisions.filter((decision) => decision.status !== 'proposed')
 
+  // 战略层摘要（一个数 + 一句话）：纯函数内核 + 渲染端 t() 注入（与 verification-guidance 薄壳同口径）。
+  // pendingHumanSummary 本批由待人工暂停的 detail 派生；主进程后续批次可在账本内提供专用字段。
+  const summaryTr: RunSummaryTranslate = (key, params) => t(key, params)
+  const summary = runLoop ? buildRunSummary({
+    wave: runLoop.wave,
+    covered: runLoop.closurePlan?.metCount ?? null,
+    total: runLoop.closurePlan?.totalCount ?? null,
+    stale: null,
+    forecast: forecast ?? null,
+    closurePlan: runLoop.closurePlan ?? null,
+    loopState: runLoop.state,
+    pendingHumanSummary: runLoop.pause?.kind === 'human' ? runLoop.pause.detail.trim() || null : null,
+    budgetWarning: null
+  }, summaryTr) : null
+  // 预算琥珀警示：平时隐藏，任一维度 used/max > 80% 才浮现（computeBudgetWarning 取最严重维度）；
+  // 与预算三水位条并存（产品暂不要求隐藏水位条），"预计够/不够"由 forecast.binding 裁决。
+  const budgetWarning = runLoop ? computeBudgetWarning(runLoop.budget, forecast ?? null, now) : null
+
   const run = async (key: 'pause' | 'stop', action: () => Promise<void>): Promise<void> => {
     setBusy(key)
     setError(null)
@@ -257,6 +303,12 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
     </div>
 
     {!runLoop ? <p className="mt-3 rounded border border-dashed border-zinc-300 p-4 text-center text-xs text-zinc-400">{t('verifRun.loop.empty')}</p> : <>
+      {summary && <div className="mt-3 rounded border border-zinc-100 bg-zinc-50/60 px-3 py-2">
+        <div className="text-sm font-semibold text-zinc-800">{summary.coverageText}</div>
+        <p className={`mt-0.5 text-xs leading-5 ${SUMMARY_TONE_CLS[summary.tone]}`}>{summary.headline}</p>
+        {summary.forecastNote && <p className="mt-0.5 text-[10px] text-zinc-400">{summary.forecastNote}</p>}
+      </div>}
+
       <div className="mt-3 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
         <span className="font-medium text-zinc-700">
           {runLoop.wave ? t('verifRun.loop.wave', { wave: runLoop.wave }) : t('verifRun.loop.waveNone')}
@@ -280,6 +332,16 @@ export function RunLoopCard({ runLoop, decisions, onStart, onPause, onResume, on
         <BudgetBar label={t('verifRun.loop.tokensBudget')} used={Math.round(runLoop.budget.tokensUsed)} max={runLoop.budget.maxTokens} />
         <BudgetBar label={t('verifRun.loop.wallBudget')} used={wallUsed} max={runLoop.budget.maxWallMinutes} suffix={t('verifRun.loop.minutesSuffix')} />
       </div>
+
+      {budgetWarning && <div className="mt-2 rounded border border-amber-200 bg-amber-50 px-3 py-1.5 text-[11px] text-amber-700">
+        {t('verifRun.loop.summary.budgetWarning', {
+          dimension: t(BUDGET_DIM_LABEL_KEYS[budgetWarning.dimension]),
+          percent: budgetWarning.max > 0 ? Math.round((budgetWarning.used / budgetWarning.max) * 100) : 0,
+          used: Math.round(budgetWarning.used).toLocaleString(),
+          max: Math.round(budgetWarning.max).toLocaleString(),
+          verdict: t((forecast?.binding ?? 'unknown') === 'insufficient' ? 'verifRun.loop.summary.budgetShort' : 'verifRun.loop.summary.budgetEnough')
+        })}
+      </div>}
 
       {runLoop.pause && <div className={`mt-3 rounded border p-3 ${runLoop.pause.kind === 'breaker' ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}>
         <div className={`text-[11px] font-semibold ${runLoop.pause.kind === 'breaker' ? 'text-red-700' : 'text-amber-700'}`}>

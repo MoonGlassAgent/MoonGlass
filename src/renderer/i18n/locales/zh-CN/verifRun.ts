@@ -117,7 +117,55 @@ export const verifRun = {
     /** 继续对话框顶部琥珀提示行：当前消耗（墙钟为本窗口已运行时长） */
     consumption: '当前消耗：已 {beats} 步 · token {tokens} · 本窗口已运行 {minutes} 分钟',
     /** 墙钟预设 chip 标签（值用分钟）：{n} 小时 */
-    presetHours: '{n} 小时'
+    presetHours: '{n} 小时',
+    /** 战略层摘要（一个数 + 一句话）：闭环率、机器生成的一句话与预算琥珀警示 */
+    summary: {
+      /** 卡壳（blocked）：待人工处置一句话优先展示 */
+      blocked: '{wave} · {summary}',
+      /** 起步中：无 forecast 或速率数据 */
+      warmup: '{wave} · 起步中，尚无速率数据',
+      /** 预警（binding=insufficient）：预算只能走到约 {projected} 条 */
+      insufficient: '{wave} · 按当前打法 {covered}/{total}，预算只能走到约 {projected} 条——建议处理（调预算或改策略）',
+      /** 策略态：已切换「{strategy}」{reason}（reason 含前导冒号） */
+      strategy: '{wave} · 已切换「{strategy}」{reason}',
+      /** 正常：进度 + ETA 区间 + 预算 binding 文案 */
+      normalWithEta: '{wave} · {progress}，按当前速率还需约 {low}–{high} 小时，预算{binding}',
+      /** 正常：预测无 ETA 明细时回退（etaHours 缺数据归一） */
+      normalNoEta: '{wave} · {progress}，预算{binding}',
+      progressEarly: '推进中 {covered}/{total}',
+      progressHalf: '已过半 {covered}/{total}',
+      progressDone: '已达标 {covered}/{total}',
+      /** 无覆盖数据时的定性进度词 */
+      progressNoData: '推进中',
+      bindingSufficient: '充足',
+      bindingTight: '偏紧',
+      bindingInsufficient: '不足',
+      bindingUnknown: '未知',
+      strategyNameNormal: '正常推进',
+      strategyNameConvergeFirst: '收敛优先',
+      strategyNameDeepDive: '攻坚深挖',
+      strategyNameSteadyRegression: '稳健回归',
+      strategyReasonConvergeFirst: '：先收敛 {count} 个未决闭环项再提速',
+      strategyReasonDeepDive: '：集中攻坚 {count} 个未闭环场景',
+      strategyReasonSteadyRegression: '：优先回归巩固已有通过项',
+      /** confidence=low 附注：预测仅供参考 */
+      forecastNote: '（速率样本不足，预测仅供参考）',
+      /** 一个数：闭环率（唯一常驻硬指标） */
+      coverage: '已验证 {covered}/{total}',
+      /** 闭环率 + 陈旧通过透出 */
+      coverageStale: '已验证 {covered}/{total}，含 {stale} 条待回归',
+      coverageNone: '尚无覆盖数据',
+      /** 波段缺失占位 */
+      waveUnknown: '—',
+      /** 预算琥珀警示：维度名 */
+      dimSteps: '循环步数',
+      dimTokens: 'Token',
+      dimWall: '墙钟',
+      /** 预算琥珀警示：预计够/不够（由 forecast.binding 裁决） */
+      budgetEnough: '够',
+      budgetShort: '不够',
+      budgetWarning: '{dimension}预算已用 {percent}%（{used}/{max}），预计{verdict}'
+    }
   },
   fix: {
     title: 'RTL 修复',

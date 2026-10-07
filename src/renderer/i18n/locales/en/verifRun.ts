@@ -119,7 +119,55 @@ export const verifRun: Messages['verifRun'] = {
     /** Amber consumption line at the top of the resume dialog (wall clock = elapsed time in the current window) */
     consumption: 'Current consumption: {beats} steps · {tokens} tokens · {minutes} min elapsed this window',
     /** Wall-clock preset chip label (values are minutes): {n}h */
-    presetHours: '{n}h'
+    presetHours: '{n}h',
+    /** Strategic-layer summary (one number + one line): closure rate, machine-generated headline, amber budget warning */
+    summary: {
+      /** Blocked: pending-human one-liner takes precedence */
+      blocked: '{wave} · {summary}',
+      /** Warming up: no forecast or no rate data */
+      warmup: '{wave} · Warming up, no rate data yet',
+      /** Warning (binding=insufficient): budget runs out at ~{projected} clauses */
+      insufficient: '{wave} · At the current pace {covered}/{total}, the budget only reaches ~{projected} clauses — action suggested (raise budget or change strategy)',
+      /** Strategy: switched to "{strategy}"{reason} (reason includes a leading colon) */
+      strategy: '{wave} · Switched to "{strategy}"{reason}',
+      /** Normal: progress + ETA range + budget binding text */
+      normalWithEta: '{wave} · {progress}, ~{low}–{high} hours to go at the current rate, budget {binding}',
+      /** Normal: fallback when the forecast has no ETA detail (missing-data normalization) */
+      normalNoEta: '{wave} · {progress}, budget {binding}',
+      progressEarly: 'In progress {covered}/{total}',
+      progressHalf: 'Past halfway {covered}/{total}',
+      progressDone: 'Target met {covered}/{total}',
+      /** Qualitative progress word when no coverage data */
+      progressNoData: 'In progress',
+      bindingSufficient: 'sufficient',
+      bindingTight: 'tight',
+      bindingInsufficient: 'insufficient',
+      bindingUnknown: 'unknown',
+      strategyNameNormal: 'Normal pace',
+      strategyNameConvergeFirst: 'Converge first',
+      strategyNameDeepDive: 'Deep dive',
+      strategyNameSteadyRegression: 'Steady regression',
+      strategyReasonConvergeFirst: ': closing {count} open closure items before speeding up',
+      strategyReasonDeepDive: ': focusing on {count} unclosed scenarios',
+      strategyReasonSteadyRegression: ': consolidating existing passes via regression first',
+      /** Attached when confidence=low: forecast for reference only */
+      forecastNote: '(Rate sample too small; forecast for reference only)',
+      /** The one number: closure rate (sole permanent hard metric) */
+      coverage: 'Verified {covered}/{total}',
+      /** Closure rate + stale-pass disclosure */
+      coverageStale: 'Verified {covered}/{total}, incl. {stale} awaiting regression',
+      coverageNone: 'No coverage data yet',
+      /** Placeholder when the wave is missing */
+      waveUnknown: '—',
+      /** Amber budget warning: dimension names */
+      dimSteps: 'Loop steps',
+      dimTokens: 'Tokens',
+      dimWall: 'Wall clock',
+      /** Amber budget warning: expected to hold / fall short (decided via forecast.binding) */
+      budgetEnough: 'expected to hold',
+      budgetShort: 'expected to fall short',
+      budgetWarning: '{dimension} budget {percent}% used ({used}/{max}), {verdict}'
+    }
   },
   fix: {
     title: 'RTL Fix',

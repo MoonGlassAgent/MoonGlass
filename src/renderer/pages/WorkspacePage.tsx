@@ -1442,6 +1442,7 @@ export function WorkspacePage(): React.JSX.Element {
                   <RunLoopCard
                     runLoop={verifRunData?.runLoop ?? null}
                     decisions={verifRunData?.decisions ?? []}
+                    forecast={verifRunData?.runLoop?.forecast ?? null}
                     onStart={handleRunLoopStart}
                     onPause={handleRunLoopPause}
                     onResume={handleRunLoopResume}
