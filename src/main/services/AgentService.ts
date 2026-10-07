@@ -76,6 +76,7 @@ import {
   appendRunLoopRuleDecision,
   extractRunLoopDecisionProposal,
   findNewProposedDecisions,
+  isBudgetExceededRejection,
   markDecisionStatus,
   nextRunnableDecision,
   readDecisionLedger,
@@ -3183,6 +3184,12 @@ argument-hint: "<模块名>"
       }
       const check = validateDecisionForApproval(candidate, budget, new Date().toISOString())
       if (!check.ok) {
+        // 环境类校验失败（预算超限）：提案本身合法、只是环境暂不满足——不记 rejected（保持待裁决可重试），
+        // 提示先处理预算窗口；结构类失败（缺字段/超长/幻觉 actionId）才记 rejected 终结提案。
+        if (isBudgetExceededRejection(check.reason)) {
+          this.emit(projectId, { type: 'status', message: `循环决策 ${decisionId} 暂缓批准：${check.reason}。请先在运行卡「继续」重置预算窗口后再批准（提案保持待裁决）` })
+          throw new Error(`循环决策 ${decisionId} 暂缓批准：${check.reason}（提案保持待裁决，重置预算后可重试）`)
+        }
         markDecisionStatus(workspace, decisionId, 'rejected')
         this.emit(projectId, { type: 'status', message: `循环决策 ${decisionId} 未通过合法性校验，已记为 rejected：${check.reason}` })
         throw new Error(`循环决策 ${decisionId} 未通过合法性校验（已记为 rejected）：${check.reason}`)

@@ -209,6 +209,14 @@ export interface DecisionApprovalCheck {
  * derived 类 actionId 必须命中推导内核白名单（custom 类 actionId 必须为 null）、预算未超限。
  * budget 传 null（循环账本缺失）时跳过预算维度。
  */
+/**
+ * 校验失败是否属"环境类"（预算超限）：提案本身合法、只是环境暂不满足——
+ * 不应记 rejected（保持提案待裁决可重试）；结构类失败（缺字段/超长/幻觉 actionId）才终结提案。
+ */
+export function isBudgetExceededRejection(reason: string): boolean {
+  return /预算已超限/.test(reason)
+}
+
 export function validateDecisionForApproval(
   decision: VerifRunDecision,
   budget: VerifRunLoopBudget | null,

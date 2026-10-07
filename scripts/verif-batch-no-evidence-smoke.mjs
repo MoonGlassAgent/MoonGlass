@@ -12,7 +12,7 @@ const { join } = await import('node:path')
 
 const { judgeBatchBreakers } = await import('../src/main/services/verif-batch-verdict.ts')
 const { createRunLoopLedger, resetRunLoopWallClock, resolveRunLoopStartOptions } = await import('../src/main/services/verif-run-loop.ts')
-const { validateDecisionForApproval } = await import('../src/main/services/decision-ledger.ts')
+const { validateDecisionForApproval, isBudgetExceededRejection } = await import('../src/main/services/decision-ledger.ts')
 const { readVerifLoopLedger, updateVerifLoopLedger, verifLoopLedgerPath } = await import('../src/main/services/verif-loop-ledger.ts')
 
 const dir = mkdtempSync(join(tmpdir(), 'moonglass-verif-no-evidence-'))
@@ -102,6 +102,17 @@ resetRunLoopWallClock(tokensCandidate, overWallNow)
 const tokensRejected = validateDecisionForApproval(makeDecision(), tokensCandidate.budget, overWallNow)
 assert.equal(tokensRejected.ok, false)
 assert.ok(tokensRejected.reason.includes('token 预算已超限'))
+
+// B4. 环境类 vs 结构类校验失败分类（decide 分支据此决定记不记 rejected）：
+//     预算超限=环境类（提案保持待裁决可重试）；结构类失败=终结提案
+assert.equal(isBudgetExceededRejection(wallRejected.reason), true, '墙钟超限属环境类')
+assert.equal(isBudgetExceededRejection(beatsRejected.reason), true, '步数超限属环境类')
+assert.equal(isBudgetExceededRejection(tokensRejected.reason), true, 'token 超限属环境类')
+const structuralDecision = makeDecision()
+structuralDecision.action = { ...structuralDecision.action, stopCriteria: '' }
+const structural = validateDecisionForApproval(structuralDecision, ledger.budget, overWallNow)
+assert.equal(structural.ok, false)
+assert.equal(isBudgetExceededRejection(structural.reason), false, '结构类失败才终结提案')
 
 // ── C. verif-batch-loop.json：deferredScenarioIds 归一 + history 'no-evidence' verdict ──
 
