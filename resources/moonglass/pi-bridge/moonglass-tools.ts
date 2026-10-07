@@ -340,6 +340,74 @@ function appendRunLoopDecisionLedger(workspace: string, input: {
   return record
 }
 
+// ---- 验证长程循环"战略层"经验账本（批次/修复会话间传递可复用经验；schema 与主进程 experience-notes.ts 同源） ----
+
+interface ExperienceNoteRecord {
+  id: string
+  text: string
+  tags: string[]
+  source: string
+  createdAt: string
+}
+
+/** 经验账本滚动上限（契约：≤50 条，新在前） */
+const EXPERIENCE_NOTES_LIMIT = 50
+/** 经验正文长度上限（契约：≤200 字，超出截断） */
+const EXPERIENCE_NOTE_TEXT_MAX = 200
+/** 经验标签数量上限（契约：≤5 个） */
+const EXPERIENCE_NOTE_TAGS_MAX = 5
+/** 单个经验标签长度上限（契约：≤24 字，超出截断） */
+const EXPERIENCE_NOTE_TAG_MAX = 24
+
+/**
+ * 经验账本追加（追加式、新在前、原子写、同 text+tags 幂等复用 id）：
+ * 桥接目录无法 import 主进程模块，落盘口径与 src/main/services/experience-notes.ts 逐字一致。
+ */
+function appendExperienceNoteLedger(workspace: string, input: { text: string; tags?: string[]; source: string }): ExperienceNoteRecord {
+  const text = input.text.trim().slice(0, EXPERIENCE_NOTE_TEXT_MAX)
+  if (!text) throw new Error('经验正文（text）不能为空')
+  const tags = (input.tags ?? [])
+    .map((tag) => tag.trim().slice(0, EXPERIENCE_NOTE_TAG_MAX))
+    .filter((tag) => tag.length > 0)
+    .slice(0, EXPERIENCE_NOTE_TAGS_MAX)
+  const ledgerPath = join(workspace, 'verification', 'results', 'experience-notes.json')
+  let existing: ExperienceNoteRecord[] = []
+  try {
+    const parsed = JSON.parse(readFileSync(ledgerPath, 'utf-8')) as { notes?: unknown }
+    if (Array.isArray(parsed.notes)) {
+      existing = parsed.notes
+        .map((item) => {
+          if (typeof item !== 'object' || item === null) return null
+          const note = item as Record<string, unknown>
+          return {
+            id: String(note.id ?? ''),
+            text: String(note.text ?? ''),
+            tags: Array.isArray(note.tags) ? note.tags.map(String) : [],
+            source: String(note.source ?? ''),
+            createdAt: String(note.createdAt ?? '')
+          }
+        })
+        .filter((item): item is ExperienceNoteRecord => item !== null)
+        .slice(0, EXPERIENCE_NOTES_LIMIT)
+    }
+  } catch { /* 缺文件/损坏按空账本起步，由主进程读取方归一 */ }
+  const identity = JSON.stringify({ text, tags })
+  const reused = existing.find((note) => JSON.stringify({ text: note.text, tags: note.tags }) === identity)
+  let record: ExperienceNoteRecord
+  if (reused) {
+    record = { ...reused, createdAt: new Date().toISOString() }
+  } else {
+    const existingIds = new Set(existing.map((item) => item.id))
+    let id = ''
+    do {
+      id = `EXP-${randomBytes(4).toString('hex').toUpperCase()}`
+    } while (existingIds.has(id))
+    record = { id, text, tags, source: input.source, createdAt: new Date().toISOString() }
+  }
+  writeJsonAtomic(ledgerPath, { version: 1, generatedAt: record.createdAt, notes: [record, ...existing.filter((item) => item.id !== record.id)].slice(0, EXPERIENCE_NOTES_LIMIT) })
+  return record
+}
+
 // ============================================================
 // 工具特定逻辑
 // ============================================================
@@ -2101,6 +2169,30 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   })
 
   pi.registerTool({
+    name: 'record_experience_note',
+    label: 'Record Experience Note',
+    description: '把可复用验证经验落盘到 verification/results/experience-notes.json（验证长程循环"战略层"经验账本，批次/修复会话间传递，消灭每批重复探索）。调用时机：掌握环境用法（编译命令/cocotb make 参数/工具链版本/目录约定）、testbench 陷阱（scoreboard 比较口径/时钟相位/复位释放条件）、已验证构建参数、典型失败模式（某类竞态/溢出的表象与定位路径）时，在批次、修复、诊断会话收尾顺手登记。常规问答禁止调用本工具。text ≤200 字、tags ≤5 个（每个 ≤24 字）；同 text+tags 重复登记幂等复用 id 并刷新时间戳。禁止手写 experience-notes.json。',
+    promptSnippet: 'Record a reusable verification experience for future batch or fix sessions',
+    promptGuidelines: 'Call only when a batch/fix/diagnostic session produced something reusable: environment usage, testbench pitfalls, verified build parameters, or typical failure patterns. Never call for routine Q&A. Keep text ≤200 chars, tags ≤5 (each ≤24 chars). Identical text+tags reuses the same id, so do not re-register what is already logged.',
+    parameters: Type.Object({
+      text: Type.String({ maxLength: 200, description: '经验正文，≤200 字：一句话说清做法/陷阱/参数与适用场景' }),
+      tags: Type.Optional(Type.Array(Type.String({ maxLength: 24 }), { maxItems: 5, description: '经验标签（≤5 个，每个 ≤24 字），如 env-usage / tb-pitfall / build-param / failure-pattern / 模块名 / 场景 id' }))
+    }),
+    async execute(toolCallId, params, signal, onUpdate, ctx) {
+      try {
+        const record = appendExperienceNoteLedger(resolve(ctx.cwd), { text: params.text, tags: params.tags ?? [], source: 'pi-agent' })
+        return {
+          content: [{ type: 'text', text: `## 经验登记\n\n- 经验 ID：${record.id}\n- 标签：${record.tags.length ? record.tags.join('、') : '无'}\n- 落盘：verification/results/experience-notes.json（新前 ≤50 条，批次 prompt 自动注入经验摘要）` }],
+          details: { record },
+          isError: false
+        }
+      } catch (err) {
+        return { content: [{ type: 'text', text: `经验登记被拒绝：${err instanceof Error ? err.message : String(err)}` }], details: {}, isError: true }
+      }
+    }
+  })
+
+  pi.registerTool({
     name: 'propose_run_decision',
     label: 'Propose Run Loop Decision',
     description: '向 MoonGlass 验证运行循环的决策账本登记一条下一步行动提案（verification/results/decision-ledger.json，追加式）。仅当处于循环决策升级会话（规则空转/熔断恢复，由主进程派发）或用户在会话中明确指示改变循环方向时才允许调用；常规验证工作禁止调用本工具。trigger=user-instruction（工程师明确指示）时登记为 source=human 并直接批准，循环自动执行；其余登记为 source=llm、status=proposed，经决策卡片由工程师批准后才执行（顾问模式默认，委托模式未开启）。action.expectedOutput 与 action.stopCriteria 必填且必须非空；derived 类 actionId 必须是推导内核已知动作 id（规则层白名单校验，幻觉动作会在批准时被拒）。',
@@ -2511,6 +2603,15 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         const rootCauses = JSON.parse(readFileSync(join(resultsDir, 'root-causes.json'), 'utf-8')) as { records?: Array<{ scenarioId?: string; verdict?: string }> }
         for (const record of rootCauses.records ?? []) if (record.verdict === 'confirmed' && record.scenarioId) confirmedRootCauses.add(record.scenarioId)
       } catch { /* 无根因账本时按空集合处理 */ }
+      // 软强制（战略层经验账本，与"无根因记录"同风格、不阻断）：FAIL→PASS 场景若
+      // experience-notes.json 无该场景标签（场景 id 作 tag 关联）的关联经验 → 提醒顺手登记
+      const experienceTags = new Set<string>()
+      try {
+        const experienceNotes = JSON.parse(readFileSync(join(resultsDir, 'experience-notes.json'), 'utf-8')) as { notes?: Array<{ tags?: unknown }> }
+        for (const note of experienceNotes.notes ?? []) {
+          if (Array.isArray(note.tags)) for (const tag of note.tags) experienceTags.add(String(tag))
+        }
+      } catch { /* 无经验账本时按空集合处理 */ }
       if (failedModules.size) {
         for (const file of collectEvidenceFiles(resultsDir, (name) => name === 'scenario_hits.json')) {
           if (!failedModules.has(basename(dirname(file)))) continue
@@ -2519,6 +2620,9 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
             for (const scenario of hits.scenarios ?? []) {
               if (scenario.passed === true && scenario.id && !confirmedRootCauses.has(scenario.id)) {
                 warnings.push(`场景 ${scenario.id} 曾 FAIL 后转 PASS，但 root-causes.json 无 confirmed 根因记录；请用 record_root_cause 补登记（含已证伪假设链）`)
+              }
+              if (scenario.passed === true && scenario.id && !experienceTags.has(scenario.id)) {
+                warnings.push(`场景 ${scenario.id} 曾 FAIL 后转 PASS，但 experience-notes.json 无该场景标签的关联经验；请用 record_experience_note 顺手登记可复用经验（环境用法/testbench 陷阱/已验证构建参数/典型失败模式）`)
               }
             }
           } catch { /* 单个 hits 文件损坏不阻断审查 */ }

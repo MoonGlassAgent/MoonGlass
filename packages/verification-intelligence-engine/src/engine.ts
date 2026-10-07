@@ -3015,6 +3015,56 @@ function buildEnvironmentDigest(workspace: string): string[] {
   return lines
 }
 
+/**
+ * 经验摘要（战略层：批次/修复会话间传递可复用经验，消灭每批重复探索——历史会话经
+ * record_experience_note 落盘到 verification/results/experience-notes.json，批次 prompt
+ * 注入后优先采用）。编号列表渲染 ≤1000 字，超出省略注"另有 N 条"；无经验返回 null
+ * （调用方不渲染本段）。格式与主进程 experience-notes.ts 的 formatExperienceNotesForPrompt
+ * 等价实现逐字一致（两处各自维护，改动需同步；引擎零跨包依赖）。
+ */
+function buildExperienceDigest(workspace: string): string[] | null {
+  interface ExperienceNoteLike { text: string; tags: string[] }
+  const path = join(workspace, 'verification', 'results', 'experience-notes.json')
+  let notes: ExperienceNoteLike[] = []
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { notes?: unknown }
+    if (Array.isArray(parsed.notes)) {
+      for (const item of parsed.notes) {
+        if (typeof item !== 'object' || item === null) continue
+        const note = item as Record<string, unknown>
+        const text = String(note.text ?? '')
+        if (!text) continue
+        notes.push({
+          text,
+          tags: Array.isArray(note.tags) ? note.tags.map(String).filter((tag) => tag.length > 0) : []
+        })
+        if (notes.length >= 50) break
+      }
+    }
+  } catch { return null }
+  if (notes.length === 0) return null
+  const lines: string[] = []
+  let used = 0
+  for (const [index, note] of notes.entries()) {
+    const tagSuffix = note.tags.length ? `（${note.tags.join('、')}）` : ''
+    const line = `${index + 1}. ${note.text}${tagSuffix}`
+    const next = used === 0 ? line.length : used + 1 + line.length
+    if (index > 0 && next > 1000) {
+      lines.push(`（另有 ${notes.length - index} 条经验未展开，详见 verification/results/experience-notes.json）`)
+      break
+    }
+    lines.push(line)
+    used = next
+  }
+  return [
+    '## 经验摘要（历史会话登记）',
+    '',
+    '以下为历史会话登记的可复用经验，优先采用，避免重复探索。',
+    '',
+    ...lines
+  ]
+}
+
 export function buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): string {
   const workspace = resolve(workspaceDir)
   const registryPath = join(workspace, 'verification', 'intelligence', 'scenario-registry.json')
@@ -3041,6 +3091,9 @@ export function buildBatchPrompt(workspaceDir: string, scenarioIds: string[]): s
   ]
   // 环境就绪摘要先于场景详情：把每批固定探索成本前移到确定性 prompt（实测每批重读环境/RTL 20+ 次）
   sections.push('', ...buildEnvironmentDigest(workspace))
+  // 经验摘要紧随环境就绪摘要：历史会话登记的可复用经验（无经验时不渲染本段）
+  const experienceDigest = buildExperienceDigest(workspace)
+  if (experienceDigest) sections.push('', ...experienceDigest)
   if (cluster) {
     sections.push(
       '',
