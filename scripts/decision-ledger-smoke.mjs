@@ -24,6 +24,7 @@ const {
   findNewProposedDecisions,
   markDecisionStatus,
   nextRunnableDecision,
+  pendingProposalEntries,
   readDecisionLedger,
   recordDecisionOutcome,
   updateDecisionLedger,
@@ -157,6 +158,21 @@ writeDecisionLedger(workspace, rejectedLedger)
 const rejected = markDecisionStatus(workspace, 'DEC-REJ00001', 'rejected')
 assert.equal(rejected.status, 'rejected')
 assert.equal(rejected.outcome, null) // 未执行不填 outcome
+
+// ── D5. pendingProposalEntries 防堆积守卫：只数未裁决 proposed，approved/rejected/executed/superseded 不拦 ──
+writeDecisionLedger(workspace, {
+  version: 1,
+  decisions: [
+    makeDecision({ id: 'DEC-PEND0001' }),
+    { ...makeDecision({ id: 'DEC-DONE0001' }), status: 'approved' },
+    { ...makeDecision({ id: 'DEC-REJX0001' }), status: 'rejected' },
+    { ...makeDecision({ id: 'DEC-EXEC0001' }), status: 'executed' },
+    { ...makeDecision({ id: 'DEC-SUPX0001' }), status: 'superseded' },
+    makeDecision({ id: 'DEC-PEND0002' })
+  ]
+})
+assert.deepEqual(pendingProposalEntries(readDecisionLedger(workspace).decisions).map((d) => d.id), ['DEC-PEND0001', 'DEC-PEND0002'])
+assert.equal(pendingProposalEntries([]).length, 0)
 
 // ── E. 合法性校验（§3.2 守门）：各拒绝分支 + 通过分支 ──
 

@@ -211,6 +211,14 @@ export interface DecisionApprovalCheck {
  * budget 传 null（循环账本缺失）时跳过预算维度。
  */
 /**
+ * 未裁决提案（status='proposed'）清单；升级会话派发前的防堆积守卫据此判停——
+ * 已有待裁决提案时不得再产新升级会话（实测：churn 期循环每 2~4 分钟产出一条提案堆积 + 每条 ~2M token 空耗）。
+ */
+export function pendingProposalEntries(decisions: VerifRunDecision[]): VerifRunDecision[] {
+  return decisions.filter((item) => item.status === 'proposed')
+}
+
+/**
  * 校验失败是否属"环境类"（预算超限）：提案本身合法、只是环境暂不满足——
  * 不应记 rejected（保持提案待裁决可重试）；结构类失败（缺字段/超长/幻觉 actionId）才终结提案。
  */

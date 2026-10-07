@@ -79,6 +79,7 @@ import {
   isBudgetExceededRejection,
   markDecisionStatus,
   nextRunnableDecision,
+  pendingProposalEntries,
   readDecisionLedger,
   recordDecisionOutcome,
   validateDecisionForApproval
@@ -3133,6 +3134,22 @@ argument-hint: "<模块名>"
   ): Promise<'paused' | 'resumed' | 'stopped'> {
     const fallbackReason = fallbackBreakerReason ?? trigger
     const beforeDecisions = readDecisionLedger(workspace)?.decisions ?? []
+    // 防堆积守卫（实测：churn 期每 2~4 分钟产出一条未裁决提案）：已有待裁决提案时不再派新升级会话，
+    // 保持暂停待人（挂证据轮询，批准/否决/注入指令都会触发恢复）；否则每条新提案又是 ~2M token 空耗
+    const pending = pendingProposalEntries(beforeDecisions)
+    if (pending.length > 0) {
+      if (!this.patchRunLoopLedger(workspace, (ledger) =>
+        applyRunLoopPause(ledger, {
+          kind: 'human',
+          reason: RUN_LOOP_DECISION_PENDING_REASON,
+          detail: `已有 ${pending.length} 条未裁决决策提案（${pending.map((item) => item.id).join('、')}），请在决策卡片中批准或否决后再派发新的升级会话`,
+          pendingItems: pending.map((item) => `[${item.id}] ${item.rationale}（动作：${item.action.kind === 'derived' ? item.action.actionId : '自定义指令'}）`),
+          since: new Date().toISOString()
+        }), loopId)) throw new RunLoopSupersededError()
+      this.emit(projectId, { type: 'status', message: `验证运行循环暂停待人：已有 ${pending.length} 条未裁决提案，不再派发新的升级会话（防堆积）` })
+      this.startRunLoopEvidencePoller(projectId)
+      return 'paused'
+    }
     // 代际守卫：首写即检查（false=已被新循环取代），避免僵尸循环继续派发升级会话
     if (!this.patchRunLoopLedger(workspace, (ledger) => {
       ledger.state = 'running'
