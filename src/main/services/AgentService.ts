@@ -38,7 +38,7 @@ import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } fro
 import { applyScenarioAvoidance, isDiagnosticStalled, isTransientSessionError, judgeBatchBreakers, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixAuditRelativePath, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
-import { appendRtlFixOutcome } from './rtl-fix-outcome-ledger.ts'
+import { appendRtlFixOutcome, readRtlFixOutcomeLedger } from './rtl-fix-outcome-ledger.ts'
 import { readScenarioLabels, readVerifLoopLedger, updateVerifLoopLedger, type VerifBatchLoopLedger } from './verif-loop-ledger.ts'
 import {
   applyRunLoopBudgetOverrides,
@@ -84,6 +84,14 @@ import {
   validateDecisionForApproval
 } from './decision-ledger.ts'
 import type { GuidanceState } from '@shared/verification-guidance.ts'
+import {
+  closureRegressionsOf,
+  computeClosurePlan,
+  computeRunLoopForecast,
+  evaluateRunLoopStrategy,
+  runLoopStrategyTriggerNote,
+  stalePassedCountOf
+} from './verif-run-forecast.ts'
 import type { PhaseEngine } from './PhaseEngine.ts'
 import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
 import { aggregateSessionActivity, type SessionActivitySource } from './session-activity.ts'
@@ -2876,7 +2884,8 @@ argument-hint: "<模块名>"
           continue
         }
         // ── 规则层拍决策（LLM 决策层批 3 的触发条件全部由本层确定性判定）──
-        const plan = planRunLoopBeat(posture)
+        // 战略层：converge-first 时 wave 批次类动作降权（修复/根因/诊断类优先）；其余策略完全现状。
+        const plan = planRunLoopBeat(posture, undefined, ledgerBefore.closurePlan?.strategy ?? 'normal')
         if (plan.kind === 'planning') {
           // W0：首拍无可用态势 → 规划任务会话（prompt 与渲染端托管规划同源口径，见模块常量注释）
           // 规则层自动决策记账（§4.2）：source='rule'/trigger='rule-auto'/status='executed'，拍判定后回填 outcome
@@ -3046,11 +3055,64 @@ argument-hint: "<模块名>"
         console.error('[agent-service] decision-ledger.json outcome 回填失败（不影响拍记账）', error)
       }
     }
+    // 战略层：每拍重算收口计划 + 运行策略（纯函数推导，尽力落盘；写失败仅 console.error 不影响拍记账）
+    this.updateRunLoopClosurePlan(projectId, workspace, after, loopId)
     const counts = closureCountsOf(after)
     this.emit(projectId, {
       type: 'status',
       message: `验证运行循环 第 ${beatNo} 步完成：${advanced ? '有进展' : '无进展'}（open intents ${counts.openIntents}，阻断 holes ${counts.blockingHoles}，条款覆盖 ${counts.coveredClauses}，回归失败 ${counts.failedRegressions}）`
     })
+  }
+
+  /**
+   * 战略层拍回填（规则算战略、LLM 执行、证据裁决：全部为确定性纯函数，LLM 不参与计算）：
+   * 每拍重算收口计划判据（W1 四判据）+ 评估运行策略；策略切换时更新 strategy/strategySince
+   * 并经决策账本记账（source:'rule'、trigger:'strategy-switch'、status:'executed'、rationale 含触发条件）。
+   * 落盘口径：尽力写入（同 patchRunLoopLedger 的代际守卫，带 loopId；写失败仅 console.error，
+   * 不影响拍记账——战略层是观测/偏好面，不是循环状态面）。
+   */
+  private updateRunLoopClosurePlan(projectId: string, workspace: string, posture: GuidanceState | null, loopId: string): void {
+    try {
+      const now = new Date().toISOString()
+      const outcomeRecords = readRtlFixOutcomeLedger(workspace).outcomes
+      const ledgerNow = readVerifRunLoopLedger(workspace)
+      if (!ledgerNow) return
+      const currentPlan = ledgerNow.closurePlan ?? null
+      const currentStrategy = currentPlan?.strategy ?? 'normal'
+      const strategyInput = {
+        fixOutcomes: outcomeRecords.slice(0, 10),
+        lastBeats: ledgerNow.lastBeats,
+        stalePassedCount: stalePassedCountOf(posture),
+        current: currentStrategy
+      }
+      const nextStrategy = evaluateRunLoopStrategy(strategyInput)
+      const criteriaPart = computeClosurePlan(posture, outcomeRecords, closureRegressionsOf(posture), ledgerNow.wave)
+      const strategySince = nextStrategy === currentStrategy ? (currentPlan?.strategySince ?? now) : now
+      // 进展预测与 closurePlan 同拍重算（战略层数据面；均为纯函数，尽力落盘）
+      const forecast = computeRunLoopForecast(ledgerNow, posture, now)
+      const written = this.patchRunLoopLedger(workspace, (ledger) => {
+        ledger.closurePlan = { ...criteriaPart, strategy: nextStrategy, strategySince }
+        ledger.forecast = forecast
+      }, loopId)
+      // 代际不符（已被新循环取代）：不写决策账，静默跳过
+      if (!written) return
+      if (nextStrategy !== currentStrategy) {
+        const note = runLoopStrategyTriggerNote(strategyInput) ?? `策略回落：${currentStrategy} → ${nextStrategy}（触发条件不再成立）`
+        try {
+          appendRunLoopRuleDecision(workspace, {
+            actionId: null,
+            prompt: `（战略层）运行策略切换为 ${nextStrategy}，后续拍决策按该策略调整动作偏好`,
+            rationale: note.slice(0, 200),
+            trigger: 'strategy-switch'
+          }, now)
+        } catch (error) {
+          console.error('[agent-service] 策略切换决策记账失败（不影响收口计划落盘）', error)
+        }
+        this.emit(projectId, { type: 'status', message: `验证运行循环 战略层：${note}` })
+      }
+    } catch (error) {
+      console.error('[agent-service] 收口计划重算失败（尽力落盘，不影响拍记账）', error)
+    }
   }
 
   /**

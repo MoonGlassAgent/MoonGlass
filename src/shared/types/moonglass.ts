@@ -734,6 +734,45 @@ export interface VerifRunLoopBeatEntry {
   advanced: boolean
 }
 
+/** 收口计划（战略层数据面，规则算战略：纯函数推导、LLM 不参与计算）。
+ *  W1 收口四判据（clauses-covered/no-open-failures/no-pending-repairs/signoff-regression）；
+ *  W2/W3 本期只留 wave 与空 criteria（totalCount 0），不展开。 */
+export interface VerifRunClosurePlan {
+  /** 目标波段（无在跑波段时按 W1 收口口径预估） */
+  wave: string
+  /** 当前运行策略（确定性触发器评估；deep-dive 攻坚派发本期不实现，只留标记与账本） */
+  strategy: 'normal' | 'converge-first' | 'deep-dive' | 'steady-regression'
+  /** 当前策略生效时刻（ISO）；同策略不重复切换，切换时刷新 */
+  strategySince: string
+  criteria: Array<{ id: string; met: boolean }>
+  metCount: number
+  totalCount: number
+}
+
+/** 进展预测（战略层数据面，确定性纯函数产出；展示时带"样本不足"降权，不假精确）。 */
+export interface RunLoopForecast {
+  /** 当前已闭环条款（specClauseCovered 口径）；无条款数据为 null */
+  covered: number | null
+  /** 条款总数；无条款数据为 null */
+  total: number | null
+  /** 自循环启动的平均闭环速率（条款/小时）；运行 ≤0.5h 或无条款数据为 null */
+  ratePerHour: number | null
+  /** 近 ≤10 步 advanced=true 比例 0-1（无拍记录 → 0） */
+  recentAdvanceRatio: number
+  /** 预计剩余闭环时长区间（小时）；数据不足或速率为 0 → null */
+  etaHours: { low: number; high: number } | null
+  /** 按当前速率，各维度预算耗尽前能走完的条款数；任一度量数据不足 → 整体 null */
+  budgetProjection: {
+    steps: { projectedClauses: number }
+    tokens: { projectedClauses: number }
+    wallMinutes: { projectedClauses: number }
+  } | null
+  /** 预算约束判定：任一度量投影 < 剩余条款 → insufficient；余量 <20% → tight；无速率数据 → unknown */
+  binding: 'sufficient' | 'tight' | 'insufficient' | 'unknown'
+  /** 置信度：步数 ≥5 且近 ≤10 步有进展 → medium，否则 low */
+  confidence: 'low' | 'medium'
+}
+
 /** 覆盖式循环账本（verification/results/run-loop.json，§9.1；原子写 + 缺字段归一） */
 export interface VerifRunLoopLedger {
   version: 1
@@ -747,6 +786,10 @@ export interface VerifRunLoopLedger {
   pause: VerifRunLoopPause | null
   budget: VerifRunLoopBudget
   lastBeats: VerifRunLoopBeatEntry[]
+  /** 收口计划（可选字段：战略层每拍重算尽力落盘；旧账本缺失按无计划处理） */
+  closurePlan?: VerifRunClosurePlan
+  /** 进展预测（可选字段：与 closurePlan 同拍重算尽力落盘；旧账本缺失按无预测处理） */
+  forecast?: RunLoopForecast
 }
 
 /** 启动选项（均可选；缺省见主进程 verif-run-loop.ts 的 DEFAULT_*，§13 待决策 2 实测后调） */
@@ -762,8 +805,9 @@ export interface VerifRunLoopStartOptions {
 /** 决策来源：规则自动 / LLM 提案 / 工程师指令（§3.3 工程师决策不审批，直接 approved） */
 export type VerifRunDecisionSource = 'rule' | 'llm' | 'human'
 
-/** 决策登记触发（§9.2 trigger 口径；rule-auto=规则层每拍自动记账，user-instruction=工程师在会话中明确指示） */
-export type VerifRunDecisionTrigger = 'rule-auto' | 'rule-stall' | 'breaker-recovery' | 'user-instruction' | 'manual-override'
+/** 决策登记触发（§9.2 trigger 口径；rule-auto=规则层每拍自动记账，user-instruction=工程师在会话中明确指示；
+ *  strategy-switch=战略层运行策略切换记账（规则自动，source 恒为 'rule'）） */
+export type VerifRunDecisionTrigger = 'rule-auto' | 'rule-stall' | 'breaker-recovery' | 'user-instruction' | 'manual-override' | 'strategy-switch'
 
 /** 决策动作形态：derived=引用推导内核已知动作 id（需规则层白名单校验）；custom=自由指令（actionId 恒为 null） */
 export interface VerifRunDecisionAction {

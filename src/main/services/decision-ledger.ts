@@ -16,7 +16,7 @@
 import { randomBytes } from 'node:crypto'
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { VerifRunDecision, VerifRunDecisionAction, VerifRunDecisionLedger, VerifRunDecisionOutcome, VerifRunDecisionStatus, VerifRunLoopBudget } from '@shared/types'
+import type { VerifRunDecision, VerifRunDecisionAction, VerifRunDecisionLedger, VerifRunDecisionOutcome, VerifRunDecisionStatus, VerifRunDecisionTrigger, VerifRunLoopBudget } from '@shared/types'
 import { VERIFICATION_DERIVED_ACTION_IDS } from '@shared/verification-guidance'
 
 /** 账本滚动上限（§9.2：≤100 条，新在前） */
@@ -119,10 +119,11 @@ export function updateDecisionLedger(workspace: string, mutate: (ledger: VerifRu
  * 规则层自动决策记账（§4.2：有动作 → 记录决策 source:'rule'）：
  * 每拍派发的规则动作登记为 trigger='rule-auto'、status='executed'；
  * 拍判定后由 recordDecisionOutcome 回填 outcome。规则自动记录不参与批准前合法性校验。
+ * trigger 可覆盖（如战略层策略切换记 'strategy-switch'），缺省 'rule-auto'。
  */
 export function appendRunLoopRuleDecision(
   workspace: string,
-  input: { actionId: string | null; prompt: string; expectedOutput?: string; stopCriteria?: string; rationale?: string },
+  input: { actionId: string | null; prompt: string; expectedOutput?: string; stopCriteria?: string; rationale?: string; trigger?: VerifRunDecisionTrigger },
   now: string = new Date().toISOString()
 ): VerifRunDecision {
   const existingIds = new Set((readDecisionLedger(workspace)?.decisions ?? []).map((item) => item.id))
@@ -130,7 +131,7 @@ export function appendRunLoopRuleDecision(
     id: generateDecisionId(existingIds),
     createdAt: now,
     source: 'rule',
-    trigger: 'rule-auto',
+    trigger: input.trigger ?? 'rule-auto',
     action: {
       kind: 'derived',
       actionId: input.actionId,

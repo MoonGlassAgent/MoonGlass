@@ -14,6 +14,7 @@
 import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync, type Dirent } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
 import type {
+  VerifRunClosurePlan,
   VerifRunLoopBeatEntry,
   VerifRunLoopBudget,
   VerifRunLoopCurrent,
@@ -30,6 +31,7 @@ import {
   type GuidanceTranslate,
   type VerificationAction
 } from '@shared/verification-guidance'
+import type { RunLoopStrategy } from './verif-run-forecast.ts'
 // 主进程侧 tr 注入的最小依赖：循环侧提示词与日志固定中文口径（AGENTS.md：发给 Agent 的
 // 提示词不经 i18n），直接复用渲染端 zh-CN verification 文案数据（纯数据、无运行时依赖），
 // 按键路径查表 + {param} 插值；UI 侧仍走渲染端 i18n，本解析器只服务推导内核与循环日志。
@@ -128,6 +130,29 @@ function normalizeLastBeats(value: unknown): VerifRunLoopBeatEntry[] {
     .slice(0, VERIF_RUN_LOOP_LAST_BEATS_LIMIT)
 }
 
+/** 收口计划归一：缺失/损坏 → undefined（旧账本按无计划处理）；策略非法 → normal，计数与 criteria 对账。 */
+function normalizeClosurePlan(value: unknown): VerifRunClosurePlan | undefined {
+  if (typeof value !== 'object' || value === null) return undefined
+  const plan = value as Record<string, unknown>
+  const strategy = plan.strategy === 'converge-first' || plan.strategy === 'deep-dive' || plan.strategy === 'steady-regression'
+    ? plan.strategy
+    : 'normal'
+  const criteria = Array.isArray(plan.criteria)
+    ? plan.criteria
+        .filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+        .map((item) => ({ id: String(item.id ?? ''), met: Boolean(item.met) }))
+    : []
+  const derivedMet = criteria.filter((item) => item.met).length
+  return {
+    wave: String(plan.wave ?? 'W1'),
+    strategy,
+    strategySince: String(plan.strategySince ?? ''),
+    criteria,
+    metCount: Number.isFinite(Number(plan.metCount)) ? Number(plan.metCount) : derivedMet,
+    totalCount: Number.isFinite(Number(plan.totalCount)) ? Number(plan.totalCount) : criteria.length
+  }
+}
+
 /** 读取循环账本；不存在/损坏返回 null（调用方按无循环记录处理）。缺字段归一（version 演进预留）。 */
 export function readVerifRunLoopLedger(workspace: string): VerifRunLoopLedger | null {
   let raw: unknown
@@ -148,7 +173,8 @@ export function readVerifRunLoopLedger(workspace: string): VerifRunLoopLedger | 
     current: normalizeCurrent(data.current),
     pause: normalizePause(data.pause),
     budget: normalizeBudget(data.budget),
-    lastBeats: normalizeLastBeats(data.lastBeats)
+    lastBeats: normalizeLastBeats(data.lastBeats),
+    closurePlan: normalizeClosurePlan(data.closurePlan)
   }
 }
 
@@ -378,10 +404,38 @@ export type RunLoopBeatPlan =
   | { kind: 'derive'; action: VerificationAction }
   | { kind: 'no-action' }
 
-export function planRunLoopBeat(posture: RunLoopPosture, tr: GuidanceTranslate = runLoopTranslate): RunLoopBeatPlan {
+/**
+ * converge-first 优先动作白名单（fix-regressions/根因/诊断类）：
+ * 策略为 converge-first 且规则首选是 wave 批次类动作时，让位给列表中存在的这些动作
+ * （修复收口优先于开新批次；规则降权，确定性，LLM 不参与）。
+ */
+const CONVERGE_FIRST_PREFERRED_ACTION_IDS: readonly string[] = [
+  'fix-regressions',
+  'fix-formal',
+  'repair-formal-compatibility',
+  'add-checkers',
+  'refresh-change-impact',
+  'resolve-oracle-conflicts',
+  'escape-exploration-stall',
+  'clarify-spec'
+]
+
+/**
+ * 拍决策推导。strategy 为战略层当前运行策略（ledger.closurePlan.strategy，缺省 normal）：
+ * 仅 converge-first 改变动作选择——首选为 wave 批次类（wave-w1/wave-w2/run-batch）且
+ * 动作列表中存在修复/根因/诊断类动作时改派之；其余策略（含 normal/deep-dive/steady-regression）
+ * 本期完全现状，只入账不改派。
+ */
+export function planRunLoopBeat(posture: RunLoopPosture, tr: GuidanceTranslate = runLoopTranslate, strategy: RunLoopStrategy = 'normal'): RunLoopBeatPlan {
   if (!posture.state) return { kind: 'planning' }
   const actions = deriveVerificationActions(posture.state, tr)
-  return actions.length > 0 ? { kind: 'derive', action: actions[0]! } : { kind: 'no-action' }
+  if (actions.length === 0) return { kind: 'no-action' }
+  const first = actions[0]!
+  if (strategy === 'converge-first' && classifyRunLoopAction(first.id) === 'batch-loop') {
+    const preferred = actions.find((action) => CONVERGE_FIRST_PREFERRED_ACTION_IDS.includes(action.id))
+    if (preferred) return { kind: 'derive', action: preferred }
+  }
+  return { kind: 'derive', action: first }
 }
 
 /** 动作派发映射（批 2 委托口径）：批次类走既有 runVerifBatches 内层循环；signoff-review 独立出口（settle 后再推导 → gate-check）；其余派任务会话。 */
