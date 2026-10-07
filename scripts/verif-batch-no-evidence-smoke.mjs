@@ -11,7 +11,7 @@ const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 
 const { judgeBatchBreakers } = await import('../src/main/services/verif-batch-verdict.ts')
-const { createRunLoopLedger, resetRunLoopWallClock, resolveRunLoopStartOptions } = await import('../src/main/services/verif-run-loop.ts')
+const { createRunLoopLedger, applyRunLoopPause, resolveRunLoopStartOptions, resumeRunLoopWallWindow } = await import('../src/main/services/verif-run-loop.ts')
 const { validateDecisionForApproval, isBudgetExceededRejection } = await import('../src/main/services/decision-ledger.ts')
 const { readVerifLoopLedger, updateVerifLoopLedger, verifLoopLedgerPath } = await import('../src/main/services/verif-loop-ledger.ts')
 
@@ -70,18 +70,27 @@ const makeDecision = () => ({
   outcome: null
 })
 
-// B1. 墙钟超限（实测 253/240）：真实预算 → 拒绝；开窗重置后的候选 budget → 通过
+// B0. 等待不计费：暂停把活跃段滚入 wallResetBase 冻结窗口；恢复直接开新窗，等待段不进任何维度
+const pausedLedger = createRunLoopLedger(resolveRunLoopStartOptions({ maxWallMinutes: 240 }), '2026-10-05T00:00:00.000Z', true)
+applyRunLoopPause(pausedLedger, { kind: 'human', reason: 'llm-decision-pending', detail: 'd', pendingItems: [], since: '2026-10-05T04:13:00.000Z' })
+assert.equal(pausedLedger.budget.wallResetBase, 253, '活跃段 253 分钟滚入 wallResetBase')
+assert.equal(pausedLedger.budget.startedAt, '2026-10-05T04:13:00.000Z', '窗口冻结在暂停点')
+resumeRunLoopWallWindow(pausedLedger, '2026-10-05T12:00:00.000Z')
+assert.equal(pausedLedger.budget.startedAt, '2026-10-05T12:00:00.000Z', '恢复直接开新窗')
+assert.equal(pausedLedger.budget.wallResetBase, 253, '等待段（约 8 小时）不重复计入 base')
+
+// B1. 墙钟超限（实测 253/240）：真实预算 → 拒绝；decide 批准候选（resumeRunLoopWallWindow 开新窗）→ 通过
 const startedAt = '2026-10-05T00:00:00.000Z'
 const overWallNow = new Date(Date.parse(startedAt) + 253 * 60_000).toISOString()
 const ledger = createRunLoopLedger(resolveRunLoopStartOptions({ maxWallMinutes: 240 }), startedAt, true)
 const wallRejected = validateDecisionForApproval(makeDecision(), ledger.budget, overWallNow)
 assert.equal(wallRejected.ok, false)
 assert.ok(wallRejected.reason.includes('墙钟预算已超限'))
-// decide 批准分支的候选口径：克隆账本 + resetRunLoopWallClock（与 resumeVerifRunLoop source='user' 同权）
+// decide 批准分支的候选口径：克隆账本 + resumeRunLoopWallWindow（开新窗不计费，与 resumeVerifRunLoop 同权）
 const candidateLoop = JSON.parse(JSON.stringify(ledger))
-resetRunLoopWallClock(candidateLoop, overWallNow)
-assert.equal(candidateLoop.budget.wallResetBase, 253, '累计已运行时长滚入 wallResetBase 保留')
-assert.equal(candidateLoop.budget.startedAt, overWallNow, '墙钟按新窗口起算')
+resumeRunLoopWallWindow(candidateLoop, overWallNow)
+assert.equal(candidateLoop.budget.startedAt, overWallNow, '批准手势即开新窗')
+assert.equal(candidateLoop.budget.wallResetBase, 0, 'decide 候选不累计等待段（仅校验用，丢弃）')
 const wallApproved = validateDecisionForApproval(makeDecision(), candidateLoop.budget, overWallNow)
 assert.equal(wallApproved.ok, true, '批准是人工值守手势：墙钟维度豁免后合规提案不得被误杀')
 
@@ -89,7 +98,7 @@ assert.equal(wallApproved.ok, true, '批准是人工值守手势：墙钟维度�
 const beatsLedger = createRunLoopLedger(resolveRunLoopStartOptions({ maxWallMinutes: 240, maxBeats: 5 }), startedAt, true)
 beatsLedger.budget.beats = 5
 const beatsCandidate = JSON.parse(JSON.stringify(beatsLedger))
-resetRunLoopWallClock(beatsCandidate, overWallNow)
+resumeRunLoopWallWindow(beatsCandidate, overWallNow)
 const beatsRejected = validateDecisionForApproval(makeDecision(), beatsCandidate.budget, overWallNow)
 assert.equal(beatsRejected.ok, false)
 assert.ok(beatsRejected.reason.includes('循环步数预算已超限'))
@@ -98,7 +107,7 @@ assert.ok(beatsRejected.reason.includes('循环步数预算已超限'))
 const tokensLedger = createRunLoopLedger(resolveRunLoopStartOptions({ maxWallMinutes: 240, maxTokens: 1000 }), startedAt, true)
 tokensLedger.budget.tokensUsed = 1000
 const tokensCandidate = JSON.parse(JSON.stringify(tokensLedger))
-resetRunLoopWallClock(tokensCandidate, overWallNow)
+resumeRunLoopWallWindow(tokensCandidate, overWallNow)
 const tokensRejected = validateDecisionForApproval(makeDecision(), tokensCandidate.budget, overWallNow)
 assert.equal(tokensRejected.ok, false)
 assert.ok(tokensRejected.reason.includes('token 预算已超限'))

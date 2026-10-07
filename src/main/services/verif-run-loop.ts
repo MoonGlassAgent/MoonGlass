@@ -533,10 +533,18 @@ export function checkRunLoopBudget(ledger: VerifRunLoopLedger, noProgressLimit: 
 // ==================== 状态迁移助手（暂停/恢复/记账，驱动与 smoke 共用） ====================
 
 /** 进入暂停态（§5.1 暂停即落盘）：human → paused-human，breaker → paused-breaker；清空当前拍。 */
+/** 恢复时的墙钟开窗（只开新窗、不累计等待段）：人工等待的时间不计费（实测口径）。 */
+export function resumeRunLoopWallWindow(ledger: VerifRunLoopLedger, now: string): void {
+  ledger.budget.startedAt = now
+}
+
 export function applyRunLoopPause(
   ledger: VerifRunLoopLedger,
   pause: { kind: 'human' | 'breaker'; reason: string; detail: string; pendingItems?: string[]; since: string }
 ): void {
+  // 等待不计费：进入暂停（含熔断待人）即把当前活跃段滚入 wallResetBase 并冻结窗口；
+  // 恢复时由 resumeRunLoopWallWindow 直接开新窗，等待段既不进窗口也不进预算
+  resetRunLoopWallClock(ledger, pause.since)
   ledger.state = pause.kind === 'human' ? 'paused-human' : 'paused-breaker'
   ledger.current = null
   ledger.pause = { kind: pause.kind, reason: pause.reason, detail: pause.detail, pendingItems: pause.pendingItems ?? [], since: pause.since }
