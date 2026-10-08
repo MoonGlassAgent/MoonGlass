@@ -539,6 +539,18 @@ export function resumeRunLoopWallWindow(ledger: VerifRunLoopLedger, now: string)
   ledger.budget.startedAt = now
 }
 
+/**
+ * 人工值守手势的全量预算开窗（手动继续/批准循环决策同口径，实测反馈：token 超限态下
+ * 批准提案被旧消耗拦停、用户被迫手动调上限）：预算是"无人值守护栏"，用户操作本身就是
+ * 值守 → 步数/token/墙钟三维归零开新窗（墙钟只开新窗，等待段由 applyRunLoopPause 冻结
+ * 时不计入）。证据触发的自动续跑不得调用本函数（非人工值守，归零会让护栏失效）。
+ */
+export function resetRunLoopBudgetWindow(ledger: VerifRunLoopLedger, now: string): void {
+  resumeRunLoopWallWindow(ledger, now)
+  ledger.budget.beats = 0
+  ledger.budget.tokensUsed = 0
+}
+
 export function applyRunLoopPause(
   ledger: VerifRunLoopLedger,
   pause: { kind: 'human' | 'breaker'; reason: string; detail: string; pendingItems?: string[]; since: string }

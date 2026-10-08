@@ -113,7 +113,7 @@ export const verifRun: Messages['verifRun'] = {
     },
     resumeDialog: {
       title: 'Resume Autonomous Verification Loop',
-      description: 'Raise the budget limits here before resuming. Step/token counts keep accumulating from their current values (no reset); the wall clock re-opens from the moment you resume (unattended duration restarts). Limits not above the current consumption will be rejected.',
+      description: 'Raise the budget limits here before resuming. Resuming manually is an attended gesture: step/token/wall-clock counters reset to zero and a fresh window opens from the moment you resume (unattended duration restarts).',
       confirm: 'Resume'
     },
     /** Amber consumption line at the top of the resume dialog (wall clock = elapsed time in the current window) */

@@ -11,7 +11,7 @@ const { tmpdir } = await import('node:os')
 const { join } = await import('node:path')
 
 const { judgeBatchBreakers } = await import('../src/main/services/verif-batch-verdict.ts')
-const { createRunLoopLedger, applyRunLoopPause, resolveRunLoopStartOptions, resumeRunLoopWallWindow } = await import('../src/main/services/verif-run-loop.ts')
+const { createRunLoopLedger, applyRunLoopPause, resolveRunLoopStartOptions, resumeRunLoopWallWindow, resetRunLoopBudgetWindow } = await import('../src/main/services/verif-run-loop.ts')
 const { validateDecisionForApproval, isBudgetExceededRejection } = await import('../src/main/services/decision-ledger.ts')
 const { readVerifLoopLedger, updateVerifLoopLedger, verifLoopLedgerPath } = await import('../src/main/services/verif-loop-ledger.ts')
 
@@ -79,38 +79,42 @@ resumeRunLoopWallWindow(pausedLedger, '2026-10-05T12:00:00.000Z')
 assert.equal(pausedLedger.budget.startedAt, '2026-10-05T12:00:00.000Z', '恢复直接开新窗')
 assert.equal(pausedLedger.budget.wallResetBase, 253, '等待段（约 8 小时）不重复计入 base')
 
-// B1. 墙钟超限（实测 253/240）：真实预算 → 拒绝；decide 批准候选（resumeRunLoopWallWindow 开新窗）→ 通过
+// B1. 墙钟超限（实测 253/240）：真实预算 → 拒绝；decide 批准候选（resetRunLoopBudgetWindow 三维归零开新窗）→ 通过
 const startedAt = '2026-10-05T00:00:00.000Z'
 const overWallNow = new Date(Date.parse(startedAt) + 253 * 60_000).toISOString()
 const ledger = createRunLoopLedger(resolveRunLoopStartOptions({ maxWallMinutes: 240 }), startedAt, true)
 const wallRejected = validateDecisionForApproval(makeDecision(), ledger.budget, overWallNow)
 assert.equal(wallRejected.ok, false)
 assert.ok(wallRejected.reason.includes('墙钟预算已超限'))
-// decide 批准分支的候选口径：克隆账本 + resumeRunLoopWallWindow（开新窗不计费，与 resumeVerifRunLoop 同权）
+// decide 批准分支的候选口径：克隆账本 + resetRunLoopBudgetWindow（人工值守手势三维归零，与 resumeVerifRunLoop source='user' 同权）
 const candidateLoop = JSON.parse(JSON.stringify(ledger))
-resumeRunLoopWallWindow(candidateLoop, overWallNow)
+resetRunLoopBudgetWindow(candidateLoop, overWallNow)
 assert.equal(candidateLoop.budget.startedAt, overWallNow, '批准手势即开新窗')
 assert.equal(candidateLoop.budget.wallResetBase, 0, 'decide 候选不累计等待段（仅校验用，丢弃）')
 const wallApproved = validateDecisionForApproval(makeDecision(), candidateLoop.budget, overWallNow)
-assert.equal(wallApproved.ok, true, '批准是人工值守手势：墙钟维度豁免后合规提案不得被误杀')
+assert.equal(wallApproved.ok, true, '批准是人工值守手势：预算维度归零开新窗后合规提案不得被误杀')
 
-// B2. 步数预算超限：开窗候选也不通过（资源消耗维度不归零）
+// B2. 步数预算超限（实测 token/步数超限态批准被拦）：真实预算 → 拒绝；人工值守候选三维归零 → 通过
 const beatsLedger = createRunLoopLedger(resolveRunLoopStartOptions({ maxWallMinutes: 240, maxBeats: 5 }), startedAt, true)
 beatsLedger.budget.beats = 5
-const beatsCandidate = JSON.parse(JSON.stringify(beatsLedger))
-resumeRunLoopWallWindow(beatsCandidate, overWallNow)
-const beatsRejected = validateDecisionForApproval(makeDecision(), beatsCandidate.budget, overWallNow)
+const beatsRejected = validateDecisionForApproval(makeDecision(), beatsLedger.budget, overWallNow)
 assert.equal(beatsRejected.ok, false)
 assert.ok(beatsRejected.reason.includes('循环步数预算已超限'))
+const beatsCandidate = JSON.parse(JSON.stringify(beatsLedger))
+resetRunLoopBudgetWindow(beatsCandidate, overWallNow)
+assert.equal(beatsCandidate.budget.beats, 0, '人工值守手势步数归零')
+assert.equal(validateDecisionForApproval(makeDecision(), beatsCandidate.budget, overWallNow).ok, true)
 
-// B3. token 预算超限：开窗候选也不通过
+// B3. token 预算超限：真实预算 → 拒绝；人工值守候选三维归零 → 通过
 const tokensLedger = createRunLoopLedger(resolveRunLoopStartOptions({ maxWallMinutes: 240, maxTokens: 1000 }), startedAt, true)
 tokensLedger.budget.tokensUsed = 1000
-const tokensCandidate = JSON.parse(JSON.stringify(tokensLedger))
-resumeRunLoopWallWindow(tokensCandidate, overWallNow)
-const tokensRejected = validateDecisionForApproval(makeDecision(), tokensCandidate.budget, overWallNow)
+const tokensRejected = validateDecisionForApproval(makeDecision(), tokensLedger.budget, overWallNow)
 assert.equal(tokensRejected.ok, false)
 assert.ok(tokensRejected.reason.includes('token 预算已超限'))
+const tokensCandidate = JSON.parse(JSON.stringify(tokensLedger))
+resetRunLoopBudgetWindow(tokensCandidate, overWallNow)
+assert.equal(tokensCandidate.budget.tokensUsed, 0, '人工值守手势 token 归零')
+assert.equal(validateDecisionForApproval(makeDecision(), tokensCandidate.budget, overWallNow).ok, true)
 
 // B4. 环境类 vs 结构类校验失败分类（decide 分支据此决定记不记 rejected）：
 //     预算超限=环境类（提案保持待裁决可重试）；结构类失败=终结提案
@@ -178,4 +182,4 @@ assert.equal(legacy.history[1].verdict, 'circuit-broken', '未知 verdict 归一
 writeFileSync(verifLoopLedgerPath(workspace), JSON.stringify({ state: 'running', deferredScenarioIds: 'SCN-Z' }), 'utf-8')
 assert.equal(readVerifLoopLedger(workspace).deferredScenarioIds, undefined)
 
-console.log('verif-batch-no-evidence-smoke: OK（no-evidence 判空路径 + deferred 累积/过滤/重置/归一 + decide 墙钟开窗豁免与步数/token 维持拒绝）')
+console.log('verif-batch-no-evidence-smoke: OK（no-evidence 判空路径 + deferred 累积/过滤/重置/归一 + decide 人工值守手势三维预算归零开窗豁免）')

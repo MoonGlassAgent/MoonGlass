@@ -61,6 +61,7 @@ import {
   readVerifRunLoopLedger,
   reconcileRunLoopAfterRestart,
   recordRunLoopBeat,
+  resetRunLoopBudgetWindow,
   resolveRunLoopStartOptions,
   resumeRunLoopWallWindow,
   runLoopEscalationTitle,
@@ -2680,9 +2681,10 @@ argument-hint: "<模块名>"
 
   /**
    * 恢复：清暂停并起新循环进程，首拍重新读态势推导（显式"继续"与证据触发恢复同口径，§5.2/§5.3）。
-   * - options：继续时可抬高预算上限（须严格大于当前消耗，校验不过即抛错；计数不归零）；
-   * - source='user'（手动继续/批准决策）时墙钟开窗重置：墙钟预算是"无人值守时长"上限，
-   *   人工继续本身就是值守 → 重置开窗，历史时长滚入 wallResetBase；证据触发的自动续跑不重置。
+   * - options：继续时可抬高预算上限（人工值守手势已三维归零开新窗，校验基本恒过）；
+   * - source='user'（手动继续/批准决策）是人工值守手势：预算是"无人值守护栏"，用户操作
+   *   本身就是值守 → 步数/token/墙钟三维归零开新窗（resetRunLoopBudgetWindow）；
+   *   证据触发的自动续跑只开墙钟新窗（等待不计费），步数/token 继续累计（护栏不失效）。
    */
   async resumeVerifRunLoop(projectId: string, options?: VerifRunLoopStartOptions, source: 'user' | 'evidence' = 'user'): Promise<void> {
     const project = this.projects.get(projectId)
@@ -2695,10 +2697,14 @@ argument-hint: "<模块名>"
       throw new Error(`当前状态（${ledger.state}）不可恢复；仅暂停/熔断状态可继续`)
     }
     if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法恢复验证运行循环')
-    // 等待不计费：恢复一律按 resumeRunLoopWallWindow 开新窗（人工等待段不进窗口、
-    // 用户无需手动调大墙钟）；步数/token 是资源消耗，沿用账本原值或抬高校验
+    // 人工值守手势（手动继续）三维归零开新窗；证据续跑只开墙钟窗（等待段不计费）
+    const openWindow = (target: VerifRunLoopLedger): void => {
+      const now = new Date().toISOString()
+      if (source === 'user') resetRunLoopBudgetWindow(target, now)
+      else resumeRunLoopWallWindow(target, now)
+    }
     const candidate: VerifRunLoopLedger = JSON.parse(JSON.stringify(ledger)) as VerifRunLoopLedger
-    resumeRunLoopWallWindow(candidate, new Date().toISOString())
+    openWindow(candidate)
     const check = validateRunLoopBudgetOverrides(candidate, options, new Date().toISOString())
     if (!check.ok) throw new Error(check.reason)
     const applied = resolveRunLoopStartOptions({
@@ -2710,12 +2716,12 @@ argument-hint: "<模块名>"
     this.stopRunLoopEvidencePoller(projectId)
     this.patchRunLoopLedger(workspace, (current) => {
       applyRunLoopBudgetOverrides(current, options)
-      resumeRunLoopWallWindow(current, new Date().toISOString())
+      openWindow(current)
       applyRunLoopResume(current)
     })
     this.emit(projectId, {
       type: 'status',
-      message: `验证运行循环已恢复，重新推导下一步（上限：循环步数 ≤${applied.maxBeats}，token ≤${applied.maxTokens}，墙钟 ≤${applied.maxWallMinutes} 分钟，连续无进展 ≤${applied.noProgressLimit} 步；墙钟已重新开窗${source === 'evidence' ? '，证据触发' : ''}）`
+      message: `验证运行循环已恢复，重新推导下一步（上限：循环步数 ≤${applied.maxBeats}，token ≤${applied.maxTokens}，墙钟 ≤${applied.maxWallMinutes} 分钟，连续无进展 ≤${applied.noProgressLimit} 步；${source === 'user' ? '预算已归零重新开窗' : '墙钟已重新开窗，证据触发'}）`
     })
     // 恢复沿用账本原代际：循环重启对账/暂停均不改 loopId，只有 startVerifRunLoop 开新代际
     this.verifRunLoopGeneration.set(workspace, ledger.loopId)
@@ -3263,15 +3269,14 @@ argument-hint: "<模块名>"
     if (verdict === 'approved') {
       const candidate: VerifRunDecision = promptOverride ? { ...decision, action: { ...decision.action, prompt: promptOverride } } : decision
       const runLoop = readVerifRunLoopLedger(workspace)
-      // 任务 2（实测两项目 8 条合规提案被误杀：墙钟 253/240 时批准直接被拒并记 rejected）：
-      // 批准/否决是人工值守手势，与手动"继续"同权——校验用应用了墙钟开窗重置的候选 budget
-      // （步数/token 维度不变，仍按真实消耗校验，只豁免墙钟维度）；approve-and-resume 路径的
-      // 批准是人工值守手势：墙钟维度按新窗口校验（resumeRunLoopWallWindow 开新窗，等待段不计费），
-      // 与 resumeVerifRunLoop 恢复时的开窗口径一致；步数/token 预算维持原样校验
+      // 批准/否决是人工值守手势，与手动"继续"同权：预算是"无人值守护栏"，用户操作本身
+      // 就是值守——校验用三维（步数/token/墙钟）归零开新窗后的候选 budget
+      // （resetRunLoopBudgetWindow，与 resumeVerifRunLoop source='user' 口径一致）。
+      // 实测：token 29208280/20000000 超限态下合规提案被旧消耗拦停，用户被迫手动调上限。
       let budget = runLoop?.budget ?? null
       if (runLoop) {
         const candidateLoop: VerifRunLoopLedger = JSON.parse(JSON.stringify(runLoop)) as VerifRunLoopLedger
-        resumeRunLoopWallWindow(candidateLoop, new Date().toISOString())
+        resetRunLoopBudgetWindow(candidateLoop, new Date().toISOString())
         budget = candidateLoop.budget
       }
       const check = validateDecisionForApproval(candidate, budget, new Date().toISOString())
@@ -3288,7 +3293,15 @@ argument-hint: "<模块名>"
       }
       const updated = markDecisionStatus(workspace, decisionId, 'approved', promptOverride ? { prompt: promptOverride } : undefined)
       if (!updated) throw new Error(`循环决策 ${decisionId} 状态迁移失败（并发修改？）`)
-      this.emit(projectId, { type: 'status', message: `循环决策 ${decisionId} 已批准${promptOverride ? '（已按修改后的指令执行）' : ''}，循环将拾取执行` })
+      // 人工值守手势落到真实账本：三维预算归零开新窗——否则循环未停在 llm-decision-pending
+      // 时（如 paused-breaker(max-tokens)）账本仍带旧消耗，批准后的下一拍立即再次熔断。
+      // 无循环账本时跳过（patch 会凭空创建账本）
+      if (runLoop) {
+        this.patchRunLoopLedger(workspace, (current) => {
+          resetRunLoopBudgetWindow(current, new Date().toISOString())
+        })
+      }
+      this.emit(projectId, { type: 'status', message: `循环决策 ${decisionId} 已批准${promptOverride ? '（已按修改后的指令执行）' : ''}，预算已归零重新开窗，循环将拾取执行` })
       const transition = planDecideRunLoopTransition(readVerifRunLoopLedger(workspace), 'approved')
       if (transition.kind === 'approve-and-resume') {
         this.emit(projectId, { type: 'status', message: `验证运行循环恢复：下一步执行已批准决策 ${decisionId}` })

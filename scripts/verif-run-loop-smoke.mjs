@@ -41,6 +41,7 @@ const {
   readVerifRunLoopLedger,
   reconcileRunLoopAfterRestart,
   recordRunLoopBeat,
+  resetRunLoopBudgetWindow,
   resetRunLoopWallClock,
   resolveRunLoopStartOptions,
   runLoopConsumption,
@@ -508,5 +509,17 @@ assert.equal(appliedLedger.budget.maxBeats, 200)
 assert.equal(appliedLedger.budget.noProgressLimit, 5)
 assert.equal(appliedLedger.budget.maxTokens, consumed.budget.maxTokens)
 assert.equal(appliedLedger.budget.beats, 50)
+// M7. resetRunLoopBudgetWindow（人工值守手势：手动继续/批准决策同口径）：
+//     步数/token/墙钟三维归零开新窗；上限不变；不重复累计等待段（wallResetBase 不滚）
+const attendedLedger = JSON.parse(JSON.stringify(consumed))
+resetRunLoopBudgetWindow(attendedLedger, '2026-10-05T14:30:00.000Z')
+assert.equal(attendedLedger.budget.beats, 0)
+assert.equal(attendedLedger.budget.tokensUsed, 0)
+assert.equal(attendedLedger.budget.startedAt, '2026-10-05T14:30:00.000Z')
+assert.equal(attendedLedger.budget.maxBeats, consumed.budget.maxBeats)
+assert.equal(attendedLedger.budget.maxTokens, consumed.budget.maxTokens)
+assert.equal(attendedLedger.budget.wallResetBase, 0, '只开新窗，历史滚入由 applyRunLoopPause 负责')
+// 归零后任意正上限的过校验（resume 手动继续路径的候选口径）
+assert.equal(validateRunLoopBudgetOverrides(attendedLedger, { maxTokens: 1000 }, '2026-10-05T14:30:00.000Z').ok, true)
 
-console.log('verif-run-loop-smoke: OK（拍决策映射/派发映射/预算四分支/无进展熔断/推进判定/暂停恢复/账本归一+截断/重启对账/态势回退/证据指纹/批3升级prompt+直接熔断白名单+decide迁移/决策账本入证据指纹/loopId代际守卫+启动守卫对账/预算抬高校验+noProgressLimit与墙钟开窗重置入账本）')
+console.log('verif-run-loop-smoke: OK（拍决策映射/派发映射/预算四分支/无进展熔断/推进判定/暂停恢复/账本归一+截断/重启对账/态势回退/证据指纹/批3升级prompt+直接熔断白名单+decide迁移/决策账本入证据指纹/loopId代际守卫+启动守卫对账/预算抬高校验+noProgressLimit与墙钟开窗重置入账本/人工值守三维归零开窗）')
