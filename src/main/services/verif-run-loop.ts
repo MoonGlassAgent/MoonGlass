@@ -509,10 +509,7 @@ export function noProgressStreak(lastBeats: VerifRunLoopBeatEntry[]): number {
 
 /** 拍开始前预算校验；命中即 paused-breaker 指名原因，不静默烧钱。startedAt 不可解析时跳过墙钟维度。 */
 export function checkRunLoopBudget(ledger: VerifRunLoopLedger, noProgressLimit: number, nowIso: string): RunLoopBudgetStatus {
-  const streak = noProgressStreak(ledger.lastBeats)
-  if (streak >= noProgressLimit) {
-    return { exceeded: true, reason: 'rule-stall', detail: `连续 ${streak} 步无进展（上限 ${noProgressLimit} 步）` }
-  }
+  // 硬预算先于规则空转（实测：streak 先命中时 token 烧到 146% 也不熔断，硬预算被空转遮蔽）
   const budget = ledger.budget
   if (budget.beats >= budget.maxBeats) {
     return { exceeded: true, reason: 'max-beats', detail: `循环步数 ${budget.beats}/${budget.maxBeats}` }
@@ -526,6 +523,10 @@ export function checkRunLoopBudget(ledger: VerifRunLoopLedger, noProgressLimit: 
     if (elapsedMinutes >= budget.maxWallMinutes) {
       return { exceeded: true, reason: 'max-wall', detail: `墙钟 ${elapsedMinutes}/${budget.maxWallMinutes} 分钟` }
     }
+  }
+  const streak = noProgressStreak(ledger.lastBeats)
+  if (streak >= noProgressLimit) {
+    return { exceeded: true, reason: 'rule-stall', detail: `连续 ${streak} 步无进展（上限 ${noProgressLimit} 步）` }
   }
   return { exceeded: false, reason: null, detail: '' }
 }

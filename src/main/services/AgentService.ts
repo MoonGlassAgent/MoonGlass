@@ -3168,7 +3168,9 @@ argument-hint: "<模块名>"
       this.emit(projectId, { type: 'status', message: `验证运行循环熔断（${fallbackReason}）：决策升级会话派发失败` })
       return this.verifRunLoopStopRequested.has(projectId) ? 'stopped' : 'paused'
     }
-    // 升级会话消耗计入 token 预算（不占拍数）
+    // 升级会话消耗计入 token 预算；同时**记一拍**（修复实测自锁：升级会话不记拍 →
+    // noProgressStreak 恒 ≥ 上限 → rule-stall 每拍必中 → 每拍再派升级会话）。
+    // 记拍口径：产出提案或已有已批准决策 = 把球递到人工手里，算 advanced；零产出 → no-progress
     this.patchRunLoopLedger(workspace, (ledger) => {
       ledger.budget.tokensUsed += Math.max(0, Math.trunc(sessionResult.tokensUsed) || 0)
       ledger.current = null
@@ -3176,6 +3178,15 @@ argument-hint: "<模块名>"
     if (this.verifRunLoopStopRequested.has(projectId)) return 'stopped'
     const afterDecisions = readDecisionLedger(workspace)?.decisions ?? []
     const newProposed = findNewProposedDecisions(beforeDecisions, afterDecisions)
+    const runnableNow = nextRunnableDecision(workspace) !== null
+    const beatAdvanced = newProposed.length > 0 || runnableNow
+    const ledgerForBeat = readVerifRunLoopLedger(workspace)
+    this.recordRunLoopBeatResult(
+      projectId, workspace, (ledgerForBeat?.beat ?? 0) + 1,
+      `决策升级会话（${trigger}）：${newProposed.length > 0 ? `产出 ${newProposed.length} 条提案` : runnableNow ? '有已批准决策待执行' : '未产出提案'}`,
+      beatAdvanced, null, null, sessionResult.tokensUsed, '', null, loopId
+    )
+    if (this.verifRunLoopStopRequested.has(projectId)) return 'stopped'
     if (newProposed.length > 0) {
       // 有提案：暂停待人审批（决策卡片批 4 接入；decision-ledger.json 已入证据指纹，
       // 工程师经 decide IPC / 会话注入指令都会改账本 → 证据轮询自动续跑）

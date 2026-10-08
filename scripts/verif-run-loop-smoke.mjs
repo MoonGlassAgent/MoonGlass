@@ -135,7 +135,7 @@ const makeLedger = (mutate = () => {}) => {
 }
 const NOW = '2026-09-29T01:00:00.000Z'
 
-// C1. 连续无进展 ≥ 上限 → rule-stall（优先于其他维度判定）
+// C1. 连续无进展 ≥ 上限 → rule-stall（预算健康时）；硬预算超限时硬预算优先（见 C1b）
 const stalled = makeLedger((ledger) => {
   ledger.lastBeats = [
     { beat: 3, summary: 's', decisionId: '', verdict: 'no-progress', advanced: false },
@@ -147,6 +147,13 @@ const stallCheck = checkRunLoopBudget(stalled, DEFAULT_NO_PROGRESS_LIMIT, NOW)
 assert.equal(stallCheck.exceeded, true)
 assert.equal(stallCheck.reason, 'rule-stall')
 assert.ok(stallCheck.detail.includes('3'))
+
+// C1b. 硬预算先于规则空转（实测：streak 先命中时 token 烧到 146% 也不熔断，硬预算被遮蔽）
+const stalledAndBurned = makeLedger((ledger) => {
+  ledger.budget.tokensUsed = DEFAULT_MAX_TOKENS
+  ledger.lastBeats = stalled.lastBeats
+})
+assert.equal(checkRunLoopBudget(stalledAndBurned, DEFAULT_NO_PROGRESS_LIMIT, NOW).reason, 'max-tokens')
 
 // C2. 有进展打头 → 无进展计数清零，不熔断
 const progressed = makeLedger((ledger) => {
