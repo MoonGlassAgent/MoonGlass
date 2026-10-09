@@ -1,5 +1,6 @@
 // 直测 moonglass-tools.ts 中 writeScenarioHits 的合并逻辑：
-// 首次写入、按 ID 更新、保留他人条目、FAIL 登记、testcase 名解析、显式参数优先、未绑定提示。
+// 首次写入、按 ID 更新、保留他人条目、FAIL 登记、testcase 名解析、显式参数优先、未绑定提示、
+// 证据通道 channel 写入与缺省归一、tool 字段、静态通道 FAIL 登记、旧无 channel 数据兼容。
 // moonglass-tools.ts 依赖 pi 运行时（typebox、无扩展名导入），无法被 node 直接加载，
 // 因此从源码按花括号配对提取 writeScenarioHits 及其依赖的纯函数（filesHash/writeJsonAtomic），
 // 拼装为临时 TS 模块后用 node 类型擦除直接执行——测试的就是发布源码本身。
@@ -178,4 +179,38 @@ const truncated = failureSummary(`ERROR: ${'x'.repeat(300)}`)
 if (truncated.length !== 160) throw new Error(`failureSummary 未做 160 字硬截断：${truncated.length}`)
 if (failureSummary('INFO: all good\nPASS: ok') !== '') throw new Error('无错误行时 failureSummary 应为空串')
 
-console.log('Scenario hits smoke passed: 首次写入/按ID更新/保留他人条目/FAIL登记/testcase解析/显式优先/未绑定提示/绑定反向指针(单用例精确/多例批次/合并去重/名称解析)/失败摘要指纹(FAIL携带/PASS清除/旧数据兼容/归一化截断)')
+// 13. BUG-VERIF-BATCH-001：证据通道 channel 与登记工具 tool
+// 13a. 缺省 channel 归一为 'simulation' 且始终写入；未提供 tool 时不写 tool 字段
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-11111111'], passed: true, rtlFiles: [rtlFile], evidence })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-11111111')
+if (!entry || entry.channel !== 'simulation') throw new Error(`缺省 channel 未归一为 simulation：${JSON.stringify(entry)}`)
+if ('tool' in entry) throw new Error(`未提供 tool 时不应写入 tool 字段：${JSON.stringify(entry)}`)
+
+// 13b. 静态通道 FAIL 登记：channel/tool 忠实落盘，失败同样是证据（模拟 run_verible_lint 登记路径）
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-22222222'], channel: 'static', tool: 'run_verible_lint', passed: false, rtlFiles: [rtlFile], evidence })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-22222222')
+if (!entry || entry.reached !== true || entry.passed !== false) throw new Error('静态通道 FAIL 未登记为 reached=true/passed=false')
+if (entry.channel !== 'static' || entry.tool !== 'run_verible_lint') throw new Error(`静态通道 FAIL 登记缺 channel/tool：${JSON.stringify(entry)}`)
+
+// 13c. synthesis 通道 + 工具名（模拟 run_logic_synthesis 登记路径）
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-33333333'], channel: 'synthesis', tool: 'run_logic_synthesis', passed: true, rtlFiles: [rtlFile], evidence })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-33333333')
+if (!entry || entry.channel !== 'synthesis' || entry.tool !== 'run_logic_synthesis') throw new Error(`synthesis 通道登记缺 channel/tool：${JSON.stringify(entry)}`)
+
+// 13d. 旧数据兼容：预置无 channel 的旧条目，合并写读取不炸、不被凭空补字段；重新登记后按新口径补 channel
+hits.scenarios.push({ id: 'SCN-LEGACY00', reached: true, passed: true, reachCount: 3, rtlHash: 'legacy-hash', evidence: ['legacy.xml'], generatedAt: '2026-01-01T00:00:00.000Z' })
+writeFileSync(hitsPath, JSON.stringify(hits, null, 2), 'utf-8')
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-AAAAAAAA'], passed: true, rtlFiles: [rtlFile], evidence })
+hits = readHits()
+const legacy = hits.scenarios.find((item) => item.id === 'SCN-LEGACY00')
+if (!legacy || legacy.reachCount !== 3) throw new Error('旧无 channel 条目在合并写后未被原样保留')
+if ('channel' in legacy || 'tool' in legacy) throw new Error(`旧无 channel 条目被凭空补字段：${JSON.stringify(legacy)}`)
+writeScenarioHits(workspace, 'dma', { scenarioIds: ['SCN-LEGACY00'], channel: 'static', tool: 'check_dead_logic', passed: false, rtlFiles: [rtlFile], evidence })
+hits = readHits()
+entry = hits.scenarios.find((item) => item.id === 'SCN-LEGACY00')
+if (entry.channel !== 'static' || entry.tool !== 'check_dead_logic' || entry.passed !== false) throw new Error(`旧条目重新登记未按新口径写 channel/tool：${JSON.stringify(entry)}`)
+
+console.log('Scenario hits smoke passed: 首次写入/按ID更新/保留他人条目/FAIL登记/testcase解析/显式优先/未绑定提示/绑定反向指针(单用例精确/多例批次/合并去重/名称解析)/失败摘要指纹(FAIL携带/PASS清除/旧数据兼容/归一化截断)/证据通道(channel缺省归一/static FAIL登记/synthesis通道/tool字段/旧无channel数据兼容)')

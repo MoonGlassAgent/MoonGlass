@@ -414,6 +414,16 @@ export type SpecClauseKind = 'verifiable' | 'documentary'
  */
 export type SpecClauseChannel = 'simulation' | 'static' | 'synthesis'
 
+/**
+ * 场景 hit 的证据通道（BUG-VERIF-BATCH-001 §3.4 配套契约）：
+ * scenario_hits.json 条目携带 channel，声明该 hit 由哪类执行通道产生
+ * （simulation=仿真回灌 / static=lint·死逻辑·综合等静态检查 / synthesis=综合 /
+ * formal=形式化）。旧数据无此字段一律按 'simulation' 归一。
+ * 场景级闭环匹配口径：method='static' 的场景只认 channel='static' 的 hit——
+ * 无关仿真 hit 既不得把静态场景抬升为 PASS，也不得以无关 FAIL 污染其状态。
+ */
+export type ScenarioHitChannel = 'simulation' | 'static' | 'synthesis' | 'formal'
+
 export interface RequirementFact {
   id: string
   text: string

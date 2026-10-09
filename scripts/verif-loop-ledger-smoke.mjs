@@ -95,7 +95,7 @@ assert.equal(file.currentBatch, null)
 assert.equal(file.circuitBreaker, null)
 assert.equal(file.history.length, 2)
 
-// A9. history 滚动上限：unshift 25 条 → 截断到 20 条且最新在前
+// A9. history 滚动上限：unshift 25 条 completed → 截断到 20 条且最新在前
 updateVerifLoopLedger(workspace, (l) => {
   l.history = []
   for (let index = 0; index < 25; index += 1) l.history.unshift({ index, scenarioIds: [`SCN-${String(index).padStart(8, '0')}`], verdict: 'completed', reason: `批次 ${index}`, settledAt: new Date().toISOString() })
@@ -104,6 +104,23 @@ file = readLoopFile()
 assert.equal(VERIF_LOOP_HISTORY_LIMIT, 20)
 assert.equal(file.history.length, 20)
 assert.equal(file.history[0].index, 24)
+
+// A9b. 裁剪只作用于 completed（BUG-VERIF-BATCH-001 R4）：早期 no-evidence / circuit-broken
+//      结算审计价值最高（用户报告：发现真实门禁失败的第 25 批以 no-evidence 结算，被滚动
+//      窗口裁剪后审计断链），永久保留不裁；completed 仍受 20 条上限约束
+updateVerifLoopLedger(workspace, (l) => {
+  l.history = []
+  for (let index = 0; index < 25; index += 1) l.history.unshift({ index, scenarioIds: [`SCN-C${String(index).padStart(7, '0')}`], verdict: 'completed', reason: `批次 ${index}`, settledAt: new Date().toISOString() })
+  l.history.push(
+    { index: 90, scenarioIds: ['SCN-OLDNOEV1'], verdict: 'no-evidence', reason: '无执行证据：静态通道缺口', settledAt: '2026-10-08T11:04:58.096Z' },
+    { index: 91, scenarioIds: ['SCN-OLDBREK1'], verdict: 'circuit-broken', reason: '证据缺失：场景未登记 scenario_hits：SCN-OLDBREK1', settledAt: '2026-10-08T10:00:00.000Z' }
+  )
+})
+file = readLoopFile()
+assert.equal(file.history.filter((entry) => entry.verdict === 'completed').length, 20, 'completed 仍受 20 条滚动上限约束')
+assert.equal(file.history.length, 22, '非成功结算不计入滚动窗口、永久保留')
+assert.ok(file.history.some((entry) => entry.index === 90 && entry.verdict === 'no-evidence'), '早期 no-evidence 结算不被裁剪')
+assert.ok(file.history.some((entry) => entry.index === 91 && entry.verdict === 'circuit-broken'), '早期熔断结算不被裁剪')
 
 // A10. 损坏文件：read 返回 null；update 从 idle 初值重建
 writeFileSync(join(workspace, 'verification', 'results', 'verif-batch-loop.json'), '{broken json', 'utf-8')
@@ -170,6 +187,50 @@ writeFileSync(loopPath, JSON.stringify({
 }), 'utf-8')
 assert.equal(readVerifLoopLedger(workspace).currentBatch.scenarios[0].title.length, VERIF_SCENARIO_TITLE_MAX)
 
+// A16-A18. deferredScenarioIds 结构化 + 旧账本兼容 + 自动退役（BUG-VERIF-BATCH-001 C3）
+
+// A16. 对象结构写入 → 读取往返保留元数据（scenarioId/deferredAt/reason/batchIndex）
+updateVerifLoopLedger(workspace, (l) => {
+  l.deferredScenarioIds = [
+    { scenarioId: 'SCN-AAAAAAAA', deferredAt: '2026-10-08T11:04:58.096Z', reason: '无执行证据：该批为静态通道场景（缺口改造中）', batchIndex: 25 },
+    { scenarioId: 'SCN-BBBBBBBB', deferredAt: '2026-10-08T12:00:00.000Z', reason: '无执行证据：场景可能漏跑', batchIndex: 26 }
+  ]
+})
+file = readLoopFile()
+assert.equal(file.deferredScenarioIds.length, 2)
+assert.deepEqual(file.deferredScenarioIds[0], {
+  scenarioId: 'SCN-AAAAAAAA',
+  deferredAt: '2026-10-08T11:04:58.096Z',
+  reason: '无执行证据：该批为静态通道场景（缺口改造中）',
+  batchIndex: 25
+}, 'deferred 条目为对象结构，元数据齐全可审计')
+
+// A17. 旧账本裸 string[] 归一：缺省元数据（deferredAt/reason 空、batchIndex null）、大写去重
+writeFileSync(loopPath, JSON.stringify({ state: 'running', deferredScenarioIds: ['SCN-aaaaaaaa', 'SCN-BBBBBBBB', 'SCN-aaaaaaaa', '', 42] }), 'utf-8')
+assert.deepEqual(readVerifLoopLedger(workspace).deferredScenarioIds, [
+  { scenarioId: 'SCN-AAAAAAAA', deferredAt: '', reason: '', batchIndex: null },
+  { scenarioId: 'SCN-BBBBBBBB', deferredAt: '', reason: '', batchIndex: null }
+], '裸字符串归一为对象（元数据缺省空），非法条目丢弃')
+
+// A18. 自动退役：注册表 status=VERIFIED/WAIVED 的场景在读取归一与写入时均删除
+//      （场景已闭环，defer 语义失效；不退役会导致重复派发/配额浪费或永久跳过）
+writeFileSync(join(workspace, 'verification', 'intelligence', 'scenario-registry.json'), JSON.stringify({
+  scenarios: [
+    { id: 'SCN-AAAAAAAA', title: '已闭环', status: 'VERIFIED', method: 'static' },
+    { id: 'SCN-BBBBBBBB', title: '已豁免', status: 'WAIVED', method: 'simulation' },
+    { id: 'SCN-CCCCCCCC', title: '仍开放', status: 'OPEN', method: 'simulation' }
+  ]
+}), 'utf-8')
+writeFileSync(loopPath, JSON.stringify({ state: 'running', deferredScenarioIds: ['SCN-AAAAAAAA', 'SCN-BBBBBBBB', 'SCN-CCCCCCCC'] }), 'utf-8')
+assert.deepEqual(readVerifLoopLedger(workspace).deferredScenarioIds.map((item) => item.scenarioId), ['SCN-CCCCCCCC'],
+  'VERIFIED/WAIVED 场景读取时自动退役（deferred 语义失效）')
+updateVerifLoopLedger(workspace, (l) => { l.state = 'completed' })
+assert.deepEqual(readVerifLoopLedger(workspace).deferredScenarioIds.map((item) => item.scenarioId), ['SCN-CCCCCCCC'],
+  '写入路径同样过滤已退役条目')
+// 全部退役 → 归一为 undefined（不产生空数组噪声）
+writeFileSync(loopPath, JSON.stringify({ state: 'running', deferredScenarioIds: ['SCN-AAAAAAAA'] }), 'utf-8')
+assert.equal(readVerifLoopLedger(workspace).deferredScenarioIds, undefined, '全部退役后归一为 undefined')
+
 // ── B. 修复判定账本（§3.1，追加式）──
 
 const record = (suffix, judgment) => ({
@@ -215,4 +276,4 @@ outcomes = readOutcomeFile()
 assert.equal(outcomes.outcomes.length, 1)
 assert.equal(outcomes.outcomes[0].judgment, 'UNKNOWN')
 
-console.log('verif-loop-ledger-smoke: OK（批次循环 dispatched→completed/circuit-broken/stopped/awaiting-rtl-fix + history≤20 + 场景语义标签快照与降级；修复账本三判定落盘 + ≤50 条 + 容错）')
+console.log('verif-loop-ledger-smoke: OK（批次循环 dispatched→completed/circuit-broken/stopped/awaiting-rtl-fix + history 只裁 completed（非成功结算永久保留） + deferred 对象结构/旧 string[] 归一/VERIFIED-WAIVED 自动退役 + 场景语义标签快照与降级；修复账本三判定落盘 + ≤50 条 + 容错）')

@@ -499,9 +499,11 @@ const synthScenarioId = synthIntentReg.accepted[0]
 const preCloseBuild = buildVerificationIntelligence(root)
 const synthClausesMapped = preCloseBuild.verificationState.specMapping.clauses.filter((item) => item.channel === 'synthesis')
 if (!synthClausesMapped.every((item) => item.status === 'MAPPED_UNTESTED' && item.scenarioIds.includes(synthScenarioId))) throw new Error('synthesis 条款锚定意图后应为 MAPPED_UNTESTED')
+// BUG-VERIF-BATCH-001 §3.4：static 方法场景的闭环只认 channel='static' 的 hit——综合证据
+// 由 synthesis 通道工具登记（本冒烟模拟工具侧写 channel:'static'；旧数据无 channel 一律按 'simulation' 归一）
 writeFileSync(join(root, 'verification', 'results', 'dma', 'scenario_hits.json'), JSON.stringify({
   rtlHash: preCloseBuild.structuralModel.rtlHash,
-  scenarios: [{ id: synthScenarioId, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'dma.fst'] }]
+  scenarios: [{ id: synthScenarioId, channel: 'static', reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'dma.fst'] }]
 }, null, 2), 'utf-8')
 const synthClosed = buildVerificationIntelligence(root)
 if (synthClosed.verificationState.specMapping.synthesisClauseClosed !== 3) throw new Error(`综合报告证据闭环后 synthesisClauseClosed 应为 3：${synthClosed.verificationState.specMapping.synthesisClauseClosed}`)
@@ -635,5 +637,92 @@ if (!formalAssessment?.passOracleIds.includes('ORACLE-FORMAL-PROPERTY') || forma
 const provedScenario = exemptProved.verificationState.scenarios.find((scenario) => scenario.id === exemptFormal.id)
 if (provedScenario?.status !== 'FORMAL_PROVED') throw new Error(`#8 回归：工作区口径 Formal 证据未合并进 hits：${provedScenario?.status}`)
 rmSync(exemptRoot, { recursive: true, force: true })
+
+// ===== BUG-VERIF-BATCH-001 §3.4：静态场景闭环只认 static 通道 hit（无关仿真 hit 不抬升、不污染） =====
+// ① 静态场景仅有 simulation 通道 PASS hit → 不闭环；② channel='static' PASS hit → 正常闭环；
+// ③ sim PASS 后登记 static FAIL（同一 hits 文件后写覆盖先写）→ 不闭环且判 FAIL；
+// ④ 旧数据无 channel 归一为 'simulation'：仿真场景照常闭环（回归现有断言口径）
+const staticChannelRoot = mkdtempSync(join(tmpdir(), 'moonglass-vi-static-channel-'))
+mkdirSync(join(staticChannelRoot, 'docs', '02_requirements'), { recursive: true })
+mkdirSync(join(staticChannelRoot, 'rtl'), { recursive: true })
+mkdirSync(join(staticChannelRoot, 'verification', 'results', 'mini'), { recursive: true })
+writeFileSync(join(staticChannelRoot, 'docs', '02_requirements', 'product_requirements.md'), `
+# Static Channel Requirements
+
+- REQ-CDC-001 P1: 跨时钟域信号必须经过两级同步器。
+- REQ-CNT-001 P1: counter increments by one when advance is asserted.
+`, 'utf-8')
+writeFileSync(join(staticChannelRoot, 'rtl', 'mini_static.v'), `
+module mini_static(input clk_a, input clk_b, input rst_n, input advance, output reg [7:0] cnt, output reg [3:0] dst);
+  reg [3:0] meta;
+  always @(posedge clk_b or negedge rst_n) begin
+    if (!rst_n) begin meta <= 0; dst <= 0; end
+    else begin meta <= cnt[3:0]; dst <= meta; end
+  end
+  always @(posedge clk_a or negedge rst_n) begin
+    if (!rst_n) cnt <= 0;
+    else if (advance) cnt <= cnt + 1;
+  end
+endmodule
+`, 'utf-8')
+writeFileSync(join(staticChannelRoot, 'verification', 'results', 'mini', 'results_icarus.xml'), '<testsuite tests="2" failures="0"/>', 'utf-8')
+writeFileSync(join(staticChannelRoot, 'verification', 'results', 'mini', 'mini.fst'), 'waveform-evidence', 'utf-8')
+writeFileSync(join(staticChannelRoot, 'verification', 'results', 'mini', 'lint.log'), 'lint: 0 errors, 0 warnings', 'utf-8')
+const staticFirst = buildVerificationIntelligence(staticChannelRoot)
+if (staticFirst.risks.length === 0) throw new Error('静态通道夹具应识别至少一个风险')
+const staticWriter = staticFirst.structuralModel.registerWriters[0]
+if (!staticWriter) throw new Error('静态通道夹具应识别寄存器写入关系')
+const staticQualifiedSignal = `${staticWriter.module}.${staticWriter.register}`
+const staticReg = registerVerificationIntents(staticChannelRoot, [
+  { title: 'CDC 两级同步静态闭环', objective: '验证跨时钟域路径全部经两级同步器且无脉冲丢失', failureMode: '反例：单级同步或亚稳态直达', passCriteria: ['全部跨时钟域路径两级同步'], anchors: { riskIds: [staticFirst.risks[0].id], requirementIds: ['REQ-CDC-001'], rtlSignals: [staticQualifiedSignal] }, recommendedMethod: 'static' },
+  { title: '计数器递增仿真闭环', objective: '验证 advance 有效时计数器逐拍加一', failureMode: '反例：计数不递增或跳变', passCriteria: ['每拍加一'], anchors: { riskIds: [staticFirst.risks[0].id], requirementIds: ['REQ-CNT-001'], rtlSignals: [staticQualifiedSignal] }, recommendedMethod: 'simulation' }
+])
+if (staticReg.accepted.length !== 2) throw new Error(`静态通道夹具意图登记失败：${JSON.stringify(staticReg.rejected)}`)
+const afterStaticReg = buildVerificationIntelligence(staticChannelRoot)
+const intentScenarios = afterStaticReg.verificationState.scenarios.filter((scenario) => scenario.origin === 'AGENT_INTENT')
+if (intentScenarios.length !== 2) throw new Error(`静态通道夹具应登记 2 个 AGENT_INTENT 场景：${intentScenarios.length}`)
+const staticScenario = intentScenarios.find((scenario) => scenario.method === 'static')
+const simScenario = intentScenarios.find((scenario) => scenario.method === 'simulation')
+if (!staticScenario || !simScenario) throw new Error('静态通道夹具缺少 static / simulation 方法场景')
+const staticScenarioId = staticScenario.id
+const simScenarioId = simScenario.id
+const cdcMappingClause = (build) => build.verificationState.specMapping.clauses.find((item) => item.clauseId === 'REQ-CDC-001')
+const staticHitsPath = join(staticChannelRoot, 'verification', 'results', 'mini', 'scenario_hits.json')
+// ①④ 仅 simulation 通道（无 channel 字段的旧数据 → 归一 'simulation'）的 PASS hit：
+// 静态场景不得闭环（状态保持 PLANNED、无 PASS 判定、evidence 不透传），仿真场景照常闭环
+writeFileSync(staticHitsPath, JSON.stringify({
+  rtlHash: afterStaticReg.structuralModel.rtlHash,
+  scenarios: [
+    { id: staticScenarioId, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'mini.fst'] },
+    { id: simScenarioId, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'mini.fst'] }
+  ]
+}, null, 2), 'utf-8')
+const simOnlyBuild = buildVerificationIntelligence(staticChannelRoot)
+const simOnlyStatic = simOnlyBuild.verificationState.scenarios.find((scenario) => scenario.id === staticScenarioId)
+if (!simOnlyStatic || simOnlyStatic.status !== 'PLANNED' || simOnlyStatic.state.judgment !== 'UNKNOWN' || simOnlyStatic.state.closure !== 'OPEN') throw new Error(`BUG-VERIF-BATCH-001 ①：静态场景被无关仿真 hit（无 channel→simulation）抬升或污染：${simOnlyStatic?.status}/${simOnlyStatic?.state.judgment}/${simOnlyStatic?.state.closure}`)
+if (simOnlyStatic.evidence.length !== 0) throw new Error(`BUG-VERIF-BATCH-001 ①：通道不匹配 hit 的 evidence 不得透传给静态场景：${JSON.stringify(simOnlyStatic.evidence)}`)
+if (cdcMappingClause(simOnlyBuild)?.status !== 'MAPPED_UNTESTED') throw new Error(`BUG-VERIF-BATCH-001 ①：静态条款不应被无关仿真 hit 判为 PASSED：${cdcMappingClause(simOnlyBuild)?.status}`)
+if (simOnlyBuild.verificationState.scenarios.find((scenario) => scenario.id === simScenarioId)?.status !== 'VERIFIED') throw new Error('BUG-VERIF-BATCH-001 ④：无 channel 的旧 hit 应归一为 simulation 并照常闭环仿真场景')
+// ② channel='static' 的 PASS hit → 静态场景正常闭环（条款同步 PASSED）
+writeFileSync(staticHitsPath, JSON.stringify({
+  rtlHash: simOnlyBuild.structuralModel.rtlHash,
+  scenarios: [{ id: staticScenarioId, channel: 'static', reached: true, passed: true, evidence: ['lint.log'] }]
+}, null, 2), 'utf-8')
+const staticPassBuild = buildVerificationIntelligence(staticChannelRoot)
+const staticPassScenario = staticPassBuild.verificationState.scenarios.find((scenario) => scenario.id === staticScenarioId)
+if (staticPassScenario?.status !== 'VERIFIED' || staticPassScenario.state.judgment !== 'PASS' || staticPassScenario.state.closure !== 'VERIFIED') throw new Error(`BUG-VERIF-BATCH-001 ②：channel='static' 的 PASS hit 未闭环静态场景：${staticPassScenario?.status}/${staticPassScenario?.state.judgment}/${staticPassScenario?.state.closure}`)
+if (cdcMappingClause(staticPassBuild)?.status !== 'PASSED') throw new Error(`BUG-VERIF-BATCH-001 ②：静态场景闭环后静态条款应为 PASSED：${cdcMappingClause(staticPassBuild)?.status}`)
+// ③ 同一 hits 文件内先 sim PASS、后 static FAIL（Map 后写覆盖先写，最新登记决定通道）→ 判 FAIL、不闭环
+writeFileSync(staticHitsPath, JSON.stringify({
+  rtlHash: staticPassBuild.structuralModel.rtlHash,
+  scenarios: [
+    { id: staticScenarioId, reached: true, passed: true, assertionPassed: true, evidence: ['results_icarus.xml', 'mini.fst'] },
+    { id: staticScenarioId, channel: 'static', reached: true, passed: false, evidence: ['lint.log'] }
+  ]
+}, null, 2), 'utf-8')
+const staticFailBuild = buildVerificationIntelligence(staticChannelRoot)
+const staticFailScenario = staticFailBuild.verificationState.scenarios.find((scenario) => scenario.id === staticScenarioId)
+if (staticFailScenario?.status !== 'FAILED' || staticFailScenario.state.judgment !== 'FAIL' || staticFailScenario.state.closure === 'VERIFIED') throw new Error(`BUG-VERIF-BATCH-001 ③：static FAIL（最新登记）未生效或被 sim PASS 抬升：${staticFailScenario?.status}/${staticFailScenario?.state.judgment}`)
+rmSync(staticChannelRoot, { recursive: true, force: true })
 
 console.log(`Verification Intelligence smoke passed: ${second.risks.length} risks, ${second.verificationState.scenarioCount} scenarios`)

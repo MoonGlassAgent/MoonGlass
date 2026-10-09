@@ -178,6 +178,9 @@ function updateDiagnosticControl(input: {
   return state
 }
 
+/** 证据通道（BUG-VERIF-BATCH-001 设计契约）：scenario_hits 条目按通道做闭环匹配；旧数据缺 channel 视为 'simulation' */
+export type ScenarioEvidenceChannel = 'simulation' | 'static' | 'synthesis' | 'formal'
+
 export interface ScenarioHitWriteInput {
   /** 显式场景 ID（来自 select_next_verification_batch 返回的批次），优先于 testcase 名解析 */
   scenarioIds?: string[]
@@ -192,6 +195,10 @@ export interface ScenarioHitWriteInput {
    */
   runTestcases?: string[]
   passed: boolean
+  /** 证据通道（BUG-VERIF-BATCH-001）：缺省 'simulation'（兼容旧调用方）；静态工具传 'static'，综合工具传 'synthesis' */
+  channel?: ScenarioEvidenceChannel
+  /** 登记工具名（如 'run_verible_lint'）；提供时随条目写入，不给则不写 */
+  tool?: string
   /** FAIL 时写入：失败日志归一化后首个错误行（≤160 字硬截断，方案 C 批 1 §3.3）；PASS 路径不写并清除旧值 */
   failureSummary?: string
   /** FAIL 时写入：与 diagnostic-control 同一算法的失败指纹（归一化 sha1 前 12 位） */
@@ -206,11 +213,13 @@ export interface ScenarioHitWriteResult {
 }
 
 /**
- * 把仿真执行结果自动登记到 verification/results/<topModule>/scenario_hits.json（合并写）。
+ * 把执行结果自动登记到 verification/results/<topModule>/scenario_hits.json（合并写）。
  * 这是 scenario_hits.json 的唯一写入入口：PASS/FAIL 都登记（失败同样是证据），
  * Agent 禁止手写该文件。导出以便 smoke 直接测试合并逻辑。
  * rtlHash 必须使用引擎统一口径（computeRtlHash，与新鲜度判定同一哈希空间）；
  * 引擎不可用时回退 filesHash 并在 warnings 中说明（该回退的哈希不参与新鲜度判定）。
+ * BUG-VERIF-BATCH-001：条目始终写 channel（缺省 'simulation'，旧数据读取侧归一），
+ * 静态/综合工具经 channel='static'/'synthesis' 登记，引擎按通道做闭环匹配。
  */
 export function writeScenarioHits(workspace: string, topModule: string, input: ScenarioHitWriteInput): ScenarioHitWriteResult {
   const warnings: string[] = []
@@ -239,6 +248,8 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
   })
   const byId = new Map<string, Record<string, unknown>>()
   for (const item of existing.scenarios ?? []) if (typeof item.id === 'string') byId.set(item.id, item)
+  // 证据通道归一：缺省 'simulation'（旧调用方/旧数据同口径），始终随条目写入
+  const channel = input.channel ?? 'simulation'
   for (const id of scenarioIds) {
     const previous = byId.get(id)
     // testName：把执行该场景的 cocotb 测试函数名记入条目，供 FileService 映射 TEST ID；
@@ -253,9 +264,12 @@ export function writeScenarioHits(workspace: string, topModule: string, input: S
       id,
       reached: true,
       passed: input.passed,
+      channel,
       reachCount: Number(previous?.reachCount ?? 0) + 1,
       rtlHash,
       evidence: [...new Set([...((previous?.evidence as string[] | undefined) ?? []), ...evidence])],
+      // BUG-VERIF-BATCH-001：登记工具名仅给了才写（合并且保留旧值语义与其余字段一致）
+      ...(typeof input.tool === 'string' && input.tool ? { tool: input.tool } : {}),
       ...(typeof preciseTestName === 'string' && preciseTestName ? { testName: preciseTestName } : {}),
       ...(boundTestcases.length > 0 ? { boundTestcases, boundBy: preciseTestName ? 'testcase-name' : 'scenarioIds' } : {}),
       generatedAt: new Date().toISOString()
@@ -862,13 +876,14 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'run_verible_lint',
     label: 'Run Verible Lint',
-    description: '执行 RTL Lint。缺省按 design.json/filelist.f 对全设计进行 Verilator 联合 Lint 与顶层 elaboration；指定 filePath 时只做单文件快速检查。',
+    description: '执行 RTL Lint。缺省按 design.json/filelist.f 对全设计进行 Verilator 联合 Lint 与顶层 elaboration；指定 filePath 时只做单文件快速检查。全设计检查且提供 scenarioIds 时，把本次检查结果作为这些静态通道场景的执行证据登记到 scenario_hits.json（channel=static，PASS/FAIL 都登记）并重建验证态势；单文件快速检查不登记。',
     promptSnippet: 'Run full-design RTL lint/elaboration or a fast single-file lint',
-    promptGuidelines: 'Use file scope while editing. Before declaring RTL complete, omit filePath and run full-design lint/elaboration; a single-file PASS is never completion evidence.',
+    promptGuidelines: 'Use file scope while editing. Before declaring RTL complete, omit filePath and run full-design lint/elaboration; a single-file PASS is never completion evidence. For batches from select_next_verification_batch whose scenarios are static-channel (method=static), pass their scenarioIds on the full-design run so the lint result is registered as scenario execution evidence.',
     parameters: Type.Object({
       filePath: Type.Optional(Type.String({ description: '可选：目标文件路径。省略时检查完整设计并 elaboration 顶层' })),
       rulesFile: Type.Optional(Type.String({ description: 'Verible 规则配置文件路径（可选，仅 verible 引擎生效）' })),
-      autofix: Type.Optional(Type.Boolean({ description: '是否启用 autofix（仅 verible 支持，会就地修改文件）' }))
+      autofix: Type.Optional(Type.Boolean({ description: '是否启用 autofix（仅 verible 支持，会就地修改文件）' })),
+      scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本次全设计检查定向闭环的静态通道场景 ID；提供时把本次检查结果作为这些场景的执行证据登记到 scenario_hits.json（channel=static），单文件快速检查不提供' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const requestedPath = params.filePath as string | undefined
@@ -886,6 +901,8 @@ export default function (pi: ExtensionAPI): void {
 
       let result: { engine: string; errors: LintIssue[]; warnings: LintIssue[]; fixedCode: string | null }
       let target: string
+      let designTopModule: string | undefined
+      let designFiles: string[] = []
       if (filePath) {
         // 单文件快速检查：优先 Verible，没有则回退 Verilator。
         const veribleResult = await tryVerible(filePath, signal, rulesFile, autofix)
@@ -904,6 +921,8 @@ export default function (pi: ExtensionAPI): void {
         })
         result = { ...designResult, fixedCode: null }
         target = `完整设计（${inputs.designFiles.length} 个文件，顶层 ${inputs.topModule ?? '自动识别'}）`
+        designTopModule = inputs.topModule
+        designFiles = inputs.designFiles
       }
 
       const errorCount = result.errors.length
@@ -931,6 +950,41 @@ export default function (pi: ExtensionAPI): void {
         report.push('✅ autofix 已完成，文件已就地更新。')
       }
 
+      // BUG-VERIF-BATCH-001：静态通道场景证据登记——passed = 全设计检查 errors === 0；
+      // 仅全设计检查（单文件快速检查不构成场景完成证据）且提供 scenarioIds 时登记（channel=static），
+      // 检查报告落盘 rtlqa/lint/ 作为证据（引擎校验证据文件必须真实存在），rtlHash 由 writeScenarioHits 自算，
+      // 登记后重建验证态势；未提供 scenarioIds 时行为与现状完全一致
+      let scenarioHitsRegistered: string[] = []
+      if (!filePath && params.scenarioIds) {
+        if (designTopModule) {
+          const lintReportDir = join(resolve(ctx.cwd), 'rtlqa', 'lint')
+          mkdirSync(lintReportDir, { recursive: true })
+          const lintReportJson = join(lintReportDir, 'lint_report.json')
+          writeJsonAtomic(lintReportJson, {
+            version: 1, generatedAt: new Date().toISOString(), engine: result.engine, target,
+            passed, errorCount, warningCount, errors: result.errors, warnings: result.warnings
+          })
+          const lintReportMd = join(lintReportDir, 'lint_report.md')
+          writeFileSync(lintReportMd, report.join('\n'), 'utf-8')
+          const hits = writeScenarioHits(resolve(ctx.cwd), designTopModule, {
+            scenarioIds: params.scenarioIds as string[] | undefined,
+            passed,
+            channel: 'static',
+            tool: 'run_verible_lint',
+            rtlFiles: designFiles,
+            evidence: [lintReportJson, lintReportMd]
+          })
+          scenarioHitsRegistered = hits.registered
+          report.push('', '### Scenario 证据登记', '')
+          if (hits.registered.length) report.push(`已自动登记 ${hits.registered.length} 个场景到 scenario_hits.json：${hits.registered.join('、')}`)
+          for (const warning of hits.warnings) report.push(`⚠️ ${warning}`)
+          const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+          report.push(rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次 Lint 结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见')
+        } else {
+          report.push('', '### Scenario 证据登记', '', '⚠️ rtl/design.json 未声明顶层模块，无法定位 scenario_hits.json，跳过静态证据登记（请在 design.json 补 topModule 后重试）')
+        }
+      }
+
       return {
         content: [{ type: 'text', text: report.join('\n') }],
         details: {
@@ -940,7 +994,8 @@ export default function (pi: ExtensionAPI): void {
           warningCount,
           errors: result.errors.slice(0, MAX_ISSUES_IN_REPORT),
           warnings: result.warnings.slice(0, MAX_ISSUES_IN_REPORT),
-          autofixed: autofix && result.fixedCode !== null
+          autofixed: autofix && result.fixedCode !== null,
+          scenarioHits: scenarioHitsRegistered
         }
       }
     }
@@ -954,11 +1009,12 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'check_dead_logic',
     label: 'Check Dead Logic',
-    description: '基于 slang elaborated AST 按模块统计每个信号的驱动与负载，检出 undriven（有负载无驱动）/ unused（有驱动无负载）/ dead（两者兼有）三类死逻辑。报告写入 rtlqa/lint/dead_logic_report.json 与 dead_logic_report.md；internal 项可直接清理，spec-anchored 项（命中 docs/03_design 架构文档或属顶层端口）必须经 request_user_decision 请工程师裁决并写回报告 adjudications。',
+    description: '基于 slang elaborated AST 按模块统计每个信号的驱动与负载，检出 undriven（有负载无驱动）/ unused（有驱动无负载）/ dead（两者兼有）三类死逻辑。报告写入 rtlqa/lint/dead_logic_report.json 与 dead_logic_report.md；internal 项可直接清理，spec-anchored 项（命中 docs/03_design 架构文档或属顶层端口）必须经 request_user_decision 请工程师裁决并写回报告 adjudications。提供 scenarioIds 时，把本次检查结果作为这些静态通道场景的执行证据登记到 scenario_hits.json（channel=static，PASS/FAIL 都登记，passed=无未裁决 undriven 项）并重建验证态势。',
     promptSnippet: 'Check RTL for undriven/unused (dead) logic via slang elaborated AST',
-    promptGuidelines: 'Run after full-design lint/elaboration. Clean up internal items directly. For spec-anchored items never delete on your own: adjudicate each via request_user_decision (remove / keep with rationale / mark TBD) and record every decision into adjudications of rtlqa/lint/dead_logic_report.json. Re-run this tool after cleanup; prior adjudications for still-present items are carried over automatically.',
+    promptGuidelines: 'Run after full-design lint/elaboration. Clean up internal items directly. For spec-anchored items never delete on your own: adjudicate each via request_user_decision (remove / keep with rationale / mark TBD) and record every decision into adjudications of rtlqa/lint/dead_logic_report.json. Re-run this tool after cleanup; prior adjudications for still-present items are carried over automatically. For batches from select_next_verification_batch whose scenarios are static-channel (method=static), pass their scenarioIds so the check result is registered as scenario execution evidence.',
     parameters: Type.Object({
-      topModule: Type.Optional(Type.String({ description: '顶层模块名（可选，缺省取 rtl/design.json 的 topModule）' }))
+      topModule: Type.Optional(Type.String({ description: '顶层模块名（可选，缺省取 rtl/design.json 的 topModule）' })),
+      scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本次检查定向闭环的静态通道场景 ID；提供时把本次检查结果作为这些场景的执行证据登记到 scenario_hits.json（channel=static）' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const inputs = readRtlInputs(ctx.cwd)
@@ -1001,6 +1057,34 @@ export default function (pi: ExtensionAPI): void {
           lines.push('internal 项属死代码，直接清理（连同只服务于死信号的驱动/负载逻辑），清理后复跑本工具确认清零。')
         }
 
+        // BUG-VERIF-BATCH-001：静态通道场景证据登记——passed = 无未裁决的 undriven 项
+        // （报告里 kind=undriven 且未被 adjudications 覆盖的计数为 0；unused/dead 不计入口径），
+        // channel=static，证据=rtlqa/lint/dead_logic_report.json/.md，rtlHash 由 writeScenarioHits 自算，
+        // 登记后重建验证态势；仅在提供 scenarioIds 时登记，未提供时行为与现状完全一致
+        let scenarioHitsRegistered: string[] = []
+        if (params.scenarioIds) {
+          const deadLogicTop = (params.topModule as string | undefined) ?? inputs.topModule
+          if (deadLogicTop) {
+            const undrivenUnadjudicated = report.issues.filter((issue) => issue.kind === 'undriven' && !adjudicated.has(`${issue.module}.${issue.signal}`))
+            const hits = writeScenarioHits(resolve(ctx.cwd), deadLogicTop, {
+              scenarioIds: params.scenarioIds as string[] | undefined,
+              passed: undrivenUnadjudicated.length === 0,
+              channel: 'static',
+              tool: 'check_dead_logic',
+              rtlFiles: inputs.designFiles,
+              evidence: [jsonPath, mdPath]
+            })
+            scenarioHitsRegistered = hits.registered
+            lines.push('', '### Scenario 证据登记', '')
+            if (hits.registered.length) lines.push(`已自动登记 ${hits.registered.length} 个场景到 scenario_hits.json：${hits.registered.join('、')}（passed=${undrivenUnadjudicated.length === 0}，未裁决 undriven ${undrivenUnadjudicated.length} 项）`)
+            for (const warning of hits.warnings) lines.push(`⚠️ ${warning}`)
+            const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+            lines.push(rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次检查结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见')
+          } else {
+            lines.push('', '### Scenario 证据登记', '', '⚠️ 未提供 topModule 且 rtl/design.json 未声明顶层模块，无法定位 scenario_hits.json，跳过静态证据登记')
+          }
+        }
+
         return {
           content: [{ type: 'text', text: lines.join('\n') }],
           details: {
@@ -1013,7 +1097,8 @@ export default function (pi: ExtensionAPI): void {
             internal: report.stats.internal,
             pendingAdjudication: pending.length,
             reportPath: relative(ctx.cwd, jsonPath),
-            issues: report.issues.slice(0, MAX_ISSUES_IN_REPORT)
+            issues: report.issues.slice(0, MAX_ISSUES_IN_REPORT),
+            scenarioHits: scenarioHitsRegistered
           }
         }
       } catch (err) {
@@ -1033,13 +1118,14 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'check_synthesizability',
     label: 'Check Synthesizability',
-    description: '使用 Yosys 对 RTL 文件进行可综合性检查，包括语法解析、层次化检查和逻辑综合可行性。返回是否可综合、问题列表和资源估算（cells/wires）。',
+    description: '使用 Yosys 对 RTL 文件进行可综合性检查，包括语法解析、层次化检查和逻辑综合可行性。返回是否可综合、问题列表和资源估算（cells/wires）。提供 scenarioIds 时，把本次检查结果作为这些静态通道场景的执行证据登记到 scenario_hits.json（channel=static，PASS/FAIL 都登记，passed=检查通过）并重建验证态势。',
     promptSnippet: 'Check if RTL code is synthesizable using Yosys',
-    promptGuidelines: 'After lint, pass design files as rtlFiles and SRAM blackbox views as libraryFiles. Never pass behavioral or physical macro views to Yosys synthesis.',
+    promptGuidelines: 'After lint, pass design files as rtlFiles and SRAM blackbox views as libraryFiles. Never pass behavioral or physical macro views to Yosys synthesis. For batches from select_next_verification_batch whose scenarios are static-channel (method=static), pass their scenarioIds so the check result is registered as scenario execution evidence.',
     parameters: Type.Object({
       rtlFiles: Type.Array(Type.String(), { description: '需要检查的 RTL 文件路径列表' }),
       libraryFiles: Type.Optional(Type.Array(Type.String(), { description: '宏/库 blackbox Verilog；使用 read_verilog -lib' })),
-      topModule: Type.Optional(Type.String({ description: '顶层模块名称（可选，缺省自动识别）' }))
+      topModule: Type.Optional(Type.String({ description: '顶层模块名称（可选，缺省自动识别；提供 scenarioIds 登记证据时必填）' })),
+      scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本次检查定向闭环的静态通道场景 ID；提供时把本次检查结果作为这些场景的执行证据登记到 scenario_hits.json（channel=static）' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const rtlFiles = (params.rtlFiles as string[]).map((file) => resolve(ctx.cwd, file))
@@ -1087,6 +1173,43 @@ export default function (pi: ExtensionAPI): void {
           report.push('')
         }
 
+        // BUG-VERIF-BATCH-001：静态通道场景证据登记——passed = 可综合检查通过（无 error 级问题），
+        // channel=static；检查报告落盘 rtlqa/synthesis/ 作为证据（引擎校验证据文件必须真实存在），
+        // rtlHash 由 writeScenarioHits 自算，登记后重建验证态势；
+        // 仅在提供 scenarioIds 时登记，未提供时行为与现状完全一致
+        let scenarioHitsRegistered: string[] = []
+        if (params.scenarioIds) {
+          if (topModule) {
+            const synthReportDir = join(resolve(ctx.cwd), 'rtlqa', 'synthesis')
+            mkdirSync(synthReportDir, { recursive: true })
+            const synthReportJson = join(synthReportDir, 'synthesizability_report.json')
+            writeJsonAtomic(synthReportJson, {
+              version: 1, generatedAt: new Date().toISOString(), topModule,
+              rtlFiles, libraryFiles,
+              synthesizable: result.synthesizable, errorCount, warningCount,
+              issues: result.issues, cells: result.cells, wires: result.wires
+            })
+            const synthReportMd = join(synthReportDir, 'synthesizability_report.md')
+            writeFileSync(synthReportMd, report.join('\n'), 'utf-8')
+            const hits = writeScenarioHits(resolve(ctx.cwd), topModule, {
+              scenarioIds: params.scenarioIds as string[] | undefined,
+              passed: result.synthesizable,
+              channel: 'static',
+              tool: 'check_synthesizability',
+              rtlFiles,
+              evidence: [synthReportJson, synthReportMd]
+            })
+            scenarioHitsRegistered = hits.registered
+            report.push('', '### Scenario 证据登记', '')
+            if (hits.registered.length) report.push(`已自动登记 ${hits.registered.length} 个场景到 scenario_hits.json：${hits.registered.join('、')}`)
+            for (const warning of hits.warnings) report.push(`⚠️ ${warning}`)
+            const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+            report.push(rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次检查结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见')
+          } else {
+            report.push('', '### Scenario 证据登记', '', '⚠️ 未提供 topModule（自动识别无法定位 scenario_hits.json），跳过静态证据登记；请显式传 topModule 后重试')
+          }
+        }
+
         return {
           content: [{ type: 'text', text: report.join('\n') }],
           details: {
@@ -1095,7 +1218,8 @@ export default function (pi: ExtensionAPI): void {
             warningCount,
             cells: result.cells,
             wires: result.wires,
-            issues: result.issues.slice(0, MAX_ISSUES_IN_REPORT)
+            issues: result.issues.slice(0, MAX_ISSUES_IN_REPORT),
+            scenarioHits: scenarioHitsRegistered
           }
         }
       } catch (err) {
@@ -1454,7 +1578,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'run_simulation',
     label: 'Run Simulation',
-    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势（同时登记用例反向指针：单用例运行写精确 testName，多用例运行整组写 boundTestcases+boundBy=scenarioIds，供态势页绑定列追溯）；scenario_hits.json 由本工具独占写入，禁止手工编辑。purpose 声明运行用途：缺省 regression（回归证据）；mutation/probe 为隔离运行——不写 scenario_hits.json、不回写主 result.json 与主目录日志，结果落盘到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不计入回归判定与场景登记。',
+    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势（同时登记用例反向指针：单用例运行写精确 testName，多用例运行整组写 boundTestcases+boundBy=scenarioIds，供态势页绑定列追溯）；scenario_hits.json 由工具自动写入，禁止手工编辑。purpose 声明运行用途：缺省 regression（回归证据）；mutation/probe 为隔离运行——不写 scenario_hits.json、不回写主 result.json 与主目录日志，结果落盘到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不计入回归判定与场景登记。',
     promptSnippet: 'Run Cocotb or legacy C++ RTL simulation and collect artifacts',
     promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench. Pass scenarioIds from select_next_verification_batch so scenario hits are auto-registered; never hand-write scenario_hits.json. Mutation/fault-injection or exploratory runs MUST use purpose="mutation" (or "probe") so their expected-FAIL results stay isolated from regression evidence and scenario registration. When authoring tests, bind each test function to its TEST ID in verification/<tb>/test_manifest.json ({"<test函数名>": {"testId": "TEST-..."}}) — or at least put the TEST ID in the first line of the test docstring — so the verification posture panel can map results back to the plan.',
     parameters: Type.Object({
@@ -1692,6 +1816,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
             testNames,
             runTestcases,
             passed: result.passed,
+            channel: 'simulation',
+            tool: 'run_simulation',
             // 方案 C 批 1（§3.3）：FAIL 时失败摘要/指纹随登记落盘（与 diagnostic-control 同一次归一化产出）
             ...(result.passed ? {} : { failureSummary: failureSummary(result.log), failureSignature: failureSignature(result.log) }),
             rtlFiles,
@@ -1814,7 +1940,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'run_logic_synthesis',
     label: 'Run Logic Synthesis',
-    description: '调用 Yosys 完成逻辑综合，输出门级 Verilog 网表、JSON 网表、日志和 Markdown 报告。无 Liberty 时报告通用单元数；提供 Liberty 时执行工艺映射并尝试解析面积和 ABC 延迟。提供 scenarioIds 时综合成功即自动把 PASS 登记到 scenario_hits.json（PPA 条款的 SYNTH 阶段验收证据）并重建验证态势；scenario_hits.json 由工具独占写入，禁止手工编辑。',
+    description: '调用 Yosys 完成逻辑综合，输出门级 Verilog 网表、JSON 网表、日志和 Markdown 报告。无 Liberty 时报告通用单元数；提供 Liberty 时执行工艺映射并尝试解析面积和 ABC 延迟。提供 scenarioIds 时综合成功即自动把 PASS 登记到 scenario_hits.json（channel=synthesis，PPA 条款的 SYNTH 阶段验收证据）并重建验证态势；scenario_hits.json 由工具自动写入，禁止手工编辑。',
     promptSnippet: 'Run Yosys logic synthesis and generate netlist and reports',
     promptGuidelines: 'Pass SRAM blackbox views in libraryFiles, never behavioral/physical views. Report macro PPA separately from Yosys standard-cell area. In SYNTH phase, bind scenarioIds of intents anchored on synthesis-channel (PPA) clauses so acceptance evidence is auto-registered.',
     parameters: Type.Object({
@@ -1863,6 +1989,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         const hits = writeScenarioHits(resolve(ctx.cwd), params.topModule as string, {
           scenarioIds: params.scenarioIds as string[] | undefined,
           passed: true,
+          channel: 'synthesis',
+          tool: 'run_logic_synthesis',
           rtlFiles,
           evidence: [result.reportPath, result.netlistPath]
         })
@@ -1909,11 +2037,12 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'run_cdc_check',
     label: 'Run CDC Check',
-    description: '对工作区 RTL 代码进行时钟域交叉（Clock Domain Crossing）静态分析。检测多时钟域设计、跨域信号路径，并检查是否存在标准同步器（2-flop / async FIFO）。输出 CDC 报告与修复建议。',
+    description: '对工作区 RTL 代码进行时钟域交叉（Clock Domain Crossing）静态分析。检测多时钟域设计、跨域信号路径，并检查是否存在标准同步器（2-flop / async FIFO）。输出 CDC 报告与修复建议。提供 scenarioIds 时，把本次检查结果作为这些静态通道场景的执行证据登记到 scenario_hits.json（channel=static，PASS/FAIL 都登记，passed=无 error 级发现）并重建验证态势。',
     promptSnippet: 'Run clock domain crossing analysis on the RTL design',
-    promptGuidelines: 'Use run_cdc_check in multi-clock designs to find CDC issues. Always use 2-flop synchronizers for single-bit CDC and async FIFOs for multi-bit CDC.',
+    promptGuidelines: 'Use run_cdc_check in multi-clock designs to find CDC issues. Always use 2-flop synchronizers for single-bit CDC and async FIFOs for multi-bit CDC. For batches from select_next_verification_batch whose scenarios are static-channel (method=static), pass their scenarioIds so the check result is registered as scenario execution evidence.',
     parameters: Type.Object({
-      directory: Type.Optional(Type.String({ description: '扫描目录（缺省为工作区 rtl/）' }))
+      directory: Type.Optional(Type.String({ description: '扫描目录（缺省为工作区 rtl/）' })),
+      scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本次检查定向闭环的静态通道场景 ID；提供时把本次检查结果作为这些场景的执行证据登记到 scenario_hits.json（channel=static）' }))
     }),
     async execute(toolCallId, params, signal, onUpdate, ctx) {
       const dir = resolve(ctx.cwd, (params.directory as string | undefined) ?? 'rtl')
@@ -2020,6 +2149,40 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         report.push('4. **确认所有跨域路径都有明确同步策略**')
       }
 
+      // error 级发现集合：当前分析器仅收集 potentialViolations（尚无填充逻辑），
+      // 统一从该集合判定 passed，后续分析器升级 error 发现时登记口径不变
+      const errorFindings = potentialViolations
+
+      // BUG-VERIF-BATCH-001：静态通道场景证据登记——passed = 无 error 级发现，
+      // channel=static，证据=rtlqa/cdc/cdc_report.md，rtlHash 由 writeScenarioHits 自算，
+      // 登记后重建验证态势；仅在提供 scenarioIds 时登记，未提供时行为与现状完全一致
+      let scenarioHitsRegistered: string[] = []
+      if (params.scenarioIds) {
+        const cdcTopModule = readRtlInputs(ctx.cwd).topModule
+        if (cdcTopModule) {
+          const cdcReportDir = join(resolve(ctx.cwd), 'rtlqa', 'cdc')
+          mkdirSync(cdcReportDir, { recursive: true })
+          const cdcReportMd = join(cdcReportDir, 'cdc_report.md')
+          writeFileSync(cdcReportMd, report.join('\n'), 'utf-8')
+          const hits = writeScenarioHits(resolve(ctx.cwd), cdcTopModule, {
+            scenarioIds: params.scenarioIds as string[] | undefined,
+            passed: errorFindings.length === 0,
+            channel: 'static',
+            tool: 'run_cdc_check',
+            rtlFiles: files,
+            evidence: [cdcReportMd]
+          })
+          scenarioHitsRegistered = hits.registered
+          report.push('', '### Scenario 证据登记', '')
+          if (hits.registered.length) report.push(`已自动登记 ${hits.registered.length} 个场景到 scenario_hits.json：${hits.registered.join('、')}`)
+          for (const warning of hits.warnings) report.push(`⚠️ ${warning}`)
+          const rebuildError = rebuildVerificationPosture(resolve(ctx.cwd))
+          report.push(rebuildError ? `⚠️ 态势快照自动重建失败（不影响本次检查结果）：${rebuildError}` : '态势快照已自动重建，验证态势页刷新即可见')
+        } else {
+          report.push('', '### Scenario 证据登记', '', '⚠️ rtl/design.json 未声明顶层模块，无法定位 scenario_hits.json，跳过静态证据登记（请在 design.json 补 topModule 后重试）')
+        }
+      }
+
       return {
         content: [{ type: 'text', text: report.join('\n') }],
         details: {
@@ -2028,7 +2191,8 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           clockCount: clockDomains.size,
           synchronizersFound: synchronizers.length,
           isMultiClock,
-          resets: [...resetSignals]
+          resets: [...resetSignals],
+          scenarioHits: scenarioHitsRegistered
         }
       }
     }

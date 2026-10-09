@@ -39,7 +39,7 @@ import { applyScenarioAvoidance, isDiagnosticStalled, isTransientSessionError, j
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixAuditRelativePath, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { appendRtlFixOutcome, readRtlFixOutcomeLedger } from './rtl-fix-outcome-ledger.ts'
-import { readScenarioLabels, readVerifLoopLedger, updateVerifLoopLedger, type VerifBatchLoopLedger } from './verif-loop-ledger.ts'
+import { readScenarioChannelSnapshot, readScenarioLabels, readVerifLoopLedger, updateVerifLoopLedger, type VerifBatchLoopLedger } from './verif-loop-ledger.ts'
 import {
   applyRunLoopBudgetOverrides,
   applyRunLoopPause,
@@ -1923,6 +1923,8 @@ argument-hint: "<模块名>"
     this.activeVerifBatches.set(projectId, session)
 
     let result: VerifBatchRunResult
+    // no-evidence 措辞按批内场景的 method 通道拆分（BUG-VERIF-BATCH-001 C2），供状态消息与 history reason 共用
+    let noEvidenceChannelReason = ''
     try {
       await session.client.waitReady()
       // 决策 5：批次会话显式继承 VERIF 阶段主会话的模型选择（AgentModelStore）
@@ -1976,7 +1978,17 @@ argument-hint: "<模块名>"
         this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 正常完成（证据齐）${trailingTransient}：${ids.join('、')}` }, sessionName)
         result = finish({ status: 'completed', verdict, circuitBreaker: null, errorMessage: null }, sessionName)
       } else if (breakJudgment.status === 'no-evidence') {
-        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} 会话正常结束但未取得执行证据（${verdict.reasons.join('；')}）：场景可能无需执行或会话为纯分析，记 no-evidence 并在本循环内延后重选：${ids.join('、')}` }, sessionName)
+        // 措辞按批内场景的 method 通道拆分（BUG-VERIF-BATCH-001 C2）：静态通道工具
+        // （lint/死逻辑/可综合性/CDC）仅在显式传 scenarioIds 时登记 scenario_hits——静态批
+        // 无证据说明会话未携带 scenarioIds 调用静态工具，给可操作的指引；其余（含混合批）
+        // 给"可能漏跑"告警口径。verdict 值保持 'no-evidence' 不变（渲染端兼容）；
+        // 注册表缺失/场景缺 method 字段按非静态处理（降级不丢告警强度）。
+        const channelSnapshot = readScenarioChannelSnapshot(workspace)
+        const staticChannelIds = ids.filter((id) => channelSnapshot.get(id)?.method === 'static')
+        noEvidenceChannelReason = staticChannelIds.length === ids.length
+          ? `该批为静态通道场景，静态工具未登记证据——批次会话应在 run_verible_lint/check_dead_logic/check_synthesizability/run_cdc_check 调用中携带 scenarioIds 才会登记：${ids.join('、')}`
+          : `会话正常结束但未登记执行证据，场景可能漏跑：${ids.join('、')}`
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${batchIndex} ${noEvidenceChannelReason}（${verdict.reasons.join('；')}），记 no-evidence 并在本循环内延后重选` }, sessionName)
         result = finish({ status: 'no-evidence', verdict, circuitBreaker: null, errorMessage: null }, sessionName)
       } else {
         const circuitBreaker = breakJudgment.circuitBreaker ?? '未知原因'
@@ -1996,7 +2008,7 @@ argument-hint: "<模块名>"
     const historyReason = result.status === 'completed'
       ? (result.verdict.reasons.length > 0 ? result.verdict.reasons.join('；') : '证据齐全：scenario_hits 已登记且 posture 已重建')
       : result.status === 'no-evidence'
-        ? `无执行证据（会话正常结束，场景可能无需执行）：${result.verdict.reasons.join('；') || '未知原因'}`
+        ? `无执行证据：${noEvidenceChannelReason || (result.verdict.reasons.join('；') || '未知原因')}`
         : (result.circuitBreaker ?? result.errorMessage ?? '未知原因')
     this.patchVerifLoopLedger(workspace, (ledger) => {
       // 历史条目沿用派发时的语义标签快照（不重新读注册表）：历史批次必须还原"当时"的语义，
@@ -2092,7 +2104,8 @@ argument-hint: "<模块名>"
       }
       // 4b：本循环内已延后（no-evidence）的场景不再选中——从本批滤除；全部待执行场景均被
       // 延后的情形自然走 exhausted 出口结束循环，不空转派发
-      const deferredIds = new Set((readVerifLoopLedger(workspace)?.deferredScenarioIds ?? []).map((id) => id.toUpperCase()))
+      // （deferredScenarioIds 为对象数组，取 .scenarioId；退役过滤在账本读取/写入时已做）
+      const deferredIds = new Set((readVerifLoopLedger(workspace)?.deferredScenarioIds ?? []).map((item) => item.scenarioId.toUpperCase()))
       const selectionExhaustedByDeferral = scenarioIds.length > 0 && deferredIds.size > 0
       if (deferredIds.size > 0) scenarioIds = scenarioIds.filter((id) => !deferredIds.has(id.trim().toUpperCase()))
       if (scenarioIds.length === 0) {
@@ -2114,14 +2127,29 @@ argument-hint: "<模块名>"
       batches.push(result)
       // 4b 无执行批次合法出口（三重闩锁之二实测）：no-evidence 不是故障——不熔断停止循环。
       // 批次场景记入 deferredScenarioIds（本循环内不再选中，见选批过滤），继续派发下一批；
-      // 批次拍按无进展处理，外层循环的 rule-stall 升级自然兜底
+      // 批次拍按无进展处理，外层循环的 rule-stall 升级自然兜底。
+      // 条目结构化为 { scenarioId, deferredAt, reason, batchIndex }（BUG-VERIF-BATCH-001 C3）：
+      // 带结算时间与理由，可审计"为什么延后"；已存在条目不覆盖（保留最早的 deferredAt），
+      // 已闭环（VERIFIED/WAIVED）场景由账本写入时的自动退役过滤，不重复记入。
+      // reason 与 runVerifBatch 的 no-evidence 判定同口径：按批内场景 method 通道拆分措辞
+      // （verdict 值保持 'no-evidence' 不变，渲染端兼容；注册表缺失/缺 method 按非静态处理）
       if (result.status === 'no-evidence') {
+        const channelSnapshot = readScenarioChannelSnapshot(workspace)
+        const staticIds = result.scenarioIds.filter((id) => channelSnapshot.get(id.toUpperCase())?.method === 'static')
+        const channelReason = staticIds.length === result.scenarioIds.length
+          ? `该批为静态通道场景，静态工具未登记证据——批次会话应在 run_verible_lint/check_dead_logic/check_synthesizability/run_cdc_check 调用中携带 scenarioIds 才会登记：${result.scenarioIds.join('、')}`
+          : `会话正常结束但未登记执行证据，场景可能漏跑：${result.scenarioIds.join('、')}`
         this.patchVerifLoopLedger(workspace, (ledger) => {
-          const existing = new Set(ledger.deferredScenarioIds ?? [])
-          for (const id of result.scenarioIds) existing.add(id.toUpperCase())
-          ledger.deferredScenarioIds = [...existing]
+          const existing = new Map((ledger.deferredScenarioIds ?? []).map((item) => [item.scenarioId, item]))
+          for (const id of result.scenarioIds) {
+            const scenarioId = id.toUpperCase()
+            if (!existing.has(scenarioId)) {
+              existing.set(scenarioId, { scenarioId, deferredAt: result.finishedAt, reason: `无执行证据：${channelReason}`, batchIndex: result.batchIndex })
+            }
+          }
+          ledger.deferredScenarioIds = [...existing.values()]
         })
-        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${result.sessionName} 无执行证据（场景可能无需执行/会话纯分析）：${result.scenarioIds.join('、')} 已记入延后队列，本循环不再选中，继续派发下一批` })
+        this.emit(projectId, { type: 'status', message: `VERIF 批次 ${result.sessionName} 无执行证据（${channelReason}）：${result.scenarioIds.join('、')} 已记入延后队列，本循环不再选中，继续派发下一批` })
         continue
       }
       if (result.status !== 'completed') {

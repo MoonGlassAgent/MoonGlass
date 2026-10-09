@@ -127,32 +127,38 @@ const structural = validateDecisionForApproval(structuralDecision, ledger.budget
 assert.equal(structural.ok, false)
 assert.equal(isBudgetExceededRejection(structural.reason), false, '结构类失败才终结提案')
 
-// ── C. verif-batch-loop.json：deferredScenarioIds 归一 + history 'no-evidence' verdict ──
+// ── C. verif-batch-loop.json：deferredScenarioIds 对象结构/归一/自动退役 + history 'no-evidence' verdict ──
 
-// C1. no-evidence 批次收尾：history verdict 记 'no-evidence'（新值合法往返）
+// C1. no-evidence 批次收尾：history verdict 记 'no-evidence'（新值合法往返；
+//     BUG-VERIF-BATCH-001 C2 后 reason 按 method 通道拆分措辞，verdict 值不变、渲染端兼容）
 updateVerifLoopLedger(workspace, (l) => {
   l.state = 'running'
-  l.history.unshift({ index: 1, scenarioIds: ['SCN-AAAAAAAA', 'SCN-BBBBBBBB'], verdict: 'no-evidence', reason: '无执行证据（会话正常结束，场景可能无需执行）：posture 未重建', settledAt: '2026-10-05T01:00:00.000Z' })
+  l.history.unshift({ index: 1, scenarioIds: ['SCN-AAAAAAAA', 'SCN-BBBBBBBB'], verdict: 'no-evidence', reason: '无执行证据：会话正常结束但未登记执行证据，场景可能漏跑：SCN-AAAAAAAA、SCN-BBBBBBBB', settledAt: '2026-10-05T01:00:00.000Z' })
 })
 let loop = readVerifLoopLedger(workspace)
 assert.equal(loop.history[0].verdict, 'no-evidence')
 
-// C2. deferred 累积（runVerifBatches no-evidence 分支口径）：大写去重追加
-updateVerifLoopLedger(workspace, (l) => {
-  const existing = new Set(l.deferredScenarioIds ?? [])
-  for (const id of ['SCN-AAAAAAAA', 'SCN-BBBBBBBB']) existing.add(id.toUpperCase())
-  l.deferredScenarioIds = [...existing]
+// C2. deferred 累积（runVerifBatches no-evidence 分支口径）：对象结构去重追加，保留最早 deferredAt
+const deferredEntry = (scenarioId, batchIndex) => ({
+  scenarioId,
+  deferredAt: `2026-10-08T11:${String(batchIndex).padStart(2, '0')}:00.000Z`,
+  reason: `无执行证据：批次 ${batchIndex}`,
+  batchIndex
 })
-updateVerifLoopLedger(workspace, (l) => {
-  const existing = new Set(l.deferredScenarioIds ?? [])
-  for (const id of ['SCN-AAAAAAAA', 'SCN-CCCCCCCC']) existing.add(id.toUpperCase())
-  l.deferredScenarioIds = [...existing]
-})
+for (const entry of [deferredEntry('SCN-AAAAAAAA', 1), deferredEntry('SCN-BBBBBBBB', 1), deferredEntry('SCN-AAAAAAAA', 2), deferredEntry('SCN-CCCCCCCC', 2)]) {
+  updateVerifLoopLedger(workspace, (l) => {
+    const existing = new Map((l.deferredScenarioIds ?? []).map((item) => [item.scenarioId, item]))
+    if (!existing.has(entry.scenarioId)) existing.set(entry.scenarioId, entry)
+    l.deferredScenarioIds = [...existing.values()]
+  })
+}
 loop = readVerifLoopLedger(workspace)
-assert.deepEqual(loop.deferredScenarioIds, ['SCN-AAAAAAAA', 'SCN-BBBBBBBB', 'SCN-CCCCCCCC'], 'deferred 累积去重')
+assert.deepEqual(loop.deferredScenarioIds.map((item) => item.scenarioId), ['SCN-AAAAAAAA', 'SCN-BBBBBBBB', 'SCN-CCCCCCCC'], 'deferred 累积去重（对象结构）')
+assert.equal(loop.deferredScenarioIds[0].batchIndex, 1, '重复 defer 保留最早批次的 batchIndex/deferredAt')
+assert.equal(loop.deferredScenarioIds[0].reason, '无执行证据：批次 1', 'reason 元数据随条目保留（可审计）')
 
-// C3. 本轮不再选中：选批结果按 deferred 过滤（runVerifBatches 选批过滤口径）
-const deferredSet = new Set((readVerifLoopLedger(workspace)?.deferredScenarioIds ?? []).map((id) => id.toUpperCase()))
+// C3. 本轮不再选中：选批结果按 deferred 过滤（runVerifBatches 选批过滤口径：读 .scenarioId）
+const deferredSet = new Set((readVerifLoopLedger(workspace)?.deferredScenarioIds ?? []).map((item) => item.scenarioId.toUpperCase()))
 const selected = ['SCN-AAAAAAAA', 'SCN-CCCCCCCC', 'SCN-DDDDDDDD']
 assert.deepEqual(selected.filter((id) => !deferredSet.has(id.trim().toUpperCase())), ['SCN-DDDDDDDD'], '已延后场景本循环内不再选中')
 const allDeferred = ['SCN-AAAAAAAA', 'SCN-CCCCCCCC']
@@ -182,4 +188,26 @@ assert.equal(legacy.history[1].verdict, 'circuit-broken', '未知 verdict 归一
 writeFileSync(verifLoopLedgerPath(workspace), JSON.stringify({ state: 'running', deferredScenarioIds: 'SCN-Z' }), 'utf-8')
 assert.equal(readVerifLoopLedger(workspace).deferredScenarioIds, undefined)
 
-console.log('verif-batch-no-evidence-smoke: OK（no-evidence 判空路径 + deferred 累积/过滤/重置/归一 + decide 人工值守手势三维预算归零开窗豁免）')
+// C6. 旧账本裸 string[] 归一为对象数组（BUG-VERIF-BATCH-001 C3）：元数据缺省空、大写去重
+writeFileSync(verifLoopLedgerPath(workspace), JSON.stringify({ state: 'running', deferredScenarioIds: ['SCN-aaaaaaaa', 'SCN-BBBBBBBB', 'SCN-aaaaaaaa'] }), 'utf-8')
+assert.deepEqual(readVerifLoopLedger(workspace).deferredScenarioIds, [
+  { scenarioId: 'SCN-AAAAAAAA', deferredAt: '', reason: '', batchIndex: null },
+  { scenarioId: 'SCN-BBBBBBBB', deferredAt: '', reason: '', batchIndex: null }
+], '裸字符串归一为对象（deferredAt/reason 空、batchIndex null）')
+
+// C7. 自动退役（BUG-VERIF-BATCH-001 C3）：注册表 status=VERIFIED/WAIVED 的场景不再滞留延后队列
+mkdirSync(join(workspace, 'verification', 'intelligence'), { recursive: true })
+writeFileSync(join(workspace, 'verification', 'intelligence', 'scenario-registry.json'), JSON.stringify({
+  scenarios: [
+    { id: 'SCN-AAAAAAAA', title: '已闭环', status: 'VERIFIED', method: 'static' },
+    { id: 'SCN-BBBBBBBB', title: '仍开放', status: 'OPEN', method: 'simulation' }
+  ]
+}), 'utf-8')
+writeFileSync(verifLoopLedgerPath(workspace), JSON.stringify({ state: 'running', deferredScenarioIds: ['SCN-AAAAAAAA', 'SCN-BBBBBBBB'] }), 'utf-8')
+assert.deepEqual(readVerifLoopLedger(workspace).deferredScenarioIds.map((item) => item.scenarioId), ['SCN-BBBBBBBB'],
+  'VERIFIED 场景读取时自动退役（用户报告案例：SCN-F6539D01 已闭环但 deferred 残留）')
+updateVerifLoopLedger(workspace, (l) => { l.state = 'completed' })
+assert.deepEqual(readVerifLoopLedger(workspace).deferredScenarioIds.map((item) => item.scenarioId), ['SCN-BBBBBBBB'],
+  '写入路径（批次结算后）同样过滤已退役条目')
+
+console.log('verif-batch-no-evidence-smoke: OK（no-evidence 判空路径 + deferred 对象结构/累积/过滤/重置/旧账本归一/自动退役 + decide 人工值守手势三维预算归零开窗豁免）')

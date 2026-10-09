@@ -47,6 +47,7 @@ import type {
   SpecClauseMapping,
   SpecClauseStatus,
   SpecClauseChannel,
+  ScenarioHitChannel,
   SpecMappingMatrix,
   ScenarioCluster,
   ReclusterSuggestion,
@@ -1606,6 +1607,8 @@ interface ScenarioHit {
   failureSummary?: string
   failureSignature?: string
   observedAt: number
+  /** 证据通道（BUG-VERIF-BATCH-001 §3.4）：scenario_hits.json 条目携带；旧数据无此字段按 'simulation' 归一 */
+  channel: ScenarioHitChannel
 }
 
 function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, ScenarioHit> {
@@ -1613,7 +1616,7 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, S
   for (const file of walk(join(workspace, 'verification', 'results'), (path) => basename(path) === 'scenario_hits.json')) {
     try {
       const observedAt = statSync(file).mtimeMs
-      const data = JSON.parse(readFileSync(file, 'utf-8')) as { rtlHash?: string; scenarios?: Array<{ id?: string; status?: ScenarioStatus; reached?: boolean; passed?: boolean; assertionPassed?: boolean; reachCount?: number; coverageDelta?: Record<string, number>; evidence?: string[]; rtlHash?: string; failureSummary?: string; failureSignature?: string }> }
+      const data = JSON.parse(readFileSync(file, 'utf-8')) as { rtlHash?: string; scenarios?: Array<{ id?: string; status?: ScenarioStatus; channel?: string; reached?: boolean; passed?: boolean; assertionPassed?: boolean; reachCount?: number; coverageDelta?: Record<string, number>; evidence?: string[]; rtlHash?: string; failureSummary?: string; failureSignature?: string }> }
       for (const item of data.scenarios ?? []) {
         if (!item.id) continue
         const evidence = (item.evidence ?? []).map((path) => resolve(dirname(file), path))
@@ -1622,8 +1625,12 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, S
         const status = ['VERIFIED', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE'].includes(requestedStatus) && validEvidence.length === 0
           ? 'PARTIAL'
           : requestedStatus
+        // BUG-VERIF-BATCH-001 §3.4：channel 读取口径——只认契约四值，其余（含旧数据缺失）一律归一 'simulation'
+        const channel: ScenarioHitChannel = item.channel === 'static' || item.channel === 'synthesis' || item.channel === 'formal' ? item.channel : 'simulation'
         // 方案 C 批 1（§3.3）：failureSummary/failureSignature 仅透传（旧数据无字段则缺省），不进 status 派生
-        hits.set(item.id, { status, evidence: [relative(workspace, file), ...validEvidence.map((path) => relative(workspace, path))], reachCount: Number(item.reachCount ?? (item.reached ? 1 : 0)), assertionPassed: item.assertionPassed ?? item.passed, coverageDelta: Object.fromEntries(Object.entries(item.coverageDelta ?? {}).filter(([, value]) => typeof value === 'number')), rtlHash: item.rtlHash ?? data.rtlHash, observedAt, ...(typeof item.failureSummary === 'string' && item.failureSummary ? { failureSummary: item.failureSummary } : {}), ...(typeof item.failureSignature === 'string' && item.failureSignature ? { failureSignature: item.failureSignature } : {}) })
+        // BUG-VERIF-BATCH-001 §3.4 口径：hits 为 Map<id, 单条>，同一 scenarioId 后写覆盖先写——
+        // 静态场景先登记 sim hit、后登记 static hit 时，最终只剩 static 那条（最新登记决定通道）。
+        hits.set(item.id, { status, evidence: [relative(workspace, file), ...validEvidence.map((path) => relative(workspace, path))], reachCount: Number(item.reachCount ?? (item.reached ? 1 : 0)), assertionPassed: item.assertionPassed ?? item.passed, coverageDelta: Object.fromEntries(Object.entries(item.coverageDelta ?? {}).filter(([, value]) => typeof value === 'number')), rtlHash: item.rtlHash ?? data.rtlHash, observedAt, channel, ...(typeof item.failureSummary === 'string' && item.failureSummary ? { failureSummary: item.failureSummary } : {}), ...(typeof item.failureSignature === 'string' && item.failureSignature ? { failureSignature: item.failureSignature } : {}) })
       }
     } catch { /* 无效反馈由证据审查报告处理 */ }
   }
@@ -1641,7 +1648,7 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, S
     if (existing && (!decisive || stale)) continue
     let observedAt = existing?.observedAt ?? 0
     try { observedAt = statSync(result.resultFile).mtimeMs } catch { /* 结果文件不可读时沿用已有时间 */ }
-    hits.set(result.scenarioId, { status, evidence: [...new Set([...(existing?.evidence ?? []), result.resultFile, ...result.propertyFiles, ...result.traces])], reachCount: result.outcome === 'COVERED' || result.outcome === 'PROVEN' ? Math.max(1, existing?.reachCount ?? 0) : existing?.reachCount ?? 0, assertionPassed: result.outcome === 'COUNTEREXAMPLE' ? false : result.outcome === 'PROVEN' ? true : existing?.assertionPassed, coverageDelta: existing?.coverageDelta ?? {}, rtlHash: result.rtlHash ?? existing?.rtlHash, observedAt })
+    hits.set(result.scenarioId, { status, evidence: [...new Set([...(existing?.evidence ?? []), result.resultFile, ...result.propertyFiles, ...result.traces])], reachCount: result.outcome === 'COVERED' || result.outcome === 'PROVEN' ? Math.max(1, existing?.reachCount ?? 0) : existing?.reachCount ?? 0, assertionPassed: result.outcome === 'COUNTEREXAMPLE' ? false : result.outcome === 'PROVEN' ? true : existing?.assertionPassed, coverageDelta: existing?.coverageDelta ?? {}, rtlHash: result.rtlHash ?? existing?.rtlHash, observedAt, channel: 'formal' })
   }
   return hits
 }
@@ -1650,11 +1657,31 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, S
 const EXECUTION_DERIVED_STATUS: ScenarioStatus[] = ['VERIFIED', 'FAILED', 'REACHED', 'NOT_REACHED', 'PARTIAL', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE']
 
 /**
+ * BUG-VERIF-BATCH-001 §3.4 场景级闭环通道匹配：
+ * method='static' 的场景只认 channel='static' 的 hit；通道不匹配的 hit 对该场景视同无 hit——
+ * 既不能借无关仿真 hit 把静态场景抬升为 VERIFIED/PASS，也不应以无关 FAIL 污染其状态，
+ * evidence/failureSummary/failureSignature 透传一并跳过（保持语义干净）。
+ * method 为 'simulation'/'formal-candidate' 或缺省的场景维持现状：任何 channel 的 hit 都参与派生。
+ * 注：hits 是 Map<id, 单条>（同一 scenarioId 后写覆盖先写），静态场景先登记 sim hit、后登记
+ * static hit 时 Map 中只剩 static 那条——最新登记决定通道，正是本口径期望的语义（合并结构不改）。
+ */
+function scenarioHitForMethod(method: VerificationScenario['method'], scenarioId: string, hits: Map<string, ScenarioHit>): ScenarioHit | undefined {
+  const hit = hits.get(scenarioId)
+  if (!hit) return undefined
+  if (method === 'static' && hit.channel !== 'static') return undefined
+  return hit
+}
+
+function scenarioHitFor(item: VerificationScenario, hits: Map<string, ScenarioHit>): ScenarioHit | undefined {
+  return scenarioHitForMethod(item.method, item.id, hits)
+}
+
+/**
  * 用最新 hit 证据刷新上一轮回存场景的状态（AGENT_INTENT 保留与 CLAUSE_DERIVED 幂等合并共用）：
  * 状态合并口径 = hit 证据优先于上一轮状态，证据新鲜度按 rtlHash 判定。
  */
 function refreshScenarioWithHits(item: VerificationScenario, hits: ReturnType<typeof scenarioHits>, rtlHash: string): VerificationScenario {
-  const hit = hits.get(item.id)
+  const hit = scenarioHitFor(item, hits)
   // 规格裁决与执行事实分开表达（2026-10-05）：recordScenarioAdjudication 写入的非执行派生状态
   // 带 adjudicatedAt 时间戳。该裁决若晚于证据落盘时间，则裁决结论生效——历史 hit 仍保留其执行
   // 事实（evidence/failureSummary 照常透传，失败不被涂改），但不得回写覆盖裁决状态。
@@ -1757,7 +1784,9 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
     const stableKey = `${risk.taxonomyId}\0${risk.object}\0${risk.features.sort().join(',')}`
     const id = `SCN-${createHash('sha1').update(stableKey).digest('hex').slice(0, 8).toUpperCase()}`
     const previousItem = previousById.get(id)
-    const hit = hits.get(id)
+    const method = nway ? 'formal-candidate' as const : rule.method
+    // BUG-VERIF-BATCH-001 §3.4：场景级闭环统一走通道匹配口径（R10 等 static 风险规则候选同样只认 static 通道 hit）
+    const hit = scenarioHitForMethod(method, id, hits)
     const requirementIds = requirements.requirements.filter((item) => item.features.some((feature) => risk.features.includes(feature))).map((item) => item.id)
     const criticality = requirements.requirements.some((item) => requirementIds.includes(item.id) && item.priority === 'P0') ? 1 : requirementIds.length > 0 ? 0.8 : 0.6
     let status = hit?.status ?? previousItem?.status ?? (requirementIds.length === 0 ? 'BLOCKED_BY_SPEC' : 'DISCOVERED')
@@ -1775,7 +1804,7 @@ function buildScenarios(requirements: RequirementModel, structure: StructuralMod
     const evidence = [...new Set([risk.source.file, ...(hit?.evidence ?? previousItem?.evidence ?? [])])]
     const reachCount = hit?.reachCount ?? previousItem?.reachCount ?? 0
     const assertionPassed = hit?.assertionPassed ?? previousItem?.assertionPassed
-    const scenario = { id, origin: 'ENGINE_CANDIDATE' as const, wave: deriveWaveForEngineCandidate(nway ? 'formal-candidate' : rule.method), topic: TAXONOMY_TOPICS[risk.taxonomyId], title: `${risk.title}: ${risk.features.join(' × ')}`, riskIds: [risk.id], requirementIds, rtlObjects: [risk.object], features: risk.features, trigger: nway ? risk.features.map((item) => `${item} 在同周期或相邻周期有效`) : rule.trigger, expected: nway ? ['这些共享信号的优先级与更新次数符合规格，无重复累加、丢失或错误裁决'] : rule.expected, method: nway ? 'formal-candidate' as const : rule.method, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash: structure.rtlHash, risk: risk.riskScore, interaction: risk.interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `结构规则 ${risk.taxonomyId} 命中 ${risk.object}；${risk.features.join('、')} 共享控制或时序语义。`, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? previousItem?.coverageDelta ?? {}, updatedAt: new Date().toISOString() } as VerificationScenario
+    const scenario = { id, origin: 'ENGINE_CANDIDATE' as const, wave: deriveWaveForEngineCandidate(method), topic: TAXONOMY_TOPICS[risk.taxonomyId], title: `${risk.title}: ${risk.features.join(' × ')}`, riskIds: [risk.id], requirementIds, rtlObjects: [risk.object], features: risk.features, trigger: nway ? risk.features.map((item) => `${item} 在同周期或相邻周期有效`) : rule.trigger, expected: nway ? ['这些共享信号的优先级与更新次数符合规格，无重复累加、丢失或错误裁决'] : rule.expected, method, status, state: scenarioState(status, evidence, reachCount, assertionPassed, freshness), rtlHash: structure.rtlHash, risk: risk.riskScore, interaction: risk.interaction, coverageGap, criticality, confidenceFactor, costFactor, priority, reason: `结构规则 ${risk.taxonomyId} 命中 ${risk.object}；${risk.features.join('、')} 共享控制或时序语义。`, evidence, reachCount, assertionPassed, coverageDelta: hit?.coverageDelta ?? previousItem?.coverageDelta ?? {}, updatedAt: new Date().toISOString() } as VerificationScenario
     scenario.coordinates = coordinatesFor(structure, scenario, risk)
     // 方案 C 批 1（§3.3）：失败摘要/指纹透传（hit 有记录时以 hit 为准，无 hit 保留上一轮值；不进状态派生）
     const failureSummary = hit ? hit.failureSummary : previousItem?.failureSummary
