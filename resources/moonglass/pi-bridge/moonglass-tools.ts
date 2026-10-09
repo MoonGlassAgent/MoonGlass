@@ -121,7 +121,28 @@ function writeJsonAtomic(path: string, value: unknown): void {
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf-8')
-  renameSync(temporary, path)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁）。
+  // 助手内嵌于本函数：scenario-hits/design-review-dispatch smoke 按花括号提取 writeJsonAtomic
+  // 拼装临时模块，顶层助手不在提取范围内会 ReferenceError（shim 已导入 renameSync）。
+  const renameWithRetry = (from: string, to: string, attempts = 5): void => {
+    const sleepMs = (ms: number): void => {
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+    }
+    let lastError: unknown
+    for (let attempt = 0; attempt < attempts; attempt++) {
+      try {
+        renameSync(from, to)
+        return
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException)?.code
+        if (code !== 'EPERM' && code !== 'EBUSY') throw error
+        lastError = error
+        sleepMs(100 * (attempt + 1))
+      }
+    }
+    throw lastError
+  }
+  renameWithRetry(temporary, path)
 }
 
 async function validatePythonTests(testDir: string, signal?: AbortSignal): Promise<{ ok: boolean; issues: string[] }> {
@@ -420,6 +441,64 @@ function appendExperienceNoteLedger(workspace: string, input: { text: string; ta
   }
   writeJsonAtomic(ledgerPath, { version: 1, generatedAt: record.createdAt, notes: [record, ...existing.filter((item) => item.id !== record.id)].slice(0, EXPERIENCE_NOTES_LIMIT) })
   return record
+}
+
+// ---- 设计评审左移（DESIGN-REVIEW-LEFT-SHIFT §4/§5/§8）：review-request.json 落盘 ----
+// 主进程侧消费/标记口径与 src/main/services/AgentService.ts 逐字一致（桥接目录无法 import 主进程模块）。
+
+/** 设计评审请求类型：arch-consistency=ARCH 出口一致性审查；rtl-semantic=RTL 出口语义审查 */
+const DESIGN_REVIEW_TYPES = ['arch-consistency', 'rtl-semantic'] as const
+
+/** 各类型发现清单的相对路径（§6 契约；报告 md 与清单同目录） */
+function designReviewFindingsRelPath(type: string): string {
+  return type === 'arch-consistency'
+    ? join('docs', '03_design', 'review-findings.json')
+    : join('rtlqa', 'review', 'review-findings.json')
+}
+
+/**
+ * 已完成审查轮数：读发现清单顶层 reviewRound（兼容多轮存储 rounds[] 长度）；清单缺失/损坏按 0 轮。
+ * 新请求的 round = 已完成轮数 + 1（幂等重复登记不重新计算、沿用原值）。
+ */
+function readDesignReviewCompletedRounds(workspace: string, type: string): number {
+  try {
+    const parsed = JSON.parse(readFileSync(join(workspace, designReviewFindingsRelPath(type)), 'utf-8')) as { reviewRound?: unknown; rounds?: unknown }
+    if (typeof parsed.reviewRound === 'number' && Number.isFinite(parsed.reviewRound)) return parsed.reviewRound
+    if (Array.isArray(parsed.rounds)) return parsed.rounds.length
+  } catch { /* 无清单 = 尚未完成任何一轮 */ }
+  return 0
+}
+
+/**
+ * 审查请求追加（原子写、幂等）：同 type 存在未消费请求时不重复追加（deduplicated=true 返回原记录）。
+ * 请求记录字段：type / scope（可选，审查重点自由描述）/ requestedAt / round。
+ * 导出以便 smoke 直接测试落盘与幂等逻辑。
+ */
+export function appendDesignReviewRequest(workspace: string, input: { type: string; scope?: string }) {
+  const type = String(input.type ?? '')
+  if (!(DESIGN_REVIEW_TYPES as readonly string[]).includes(type)) {
+    throw new Error(`非法 review 类型：${type || '（空）'}（仅支持 ${DESIGN_REVIEW_TYPES.join(' / ')}）`)
+  }
+  const path = join(workspace, 'reports', 'review-request.json')
+  const requests: Array<Record<string, unknown>> = []
+  try {
+    const parsed = JSON.parse(readFileSync(path, 'utf-8')) as { requests?: unknown }
+    if (Array.isArray(parsed.requests)) {
+      for (const item of parsed.requests) {
+        if (typeof item === 'object' && item !== null) requests.push(item as Record<string, unknown>)
+      }
+    }
+  } catch { /* 缺文件/损坏按空请求清单起步 */ }
+  const pending = requests.find((item) => item.type === type && item.consumed !== true)
+  if (pending) return { record: pending, deduplicated: true }
+  const record: Record<string, unknown> = {
+    type,
+    ...(typeof input.scope === 'string' && input.scope.trim() ? { scope: input.scope.trim() } : {}),
+    requestedAt: new Date().toISOString(),
+    round: readDesignReviewCompletedRounds(workspace, type) + 1
+  }
+  writeJsonAtomic(path, { version: 1, requests: [...requests, record] })
+  return { record, deduplicated: false }
 }
 
 // ============================================================
@@ -866,6 +945,41 @@ export default function (pi: ExtensionAPI): void {
           text: `MOONGLASS_DECISION_REQUEST:${JSON.stringify(request)}\n等待用户在 MoonGlass 决策卡中回答。不要自行替用户选择。`
         }],
         details: request
+      }
+    }
+  })
+
+  // ============================================================
+  // 工具 0.5: request_design_review — 设计评审请求登记（不自己审，独立审查会话执行）
+  // （DESIGN-REVIEW-LEFT-SHIFT §8；ARCH=arch-consistency / RTL=rtl-semantic）
+  // ============================================================
+  pi.registerTool({
+    name: 'request_design_review',
+    label: 'Request Design Review',
+    description: '登记设计评审请求（arch-consistency / rtl-semantic），原子写入 reports/review-request.json。本工具不执行审查——由 MoonGlass 派发独立审查会话执行（禁止实现会话自审，独立会话看不到实现会话的推理过程，只阅读产物）。同类型未消费请求幂等不重复追加；round 按已完成审查轮数 +1 自动计算。审查结果以报告与发现清单落盘。',
+    promptSnippet: 'Request an independent design review session after self-assessment passes (ARCH design docs complete, or RTL lint and dead-logic clean)',
+    promptGuidelines: 'ARCH 阶段设计文档完成、自评就绪后调用 type=arch-consistency：审查目标是需求-规格被设计文档覆盖实现（工艺/面积等 TBD 项明确排除）；RTL 阶段联合 Lint 与死逻辑检查通过后调用 type=rtl-semantic：审查目标是 RTL 与设计文档/规格的语义一致性（纯静态阅读，不跑仿真）。审查由独立会话执行、审查方式由审查者自由发挥（活动驱动，不条款化）；本工具只登记请求，scope 可自由描述希望审查的重点。报告与发现清单落盘后，按发现清单逐条处置发现。',
+    parameters: Type.Object({
+      type: Type.Union([Type.Literal('arch-consistency'), Type.Literal('rtl-semantic')], { description: '审查类型：arch-consistency=ARCH 出口需求-规格覆盖一致性；rtl-semantic=RTL 出口语义一致性' }),
+      scope: Type.Optional(Type.String({ description: '可选：审查重点自由描述（如最担心的模块/接口/场景），交给独立审查者参考' }))
+    }),
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      try {
+        const { record, deduplicated } = appendDesignReviewRequest(resolve(ctx.cwd), {
+          type: String(params.type),
+          scope: params.scope ? String(params.scope) : undefined
+        })
+        const type = String(record.type)
+        const findingsRel = designReviewFindingsRelPath(type).replace(/\\/g, '/')
+        const reportRel = type === 'arch-consistency'
+          ? 'docs/03_design/review-arch-consistency.md'
+          : 'rtlqa/review/semantic-review.md'
+        const text = deduplicated
+          ? `已存在未消费的 ${type} 审查请求（round ${String(record.round)}，请求于 ${String(record.requestedAt)}），本次调用不重复登记。系统将派发独立审查会话执行审查，审查结果以报告与发现清单落盘（${reportRel} / ${findingsRel}）。`
+          : `审查请求已登记（type=${type}，round ${String(record.round)}${typeof record.scope === 'string' && record.scope ? `，scope：${record.scope}` : ''}）。本工具不做审查——系统将派发独立审查会话执行审查（你看不到该会话的推理过程），审查结果以报告与发现清单落盘：${reportRel} 与 ${findingsRel}。请在审查报告出来后按发现清单逐条处置发现。`
+        return { content: [{ type: 'text', text }], details: { request: record, deduplicated }, isError: false }
+      } catch (err) {
+        return { content: [{ type: 'text', text: `审查请求登记被拒绝：${err instanceof Error ? err.message : String(err)}` }], details: {}, isError: true }
       }
     }
   })

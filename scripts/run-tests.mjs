@@ -45,7 +45,9 @@ const suites = {
     'scripts/clk-rst-comb-lint-smoke.mjs',
     'scripts/lint-rules-smoke.mjs',
     'scripts/dead-logic-smoke.mjs',
-    'scripts/artifact-drift-smoke.mjs'
+    'scripts/artifact-drift-smoke.mjs',
+    'scripts/design-review-smoke.mjs',
+    'scripts/design-review-dispatch-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

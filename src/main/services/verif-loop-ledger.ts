@@ -10,8 +10,9 @@
  * 保留终态，下次循环开始（running）覆盖。读取方一律做缺字段归一（version 演进预留）。
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { renameSyncWithRetry } from './atomic-write.ts'
 
 /**
  * 批次语义标签：批次里每个场景"在验证什么"的**派发时快照**。
@@ -324,7 +325,8 @@ export function writeVerifLoopLedger(workspace: string, ledger: VerifBatchLoopLe
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify({ ...ledger, version: 1, updatedAt: new Date().toISOString() }, null, 2), 'utf-8')
-  renameSync(temporary, path)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁，见 atomic-write.ts）
+  renameSyncWithRetry(temporary, path)
 }
 
 /**

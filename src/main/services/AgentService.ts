@@ -19,8 +19,9 @@
 
 import { app } from 'electron'
 import { randomUUID } from 'node:crypto'
-import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { copyFileSync, cpSync, existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { basename, dirname, join, resolve } from 'node:path'
+import { renameSyncWithRetry } from './atomic-write.ts'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound } from '@moonglass/verification-intelligence-engine'
 import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, ImageAttachment, IpLibraryRecord, Phase, ProjectSessionActivity, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict, VerifRunDecision, VerifRunLoopLedger, VerifRunLoopStartOptions } from '@shared/types'
@@ -292,6 +293,139 @@ const RUN_LOOP_TASK_TIMEOUT_MS = 60 * 60_000
 /** 暂停待人期间的证据轮询粒度（§5.2：恢复由证据变化触发，15s 轮询 verification/ mtime） */
 const RUN_LOOP_EVIDENCE_POLL_INTERVAL_MS = 15_000
 
+// ==================== 设计评审左移（片 B：request_design_review 监听与独立审查会话派发，§8） ====================
+// 纯函数模块级实现：pi 桥接侧落盘口径与本节逐字一致（桥接目录无法 import 主进程模块）；
+// 事件提取与 extractRunLoopDecisionProposal（decision-ledger.ts）同模式。
+
+/** review-request.json 相对路径（片 A/B 共享契约：{version:1, requests:[...]}） */
+const DESIGN_REVIEW_REQUEST_REL_PATH = join('reports', 'review-request.json')
+
+export interface DesignReviewDispatchRequest {
+  type: string
+  scope: string
+  round: number
+}
+
+/**
+ * 从 pi tool_execution_end 事件提取 request_design_review 登记结果（主进程侧唯一入口）：
+ * 工具出错（isError）、非本工具、details.request 缺失或 type 非法一律返回 null。
+ * 任何会话（前台/后台/任务）发起审查请求都经此入口识别。
+ */
+export function extractDesignReviewRequest(event: Record<string, unknown>): DesignReviewDispatchRequest | null {
+  if (event.type !== 'tool_execution_end') return null
+  if (Boolean(event.isError)) return null
+  if (String(event.toolName ?? '') !== 'request_design_review') return null
+  const result = (event.result ?? {}) as { details?: { request?: Record<string, unknown> } }
+  const request = result.details?.request
+  if (!request || typeof request !== 'object') return null
+  const type = String(request.type ?? '')
+  if (type !== 'arch-consistency' && type !== 'rtl-semantic') return null
+  const round = Number(request.round ?? 0)
+  return { type, scope: typeof request.scope === 'string' ? request.scope : '', round: Number.isFinite(round) && round > 0 ? Math.trunc(round) : 1 }
+}
+
+/** 读取 review-request.json 的 requests 数组；缺文件/损坏按空清单（与桥接侧读取口径一致）。 */
+function readDesignReviewRequestRecords(workspace: string): Array<Record<string, unknown>> {
+  try {
+    const parsed = JSON.parse(readFileSync(join(workspace, DESIGN_REVIEW_REQUEST_REL_PATH), 'utf-8')) as { requests?: unknown }
+    if (!Array.isArray(parsed.requests)) return []
+    return parsed.requests.filter((item): item is Record<string, unknown> => typeof item === 'object' && item !== null)
+  } catch {
+    return []
+  }
+}
+
+/** 原子写 review-request.json（临时文件 + rename，避免读到半截 JSON）。 */
+function writeDesignReviewRequestRecords(workspace: string, requests: Array<Record<string, unknown>>): void {
+  const path = join(workspace, DESIGN_REVIEW_REQUEST_REL_PATH)
+  mkdirSync(dirname(path), { recursive: true })
+  const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
+  writeFileSync(temporary, JSON.stringify({ version: 1, requests }, null, 2), 'utf-8')
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁，见 atomic-write.ts）。
+  // typeof 守卫：design-review-dispatch-smoke 按花括号提取本函数拼装临时模块，其 shim
+  // 无 atomic-write 导入（标识符未声明），守卫回退裸 renameSync；正常构建下恒走重试版。
+  if (typeof renameSyncWithRetry === 'function') renameSyncWithRetry(temporary, path)
+  else renameSync(temporary, path)
+}
+
+/**
+ * 审查会话 settle 后：把同类型最新一条未消费请求标记 consumed（带 settledAt / 会话名 / 模型身份）。
+ * 模型身份供交叉 review 建议与态势展示（§8：记录每轮 review 的 provider/model）。
+ * 找不到未消费请求返回 false（调用方按幂等重复结算处理）。
+ */
+export function markDesignReviewRequestConsumed(workspace: string, type: string, info: { sessionName: string; model: string; settledAt: string }): boolean {
+  const requests = readDesignReviewRequestRecords(workspace)
+  for (let index = requests.length - 1; index >= 0; index--) {
+    const record = requests[index]!
+    if (record.type !== type || record.consumed === true) continue
+    record.consumed = true
+    record.consumedAt = info.settledAt
+    record.reviewSession = info.sessionName
+    record.reviewModel = info.model
+    writeDesignReviewRequestRecords(workspace, requests)
+    return true
+  }
+  return false
+}
+
+/**
+ * 审查会话异常（派发失败 / 会话出错 / watchdog 熔断）：请求保持未消费（可被重新派发），
+ * 仅记 lastError 留痕，不静默吞。
+ */
+export function markDesignReviewRequestError(workspace: string, type: string, error: string, at = new Date().toISOString()): boolean {
+  const requests = readDesignReviewRequestRecords(workspace)
+  for (let index = requests.length - 1; index >= 0; index--) {
+    const record = requests[index]!
+    if (record.type !== type || record.consumed === true) continue
+    record.lastError = `${at}：${error}`
+    writeDesignReviewRequestRecords(workspace, requests)
+    return true
+  }
+  return false
+}
+
+export interface DesignReviewDispatchPlan {
+  phase: Phase
+  /** 会话名基（重名时追加时间戳，沿用 runRtlFixSession 做法） */
+  sessionNameBase: string
+  prompt: string
+  reportRelPath: string
+  findingsRelPath: string
+}
+
+/**
+ * 独立审查会话派发计划（纯函数，dispatch 与 smoke 共用）：
+ * 按类型定阶段/产物路径，并构造审查 prompt（身份独立性、目标单一、§6 产出契约、模型身份落盘）。
+ */
+export function buildDesignReviewDispatchPlan(input: { type: string; scope: string; round: number; model: string }): DesignReviewDispatchPlan {
+  const isArch = input.type === 'arch-consistency'
+  const phase: Phase = isArch ? 'ARCH' : 'RTL'
+  const reportRelPath = isArch ? join('docs', '03_design', 'review-arch-consistency.md') : join('rtlqa', 'review', 'semantic-review.md')
+  const findingsRelPath = isArch ? join('docs', '03_design', 'review-findings.json') : join('rtlqa', 'review', 'review-findings.json')
+  const goal = isArch
+    ? '目标单一：需求-规格（docs/02_requirements/ 全部文档）是否都被设计文档（docs/03_design/ 全部文档）覆盖实现。工艺/面积等 TBD 项明确排除，不作为发现。'
+    : '目标单一：rtl/ 全部 RTL 实现与设计文档（docs/03_design/）及规格（docs/02_requirements/）在语义上是否一致。纯静态阅读，不跑仿真。'
+  const scopeNote = input.scope.trim() ? `\n发起方附带的审查范围说明（自由文本，供你参考取舍，不构成条款）：\n${input.scope.trim()}\n` : ''
+  const prompt = [
+    '你是 MoonGlass 派发的独立设计审查者（设计评审左移，独立审查会话）。',
+    '',
+    '独立性：你的上下文是干净的——看不到实现会话的推理过程与对话历史，只能阅读工作区产物文件；禁止假设实现者的意图，一切以文件内容为准。',
+    `审查类型：${input.type}（第 ${input.round} 轮）。`,
+    goal,
+    `审查方式由你自由发挥（活动驱动，不条款化）：不规定检查清单与章节映射，怎么审由你决定；MoonGlass 只保证审查活动真实发生、发现被处置、证据可溯。明确不追求高覆盖率，拦截主要问题、可见的简单问题和可能的深层问题即可。${scopeNote}`,
+    '',
+    '产出契约（恰好两件，§6）：',
+    `1. 审查报告（Markdown）：${reportRelPath}`,
+    `2. 发现清单（JSON）：${findingsRelPath}，顶层 { version: 1, generatedAt, reviewRound: ${input.round}, model: "${input.model}" }；findings 数组每项恰好四个字段：描述、位置（rtl/文件:行号 或 docs/ 文档锚点，须真实可读）、严重度（major|minor）、处置——审查阶段一律填 pending（fixed/waived 由后续处置更新，不是你的职责）。发现没有 id 字段。`,
+    `发现清单的 model 字段必须填 "${input.model}"（当前审查会话实际 provider/model，已替你写入上方模板，原样保留）。`,
+    '多轮合并：若发现清单已存在历史内容，先读取旧清单再写——顶层 reviewRound 更新为本轮；此前各轮发现移入 rounds[]（每轮记录 model/generatedAt/该轮 findings）；旧发现的处置状态跨轮按「位置+描述」归一化键合并保留，不得丢弃已被 fixed/waived 的处置结论。',
+    '',
+    '边界：只允许写上述报告与发现清单两件产物；禁止修改 rtl/、docs/03_design/、docs/02_requirements/ 下的任何文件（发现的问题交由实现侧按正常路径处置，规格模糊的澄清要求实现侧回填规格文档）；审查完成、两件产物落盘后即结束回合，不要继续其他工作。',
+    ''
+  ].join('\n')
+  return { phase, sessionNameBase: `${phaseMainSessionName(phase)}--review-${input.type}`, prompt, reportRelPath, findingsRelPath }
+}
+
 export class AgentService implements MoonGlassService {
   readonly name = 'agent-service'
 
@@ -300,6 +434,8 @@ export class AgentService implements MoonGlassService {
   private pendingEnsures = new Map<string, Promise<AgentSessionInfo>>()
   /** 切走后仍在执行的会话进程，按项目和会话文件保存。 */
   private backgroundSessions = new Map<string, Map<string, PiSession>>()
+  /** 设计评审左移（§8）：每项目正在运行的独立审查会话（type → 会话名），并发守卫据此拒绝同类型重复派发 */
+  private activeDesignReviews = new Map<string, Map<string, string>>()
   /** 上一轮被应用退出中断的会话（start 时一次性消费标记文件，本轮内存保留供徽标展示） */
   private interruptedSessions: InterruptedSessionRecord[] = []
   private piBinPath = ''
@@ -948,6 +1084,19 @@ argument-hint: "<模块名>"
             type: 'status',
             message: `循环决策 ${decisionProposal.id} 已登记（${sourceLabel} / ${decisionProposal.trigger}，状态 ${decisionProposal.status}）：${decisionProposal.rationale}`
           }, session.activeSessionName)
+        }
+
+        // 设计评审左移（§8）：任何会话 request_design_review 登记成功 → 派发独立审查会话
+        // （后台平行会话，主会话保持前台；并发守卫防同类型重复派发）。
+        const reviewRequest = extractDesignReviewRequest(event)
+        if (reviewRequest) {
+          void this.dispatchDesignReviewSession(projectId, session, reviewRequest).catch((error) => {
+            console.warn('[agent-service] 设计审查会话派发失败', error)
+            this.emit(projectId, {
+              type: 'error',
+              message: `${reviewRequest.type} 审查会话派发失败：${error instanceof Error ? error.message : String(error)}`
+            }, session.activeSessionName)
+          })
         }
 
         if (event.type === 'agent_start') {
@@ -2606,6 +2755,147 @@ argument-hint: "<模块名>"
       type: 'status',
       message: `RTL 修复会话 ${sessionName} 判定 ${outcomeLabel}（${fix.scenarioId}）：${judgment.reason}。${judgment.outcome === 'FIXED' ? '可继续选批或安排回归。' : '请回验证会话继续诊断（在 root-causes.json 开新假设链）。'}`
     }, source.activeSessionName)
+  }
+
+  // ==================== 设计评审左移（片 B：独立审查会话派发，§8） ====================
+
+  /**
+   * 独立审查会话派发：任何会话经 request_design_review 登记请求后，由主进程派一个上下文干净的
+   * 全新会话执行审查（看不到实现会话的推理过程，只阅读产物）。生命周期沿用 runRtlFixSession 模式：
+   * 手写会话头（parentSession 血缘指向来源会话文件）→ 后台平行会话（主会话保持前台）→
+   * runBatchToSettled 执行审查 prompt 并等待 settle → 标记请求 consumed / lastError → dispose
+   * （JSONL 保留，可经会话列表只读回看）。
+   * 并发守卫：同项目同类型已有审查会话在跑则不重复派发（请求保持未消费，settle 后可再发起）。
+   * 失败处理：会话异常 → 请求保持未消费并记 lastError，不静默吞。
+   */
+  private async dispatchDesignReviewSession(projectId: string, source: PiSession, request: DesignReviewDispatchRequest): Promise<void> {
+    const project = this.projects.get(projectId)
+    if (!project) return
+    // 并发守卫：同项目同类型已有审查会话在跑则不重复派发
+    let active = this.activeDesignReviews.get(projectId)
+    if (active?.has(request.type)) {
+      this.emit(projectId, {
+        type: 'status',
+        message: `${request.type} 审查会话（${active.get(request.type)}）正在运行，本次请求不重复派发。`
+      }, source.activeSessionName)
+      return
+    }
+    const workspace = this.workspaceDir(projectId)
+    const failRequest = (error: string): void => {
+      try {
+        markDesignReviewRequestError(workspace, request.type, error)
+      } catch (markError) {
+        console.error('[agent-service] review-request.json lastError 落盘失败', markError)
+      }
+    }
+    if (this.readyProviders().length === 0) {
+      const message = '没有已启用且配置完成的模型服务，无法派发独立审查会话'
+      failRequest(message)
+      this.emit(projectId, { type: 'error', message: `${request.type} 审查请求已登记，但${message}。` }, source.activeSessionName)
+      return
+    }
+
+    // 派发计划（阶段/产物路径/审查 prompt 骨架）；模型选定后回填 model 再构造最终 prompt
+    const prePlan = buildDesignReviewDispatchPlan({ type: request.type, scope: request.scope, round: request.round, model: '' })
+    let sessionName = prePlan.sessionNameBase
+    let sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    if (existsSync(sessionFile)) {
+      sessionName = `${sessionName}-${Date.now().toString(36)}`
+      sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    }
+    const now = new Date().toISOString()
+    writeFileSync(sessionFile, [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: randomUUID(),
+        timestamp: now,
+        cwd: workspace,
+        // 会话血缘：指向发起审查请求的会话文件（pi 官方格式为会话文件路径）
+        parentSession: resolve(source.currentSessionFile)
+      }),
+      JSON.stringify({ type: 'session_info', id: randomUUID().slice(0, 8), parentId: null, timestamp: now, name: `设计审查 ${request.type} (${prePlan.phase})` })
+    ].join('\n') + '\n', 'utf-8')
+
+    // 与 runRtlFixSession 相同：审查会话作为后台平行会话运行，主会话保持前台
+    const previousActive = this.sessions.get(projectId)
+    let session: PiSession
+    try {
+      session = this.spawnSession(projectId, prePlan.phase, project.name, sessionFile)
+    } catch (error) {
+      rmSync(sessionFile, { force: true })
+      const message = error instanceof Error ? error.message : String(error)
+      failRequest(`审查会话进程启动失败：${message}`)
+      throw error
+    }
+    this.sessions.delete(projectId)
+    if (previousActive) this.sessions.set(projectId, previousActive)
+    this.backgroundFor(projectId).set(resolve(sessionFile), session)
+    if (!active) {
+      active = new Map<string, string>()
+      this.activeDesignReviews.set(projectId, active)
+    }
+    active.set(request.type, sessionName)
+
+    try {
+      await session.client.waitReady()
+      // 模型继承：优先发起会话的当前模型选择（交叉 review 建议用户换模型后再发起），
+      // 失效时回落阶段主会话模型，最终回落 providers[0]；模型身份随 consumed 落盘供态势展示
+      const providers = this.readyProviders()
+      const inherited = source.selectedModel
+        ?? this.modelStore.get(projectId, phaseMainSessionName(prePlan.phase))
+      const selection = inherited && providers.some((p) => p.id === inherited.providerId && p.models.includes(inherited.modelId))
+        ? inherited
+        : { providerId: providers[0]!.id, modelId: providers[0]!.models[0]! }
+      await this.setModelInternal(session, selection.providerId, selection.modelId)
+      this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
+      session.ready = true
+
+      const model = `${selection.providerId}/${selection.modelId}`
+      const plan = buildDesignReviewDispatchPlan({ type: request.type, scope: request.scope, round: request.round, model })
+      this.emit(projectId, {
+        type: 'status',
+        message: `独立审查会话 ${sessionName} 已派发（${request.type} 第 ${request.round} 轮，模型 ${model}）：审查报告 ${plan.reportRelPath.replace(/\\/g, '/')} + 发现清单 ${plan.findingsRelPath.replace(/\\/g, '/')}。`
+      }, source.activeSessionName)
+      const settledAt = new Date().toISOString()
+      const run = await this.runBatchToSettled(session, plan.prompt, RUN_LOOP_TASK_TIMEOUT_MS)
+      if (run.errorMessage) {
+        failRequest(`审查会话异常：${run.errorMessage}`)
+        this.emit(projectId, { type: 'error', message: `${request.type} 审查会话异常：${run.errorMessage}（请求保持未消费，可重新发起）` }, source.activeSessionName)
+      } else if (run.watchdogAbort) {
+        failRequest(`审查会话被 watchdog 熔断：${run.watchdogAbort}`)
+        this.emit(projectId, { type: 'error', message: `${request.type} 审查会话被 watchdog 熔断：${run.watchdogAbort}（请求保持未消费，可重新发起）` }, source.activeSessionName)
+      } else {
+        // settle 后标记该请求 consumed（带 settledAt / 会话名 / 模型身份）
+        try {
+          markDesignReviewRequestConsumed(workspace, request.type, { sessionName, model, settledAt })
+        } catch (markError) {
+          console.error('[agent-service] review-request.json consumed 标记落盘失败', markError)
+        }
+        this.emit(projectId, {
+          type: 'status',
+          message: `${request.type} 独立审查会话 ${sessionName} 已完成（模型 ${model}）：报告 ${plan.reportRelPath.replace(/\\/g, '/')}，发现清单 ${plan.findingsRelPath.replace(/\\/g, '/')}；请按发现清单逐条处置发现。`
+        }, source.activeSessionName)
+      }
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      failRequest(`审查会话执行失败：${message}`)
+      this.emit(projectId, { type: 'error', message: `${request.type} 审查会话执行失败：${message}（请求保持未消费，可重新发起）` }, source.activeSessionName)
+    } finally {
+      // 审查会话收尾：释放进程资源（JSONL 保留）；并发守卫解除
+      const background = this.backgroundSessions.get(projectId)
+      const key = resolve(session.currentSessionFile)
+      if (background?.get(key) === session) {
+        background.delete(key)
+        if (background.size === 0) this.backgroundSessions.delete(projectId)
+      }
+      session.client.dispose()
+      const activeMap = this.activeDesignReviews.get(projectId)
+      if (activeMap) {
+        if (activeMap.get(request.type) === sessionName) activeMap.delete(request.type)
+        if (activeMap.size === 0) this.activeDesignReviews.delete(projectId)
+      }
+    }
   }
 
   // ==================== 验证运行循环（VERIF-RUN-LOOP 批 2/批 3：外层循环，设计文档 §3.2/§4/§5/§6/§9.1/§9.2/§10） ====================

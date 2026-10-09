@@ -11,8 +11,9 @@
  * 决策层升级触发与 decide 迁移的纯函数部分。
  */
 
-import { mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync, type Dirent } from 'node:fs'
+import { mkdirSync, readdirSync, readFileSync, statSync, writeFileSync, type Dirent } from 'node:fs'
 import { dirname, join, relative, sep } from 'node:path'
+import { renameSyncWithRetry } from './atomic-write.ts'
 import type {
   VerifRunClosurePlan,
   VerifRunLoopBeatEntry,
@@ -184,7 +185,8 @@ export function writeVerifRunLoopLedger(workspace: string, ledger: VerifRunLoopL
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify({ ...ledger, version: 1, updatedAt: new Date().toISOString() }, null, 2), 'utf-8')
-  renameSync(temporary, path)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁，见 atomic-write.ts）
+  renameSyncWithRetry(temporary, path)
 }
 
 // ==================== 代际守卫（僵尸循环：内存句柄活着但账本被删/终态/被新循环取代） ====================

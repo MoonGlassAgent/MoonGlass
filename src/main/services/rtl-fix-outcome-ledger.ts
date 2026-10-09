@@ -10,8 +10,9 @@
  * 判定来源：deliverRtlFixOutcome 送达 judgeRtlFixOutcome 判定时写入。
  */
 
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { renameSyncWithRetry } from './atomic-write.ts'
 
 export type RtlFixOutcomeJudgment = 'FIXED' | 'STILL_FAIL' | 'UNKNOWN'
 
@@ -85,6 +86,7 @@ export function appendRtlFixOutcome(workspace: string, record: RtlFixOutcomeReco
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify(ledger, null, 2), 'utf-8')
-  renameSync(temporary, path)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁，见 atomic-write.ts）
+  renameSyncWithRetry(temporary, path)
   return ledger
 }

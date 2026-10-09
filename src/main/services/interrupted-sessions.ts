@@ -8,8 +8,9 @@
  * 在原会话继续输入即可续跑。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { renameSyncWithRetry } from './atomic-write.ts'
 import type { Phase } from '@shared/types'
 
 /** 单个被应用退出中断的会话记录 */
@@ -31,7 +32,8 @@ export function writeInterruptedSessions(filePath: string, records: InterruptedS
   mkdirSync(dirname(filePath), { recursive: true })
   const tmpPath = `${filePath}.tmp`
   writeFileSync(tmpPath, JSON.stringify(records, null, 2), 'utf-8')
-  renameSync(tmpPath, filePath)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁，见 atomic-write.ts）
+  renameSyncWithRetry(tmpPath, filePath)
 }
 
 /**

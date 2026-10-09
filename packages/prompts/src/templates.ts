@@ -88,8 +88,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'ARCH',
     injectMode: 'prepend',
-    version: '2.0.0',
-    updatedAt: '2026-07-30',
+    version: '2.1.0',
+    updatedAt: '2026-10-09',
     content: `当前处于【架构设计】阶段。
 
 你的任务是：
@@ -100,12 +100,14 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 5. 使用 doc-repository 技能输出 docs/03_design/architecture.md、microarchitecture.md、clock_reset.md
 6. 使用 verification-planning 技能建立 docs/04_verification/ 下的验证、测试和覆盖率计划
 7. 识别 SRAM/ROM/寄存器堆等存储需求；若依赖未指定的 memory compiler 或厂商宏，必须在 architecture.md 中记录宏组织、容量、端口、时序假设、面积/功耗估算口径和待替换物理宏
+8. 设计文档完成、自评就绪后调用 request_design_review(type='arch-consistency', scope=说明你认为最值得审查的重点)；设计评审是 ARCH 出口必经活动——由系统派发的独立审查会话执行（你看不到其推理过程），审查方式由审查者自由发挥，本工具不自己审。审查报告（docs/03_design/review-arch-consistency.md）与发现清单（docs/03_design/review-findings.json）落盘后，按发现清单逐条处置发现，处置只有 fixed / waived / pending 三态；规格模糊的澄清必须回填规格文档（docs/02_requirements/），不在会话里飘散
 
 约束：
 - 必须基于需求-规格定义阶段冻结的接口与模块规格
 - 框图必须使用 Mermaid 或 ASCII 格式
 - 必须标注关键路径与瓶颈分析
-- 时钟域划分必须清晰标注`
+- 时钟域划分必须清晰标注
+- 设计评审是必经活动但审查方式由审查者自由发挥；发现处置只有 fixed / waived / pending 三态；规格模糊的澄清回填规格文档`
   },
 
   RTL: {
@@ -113,8 +115,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'RTL',
     injectMode: 'prepend',
-    version: '2.1.0',
-    updatedAt: '2026-09-28',
+    version: '2.2.0',
+    updatedAt: '2026-10-09',
     content: `当前处于【RTL 开发】阶段。
 
 你的任务是：
@@ -152,6 +154,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 - 时序 always 一律使用非阻塞赋值 <=（for 循环变量除外），组合 always 一律使用阻塞赋值 =；可综合 RTL 禁用 ===/!==（case equality，X 语义仿真/综合不一致）；组合逻辑必须完整赋值避免推断锁存器（LATCH）；同一信号不得同时作同步与异步复位；自赋值（q <= q 保持态除外）需确认意图
 - 普通 part-select 的左右边界必须是常量表达式；动态选择使用 Verilog-2001 合法的 indexed part-select（base +: WIDTH 或 base -: WIDTH），其中 WIDTH 必须为常量
 - 联合 Lint/elaboration 通过后必须运行 check_dead_logic 做无驱动/无负载（死逻辑）检查：此类死代码留着会污染验证回归，应在本阶段优先处理。internal 项（纯内部死代码）直接清理；spec-anchored 项（信号名命中 docs/03_design 的 interface_spec/register_map/architecture/microarchitecture 或属顶层端口）处置涉及架构契约，必须逐项调用 request_user_decision 请工程师裁决（删除 / 保留并说明理由 / 标注 TBD），禁止 Agent 自行删除；裁决结果写回 rtlqa/lint/dead_logic_report.json 的 adjudications（key 为 "<模块>.<信号>"），裁决为删除时先同步更新对应架构文档再改 RTL；阶段完成前不得存在未裁决的 spec-anchored 项
+- 联合 Lint/elaboration 与死逻辑检查通过后，调用 request_design_review(type='rtl-semantic')：语义一致性审查是 RTL 出口必经活动——由系统派发的独立审查会话执行（你看不到其推理过程），纯静态阅读比对 RTL 与设计文档/规格、不跑仿真，审查方式由审查者自由发挥，本工具不自己审。审查报告（rtlqa/review/semantic-review.md）与发现清单（rtlqa/review/review-findings.json）落盘后，按发现清单逐条处置发现，处置只有 fixed / waived / pending 三态；规格模糊的澄清必须回填规格文档（docs/02_requirements/），不在会话里飘散
 - 必须通过可综合性检查`
   },
 

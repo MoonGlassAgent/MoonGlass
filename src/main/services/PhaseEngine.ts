@@ -24,12 +24,19 @@ import {
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import { gateChecks } from '../data/schema/moonglass.ts'
 import type { DbService } from './DbService.ts'
+import {
+  ARCH_REVIEW_FINDINGS_PATH,
+  RTL_REVIEW_FINDINGS_PATH,
+  pendingMajorCount,
+  readDesignReviewFindings,
+  reviewRoundCount
+} from './design-review.ts'
 
 /** 阶段跳转门禁规则表（规格书 §3.1） */
 export const GATE_RULES: readonly GateRule[] = [
   { from: 'REQ_SPEC', to: 'ARCH', precondition: '需求、模块规格、接口规格与追溯矩阵可用于架构设计', autoChecks: ['requirements-usable', 'module-spec-usable', 'interface-spec-usable', 'rtm-complete'] },
-  { from: 'ARCH', to: 'RTL', precondition: '总体架构和接口可用；独立微架构与时钟复位文档按设计复杂度选配', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined'] },
-  { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过', autoChecks: ['verible-lint-zero-error', 'port-consistency'] },
+  { from: 'ARCH', to: 'RTL', precondition: '总体架构和接口可用；复杂度超阈值时微架构文档必选；建议完成独立架构一致性 review（软告警不阻断）', autoChecks: ['block-diagram-parsable', 'interface-signals-nonempty', 'module-partition-sane', 'clock-reset-defined', 'arch-consistency-review'] },
+  { from: 'RTL', to: 'VERIF', precondition: '可编译 RTL + 端口提取通过；建议完成独立语义一致性 review（软告警不阻断）', autoChecks: ['verible-lint-zero-error', 'port-consistency', 'rtl-semantic-review'] },
   { from: 'VERIF', to: 'QA', precondition: '覆盖率、Scenario 闭环与独立证据审查报告', autoChecks: ['line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'sim-passed', 'verification-scenario-closure', 'verification-evidence-review'] },
   { from: 'QA', to: 'SYNTH', precondition: 'Lint/CDC/代码审查通过，语义实现与验证完备性已终审，覆盖率无退化', autoChecks: ['verible-zero-error', 'yosys-synthesizable', 'cdc-passed', 'line-coverage-gte-90', 'branch-coverage-gte-85', 'func-coverage-gte-80', 'qa-spec-implementation-reviewed', 'qa-verification-completeness', 'qa-code-review-done', 'qa-reset-review-documented', 'qa-dead-logic-adjudicated'] }
 ] as const
@@ -50,11 +57,13 @@ const CHECK_NAMES: Record<string, string> = {
   'interface-spec-usable': '接口规格可用于架构设计',
   'rtm-complete': '需求-规格追溯矩阵完备',
   'interface-signals-nonempty': '接口信号清单非空',
-  'module-partition-sane': '微架构文档（按复杂度选配）',
+  'module-partition-sane': '微架构文档（复杂度超阈值必选）',
   'block-diagram-parsable': '架构框图可解析',
   'clock-reset-defined': '独立时钟/复位文档（按复杂度选配）',
   'verible-lint-zero-error': 'Lint 零 Error',
   'port-consistency': '端口一致性检查',
+  'arch-consistency-review': 'ARCH 出口架构一致性 review（软运行）',
+  'rtl-semantic-review': 'RTL 出口语义一致性 review（软运行）',
   'line-coverage-gte-90': '行覆盖率 ≥90%',
   'branch-coverage-gte-85': '条件覆盖率 ≥85%（表达式求值口径，非 MC/DC）',
   'func-coverage-gte-80': '功能覆盖率 ≥80%',
@@ -160,6 +169,102 @@ function optionalDocument(relativePath: string, simpleDesignReason: string) {
           `可选文档已存在但内容不完整，不阻断推进：${relativePath}\n${document.issues.map((issue) => `  - ${issue}`).join('\n')}`
         )
   }
+}
+
+// 复杂度阈值口径（设计文档 DESIGN-REVIEW-LEFT-SHIFT-ZH-CN.md §3「方案一」）：
+// 规格条款数 > 50 或 模块数 > 4 时，docs/03_design/microarchitecture.md 由 info 选配升为 error 必选；
+// 未超阈值维持 info 现状。两个指标任一超阈值即升档。
+const MICROARCH_CLAUSE_THRESHOLD = 50
+const MICROARCH_MODULE_THRESHOLD = 4
+
+/**
+ * 从 architecture.md 的模块划分节统计模块数（保守启发式，宁软勿硬）：
+ * 只认「标题含『模块』且含『划分/列表』」的小节内的 Markdown 表格，
+ * 且表头首列须恰为 模块名/模块名称/模块，统计首列非空的数据行数（按模块名去重）。
+ * 识别不到符合口径的模块列表时返回 null，调用方按「未超阈值」处理。
+ */
+function countArchitectureModules(content: string): number | null {
+  const lines = content.split(/\r?\n/)
+  let inModuleSection = false
+  let sectionLevel = 0
+  let expectSeparator = false
+  let expectRows = false
+  const names = new Set<string>()
+  for (const line of lines) {
+    const heading = /^(#{1,6})\s+/.exec(line)
+    if (heading) {
+      const level = heading[1].length
+      if (inModuleSection && level <= sectionLevel) {
+        inModuleSection = false
+        expectSeparator = false
+        expectRows = false
+      }
+      const title = line.replace(/^#{1,6}\s+/, '').trim()
+      if (/模块/.test(title) && /(?:划分|列表)/.test(title)) {
+        inModuleSection = true
+        sectionLevel = level
+      }
+      continue
+    }
+    if (!inModuleSection) continue
+    const cells = markdownCells(line)
+    if (!cells) {
+      expectSeparator = false
+      expectRows = false
+      continue
+    }
+    if (expectSeparator) {
+      expectSeparator = false
+      expectRows = cells.every((cell) => /^:?-{3,}:?$/.test(cell))
+      continue
+    }
+    if (expectRows) {
+      const name = (cells[0] ?? '').trim()
+      if (name) names.add(name)
+    } else if (/^(?:模块名|模块名称|模块)$/.test((cells[0] ?? '').trim())) {
+      expectSeparator = true
+    }
+  }
+  return names.size > 0 ? names.size : null
+}
+
+/**
+ * 微架构文档分级门禁（module-partition-sane 改造，设计文档 §3/§7）：
+ * 规格条款数复用 requirements-usable 的稳定需求 ID 识别口径（requirementIds）；
+ * 模块数走 countArchitectureModules 保守启发式（识别失败按未超阈值处理）。
+ * 超阈值时 microarchitecture.md 缺失/无效报 error 阻断；未超阈值维持 info 选配语义。
+ */
+async function modulePartitionSane(ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> {
+  const requirements = inspectDocument(ctx, 'docs/02_requirements/product_requirements.md')
+  const clauseCount = requirementIds(requirements.content).size
+  const architecture = inspectDocument(ctx, 'docs/03_design/architecture.md')
+  const moduleCount = architecture.issues.length === 0 ? countArchitectureModules(architecture.content) : null
+  const thresholdNote = `复杂度口径：规格条款数 ${clauseCount}（升档阈值 >${MICROARCH_CLAUSE_THRESHOLD}），模块数 ${moduleCount === null ? '无法解析（按未超阈值处理）' : moduleCount}（升档阈值 >${MICROARCH_MODULE_THRESHOLD}）`
+  const overClause = clauseCount > MICROARCH_CLAUSE_THRESHOLD
+  const overModule = moduleCount !== null && moduleCount > MICROARCH_MODULE_THRESHOLD
+  if (!overClause && !overModule) {
+    const optional = await optionalDocument(
+      'docs/03_design/microarchitecture.md',
+      '简单单模块或无需展开内部流水线/控制状态的设计可不单独创建微架构文档'
+    )(ctx, checkId)
+    return { ...optional, message: `${optional.message}\n${thresholdNote}` }
+  }
+  const document = inspectDocument(ctx, 'docs/03_design/microarchitecture.md')
+  if (document.issues.length > 0) {
+    return makeResult(
+      checkId,
+      false,
+      'error',
+      [
+        '设计复杂度超阈值，必须提供独立微架构文档（设计文档 DESIGN-REVIEW-LEFT-SHIFT-ZH-CN.md §3）：',
+        '• docs/03_design/microarchitecture.md',
+        ...document.issues.map((issue) => `  - ${issue}`),
+        thresholdNote,
+        '每个非平凡模块应在微架构文档中说明功能、状态机（状态+转移条件）、寄存器与边界行为、关键时序关系。'
+      ].join('\n')
+    )
+  }
+  return makeResult(checkId, true, 'error', `通过：复杂度超阈值且微架构文档存在且有效。${thresholdNote}`)
 }
 
 // 负向回顾 (?<![A-Za-z0-9]-) 阻止裸前缀匹配到另一 ID 内部（如 SPEC-PERF-006 中的 PERF-006），
@@ -861,6 +966,82 @@ async function qaDeadLogicAdjudicated(ctx: GateCheckContext, checkId: string): P
   return makeResult(checkId, true, 'error', `死逻辑检查闭环：${specAnchored.length} 项 spec-anchored 均有合法工程师裁决（remove / keep+理由 / tbd）`)
 }
 
+/** 软 review 门禁的品类定义（设计文档 §4/§5/§7：报告 + 发现清单两件产物） */
+type DesignReviewKind = 'arch-consistency' | 'rtl-semantic'
+
+interface DesignReviewGateSpec {
+  /** 发现清单相对路径（design-review.ts 中的路径常量） */
+  findingsPath: string
+  /** review 报告（md）相对路径 */
+  reportPath: string
+  /** review 名称（门禁消息文案用） */
+  reviewLabel: string
+  /** 发起 review 的会话阶段（指引文案用） */
+  phaseLabel: string
+}
+
+const DESIGN_REVIEW_GATES: Record<DesignReviewKind, DesignReviewGateSpec> = {
+  'arch-consistency': {
+    findingsPath: ARCH_REVIEW_FINDINGS_PATH,
+    reportPath: 'docs/03_design/review-arch-consistency.md',
+    reviewLabel: '架构一致性',
+    phaseLabel: 'ARCH'
+  },
+  'rtl-semantic': {
+    findingsPath: RTL_REVIEW_FINDINGS_PATH,
+    reportPath: 'rtlqa/review/semantic-review.md',
+    reviewLabel: '语义一致性',
+    phaseLabel: 'RTL'
+  }
+}
+
+/** 交叉 review 建议文案（设计文档 §2/§7：首轮后建议切换模型再发起一轮独立 review） */
+const CROSS_REVIEW_ADVICE = '建议切换模型再发起一轮独立 review（不同模型盲区不同，可显著降低漏检）'
+
+/**
+ * 软 review 门禁工厂（设计文档 §7：warning 软运行，告警不阻断）：
+ * - 报告/清单缺失或清单无法解析：passed=true + warning 提示（与 qa-dead-logic-adjudicated
+ *   缺失放行口径一致——「没审过」是提示不是失败），消息给出如何补齐的指引；
+ * - 存在 pending major 发现：passed=false + warning（仍不阻断），措辞升级；
+ * - 通过：报告存在且跨轮合并后 pending major 为 0；
+ * 仅 1 轮记录时在任何有清单的状态下都追加交叉 review 建议。
+ */
+function designReviewGate(kind: DesignReviewKind) {
+  const spec = DESIGN_REVIEW_GATES[kind]
+  return async (ctx: GateCheckContext, checkId: string): Promise<GateCheckResult> => {
+    const reportExists = existsSync(join(ctx.workspaceDir, ...spec.reportPath.split('/')))
+    const findingsExists = existsSync(join(ctx.workspaceDir, ...spec.findingsPath.split('/')))
+    const findings = readDesignReviewFindings(ctx.workspaceDir, spec.findingsPath)
+    if (!reportExists || findings === null) {
+      const lines: string[] = []
+      if (!reportExists) {
+        lines.push(`尚未发起${spec.reviewLabel} review：请在 ${spec.phaseLabel} 会话中调用 request_design_review（报告产物：${spec.reportPath}）`)
+      } else {
+        lines.push(`发现清单缺失或无法解析（${spec.findingsPath}）：请在 ${spec.phaseLabel} 会话中重新调用 request_design_review，由独立审查会话写出报告与发现清单`)
+      }
+      lines.push(`本检查为软运行告警，不阻断进入下一阶段；review 目标见设计文档 DESIGN-REVIEW-LEFT-SHIFT-ZH-CN.md。`)
+      return makeResult(checkId, true, 'warning', lines.join('\n'))
+    }
+    const pendingMajor = pendingMajorCount(findings)
+    const roundNote = `已记录 ${reviewRoundCount(findings)} 轮 review`
+    if (pendingMajor > 0) {
+      return makeResult(
+        checkId,
+        false,
+        'warning',
+        `${pendingMajor} 条 major 发现待处置（修复或裁决 waived）：${spec.findingsPath}（${roundNote}）。处置完成（fixed/waived）后本检查自动通过；本告警不阻断流转。`
+      )
+    }
+    const advice = reviewRoundCount(findings) <= 1 ? `；${CROSS_REVIEW_ADVICE}` : ''
+    return makeResult(
+      checkId,
+      true,
+      'warning',
+      `通过：${spec.reviewLabel} review 报告存在（${spec.reportPath}），跨轮合并后 pending major 0 条（${roundNote}）${advice}`
+    )
+  }
+}
+
 /** 检查器注册表：checkId → 真实检查实现；未注册的走「未接入」占位 */
 const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promise<GateCheckResult>> = {
   'requirements-usable': requirementsUsable,
@@ -868,16 +1049,15 @@ const CHECKERS: Record<string, (ctx: GateCheckContext, checkId: string) => Promi
   'interface-spec-usable': requireFiles(['docs/03_design/interface_spec.md']),
   'rtm-complete': rtmComplete,
   'interface-signals-nonempty': requireFiles(['docs/03_design/interface_spec.md']),
-  'module-partition-sane': optionalDocument(
-    'docs/03_design/microarchitecture.md',
-    '简单单模块或无需展开内部流水线/控制状态的设计可不单独创建微架构文档'
-  ),
+  'module-partition-sane': modulePartitionSane,
   'block-diagram-parsable': architectureDiagramParsable,
   'clock-reset-defined': optionalDocument(
     'docs/03_design/clock_reset.md',
     '单时钟、单复位且无 CDC/RDC 的设计可不单独创建时钟复位文档'
   ),
   'port-consistency': requireFiles(['docs/03_design/interface_spec.md']),
+  'arch-consistency-review': designReviewGate('arch-consistency'),
+  'rtl-semantic-review': designReviewGate('rtl-semantic'),
   'line-coverage-gte-90': coverageAtLeast(['lineCoverage', 'line_coverage'], 90),
   'branch-coverage-gte-85': coverageAtLeast(['branchCoverage', 'branch_coverage', 'expressionCoverage'], 85),
   'func-coverage-gte-80': coverageAtLeast(['functionalCoverage', 'functional_coverage', 'funcCoverage'], 80),

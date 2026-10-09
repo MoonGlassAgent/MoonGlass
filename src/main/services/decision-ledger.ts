@@ -14,8 +14,9 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { renameSyncWithRetry } from './atomic-write.ts'
 import type { VerifRunDecision, VerifRunDecisionAction, VerifRunDecisionLedger, VerifRunDecisionOutcome, VerifRunDecisionStatus, VerifRunDecisionTrigger, VerifRunLoopBudget } from '@shared/types'
 import { VERIFICATION_DERIVED_ACTION_IDS } from '@shared/verification-guidance'
 
@@ -101,7 +102,8 @@ export function writeDecisionLedger(workspace: string, ledger: VerifRunDecisionL
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify({ ...ledger, version: 1 }, null, 2), 'utf-8')
-  renameSync(temporary, path)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁，见 atomic-write.ts）
+  renameSyncWithRetry(temporary, path)
 }
 
 /** 读取-变更-原子写的一站式入口；文件缺失时空账本起步；每次写入强制滚动上限。 */

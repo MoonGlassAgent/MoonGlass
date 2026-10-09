@@ -13,8 +13,9 @@
  */
 
 import { randomBytes } from 'node:crypto'
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
+import { renameSyncWithRetry } from './atomic-write.ts'
 
 /** 经验账本滚动上限（契约：≤50 条，新在前） */
 export const EXPERIENCE_NOTES_LIMIT = 50
@@ -97,7 +98,8 @@ export function writeExperienceNotes(workspace: string, ledger: ExperienceNotesL
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify({ ...ledger, version: 1 }, null, 2), 'utf-8')
-  renameSync(temporary, path)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁，见 atomic-write.ts）
+  renameSyncWithRetry(temporary, path)
 }
 
 /**

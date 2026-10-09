@@ -391,6 +391,26 @@ export function deadLogicReportPath(workspace: string): string {
   return join(workspace, 'rtlqa', 'lint', 'dead_logic_report.json')
 }
 
+/** renameSync 的 EPERM/EBUSY 退避重试版（5 次，100/200/300/400/500ms；Windows 杀毒瞬时持锁）。 */
+function renameWithRetry(from: string, to: string, attempts = 5): void {
+  const sleepMs = (ms: number): void => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  }
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      renameSync(from, to)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code
+      if (code !== 'EPERM' && code !== 'EBUSY') throw error
+      lastError = error
+      sleepMs(100 * (attempt + 1))
+    }
+  }
+  throw lastError
+}
+
 /**
  * 写出 rtlqa/lint/dead_logic_report.json + dead_logic_report.md。
  * 复跑时从旧报告继承仍命中问题项的工程师裁决（按 module.signal 键），避免重复裁决。
@@ -415,7 +435,8 @@ export function writeDeadLogicReport(workspace: string, report: DeadLogicReport)
   mkdirSync(join(workspace, 'rtlqa', 'lint'), { recursive: true })
   const temporary = `${jsonPath}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify(report, null, 2), 'utf-8')
-  renameSync(temporary, jsonPath)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁）
+  renameWithRetry(temporary, jsonPath)
 
   const lines: string[] = [
     '# RTL 死逻辑（无驱动/无负载）检查报告',

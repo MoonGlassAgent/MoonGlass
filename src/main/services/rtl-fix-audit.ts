@@ -14,8 +14,9 @@
  *   - 尽力拦截层在 resources/moonglass/pi-bridge/rtl-write-guard.ts（pi 扩展侧）。
  */
 
-import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { dirname, join, relative } from 'node:path'
+import { renameSyncWithRetry } from './atomic-write.ts'
 
 /** 修复中标志内容（落盘 verification/results/rtl-fix-in-progress.json） */
 export interface RtlFixInProgressFlag {
@@ -56,7 +57,8 @@ export function writeRtlFixFlag(workspace: string, flag: RtlFixInProgressFlag): 
   mkdirSync(dirname(path), { recursive: true })
   const temporary = `${path}.${process.pid}.${Date.now()}.tmp`
   writeFileSync(temporary, JSON.stringify(flag, null, 2), 'utf-8')
-  renameSync(temporary, path)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁，见 atomic-write.ts）
+  renameSyncWithRetry(temporary, path)
 }
 
 /**

@@ -19,6 +19,8 @@ const compile = (sourcePath, outfile) => {
   writeFileSync(path, compiled.outputText, 'utf8')
   return pathToFileURL(path).href
 }
+// 两个账本文件都依赖 ./atomic-write.ts（rename 退避重试），转译沙盒须最先物化
+compile('src/main/services/atomic-write.ts', 'atomic-write.ts')
 const { readVerifLoopLedger, updateVerifLoopLedger, readScenarioLabels, VERIF_LOOP_HISTORY_LIMIT, VERIF_SCENARIO_TITLE_MAX } = await import(compile('src/main/services/verif-loop-ledger.ts', 'verif-loop-ledger.mjs'))
 const { readRtlFixOutcomeLedger, appendRtlFixOutcome, RTL_FIX_OUTCOME_LIMIT } = await import(compile('src/main/services/rtl-fix-outcome-ledger.ts', 'rtl-fix-outcome-ledger.mjs'))
 

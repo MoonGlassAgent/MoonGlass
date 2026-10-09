@@ -210,10 +210,31 @@ function featuresOf(text: string): string[] {
   return FEATURE_PATTERNS.filter(([, pattern]) => pattern.test(text)).map(([feature]) => feature)
 }
 
+/** renameSync 的 EPERM/EBUSY 退避重试版（5 次，100/200/300/400/500ms；Windows 杀毒瞬时持锁）。 */
+function renameWithRetry(from: string, to: string, attempts = 5): void {
+  const sleepMs = (ms: number): void => {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  }
+  let lastError: unknown
+  for (let attempt = 0; attempt < attempts; attempt++) {
+    try {
+      renameSync(from, to)
+      return
+    } catch (error) {
+      const code = (error as NodeJS.ErrnoException)?.code
+      if (code !== 'EPERM' && code !== 'EBUSY') throw error
+      lastError = error
+      sleepMs(100 * (attempt + 1))
+    }
+  }
+  throw lastError
+}
+
 function writeJsonAtomic(path: string, value: unknown): void {
   const temporary = join(dirname(path), `.${basename(path)}.${process.pid}.${Date.now()}.tmp`)
   writeFileSync(temporary, JSON.stringify(value, null, 2), 'utf-8')
-  renameSync(temporary, path)
+  // rename 走 EPERM/EBUSY 退避重试（Windows 杀毒瞬时持锁）
+  renameWithRetry(temporary, path)
 }
 
 function sourceLine(text: string, pattern: RegExp): number {
