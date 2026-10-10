@@ -26,6 +26,8 @@ const dependencies = {
   readVerifRunLoopLedger: root => missingLedger ? null : core.readVerifRunLoopLedger(root),
   nextRunnableDecision: () => null,
   rtlFixGateReason: () => null,
+  // 模块 UT 互斥门控（MODULE-UT §4）：本 smoke 不涉及 UT，恒放行（门控本身由 module-ut-smoke 覆盖）
+  moduleUtRunLoopGateReason: () => null,
   reconcileVerificationWork: () => {},
   readVerificationWork: () => ({work:[]}),
   blockedVerificationScenarios: () => new Set(),

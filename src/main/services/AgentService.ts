@@ -97,6 +97,21 @@ import {
 } from './verif-run-forecast.ts'
 import type { PhaseEngine } from './PhaseEngine.ts'
 import { readPiSessionMessages, type PiMessage } from './session-transcript.ts'
+import { readRtlInputs } from '@moonglass/eda-bridge'
+import {
+  MODULE_UT_CHURN_THRESHOLD,
+  acquireModuleUt,
+  collectModuleUtFailureHints,
+  countRtlFileFixChurn,
+  matchModuleRtlFiles,
+  moduleUtReportRelDir,
+  moduleUtRunLoopGateReason,
+  moduleUtSuggestionDue,
+  buildModuleUtPrompt,
+  readModuleUtLedger,
+  reconcileModuleUtAfterRestart,
+  releaseModuleUt
+} from './module-ut.ts'
 import { aggregateSessionActivity, type SessionActivitySource } from './session-activity.ts'
 import { consumeInterruptedSessions, writeInterruptedSessions, type InterruptedSessionRecord } from './interrupted-sessions.ts'
 import { resolveProviderHeaders } from './provider-headers.ts'
@@ -436,6 +451,10 @@ export class AgentService implements MoonGlassService {
   private backgroundSessions = new Map<string, Map<string, PiSession>>()
   /** 设计评审左移（§8）：每项目正在运行的独立审查会话（type → 会话名），并发守卫据此拒绝同类型重复派发 */
   private activeDesignReviews = new Map<string, Map<string, string>>()
+  /** 模块 UT 软建议去重：项目::模块 → 最近一次提示时间戳（ms），1 小时冷却窗口（MODULE-UT §2） */
+  private moduleUtHintedAt = new Map<string, number>()
+  /** 启动对账阶段产生、待 attachEmitter 后补发的状态提示（start() 时渲染端事件通道尚未接入） */
+  private pendingStartupUtNotices: Array<{ projectId: string; message: string }> = []
   /** 上一轮被应用退出中断的会话（start 时一次性消费标记文件，本轮内存保留供徽标展示） */
   private interruptedSessions: InterruptedSessionRecord[] = []
   private piBinPath = ''
@@ -562,6 +581,24 @@ export class AgentService implements MoonGlassService {
         }
       } catch (error) {
         console.warn('[agent-service] 验证运行循环重启对账失败（忽略，不影响启动）', error)
+      }
+    }
+
+    // 模块 UT（MODULE-UT §5 强关恢复）：上轮 active 的 UT 锁随应用退出一并失效，
+    // 一律自动释放记 interrupted（app-restart）；锁在账本就保证了主循环重启后停在
+    // paused-breaker 待人确认——两种失控组合（锁没放循环自动跑 / 锁放了循环对着半截
+    // RTL 自动跑）都不存在（锁负责互斥，人负责现场）。
+    for (const project of this.projects.list()) {
+      try {
+        const workspace = this.projects.workspaceDir(project.id)
+        const interrupted = reconcileModuleUtAfterRestart(workspace)
+        for (const item of interrupted) {
+          const message = `模块 UT 被强制中断：${item.module}（${item.utId}，会话 ${item.sessionName}）——应用重启导致 UT 会话进程不存在，锁已自动释放；RTL 可能处于半截修改状态，请确认现场后再恢复`
+          console.warn(`[agent-service] ${message}`)
+          this.pendingStartupUtNotices.push({ projectId: project.id, message })
+        }
+      } catch (error) {
+        console.warn('[agent-service] 模块 UT 重启对账失败（忽略，不影响启动）', error)
       }
     }
 
@@ -722,6 +759,10 @@ export class AgentService implements MoonGlassService {
   /** 由主进程入口注入事件推送通道（webContents.send） */
   attachEmitter(emit: (projectId: string, event: AgentStreamEvent, sessionName?: string) => void): void {
     this.emit = emit
+    // 启动对账阶段（start() 时渲染端尚未接入事件通道）积压的模块 UT 中断提示，在此补发
+    const notices = this.pendingStartupUtNotices
+    this.pendingStartupUtNotices = []
+    for (const notice of notices) this.emit(notice.projectId, { type: 'status', message: notice.message })
   }
 
   private queueStreamEvent(projectId: string, sessionName: string | undefined, event: AgentStreamEvent): void {
@@ -2719,6 +2760,29 @@ argument-hint: "<模块名>"
     } catch (error) {
       console.error('[agent-service] rtl-fix-outcomes.json 落盘失败（不影响判定送达）', error)
     }
+    // 模块 UT 软建议（MODULE-UT §2，只提示不派发）：同一 RTL 文件在近期修复审计
+    // （rtl-fix-audit-*.json 的 changed 字段）中出现 ≥2 次 → 提示"修复密集，建议发起模块 UT"；
+    // 同一模块 1 小时内去重（moduleUtHintedAt 内存记账），提示失败仅静默跳过不阻断判定送达
+    try {
+      const workspace = this.workspaceDir(projectId)
+      const auditPath = rtlFixAuditRelativePath(fix.rootCauseId)
+      const auditRaw = JSON.parse(readFileSync(join(workspace, auditPath), 'utf-8')) as { changed?: unknown }
+      const changed = Array.isArray(auditRaw.changed) ? auditRaw.changed.map(String) : []
+      const checked = new Set<string>()
+      for (const rel of changed) {
+        const moduleName = basename(rel.replaceAll('\\', '/')).replace(/\.v$/i, '')
+        if (!moduleName || checked.has(moduleName)) continue
+        checked.add(moduleName)
+        const churn = countRtlFileFixChurn(workspace, rel)
+        const key = `${projectId}::${moduleName}`
+        if (churn >= MODULE_UT_CHURN_THRESHOLD && moduleUtSuggestionDue(this.moduleUtHintedAt.get(key) ?? null, Date.now())) {
+          this.moduleUtHintedAt.set(key, Date.now())
+          this.emit(projectId, { type: 'status', message: `模块 ${moduleName} 修复密集（近期修复改动 ${churn} 次），建议发起一次模块 UT（入口：验证运行卡按钮或会话指令）。` })
+        }
+      }
+    } catch {
+      // 软建议尽力而为：审计读取/计数失败不影响修复判定送达
+    }
     const outcomeLabels: Record<RtlFixJudgment['outcome'], string> = {
       FIXED: 'FIXED（回归通过）',
       STILL_FAIL: 'STILL_FAIL（回归仍失败）',
@@ -2898,6 +2962,166 @@ argument-hint: "<模块名>"
     }
   }
 
+  // ==================== 模块级轻量 UT（MODULE-UT：派发 / 互斥 / 恢复，设计文档 docs/MODULE-UT-DESIGN-ZH-CN.md） ====================
+
+  /**
+   * 发起模块 UT（用户自选入口，UI 按钮 / 会话指令同口径）：
+   * 校验（VERIF 阶段 / 模块存在于 rtl/ / 无同模块 active UT / 有可用 provider）→
+   * 获取 UT 锁（账本，先于会话启动，主循环互斥门控立即生效）→ 手写会话头 + 后台独立会话
+   * （会话名 phase-verif--ut-<module>，模型继承 VERIF 主会话）→ 后台执行 UT prompt（§6），
+   * 立即返回 { utId }。settle（正常/异常/超时）后由 runModuleUtSession 一律释放锁并发状态消息。
+   */
+  async startModuleUt(projectId: string, moduleName: string): Promise<{ utId: string }> {
+    const project = this.projects.get(projectId)
+    if (!project) throw new Error(`[agent-service] 项目不存在: ${projectId}`)
+    const module = moduleName.trim()
+    if (!module) throw new Error('模块名不能为空')
+    // UT 是验证阶段活动（设计文档 §2）：VERIF 阶段外拒绝
+    if (project.currentPhase !== 'VERIF') throw new Error(`模块 UT 是验证阶段活动，当前处于 ${PHASE_LABELS[project.currentPhase]} 阶段，仅 VERIF 阶段可发起`)
+    const workspace = this.workspaceDir(projectId)
+    // 模块存在性：rtl/ 设计文件清单中须存在 <module>.v
+    const rtlFiles = matchModuleRtlFiles(module, readRtlInputs(workspace).designFiles)
+    if (rtlFiles.length === 0) throw new Error(`模块 ${module} 不存在于 rtl/（未找到对应的 ${module}.v 设计文件）`)
+    // 同模块 active UT 幂等拒绝（账本口径；不同模块并行合法）
+    const duplicated = readModuleUtLedger(workspace).sessions.find((entry) => entry.module === module && entry.state === 'active')
+    if (duplicated) throw new Error(`模块 ${module} 的 UT 已在进行中（${duplicated.utId}，会话 ${duplicated.sessionName}，开始于 ${duplicated.startedAt}）`)
+    if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法发起模块 UT')
+
+    // 会话名重名时追加时间戳（沿用 dispatchDesignReviewSession 做法）
+    const sessionNameBase = `${phaseMainSessionName('VERIF')}--ut-${module}`
+    let sessionName = sessionNameBase
+    let sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    if (existsSync(sessionFile)) {
+      sessionName = `${sessionName}-${Date.now().toString(36)}`
+      sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    }
+
+    // 锁先于会话启动获取：派发失败也走释放路径（interrupted + note），不残留 active 锁
+    const acquired = acquireModuleUt(workspace, module, sessionName)
+    if (!acquired.ok) throw new Error(acquired.reason)
+    const utId = acquired.utId
+
+    const now = new Date().toISOString()
+    writeFileSync(sessionFile, [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: randomUUID(),
+        timestamp: now,
+        cwd: workspace
+      }),
+      JSON.stringify({ type: 'session_info', id: randomUUID().slice(0, 8), parentId: null, timestamp: now, name: `模块 UT ${module} (VERIF)` })
+    ].join('\n') + '\n', 'utf-8')
+
+    // 独立后台会话：主会话保持前台（与审查/修复会话同生命周期模式）
+    const previousActive = this.sessions.get(projectId)
+    let session: PiSession
+    try {
+      session = this.spawnSession(projectId, 'VERIF', project.name, sessionFile)
+    } catch (error) {
+      rmSync(sessionFile, { force: true })
+      const message = error instanceof Error ? error.message : String(error)
+      releaseModuleUt(workspace, utId, 'interrupted', { note: `UT 会话进程启动失败：${message}` })
+      throw error
+    }
+    this.sessions.delete(projectId)
+    if (previousActive) this.sessions.set(projectId, previousActive)
+    this.backgroundFor(projectId).set(resolve(sessionFile), session)
+
+    try {
+      await session.client.waitReady()
+      // 模型继承：优先 VERIF 阶段主会话模型（与 RTL 修复会话同口径），失效回落 providers[0]
+      const providers = this.readyProviders()
+      const inherited = this.modelStore.get(projectId, phaseMainSessionName('VERIF'))
+        ?? (previousActive?.phase === 'VERIF' ? previousActive.selectedModel : null)
+      const selection = inherited && providers.some((p) => p.id === inherited.providerId && p.models.includes(inherited.modelId))
+        ? inherited
+        : { providerId: providers[0]!.id, modelId: providers[0]!.models[0]! }
+      await this.setModelInternal(session, selection.providerId, selection.modelId)
+      this.modelStore.set(projectId, sessionName, selection.providerId, selection.modelId)
+      session.ready = true
+    } catch (error) {
+      // 启动/建模失败：摘除后台会话、释放进程与锁（interrupted + note），不静默吞
+      const background = this.backgroundSessions.get(projectId)
+      const key = resolve(session.currentSessionFile)
+      if (background?.get(key) === session) {
+        background.delete(key)
+        if (background.size === 0) this.backgroundSessions.delete(projectId)
+      }
+      session.client.dispose()
+      const message = error instanceof Error ? error.message : String(error)
+      releaseModuleUt(workspace, utId, 'interrupted', { note: `UT 会话就绪失败：${message}` })
+      throw error
+    }
+
+    const model = `${this.modelStore.get(projectId, sessionName)?.providerId}/${this.modelStore.get(projectId, sessionName)?.modelId}`
+    this.emit(projectId, {
+      type: 'status',
+      message: `模块 UT 已派发：${module}（独立会话 ${sessionName}${model ? `，模型 ${model}` : ''}）——主验证循环互斥挂起中，UT 期间 rtl/ 由该会话独占修改`
+    })
+    // UT prompt 执行放后台：settle（正常/异常/超时）后释放锁并通知（runModuleUtSession 兜全出口）
+    void this.runModuleUtSession(projectId, session, utId, module, rtlFiles, workspace).catch((error) => {
+      console.error('[agent-service] 模块 UT 会话执行异常（应由 runModuleUtSession 兜住）', error)
+    })
+    return { utId }
+  }
+
+  /**
+   * UT 会话后台执行体：构造 §6 prompt（附该模块相关的近期失败指纹/根因摘要）→
+   * runBatchToSettled（60 分钟有界会话）→ settle 后一律 release（completed/interrupted）；
+   * 异常/熔断路径记 note 不静默吞。锁释放写账本身就是 verification/ 下的证据变化，
+   * 会把互斥挂起（module-ut-active）的主循环经证据轮询唤醒续跑（§4 时序互斥）。
+   */
+  private async runModuleUtSession(
+    projectId: string,
+    session: PiSession,
+    utId: string,
+    module: string,
+    rtlFiles: string[],
+    workspace: string
+  ): Promise<void> {
+    const reportDir = moduleUtReportRelDir(module)
+    const reportPath = `${reportDir}report.md`
+    let outcome: 'completed' | 'interrupted' = 'completed'
+    let note: string | undefined
+    try {
+      const hints = collectModuleUtFailureHints(workspace, module)
+      const prompt = buildModuleUtPrompt({ moduleName: module, rtlFiles, rootCauseHints: hints.rootCauseHints, fixOutcomeHints: hints.fixOutcomeHints })
+      const run = await this.runBatchToSettled(session, prompt, RUN_LOOP_TASK_TIMEOUT_MS)
+      if (run.errorMessage) {
+        outcome = 'interrupted'
+        note = `UT 会话异常：${run.errorMessage}`
+      } else if (run.watchdogAbort) {
+        outcome = 'interrupted'
+        note = `UT 会话被 watchdog 熔断：${run.watchdogAbort}`
+      }
+    } catch (error) {
+      outcome = 'interrupted'
+      note = `UT 会话执行失败：${error instanceof Error ? error.message : String(error)}`
+    } finally {
+      releaseModuleUt(workspace, utId, outcome, { reportPath, note })
+      // UT 会话收尾：释放进程资源（JSONL 保留，可经会话列表只读回看）
+      const background = this.backgroundSessions.get(projectId)
+      const key = resolve(session.currentSessionFile)
+      if (background?.get(key) === session) {
+        background.delete(key)
+        if (background.size === 0) this.backgroundSessions.delete(projectId)
+      }
+      session.client.dispose()
+    }
+    if (outcome === 'completed') {
+      this.emit(projectId, {
+        type: 'status',
+        message: `模块 UT 完成：${module}（报告 ${reportDir}）；UT 结果属 probe 隔离产物，不免除 TOP 级全量重回归`
+      })
+    } else {
+      this.emit(projectId, {
+        type: 'error',
+        message: `模块 UT 中断：${module}（${note ?? '未知原因'}）；锁已释放，RTL 可能留有半截修改，请确认现场后再恢复主验证循环`
+      })
+    }
+  }
+
   // ==================== 验证运行循环（VERIF-RUN-LOOP 批 2/批 3：外层循环，设计文档 §3.2/§4/§5/§6/§9.1/§9.2/§10） ====================
   //
   // 内层批次编排（runVerifBatches/批次判定/RTL 修复门控）是本循环 running 态的一种动作类型，
@@ -2965,6 +3189,9 @@ argument-hint: "<模块名>"
       this.emit(projectId, { type: 'status', message: '检测到残留的验证循环句柄（账本已不存在或已终止），已清理并重新启动' })
     }
     if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法启动验证运行循环')
+    // 模块 UT 互斥（MODULE-UT §4）：UT 锁非空时启动即与 UT 并发改 rtl/ 冲突，拒绝并说明
+    const startUtGate = moduleUtRunLoopGateReason(workspace)
+    if (startUtGate) throw new Error(`模块 UT 进行中，无法启动验证运行循环：${startUtGate}`)
     const resolved = resolveRunLoopStartOptions(options)
     const hasPosture = readRunLoopPosture(workspace).state !== null
     this.verifRunLoopStopRequested.delete(projectId)
@@ -3015,6 +3242,10 @@ argument-hint: "<模块名>"
       throw new Error(`当前状态（${ledger.state}）不可恢复；仅暂停/熔断状态可继续`)
     }
     if (this.readyProviders().length === 0) throw new Error('没有已启用且配置完成的模型服务，无法恢复验证运行循环')
+    // 模块 UT 互斥（MODULE-UT §4）：UT 锁非空时恢复会与 UT 并发改 rtl/ 冲突，拒绝并说明；
+    // 证据轮询在 UT 落盘/锁释放写账后会再次触发恢复，无需人工重试
+    const resumeUtGate = moduleUtRunLoopGateReason(workspace)
+    if (resumeUtGate) throw new Error(`模块 UT 进行中，无法恢复验证运行循环：${resumeUtGate}`)
     // 人工值守手势（手动继续）三维归零开新窗；证据续跑只开墙钟窗（等待段不计费）
     const openWindow = (target: VerifRunLoopLedger): void => {
       const now = new Date().toISOString()
@@ -3135,6 +3366,17 @@ argument-hint: "<模块名>"
           patchOwn((ledger) =>
             applyRunLoopPause(ledger, { kind: 'human', reason: 'user-pause', detail: '用户手动暂停', since: new Date().toISOString() }))
           this.emit(projectId, { type: 'status', message: '验证运行循环已暂停（用户手动暂停）' })
+          this.startRunLoopEvidencePoller(projectId)
+          return
+        }
+        // ── 模块 UT 时序互斥（MODULE-UT §4，拍派发前检查）：UT 锁非空 → 本拍不派批次/任务，
+        //    循环落 paused-human（reason='module-ut-active'）；UT 报告落盘与锁释放写账都是
+        //    verification/ 下的证据变化，paused-human 的证据轮询会自动续跑，无需额外唤醒 ──
+        const utGate = moduleUtRunLoopGateReason(workspace)
+        if (utGate) {
+          patchOwn((ledger) =>
+            applyRunLoopPause(ledger, { kind: 'human', reason: 'module-ut-active', detail: utGate, since: new Date().toISOString() }))
+          this.emit(projectId, { type: 'status', message: `验证运行循环互斥挂起：${utGate}` })
           this.startRunLoopEvidencePoller(projectId)
           return
         }

@@ -117,7 +117,9 @@ export const IPC = {
     ResumeVerifRunLoop: 'agent:resume-verif-run-loop',
     StopVerifRunLoop: 'agent:stop-verif-run-loop',
     /** 循环决策层（批 3，§3.3）：工程师对挂起决策给出批准/否决；决策账本 verification/results/decision-ledger.json */
-    DecideVerifRunDecision: 'agent:decide-verif-run-decision'
+    DecideVerifRunDecision: 'agent:decide-verif-run-decision',
+    /** 模块级轻量 UT（MODULE-UT）：发起指定模块的独立 UT 会话；锁账本 verification/results/ut-sessions.json */
+    StartModuleUt: 'agent:start-module-ut'
   },
   Fs: {
     Tree: 'fs:tree',
@@ -280,6 +282,9 @@ export interface MoonGlassApi {
     /** 循环决策层（批 3，§3.3）：工程师对挂起的 LLM 提案给出批准/否决，可附修改后的指令；
      *  批准后循环拾取执行（合法性校验不过 → 记 rejected 并抛错） */
     decideVerifRunDecision(projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string): Promise<void>
+    /** 模块级轻量 UT（MODULE-UT）：对 rtl/ 指定模块发起独立 UT 会话（probe 隔离，主循环互斥挂起）；
+     *  同模块 UT 已在跑 / 模块不存在 / 非 VERIF 阶段 / 无可用 provider 时 reject */
+    startModuleUt(projectId: string, moduleName: string): Promise<{ utId: string }>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
   }

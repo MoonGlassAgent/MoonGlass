@@ -109,6 +109,8 @@ const api: MoonGlassApi = {
     stopVerifRunLoop: (projectId: string) => ipcRenderer.invoke(IPC.Agent.StopVerifRunLoop, projectId),
     decideVerifRunDecision: (projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string) =>
       ipcRenderer.invoke(IPC.Agent.DecideVerifRunDecision, projectId, decisionId, verdict, editedPrompt),
+    startModuleUt: (projectId: string, moduleName: string) =>
+      ipcRenderer.invoke(IPC.Agent.StartModuleUt, projectId, moduleName),
     onEvent: (cb: (payload: AgentEventPayload) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, payload: AgentEventPayload): void =>
         cb(payload)

@@ -47,7 +47,8 @@ const suites = {
     'scripts/dead-logic-smoke.mjs',
     'scripts/artifact-drift-smoke.mjs',
     'scripts/design-review-smoke.mjs',
-    'scripts/design-review-dispatch-smoke.mjs'
+    'scripts/design-review-dispatch-smoke.mjs',
+    'scripts/module-ut-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

@@ -352,6 +352,9 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.Agent.DecideVerifRunDecision, (_e, projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string) =>
     agent.decideVerifRunDecision(projectId, decisionId, verdict, editedPrompt)
   )
+  ipcMain.handle(IPC.Agent.StartModuleUt, (_e, projectId: string, moduleName: string) =>
+    agent.startModuleUt(projectId, moduleName)
+  )
 
   // ==================== 项目文件 ====================
   ipcMain.handle(IPC.Fs.Tree, (_e, projectId: string) => files.tree(projectId))
