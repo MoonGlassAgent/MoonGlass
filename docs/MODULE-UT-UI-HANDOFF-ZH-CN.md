@@ -3,7 +3,7 @@
 | 项目 | 内容 |
 |---|---|
 | 日期 | 2026-10-10 |
-| 状态 | 主进程侧实施中（以落地后的 `src/shared/ipc-contract.ts` 为最终契约） |
+| 状态 | **主进程侧已落地**（`agent:start-module-ut`，契约见 `src/shared/ipc-contract.ts`） |
 | 背景设计 | docs/MODULE-UT-DESIGN-ZH-CN.md（请先读 §1 定位与 §4 互斥口径） |
 
 ## 一句话背景
@@ -20,8 +20,8 @@
 - 交互：点击 → 弹窗输入/选择模块名（下拉候选 = 项目 `rtl/*.v` 模块名清单；
   若清单读取需要新 IPC，主进程侧可加 `listRtlModules`，未落地前先用自由输入框）。
 - 可用性：仅 VERIF 阶段可用；UT 进行中/主循环运行中可并发（不同模块并行 UT 合法）。
-- 调用（契约以 ipc-contract.ts 落地为准）：
-  `window.moonglass.startModuleUt(projectId: string, moduleName: string): Promise<{ utId: string }>`
+- 调用（契约以 ipc-contract.ts 落地为准——**已落地**，注意在 `agent` 命名空间下）：
+  `window.moonglass.agent.startModuleUt(projectId: string, moduleName: string): Promise<{ utId: string }>`
 - 错误呈现：同名模块 UT 已在跑、模块不存在、主循环处于不可互斥状态时会 reject，
   消息可直接红条透出。
 
@@ -45,8 +45,9 @@
 
 - 文案一律走 i18n（zh-CN 为源，en 同步），新键放合适命名空间（建议 `verifRun` 或
   `workspace`），禁止硬编码。
-- 本功能渲染端改动与你们在途的 VerifRunPanel/WorkspacePage 改动同区域，注意合流；
-  主进程侧 IPC 落地后我会在此文档更新「契约已生效」标记。
+- 本功能渲染端改动与你们在途的 VerifRunPanel/WorkspacePage 改动同区域，注意合流。
+- ⚠️ 修订（2026-10-10）：API 在 **`agent` 命名空间**下——`window.moonglass.agent.startModuleUt(...)`，
+  不是顶层 `window.moonglass.startModuleUt(...)`。若已按顶层接入，改一行调用即可。
 - 联调验证：dev 起项目 → 对 MIC_NPU 或 GMAC 项目发起 UT → 观察会话标签页、
   主循环挂起提示、UT 结束后主循环可恢复。
 
