@@ -1,70 +1,75 @@
 /**
- * 阶段工作区 — 可拖拽分栏布局（Phase 4）
+ * 阶段工作区 — 可拖拽分栏布局
  *
- * 布局：顶部 PhaseBoard → 水平分栏（文件树 | 分隔条 | 主区）→
- * 主区垂直分栏（对话/文件 | 分隔条 | 底部面板）。
- * 所有分隔条可鼠标拖拽调整大小，类似 VS Code 体验。
+ * 布局：顶部 PhaseBoard → 水平分栏（文件树 | 分隔条 | 主区）。
+ * 分隔条可鼠标拖拽调整大小，类似 VS Code 体验。
  *
- * Phase 4 增强：
- * - 可拖拽分栏（水平 + 垂直）
+ * 功能：
  * - 验证操作按钮（VERIF 阶段）
  * - 带行号、搜索和语法高亮的只读代码查看器
- * - 底部面板功能化
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { APP_INFO } from '@shared/app-info'
 import {
-  AlertTriangle,
   ArrowRight,
   Bot,
-  Box,
-  ChevronDown,
-  ChevronUp,
-  FileOutput,
-  FlaskConical,
-  Maximize2,
   Minus,
-  Play,
   Plus,
   RefreshCw,
-  RotateCw,
   Search,
-  Square,
-  TerminalSquare
+  Square
 } from 'lucide-react'
 import {
   PHASE_LABELS,
   PHASE_ORDER,
+  type ArtifactDriftEntry,
   type ChipProject,
   type GateCheckResult,
   type AgentDecisionRequest,
-  type Phase
+  type Phase,
+  type VerifRunLoopLedger,
+  type VerifRunLoopStartOptions,
+  type VerifRunLoopState
 } from '@shared/types'
 import { serializeDecisionResponses } from '@shared/agent-interaction'
-import { extractFileReference } from '@shared/file-reference'
 import { PhaseBoard, type GatePanelData } from '../components/PhaseBoard'
 import { ChatPanel, SessionTabs } from '../components/ChatPanel'
 import { FileTree } from '../components/FileTree'
 import { CodeViewer, fileLanguage } from '../components/CodeViewer'
 import { MarkdownPreview } from '../components/MarkdownPreview'
+import { VerificationGuideCard } from '../components/VerificationGuideCard'
+import { WorkbenchConclusion } from '../components/WorkbenchConclusion'
+import type { VerificationWorkbenchSnapshot } from '@shared/verification-workbench'
+import {
+  FixWindowBanner,
+  RunLoopCard,
+  VerifRunPanel,
+  normalizeDecisionLedger,
+  normalizeRootCauseRecords,
+  normalizeRtlFixInProgress,
+  normalizeRtlFixOutcomes,
+  normalizeRunLoopLedger,
+  normalizeUtSessions,
+  normalizeVerifBatchLoop,
+  type RootCauseRecordView,
+  type RtlFixInProgressView,
+  type RtlFixOutcomeView,
+  type UtSessionsView,
+  type VerifBatchLoopView,
+  type VerifRunDecisionEntryView
+} from '../components/verif-run'
+import { ModuleUtCard } from '../components/verif-run/ModuleUtCard'
+import { GlossaryTip } from '../components/GlossaryTip'
 import { useChatStore } from '../store/chatStore'
+import { useManagedStore } from '../store/managedStore'
 import { deriveVerificationActions, deriveVerificationSteps, type GuidanceState } from '../verification-guidance'
 import { useTranslation, phaseLabel, type MessageKey } from '../i18n'
+import { useVerificationChanged } from '../hooks/useVerificationChanged'
 
-const BOTTOM_TABS = [
-  { id: 'problems', labelKey: 'workspace.tabs.problems', icon: AlertTriangle },
-  { id: 'runs', labelKey: 'workspace.tabs.runs', icon: Play },
-  { id: 'verification', labelKey: 'workspace.tabs.verification', icon: FlaskConical },
-  { id: 'synthesis', labelKey: 'workspace.tabs.synthesis', icon: Box },
-  { id: 'artifacts', labelKey: 'workspace.tabs.artifacts', icon: FileOutput }
-] as const satisfies ReadonlyArray<{ id: string; labelKey: MessageKey; icon: typeof AlertTriangle }>
-type BottomTab = (typeof BOTTOM_TABS)[number]['id']
 const MIN_SIDEBAR = 140
 const MAX_SIDEBAR = 400
-const MIN_BOTTOM = 80
-const MAX_BOTTOM = 400
 
 interface ManagedStep {
   phase: Phase
@@ -72,14 +77,49 @@ interface ManagedStep {
   detail: string
 }
 
+/** 验证运行页签数据（方案 C + 外层循环批 4）：批次循环/修复判定/修复窗口/根因链/
+ *  外层循环账本/决策账本六份落盘 JSON 的归一化视图 */
+interface VerifRunData {
+  batchLoop: VerifBatchLoopView | null
+  fixOutcomes: RtlFixOutcomeView[]
+  fixInProgress: RtlFixInProgressView | null
+  rootCauses: RootCauseRecordView[]
+  runLoop: VerifRunLoopLedger | null
+  decisions: VerifRunDecisionEntryView[]
+  /** 模块 UT 会话账本（ut-sessions.json；null=无账本） */
+  ut: UtSessionsView | null
+}
+
+/** 手动/自动互斥（§7.2 方向盘唯一）：这些状态表示循环持有方向盘，手动动作需先弹确认并暂停循环 */
+const RUN_LOOP_ACTIVE_STATES: readonly VerifRunLoopState[] = ['planning', 'running', 'judging', 'repairing', 'signoff-review', 'gate-check']
+/** 托管切换（批 4）轮询 run-loop.json 的收敛态：completed 继续托管，stopped/paused-* 停止托管 */
+const RUN_LOOP_SETTLED_STATES: readonly VerifRunLoopState[] = ['completed', 'stopped', 'paused-human', 'paused-breaker']
+/** 托管轮询间隔（毫秒，§10 批 4：10–15s） */
+const RUN_LOOP_POLL_INTERVAL_MS = 12_000
+
 const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 const isManagedPause = (message: string): boolean => /用户停止托管|托管已暂停|L3\/L4 高影响/.test(message)
+
+/** 波段步骤条术语悬浮：W0-W3 名称 → glossary 一句话解释（旧线性步骤不标注） */
+const WAVE_GLOSSARY_KEYS: Record<string, MessageKey> = {
+  W0: 'verification.glossary.wave',
+  W1: 'verification.glossary.w1',
+  W2: 'verification.glossary.w2',
+  W3: 'verification.glossary.w3'
+}
 
 function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasic, onCorner, onSignoff }: { projectId: string; agentStreaming: boolean; onAction: (prompt: string) => void; onPlanEnv: () => void; onBasic: () => void; onCorner: () => void; onSignoff: () => void }): React.JSX.Element {
   const { t } = useTranslation()
   const [state, setState] = useState<GuidanceState | null>(null)
+  // 验证结论快照（P1）：主进程侧核对当前 RTL 版本与证据文件，与向导卡共用同一次重载
+  const [conclusion, setConclusion] = useState<VerificationWorkbenchSnapshot | null>(null)
   const [loading, setLoading] = useState(true)
+  // 防重入：进行中的加载不重复进入，期间到达的变更推送合并为一次尾随重载
+  const loadingRef = useRef(false)
+  const pendingReloadRef = useRef(false)
   const load = useCallback(async () => {
+    if (loadingRef.current) { pendingReloadRef.current = true; return }
+    loadingRef.current = true
     setLoading(true)
     let data: GuidanceState | null = null
     try {
@@ -91,34 +131,43 @@ function VerifStatusBar({ projectId, agentStreaming, onAction, onPlanEnv, onBasi
       try { data = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/verification-state.json') as GuidanceState | null } catch { data = null }
     }
     setState(data)
+    // 结论快照单独取：IPC 失败时置 null（界面显示"暂不可用"），与"尚未生成"区分
+    try {
+      setConclusion(await window.moonglass.fs.verificationWorkbench(projectId))
+    } catch { setConclusion(null) }
+    loadingRef.current = false
     setLoading(false)
+    if (pendingReloadRef.current) { pendingReloadRef.current = false; void load() }
   }, [projectId])
   useEffect(() => { void load() }, [load])
+  // verification/ 产物与证据 JSON 变化时自动重读（主进程已去抖 + 仅 .json；卸载自动退订）
+  useVerificationChanged(projectId, load)
   const steps = useMemo(() => deriveVerificationSteps(state), [state])
   const actions = useMemo(() => state ? deriveVerificationActions(state) : [], [state])
-  const primary = actions[0]
-  const current = steps.find((step) => step.status === 'blocked') ?? steps.find((step) => step.status === 'running') ?? steps.at(-1)!
   return <div className="mt-3 border-t border-zinc-100 pt-3">
     <div className="flex items-center gap-3">
       <span className="shrink-0 text-xs font-medium text-zinc-500">{t('workspace.verifBar.statusLabel')}</span>
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">{steps.map((step, index) => <div key={step.id} className="flex min-w-0 items-center gap-1.5"><span title={`${step.label}：${step.detail}`} className={`flex min-w-0 items-center gap-1 rounded px-2 py-1 text-[10px] ${step.status === 'completed' ? 'bg-emerald-50 text-emerald-700' : step.status === 'blocked' ? 'bg-red-50 text-red-700' : step.status === 'running' ? 'bg-amber-50 text-amber-700' : 'bg-zinc-50 text-zinc-400'}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${step.status === 'completed' ? 'bg-emerald-500' : step.status === 'blocked' ? 'bg-red-500' : step.status === 'running' ? 'bg-amber-500' : 'bg-zinc-300'}`} /><span className="truncate">{step.label}</span></span>{index < steps.length - 1 && <ArrowRight size={10} className="shrink-0 text-zinc-300" />}</div>)}</div>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 overflow-hidden">{steps.map((step, index) => <div key={step.id} className="flex min-w-0 items-center gap-1.5"><span title={`${step.label}：${step.detail}`} className={`flex min-w-0 items-center gap-1 rounded px-2 py-1 text-[10px] ${step.status === 'completed' ? 'bg-emerald-50 text-emerald-700' : step.status === 'blocked' ? 'bg-red-50 text-red-700' : step.status === 'running' ? 'bg-amber-50 text-amber-700' : 'bg-zinc-50 text-zinc-400'}`}><span className={`h-1.5 w-1.5 shrink-0 rounded-full ${step.status === 'completed' ? 'bg-emerald-500' : step.status === 'blocked' ? 'bg-red-500' : step.status === 'running' ? 'bg-amber-500' : 'bg-zinc-300'}`} />{WAVE_GLOSSARY_KEYS[step.id] ? <GlossaryTip tip={t(WAVE_GLOSSARY_KEYS[step.id])} className="truncate">{step.label}</GlossaryTip> : <span className="truncate">{step.label}</span>}</span>{index < steps.length - 1 && <ArrowRight size={10} className="shrink-0 text-zinc-300" />}</div>)}</div>
       <button onClick={() => void load()} disabled={loading} className="rounded border border-zinc-200 p-1.5 text-zinc-400 hover:text-zinc-700" title={t('workspace.verifBar.refresh')}><RefreshCw size={12} className={loading ? 'animate-spin' : ''} /></button>
     </div>
-    <div className="mt-2 flex items-center gap-3 bg-zinc-50 px-3 py-2">
-      <div className="min-w-0 flex-1"><span className={`text-xs font-medium ${current.status === 'blocked' ? 'text-red-700' : 'text-zinc-700'}`}>{t('workspace.verifBar.current', { label: current.label })}</span><span className="ml-2 text-xs text-zinc-500">{current.detail}</span><span className="ml-3 text-xs text-zinc-400">{t('workspace.verifBar.next', { action: primary?.title ?? t('workspace.verifBar.defaultNextAction') })}</span></div>
-      {primary && <button disabled={agentStreaming} onClick={() => onAction(primary.prompt)} className="shrink-0 rounded bg-zinc-900 px-3 py-1.5 text-xs font-medium text-white hover:bg-zinc-700 disabled:opacity-50"><Play size={12} className="mr-1 inline" />{primary.title}</button>}
-      <div className="flex shrink-0 overflow-hidden rounded border border-zinc-200 bg-white">
+    {/* 验证向导卡：当前目标/进展/主行动/预期产出/次要行动；波段按钮降权进“专家操作”折叠区（prompt 逻辑不变） */}
+    <VerificationGuideCard steps={steps} actions={actions} streaming={agentStreaming} onAction={onAction}
+      expertLabel={t('workspace.verifBar.expertActions')} expertHint={t('workspace.verifBar.expertActionsHint')}
+      expertActions={<div className="flex overflow-hidden rounded border border-zinc-200 bg-white">
         <button onClick={onPlanEnv} disabled={agentStreaming} title={t('workspace.verifBar.planEnvTitle')} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-blue-700 hover:bg-blue-50 disabled:opacity-50">{t('workspace.verifBar.planEnv')}</button>
         <button onClick={onBasic} disabled={agentStreaming} title={t('workspace.verifBar.basicTitle')} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-amber-700 hover:bg-amber-50 disabled:opacity-50">{t('workspace.verifBar.basic')}</button>
         <button onClick={onCorner} disabled={agentStreaming} title={t('workspace.verifBar.cornerTitle')} className="border-r border-zinc-200 px-2.5 py-1.5 text-xs text-violet-700 hover:bg-violet-50 disabled:opacity-50">{t('workspace.verifBar.corner')}</button>
         <button onClick={onSignoff} disabled={agentStreaming} title={t('workspace.verifBar.signoffTitle')} className="px-2.5 py-1.5 text-xs text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">{t('workspace.verifBar.signoff')}</button>
-      </div>
-    </div>
+      </div>} />
+    {/* 验证结论（P1）：条款计数（记录通过 vs 当前有效通过）+ 证据有效性 + 签核状态；
+        只读投影，缺评估/证据过期时显示"未确认"而非绿色就绪 */}
+    <WorkbenchConclusion snapshot={conclusion} />
   </div>
 }
 
-// 注意：VERIF 不在此表——VERIF 托管走"主会话规划 → 主进程批级派发 → 主会话终审"
-// 三段式（MANAGED_VERIF_PLANNING_PROMPT / runVerifBatches / MANAGED_VERIF_REVIEW_PROMPT）
+// 注意：VERIF 不在此表——VERIF 托管走"验证运行循环"（VERIF-RUN-LOOP 批 4 托管切换，
+// 设计文档 §10）：startVerifRunLoop（默认预算）→ 轮询 run-loop.json 直至终态/暂停态，
+// completed 继续托管推进门禁，stopped/paused-* 停止托管交用户处置（见 startManagedRun）。
 const MANAGED_PHASE_PROMPTS: Record<Exclude<Phase, 'VERIF'>, string> = {
   REQ_SPEC: '完成需求-规格定义：审查项目目标，补齐产品需求、模块规格、接口规格和需求-规格追溯矩阵，消除占位内容并执行文档检查。',
   ARCH: '完成架构设计：根据已批准需求规格更新总体架构、模块划分、接口、时钟复位和寄存器设计，并检查需求追溯。简单单模块/单时钟复位设计可将说明合并在 architecture.md；仅在复杂微架构、多时钟、多复位或 CDC/RDC 场景单独创建 microarchitecture.md、clock_reset.md。',
@@ -127,17 +176,6 @@ const MANAGED_PHASE_PROMPTS: Record<Exclude<Phase, 'VERIF'>, string> = {
   SYNTH: '完成综合评估：检查约束，生成 SDC，执行逻辑综合，汇总网表、单元、面积和时序估算及警告；明确区分估算与正式签核。'
 }
 
-// VERIF 托管（上下文治理第 3 批）：主会话只做规划与最终审查；
-// 批次场景由主进程经 runVerifBatches 逐批 spawn 平行会话执行，完成判定绑定工具登记证据。
-const MANAGED_VERIF_PLANNING_PROMPT =
-  '完成验证规划与环境准备：更新验证计划和覆盖率计划，搭建或修复验证环境并跑通一次基础回归确认环境可用；' +
-  '调用 build_verification_intelligence 生成风险候选与结构事实，圈定真实验证点并用 register_verification_intents 登记（锚定真实 riskIds/requirementIds/rtlSignals）。' +
-  '场景批次执行由 MoonGlass 主进程编排派发到独立批次会话，本会话只做规划，不要逐批执行场景回归。'
-const MANAGED_VERIF_REVIEW_PROMPT =
-  'VERIF 批次执行已结束。读取 verification/intelligence/execution-summary.json 核对批次结果与证据增量；' +
-  '调用 review_verification_scenarios 与 review_verification_evidence 独立审查原始测试、日志、result.json 和覆盖率证据，存在阻断项时继续修复并回归；' +
-  '最后用实际机器可读产物和原始证据更新 docs/04_verification/ 文档、需求追溯和 docs/06_validation/ 验证报告。'
-
 function pendingDecisionRequests(): AgentDecisionRequest[] {
   const messages = useChatStore.getState().messages
   const answered = new Set(messages.flatMap((message) =>
@@ -145,6 +183,12 @@ function pendingDecisionRequests(): AgentDecisionRequest[] {
   ).map((response) => response.requestId))
   return messages.flatMap((message) => message.decisionRequest ? [message.decisionRequest] : [])
     .filter((request) => !answered.has(request.id))
+}
+
+/** 漂移提醒的 localStorage 确认键：含 projectId + 阶段 + completedAt 指纹。
+ *  阶段未来重新完成后再被删除时 completedAt 变化，会重新提醒；同一状态不重复弹。 */
+function artifactDriftAckKey(projectId: string, phase: Phase, completedAt: string): string {
+  return `moonglass:artifact-drift-ack:${projectId}:${phase}:${completedAt}`
 }
 
 // ============================================================
@@ -178,33 +222,6 @@ function HResizeHandle({ onDrag }: { onDrag: (dx: number) => void }): React.JSX.
   )
 }
 
-function VResizeHandle({ onDrag }: { onDrag: (dy: number) => void }): React.JSX.Element {
-  const dragging = useRef(false)
-
-  return (
-    <div
-      onMouseDown={(e) => {
-        dragging.current = true
-        document.body.style.cursor = 'row-resize'
-        document.body.style.userSelect = 'none'
-        const onMove = (ev: MouseEvent): void => {
-          if (dragging.current) onDrag(ev.movementY)
-        }
-        const onUp = (): void => {
-          dragging.current = false
-          document.body.style.cursor = ''
-          document.body.style.userSelect = ''
-          document.removeEventListener('mousemove', onMove)
-          document.removeEventListener('mouseup', onUp)
-        }
-        document.addEventListener('mousemove', onMove)
-        document.addEventListener('mouseup', onUp)
-      }}
-      className="resize-rail resize-rail-y h-1 cursor-row-resize shrink-0"
-    />
-  )
-}
-
 // ============================================================
 // 工具函数
 // ============================================================
@@ -223,15 +240,6 @@ function parseFileLocation(reference: string): { path: string; line?: number; co
     line: match[2] ? Number(match[2]) : undefined,
     column: match[3] ? Number(match[3]) : undefined
   }
-}
-
-function flattenFiles(nodes: Array<{ name: string; path: string; type: 'file' | 'dir'; children?: unknown[] }>): string[] {
-  const out: string[] = []
-  for (const n of nodes) {
-    if (n.type === 'file') out.push(n.path)
-    if (n.children) out.push(...flattenFiles(n.children as typeof nodes))
-  }
-  return out
 }
 
 function buildChangeResponsePrompt(project: ChipProject, targetPhase: Phase): string {
@@ -273,11 +281,15 @@ export function WorkspacePage(): React.JSX.Element {
 
   // 分栏布局状态（px）
   const [sidebarW, setSidebarW] = useState(200)
-  const [bottomH, setBottomH] = useState(() => Number(localStorage.getItem(`moonglass:bottom-height:${projectId}`)) || 190)
-  const [bottomCollapsed, setBottomCollapsed] = useState(false)
 
-  const [activeTab, setActiveTab] = useState<BottomTab>('problems')
   const [mainTab, setMainTab] = useState<MainTab>('chat')
+  // 「验证运行」只在 VERIF 阶段存在：非该阶段隐藏页签，并把选中回退到对话，
+  // 避免在其它阶段停留在一个空的验证运行面板上（阶段切换不清空 openFiles 等其它页签）。
+  const showVerifRun = project?.currentPhase === 'VERIF'
+  const visibleMainTab = mainTab === 'verifrun' && !showVerifRun ? 'chat' : mainTab
+  useEffect(() => {
+    if (!showVerifRun) setMainTab((tab) => (tab === 'verifrun' ? 'chat' : tab))
+  }, [showVerifRun])
   const [openFiles, setOpenFiles] = useState<OpenFile[]>([])
   const [treeTick, setTreeTick] = useState(0)
   const [verifLog, setVerifLog] = useState<string[]>([])
@@ -293,10 +305,19 @@ export function WorkspacePage(): React.JSX.Element {
   const [changeType, setChangeType] = useState<'requirement' | 'specification' | 'bug'>('bug')
   const [changeSourcePhase, setChangeSourcePhase] = useState<Phase>('RTL')
   const [changeDescription, setChangeDescription] = useState('')
+  // 阶段产物漂移对账：项目加载后检查一次，漂移未确认过才弹模态
+  const driftCheckedRef = useRef('')
+  const [artifactDrift, setArtifactDrift] = useState<ArtifactDriftEntry[]>([])
+  const [driftDialogOpen, setDriftDialogOpen] = useState(false)
+  const [driftResetDownstream, setDriftResetDownstream] = useState(true)
+  const [driftPurging, setDriftPurging] = useState(false)
+  const [driftProgress, setDriftProgress] = useState({ index: 0, total: 0 })
   const [wordWrap, setWordWrap] = useState(() => localStorage.getItem('moonglass:viewer-word-wrap') === 'true')
   const [findRequestKey, setFindRequestKey] = useState(0)
   const [viewerFontSize, setViewerFontSize] = useState(() => Number(localStorage.getItem('moonglass:viewer-font-size')) || 13)
   const [markdownPreview, setMarkdownPreview] = useState(true)
+  // 验证运行数据（方案 C）：四份落盘 JSON 归一化视图，驱动修复窗口横幅
+  const [verifRunData, setVerifRunData] = useState<VerifRunData | null>(null)
   const agentStreaming = useChatStore((s) => s.streaming)
   // 切走后仍在后台执行的阶段（阶段栏据此显示运行标记）
   const backgroundRunningPhases = useChatStore((s) => s.sessionInfo?.backgroundRunningPhases)
@@ -310,7 +331,68 @@ export function WorkspacePage(): React.JSX.Element {
     setProject(await window.moonglass.project.get(projectId))
   }, [projectId])
 
+  // 发起模块 UT（MODULE-UT-UI-HANDOFF §1）：契约 agent:start-module-ut 已落地，错误直接透传卡片红条
+  const handleStartModuleUt = useCallback(async (moduleName: string): Promise<void> => {
+    await window.moonglass.agent.startModuleUt(projectId, moduleName)
+  }, [projectId])
+
+  // 验证运行页签数据加载：六份 JSON 各自独立读取（单份损坏/缺失不影响其余），归一化后一次性回填
+  // 防重入：进行中的加载不重复进入，期间到达的变更推送合并为一次尾随重载（与 VerifStatusBar 同模式）
+  const verifRunLoadingRef = useRef(false)
+  const verifRunPendingRef = useRef(false)
+  const loadVerifRun = useCallback(async () => {
+    if (verifRunLoadingRef.current) { verifRunPendingRef.current = true; return }
+    verifRunLoadingRef.current = true
+    const readResult = async (relPath: string): Promise<unknown> => {
+      try { return await window.moonglass.fs.readJson(projectId, relPath) } catch { return null }
+    }
+    const [batchLoopRaw, outcomesRaw, inProgressRaw, rootCausesRaw, runLoopRaw, decisionsRaw, utSessionsRaw] = await Promise.all([
+      readResult('verification/results/verif-batch-loop.json'),
+      readResult('verification/results/rtl-fix-outcomes.json'),
+      readResult('verification/results/rtl-fix-in-progress.json'),
+      readResult('verification/results/root-causes.json'),
+      readResult('verification/results/run-loop.json'),
+      readResult('verification/results/decision-ledger.json'),
+      readResult('verification/results/ut-sessions.json')
+    ])
+    setVerifRunData({
+      batchLoop: normalizeVerifBatchLoop(batchLoopRaw),
+      fixOutcomes: normalizeRtlFixOutcomes(outcomesRaw),
+      fixInProgress: normalizeRtlFixInProgress(inProgressRaw),
+      rootCauses: normalizeRootCauseRecords(rootCausesRaw),
+      runLoop: normalizeRunLoopLedger(runLoopRaw),
+      decisions: normalizeDecisionLedger(decisionsRaw),
+      ut: normalizeUtSessions(utSessionsRaw)
+    })
+    verifRunLoadingRef.current = false
+    if (verifRunPendingRef.current) { verifRunPendingRef.current = false; void loadVerifRun() }
+  }, [projectId])
+  useEffect(() => { void loadVerifRun() }, [loadVerifRun])
+  // verification/ 产物与证据 JSON 变化时自动重载（主进程已去抖 + 仅 .json；卸载自动退订）
+  useVerificationChanged(projectId, loadVerifRun)
+
   useEffect(() => { void reload() }, [reload])
+  // 阶段产物漂移对账（每项目每次进入工作区只查一次）：
+  // 库记录显示已完成、但产物目录已被手动删除时弹模态，提供"从 0 开始"清零入口。
+  useEffect(() => {
+    if (!project || driftCheckedRef.current === projectId) return
+    driftCheckedRef.current = projectId
+    void (async () => {
+      try {
+        const entries = await window.moonglass.project.reconcileArtifacts(projectId)
+        if (entries.length === 0) return
+        const completedAtOf = (phase: Phase): string => project.phases[phase].completedAt ?? ''
+        const unacked = entries.filter((entry) => !localStorage.getItem(artifactDriftAckKey(projectId, entry.phase, completedAtOf(entry.phase))))
+        if (unacked.length > 0) {
+          setArtifactDrift(unacked)
+          setDriftResetDownstream(true)
+          setDriftDialogOpen(true)
+        }
+      } catch {
+        // 对账失败不阻断工作区使用
+      }
+    })()
+  }, [project, projectId])
   useEffect(() => {
     if (!agentStreaming) {
       setTreeTick((t) => t + 1)
@@ -321,9 +403,6 @@ export function WorkspacePage(): React.JSX.Element {
     const timer = window.setInterval(() => { void reload() }, 2000)
     return () => window.clearInterval(timer)
   }, [reload])
-  useEffect(() => {
-    localStorage.setItem(`moonglass:bottom-height:${projectId}`, String(bottomH))
-  }, [bottomH, projectId])
 
   const refreshOpenFile = useCallback(async (relPath: string): Promise<void> => {
     const result = await window.moonglass.fs.readFile(projectId, relPath)
@@ -569,9 +648,10 @@ export function WorkspacePage(): React.JSX.Element {
         '2. 用 collect_rtl_files 读取 rtl/design.json 与 filelist.f，确认 DUT、topModule 和真实 RTL 范围\n' +
         '3. 调用 build_verification_intelligence 生成风险候选、结构事实与规格映射矩阵；穷举候选只是参考，不是任务清单\n' +
         '4. 阅读 risk-register.json 与 structural-model.json 并结合规格语义，圈定 5~10 个真实验证点（点名具体信号、失效反例、判定标准，声明 wave/topic 标签），调用 register_verification_intents 登记；被 REJECTED 的锚点必须修正后重登，不得绕过；Spec Gap 未澄清时标记 BLOCKED_BY_SPEC，不得自行猜测\n' +
-        '5. 审查 module-verification-strategy.json 并按分层搭建验证环境；优先复用 IP 库 VIP/BFM；定向测试与 SCN-ID 绑定（testcase 命名含 scn_<8位hex>），scenario_hits.json 由 run_simulation 自动登记，禁止手写\n' +
-        '6. 冒烟验收（W0）：reset、接口连通、一个正常事务经 run_simulation 真实执行通过（环境自检不绑 scenarioIds）；冒烟不过则环境不算就绪\n' +
-        '7. 完成后列出登记的验证点、模块分层、环境入口和冒烟结果，然后停止'
+        '5. 读规格书的寄存器/配置章节并调用 register_config_space 登记配置空间账本；规格缺寄存器章节时转 Spec Gap 阻断，不得编造寄存器\n' +
+        '6. 读取 module-verification-strategy.json（两态口径：TOP_SIGNOFF/COVERED_BY_TOP/UT_EXCEPTION）并只搭建一套 TOP cocotb 环境（verification/<topModule>_tb/：总线 VIP 挂接寄存器配置，driver/monitor/scoreboard/golden model 面向顶层接口）；优先复用 IP 库 VIP/BFM；禁止未经 register_ut_escalation 登记直接搭模块级 Testbench；定向测试与 SCN-ID 绑定（testcase 命名含 scn_<8位hex>），scenario_hits.json 由 run_simulation 自动登记，禁止手写\n' +
+        '7. 冒烟验收（W0）：reset、接口连通、一个正常事务经 run_simulation 真实执行通过（环境自检不绑 scenarioIds）；冒烟不过则环境不算就绪\n' +
+        '8. 完成后列出登记的验证点、环境入口和冒烟结果，然后停止'
       )
       appendLog(t('workspace.log.planEnvDone'))
     } catch (err) {
@@ -611,14 +691,53 @@ export function WorkspacePage(): React.JSX.Element {
     }
   }
 
+  /** 漂移对账"从 0 开始"：对每个漂移阶段依次执行 purge 清零
+   *  （复用 handleResetPhase 的调用链：IPC 内 abort → clearPhaseSessions → resetPhase，
+   *  前端随后 clearAfterPhasePurge 并刷新项目状态）。 */
+  const handleDriftStartOver = async (): Promise<void> => {
+    if (artifactDrift.length === 0 || driftPurging) return
+    setDriftPurging(true)
+    try {
+      for (let index = 0; index < artifactDrift.length; index += 1) {
+        const entry = artifactDrift[index]
+        setDriftProgress({ index: index + 1, total: artifactDrift.length })
+        appendLog(t('workspace.log.driftPurging', { phase: phaseLabel(entry.phase), index: index + 1, total: artifactDrift.length }))
+        const result = await window.moonglass.phase.reset(projectId, entry.phase, 'purge', { resetDownstream: driftResetDownstream })
+        setProject(result.project)
+      }
+      clearAgentAfterPhasePurge()
+      setGate(null)
+      setTreeTick((tick) => tick + 1)
+      setMainTab('chat')
+      appendLog(t('workspace.log.driftPurged', { count: artifactDrift.length }))
+      setDriftDialogOpen(false)
+      setArtifactDrift([])
+    } catch (error) {
+      appendLog(t('workspace.log.phaseResetFailed', { error: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setDriftPurging(false)
+      await reload()
+    }
+  }
+
+  /** 漂移对账"保持现状"：关闭并记录确认指纹（同一状态不重复提醒）。 */
+  const handleDriftKeep = (): void => {
+    if (project) {
+      for (const entry of artifactDrift) {
+        localStorage.setItem(artifactDriftAckKey(projectId, entry.phase, project.phases[entry.phase].completedAt ?? ''), new Date().toISOString())
+      }
+    }
+    setDriftDialogOpen(false)
+  }
+
   const handleBasicValidation = async (): Promise<void> => {
     appendLog(t('workspace.log.basicStart'))
     try {
       await sendAgentPrompt(
-        '请完成 W1 基础功能验证：目标是规格映射矩阵中每条可验证条款（simulation/static 通道）都有 happy path 证据。停止边界是“条款全部有执行证据或明确缺口记录”，不要做增补验证（W2）或签核（W3）：\n' +
+        '请完成 W1 基础功能验证：规格映射矩阵中每条可验证条款（simulation/static 通道，含寄存器手册条款）逐条获得 TOP 执行证据，testcase 一律面向 TOP。停止边界是“条款全部有执行证据或明确缺口记录”，不要做增补验证（W2）或签核（W3）：\n' +
         '1. 读取 execution-summary.json 的 specMapping；引擎已为未覆盖条款派生 CLAUSE_DERIVED 候选，逐条确认，或用 register_verification_intents 补充更准确的验证点\n' +
         '2. 用 select_next_verification_batch 按聚类选批；同组场景一次 authoring 多条 testcase，run_simulation(scenarioIds=[...]) 一次绑定登记，scenario_hits 与态势由工具自动更新\n' +
-        '3. 失败时按 diagnostic-control 提升诊断等级，确认根因后调用 record_root_cause；L3/L4 影响必须发起用户决策\n' +
+        '3. 失败时按 diagnostic-control 提升诊断等级，确认根因后调用 record_root_cause；诊断到 L3/L4 且 probe 子模块信号仍无果时，经 register_ut_escalation 登记后才可单独建模块 TB；L3/L4 影响必须发起用户决策\n' +
         '4. 完成后报告条款覆盖（coveredClause/clauseTotal）与仍未闭合条款清单，然后停止'
       )
       appendLog(t('workspace.log.basicDone'))
@@ -631,13 +750,14 @@ export function WorkspacePage(): React.JSX.Element {
     appendLog(t('workspace.log.cornerStart'))
     try {
       await sendAgentPrompt(
-        '请完成 W2 增补验证：按主题波执行 corner 场景。停止边界是“各主题波闭环或探索饱和”，不要进入签核（W3）：\n' +
-        '1. 读取 execution-summary.json 的 waveProgress W2 主题列表（错误注入/边界/并发碰撞/性能等），逐主题推进\n' +
-        '2. 每个主题用 select_next_verification_batch 选聚类组（同模块同 Oracle 域），组内一次 authoring 多条 testcase，run_simulation(scenarioIds=[...]) 一次绑定登记\n' +
-        '3. 执行后参考再聚类建议（reclusterSuggestions）调整分组；formal-candidate 用 run_formal_verification 补强（BMC PASS 不算证明）\n' +
-        '4. 未覆盖项按 C1-C6 分类处置；探索连续无语义新增即饱和收手并说明\n' +
-        '5. 执行派生状态由工具证据派生，record_scenario_adjudication 仅用于规格澄清/豁免（WAIVED 需已有具名审批）；失败根因确认后调用 record_root_cause\n' +
-        '6. 完成后报告各主题波闭环情况与残余风险，然后停止'
+        '请完成 W2 增补验证：按主题波执行 corner 场景（testcase 一律面向 TOP）。停止边界是“各主题波闭环或探索饱和”，不要进入签核（W3）：\n' +
+        '1. 读取 execution-summary.json 的 waveProgress W2 主题列表（错误注入/边界/并发碰撞/性能/配置点等），逐主题推进\n' +
+        '2. 配置点波按 config-space 四类配置点选批：业务点（enum 每值/flag 组合）、边界点（range 的 0/min/max/溢出邻值）、非法点（违反 constraint 的组合）、动态点（忙时改配/在线切模式）；非法点必须校验 DUT 行为符合规格期望（报错/忽略/截断），不得把非法激励当 PASS 放行\n' +
+        '3. 每个主题用 select_next_verification_batch 选聚类组（同 Oracle 域同主题），组内一次 authoring 多条 testcase，run_simulation(scenarioIds=[...]) 一次绑定登记\n' +
+        '4. 执行后参考再聚类建议（reclusterSuggestions）调整分组；formal-candidate 用 run_formal_verification 补强（BMC PASS 不算证明）\n' +
+        '5. 未覆盖项按 C1-C6 分类处置；探索连续无语义新增即饱和收手并说明\n' +
+        '6. 执行派生状态由工具证据派生，record_scenario_adjudication 仅用于规格澄清/豁免（WAIVED 需已有具名审批）；失败根因确认后调用 record_root_cause\n' +
+        '7. 完成后报告各主题波闭环情况与残余风险，然后停止'
       )
       appendLog(t('workspace.log.cornerDone'))
     } catch (err) {
@@ -700,6 +820,45 @@ export function WorkspacePage(): React.JSX.Element {
     } catch (error) {
       appendLog(t('workspace.log.guidanceActionFailed', { error: error instanceof Error ? error.message : String(error) }))
     }
+  }
+
+  // ---- 外层循环卡控制（VERIF-RUN-LOOP 批 4，§7.1 做控制）：薄 IPC 包装，错误抛给卡内错误条 ----
+  const handleRunLoopStart = async (options: VerifRunLoopStartOptions): Promise<void> => {
+    await window.moonglass.agent.startVerifRunLoop(projectId, options)
+    appendLog(t('workspace.log.runLoopStarted'))
+    void loadVerifRun()
+  }
+  const handleRunLoopPause = async (): Promise<void> => {
+    await window.moonglass.agent.pauseVerifRunLoop(projectId)
+    void loadVerifRun()
+  }
+  const handleRunLoopResume = async (options?: VerifRunLoopStartOptions): Promise<void> => {
+    await window.moonglass.agent.resumeVerifRunLoop(projectId, options)
+    void loadVerifRun()
+  }
+  const handleRunLoopStop = async (): Promise<void> => {
+    await window.moonglass.agent.stopVerifRunLoop(projectId)
+    void loadVerifRun()
+  }
+  const handleRunLoopDecide = async (decisionId: string, verdict: 'approved' | 'rejected'): Promise<void> => {
+    // 批 3 决策层 IPC（advisor 模式）：主进程实现前会抛 NotImplemented，错误经卡内提示
+    await window.moonglass.agent.decideVerifRunDecision(projectId, decisionId, verdict)
+    void loadVerifRun()
+  }
+
+  /** §7.2 手动/自动互斥（方向盘唯一）：循环持有方向盘时，手动动作先确认并暂停循环，再走原发送路径。 */
+  const guardManualVerifAction = async (action: () => Promise<void>): Promise<void> => {
+    const runLoop = verifRunData?.runLoop
+    if (runLoop && RUN_LOOP_ACTIVE_STATES.includes(runLoop.state)) {
+      if (!window.confirm(t('workspace.confirm.manualTakeover'))) return
+      try {
+        await window.moonglass.agent.pauseVerifRunLoop(projectId)
+        void loadVerifRun()
+      } catch (error) {
+        appendLog(t('workspace.log.runLoopPauseFailed', { error: error instanceof Error ? error.message : String(error) }))
+      }
+    }
+    await action()
   }
 
   const runManagedAgent = async (instruction: string): Promise<void> => {
@@ -777,13 +936,17 @@ export function WorkspacePage(): React.JSX.Element {
   }
 
   const startManagedRun = async (): Promise<void> => {
-    if (!project || managedRunning) return
+    // store 中的 running 跨组件存活：工作区重挂载后本地 managedRunning 已复位，
+    // 但旧托管循环可能仍在后台执行，借此防止重复启动第二个托管循环
+    if (!project || managedRunning || useManagedStore.getState().byProject[projectId]?.running) return
     const startIndex = PHASE_ORDER.indexOf(project.currentPhase)
     const endIndex = PHASE_ORDER.indexOf(managedEndPhase)
     if (endIndex < startIndex) return
     managedStopRef.current = false
     setManagedDialogOpen(false)
     setManagedRunning(true)
+    // 托管状态提升到模块级 store：项目列表页卡片据此显示「托管中」徽标
+    useManagedStore.getState().start(projectId, managedEndPhase)
     setManagedReportPath('')
     setMainTab('chat')
     const startedAt = new Date().toISOString()
@@ -792,11 +955,26 @@ export function WorkspacePage(): React.JSX.Element {
     let outcome: 'completed' | 'completed_with_risk' | 'paused' | 'stopped' | 'failed' = 'completed'
     let failure = ''
     let totalRisks = 0
+    /** 托管轮询 run-loop.json 直至收敛态（10–15s 间隔，沿用页面 wait 惯例）；用户停止时抛出中断。 */
+    const pollManagedRunLoop = async (): Promise<VerifRunLoopLedger | null> => {
+      for (;;) {
+        await wait(RUN_LOOP_POLL_INTERVAL_MS)
+        if (managedStopRef.current) throw new Error('用户停止托管')
+        let ledger: VerifRunLoopLedger | null = null
+        try {
+          ledger = normalizeRunLoopLedger(await window.moonglass.fs.readJson(projectId, 'verification/results/run-loop.json'))
+        } catch {
+          ledger = null
+        }
+        if (ledger && RUN_LOOP_SETTLED_STATES.includes(ledger.state)) return ledger
+      }
+    }
     try {
       await ensureAgent(projectId)
       if (!useChatStore.getState().sessionInfo?.providersReady) throw new Error('模型会话未就绪，请先配置并测试模型服务')
       for (let index = startIndex; index <= endIndex; index += 1) {
         const phase = PHASE_ORDER[index]
+        useManagedStore.getState().setPhase(projectId, phase)
         if (managedStopRef.current) throw new Error('用户停止托管')
         const step: ManagedStep = { phase, status: 'running', detail: 'Agent 正在执行阶段任务' }
         steps.push(step)
@@ -830,17 +1008,22 @@ export function WorkspacePage(): React.JSX.Element {
         }
         try {
           if (phase === 'VERIF') {
-            // 第 3 批：VERIF 风险闭环改为“主会话规划 → 主进程逐批 spawn 批次会话执行 → 主会话最终审查”
-            await runManagedAgent(MANAGED_VERIF_PLANNING_PROMPT)
-            if (managedStopRef.current) throw new Error('用户停止托管')
-            const loop = await window.moonglass.agent.runVerifBatches(projectId)
-            appendLog(t('workspace.log.managedVerifBatches', { count: loop.batches.length, stoppedBy: loop.stoppedBy, message: loop.message }))
-            if (loop.stoppedBy !== 'exhausted') {
+            // 批 4 托管切换（设计文档 §10）：三段式固定脚本收敛为验证运行循环托管——
+            // 启动循环（默认预算）后轮询账本；completed 继续托管推进门禁/QA，
+            // stopped/paused-* 写日志汇总并停止托管（提示用户去"验证运行"页签处置）。
+            await window.moonglass.agent.startVerifRunLoop(projectId)
+            appendLog(t('workspace.log.managedRunLoopStarted'))
+            const finalLedger = await pollManagedRunLoop()
+            if (finalLedger && finalLedger.state === 'completed') {
+              appendLog(t('workspace.log.managedRunLoopCompleted', { beats: finalLedger.beat }))
+            } else {
+              const stateText = finalLedger ? t(`verifRun.loop.state.${finalLedger.state}`) : '—'
+              const pauseReason = finalLedger?.pause ? `${finalLedger.pause.reason}${finalLedger.pause.detail ? `：${finalLedger.pause.detail}` : ''}` : ''
               totalRisks += 1
-              step.detail = `VERIF 批次编排中止（${loop.stoppedBy}）：${loop.message}`
+              step.detail = `验证运行循环停在 ${stateText}，托管已停止`
+              appendLog(t('workspace.log.managedRunLoopHalted', { state: stateText, reason: pauseReason || '—' }))
+              throw new Error(`托管已暂停：验证运行循环 ${stateText}${pauseReason ? `（${pauseReason}）` : ''}；请前往"验证运行"页签处置，恢复循环后可手动推进`)
             }
-            if (managedStopRef.current) throw new Error('用户停止托管')
-            await runManagedAgent(MANAGED_VERIF_REVIEW_PROMPT)
           } else {
             await runManagedAgent(MANAGED_PHASE_PROMPTS[phase])
           }
@@ -907,6 +1090,12 @@ export function WorkspacePage(): React.JSX.Element {
       }
       setManagedSteps([...steps])
     } finally {
+      // 批 4：托管结束（完成/带风险/失败/用户停止）时拍停验证运行循环，避免无人值守继续烧钱；
+      // paused 态例外——循环停在待人工/熔断，留给用户在"验证运行"页签处置后可一键恢复
+      if (outcome !== 'paused') {
+        await window.moonglass.agent.stopVerifRunLoop(projectId).catch((error) =>
+          appendLog(t('workspace.log.managedRunLoopStopFailed', { error: error instanceof Error ? error.message : String(error) })))
+      }
       if (outcome === 'completed' && totalRisks > 0) outcome = 'completed_with_risk'
       const path = await writeManagedReport(outcome, startedAt, steps, failure)
       const resultText = outcome === 'completed'
@@ -916,12 +1105,16 @@ export function WorkspacePage(): React.JSX.Element {
           : t('workspace.log.managedPaused')
       appendLog(t('workspace.log.managedFinished', { result: resultText, path }))
       setManagedRunning(false)
+      useManagedStore.getState().finish(projectId)
       await reload()
     }
   }
 
   const stopManagedRun = async (): Promise<void> => {
     managedStopRef.current = true
+    // 批 4：托管停止时一并停止验证运行循环（无循环/已终态时主进程为幂等 no-op）
+    await window.moonglass.agent.stopVerifRunLoop(projectId).catch((error) =>
+      appendLog(t('workspace.log.managedRunLoopStopFailed', { error: error instanceof Error ? error.message : String(error) })))
     // M1 §3.6：主进程 abort 已覆盖该项目全部存活会话（前台 + 后台任务会话 + VERIF 批次编排）
     // 无条件 abort：停止时前台通常空闲（在等批次/后台任务），按 streaming 判断会漏掉后台任务会话
     await abortAgent()
@@ -949,7 +1142,6 @@ export function WorkspacePage(): React.JSX.Element {
 
   const handleRunSynthesis = async (): Promise<void> => {
     appendLog(t('workspace.log.synthesisStart'))
-    setActiveTab('synthesis')
     try {
       await sendAgentPrompt(
         '请完成当前工程的逻辑综合闭环：\n' +
@@ -1040,6 +1232,50 @@ export function WorkspacePage(): React.JSX.Element {
           </section>
         </div>
       )}
+      {driftDialogOpen && project && artifactDrift.length > 0 && (
+        <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-6">
+          <section className="w-full max-w-xl rounded-md border border-zinc-300 bg-white shadow-2xl">
+            <header className="border-b border-zinc-200 px-5 py-4">
+              <h2 className="text-base font-semibold text-zinc-900">{t('workspace.artifactDrift.title')}</h2>
+              <p className="mt-1 text-xs leading-5 text-zinc-500">{t('workspace.artifactDrift.description')}</p>
+            </header>
+            <div className="space-y-3 p-5">
+              {artifactDrift.map((entry) => (
+                <div key={entry.phase} className="rounded border border-amber-200 bg-amber-50 p-3">
+                  <p className="text-xs font-semibold text-amber-800">{phaseLabel(entry.phase)}</p>
+                  <p className="mt-1 font-mono text-[11px] leading-5 text-amber-700">{t('workspace.artifactDrift.entryHint', { paths: entry.missingPaths.join('、') })}</p>
+                </div>
+              ))}
+              <label className="flex items-start gap-2 text-xs leading-5 text-zinc-700">
+                <input
+                  type="checkbox"
+                  checked={driftResetDownstream}
+                  onChange={(event) => setDriftResetDownstream(event.target.checked)}
+                  disabled={driftPurging}
+                  className="mt-0.5"
+                />
+                <span>{t('workspace.artifactDrift.resetDownstream')}</span>
+              </label>
+              <p className="text-xs leading-5 text-zinc-500">{t('workspace.artifactDrift.keepHint')}</p>
+              {driftPurging && (
+                <p className="text-xs text-blue-600">{t('workspace.artifactDrift.progress', { index: driftProgress.index, total: driftProgress.total })}</p>
+              )}
+            </div>
+            <footer className="flex justify-end gap-2 border-t border-zinc-200 px-5 py-3">
+              <button onClick={handleDriftKeep} disabled={driftPurging} className="rounded border border-zinc-300 px-3 py-1.5 text-xs text-zinc-600 disabled:opacity-50">
+                {t('workspace.artifactDrift.keep')}
+              </button>
+              <button
+                onClick={() => void handleDriftStartOver()}
+                disabled={driftPurging}
+                className="rounded bg-red-600 px-4 py-1.5 text-xs font-medium text-white hover:bg-red-500 disabled:opacity-50"
+              >
+                {driftPurging ? t('workspace.artifactDrift.purging') : t('workspace.artifactDrift.startOver')}
+              </button>
+            </footer>
+          </section>
+        </div>
+      )}
       {/* ======== 顶部：项目信息 + 阶段看板 ======== */}
       <header className="workspace-header relative z-30 shrink-0 overflow-visible border-b border-zinc-200 bg-white px-6 py-4">
         <div className="mb-3 flex items-center gap-3">
@@ -1094,6 +1330,8 @@ export function WorkspacePage(): React.JSX.Element {
             {managedReportPath && <button onClick={() => void openFile(managedReportPath)} className="ml-auto shrink-0 text-blue-700 underline">{t('workspace.managedRun.viewReport')}</button>}
           </div>
         )}
+        {/* RTL 修复窗口全局横幅（方案 C）：修复进行中置顶提示 rtl/ 写保护，不限 VERIF 阶段 */}
+        {verifRunData?.fixInProgress && <div className="mb-3"><FixWindowBanner fix={verifRunData.fixInProgress} /></div>}
         <PhaseBoard
           project={project}
           onEnterPhase={(phase) => void handleEnterPhase(phase)}
@@ -1128,7 +1366,12 @@ export function WorkspacePage(): React.JSX.Element {
           </div>
         )}
 
-        {project.currentPhase === 'VERIF' && <VerifStatusBar projectId={project.id} agentStreaming={agentStreaming} onAction={(prompt) => void handleVerificationGuidanceAction(prompt)} onPlanEnv={() => void handlePlanEnv()} onBasic={() => void handleBasicValidation()} onCorner={() => void handleCornerWaves()} onSignoff={() => void handleSignoff()} />}
+        {project.currentPhase === 'VERIF' && <VerifStatusBar projectId={project.id} agentStreaming={agentStreaming}
+          onAction={(prompt) => void guardManualVerifAction(() => handleVerificationGuidanceAction(prompt))}
+          onPlanEnv={() => void guardManualVerifAction(handlePlanEnv)}
+          onBasic={() => void guardManualVerifAction(handleBasicValidation)}
+          onCorner={() => void guardManualVerifAction(handleCornerWaves)}
+          onSignoff={() => void guardManualVerifAction(handleSignoff)} />}
 
         {project.currentPhase === 'SYNTH' && (
           <div className="mt-3 flex items-center gap-3 border-t border-zinc-100 pt-3">
@@ -1158,21 +1401,38 @@ export function WorkspacePage(): React.JSX.Element {
         {/* 水平分隔条 */}
         <HResizeHandle onDrag={(dx) => setSidebarW((w) => Math.max(MIN_SIDEBAR, Math.min(MAX_SIDEBAR, w + dx)))} />
 
-        {/* 右侧：垂直分栏（主区 | 底部面板） */}
+        {/* 右侧：主区 */}
         <div className="flex min-w-0 flex-1 flex-col">
           {/* ---- 主区 ---- */}
-          <div className="flex min-h-0 flex-col" style={{ height: `calc(100% - ${bottomH}px - 0.25rem)` }}>
-            {/* 选项卡条 */}
+          <div className="flex min-h-0 flex-1 flex-col">
+            {/* 选项卡条：主视图页签（对话/验证运行/文件）用页签态；会话标签以药丸形态包络进「对话」组，两级视觉不再混淆 */}
             <div className="workspace-tabs flex items-center gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-2 pt-1.5 shrink-0">
-              <button
-                onClick={() => setMainTab('chat')}
-                className={`shrink-0 rounded-t px-3 py-1.5 text-xs ${
-                  mainTab === 'chat' ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
-                }`}
-              >
-                {t('workspace.tabs.chat')}
-              </button>
-              <SessionTabs projectId={project.id} onActivate={() => setMainTab('chat')} />
+              {/* 验证运行置顶最左侧（VERIF 阶段的主要工作视图） */}
+              {showVerifRun && (
+                <button
+                  onClick={() => setMainTab('verifrun')}
+                  className={`shrink-0 rounded-t px-3 py-1.5 text-xs ${
+                    visibleMainTab === 'verifrun' ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
+                  }`}
+                >
+                  {t('workspace.tabs.verifRun')}
+                </button>
+              )}
+              {/* 对话组：主页签 + 会话标签共享一个浅底包络容器，明确表示会话隶属于对话视图 */}
+              <div className={`flex shrink-0 items-center gap-1 rounded-t-md border border-b-0 px-1.5 py-1 ${
+                mainTab === 'chat' ? 'border-zinc-300 bg-zinc-100' : 'border-zinc-200 bg-zinc-50/70'
+              }`}>
+                <button
+                  onClick={() => setMainTab('chat')}
+                  className={`shrink-0 rounded px-2.5 py-0.5 text-xs ${
+                    mainTab === 'chat' ? 'bg-white font-medium text-zinc-800 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
+                  }`}
+                >
+                  {t('workspace.tabs.chat')}
+                </button>
+                <span className="h-4 w-px shrink-0 bg-zinc-300" />
+                <SessionTabs projectId={project.id} onActivate={() => setMainTab('chat')} />
+              </div>
               {openFiles.map((f) => (
                 <span
                   key={f.path}
@@ -1190,8 +1450,35 @@ export function WorkspacePage(): React.JSX.Element {
 
             {/* 内容区 */}
             <div className="workspace-content flex-1 min-h-0">
-              <div className={mainTab === 'chat' ? 'h-full' : 'hidden'}>
-                <ChatPanel projectId={project.id} phase={project.currentPhase} />
+              <div className={visibleMainTab === 'chat' ? 'h-full' : 'hidden'}>
+                <ChatPanel projectId={project.id} phase={project.currentPhase} loopDecisions={verifRunData?.decisions ?? []} onLoopDecision={handleRunLoopDecide} />
+              </div>
+
+              {/* 验证运行页签（方案 C + 外层循环批 4）：外层循环卡置顶，批次进度/修复卡在下；
+                  手动动作（开始基础验证）与自动循环互斥（§7.2 方向盘唯一） */}
+              <div className={visibleMainTab === 'verifrun' ? 'h-full overflow-y-auto p-3' : 'hidden'}>
+                <div className="space-y-3">
+                  <RunLoopCard
+                    runLoop={verifRunData?.runLoop ?? null}
+                    decisions={verifRunData?.decisions ?? []}
+                    forecast={verifRunData?.runLoop?.forecast ?? null}
+                    onStart={handleRunLoopStart}
+                    onPause={handleRunLoopPause}
+                    onResume={handleRunLoopResume}
+                    onStop={handleRunLoopStop}
+                    onDecide={handleRunLoopDecide}
+                  />
+                  {/* 模块 UT（MODULE-UT 设计 §1-§4）：发起入口 + UT 锁活跃时的互斥挂起提示 */}
+                  <ModuleUtCard projectId={project.id} ut={verifRunData?.ut ?? null} onStart={handleStartModuleUt} />
+                  <VerifRunPanel
+                    batchLoop={verifRunData?.batchLoop ?? null}
+                    fixOutcomes={verifRunData?.fixOutcomes ?? []}
+                    fixInProgress={verifRunData?.fixInProgress ?? null}
+                    rootCauses={verifRunData?.rootCauses ?? []}
+                    onStartBasicVerification={() => void guardManualVerifAction(handleBasicValidation)}
+                    onContinueInChat={(breaker) => void handleVerificationGuidanceAction(`验证批次编排熔断（${breaker.reason}）：${breaker.detail}\n\n请在对话中分析熔断原因并给出恢复建议，等待我确认后再执行修复动作。`)}
+                  />
+                </div>
               </div>
 
               {/* 文件查看 */}
@@ -1286,61 +1573,6 @@ export function WorkspacePage(): React.JSX.Element {
               )}
             </div>
           </div>
-
-          {/* ---- 垂直分隔条 ---- */}
-          {!bottomCollapsed && (
-            <VResizeHandle onDrag={(dy) => setBottomH((h) => Math.max(MIN_BOTTOM, Math.min(MAX_BOTTOM, h - dy)))} />
-          )}
-
-          {/* ---- 底部面板 ---- */}
-          <div
-            className="workspace-bottom border-t border-zinc-200 bg-white shrink-0"
-            style={{ height: bottomCollapsed ? 38 : bottomH }}
-          >
-            <div className="engineering-console-tabs flex items-center gap-1 border-b border-zinc-200 px-3 pt-1.5 shrink-0">
-              {BOTTOM_TABS.map((tab) => (
-                <button
-                  key={tab.id}
-                  onClick={() => { setActiveTab(tab.id); setBottomCollapsed(false) }}
-                  className={`flex items-center gap-1.5 rounded-t px-3 py-1.5 text-xs ${
-                    activeTab === tab.id ? 'bg-zinc-100 text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
-                  }`}
-                >
-                  <tab.icon size={13} />
-                  {t(tab.labelKey)}
-                </button>
-              ))}
-              <span className="ml-auto text-[11px] text-zinc-400">{t('workspace.console.title')}</span>
-              <button
-                onClick={() => { setBottomCollapsed(false); setBottomH(MAX_BOTTOM) }}
-                className="console-icon-button"
-                title={t('workspace.console.maximize')}
-              >
-                <Maximize2 size={13} />
-              </button>
-              <button
-                onClick={() => setBottomCollapsed((value) => !value)}
-                className="console-icon-button"
-                title={bottomCollapsed ? t('workspace.console.expand') : t('workspace.console.collapse')}
-              >
-                {bottomCollapsed ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
-              </button>
-            </div>
-            {!bottomCollapsed && (
-              <div className="h-[calc(100%-2.25rem)] overflow-y-auto p-3 text-sm text-zinc-500">
-                <BottomPanel
-                  tab={activeTab}
-                  projectId={project.id}
-                  verifLog={verifLog}
-                  gate={gate}
-                  agentStreaming={agentStreaming}
-                  onOpenFile={(path) => void openFile(path)}
-                  onRefresh={() => setTreeTick((tick) => tick + 1)}
-                  onAskAgent={(prompt) => { setMainTab('chat'); void sendAgentPrompt(prompt) }}
-                />
-              </div>
-            )}
-          </div>
         </div>
       </div>
 
@@ -1369,382 +1601,4 @@ interface OpenFile {
   line?: number
   column?: number
   revealKey?: number
-}
-
-// ============================================================
-// 底部面板
-// ============================================================
-
-interface BottomPanelProps {
-  tab: BottomTab
-  projectId: string
-  verifLog: string[]
-  gate: GatePanelData | null
-  agentStreaming: boolean
-  onOpenFile: (path: string) => void
-  onRefresh: () => void
-  onAskAgent: (prompt: string) => void
-}
-
-interface ProjectInventory {
-  rtl: string[]
-  logs: string[]
-  waveforms: string[]
-  verification: string[]
-  synthesis: string[]
-  artifacts: string[]
-}
-
-interface VerificationIntelligenceSummary {
-  scenarioCount: number
-  criticalOpen: string[]
-  regressions: Array<{ passed: boolean }>
-  scenarios: Array<{
-    id: string
-    title: string
-    priority: number
-    method: string
-    status: string
-    evidence: string[]
-  }>
-  analyzer?: { engine: string; version?: string; limitations: string[] }
-  interactionGraph?: {
-    nodes: Array<{ id: string; kind: string; label: string; source?: { file: string; line?: number } }>
-    edges: Array<{ id: string; from: string; to: string; type: string; confidence: string }>
-  }
-  executionPlan?: Array<{ scenarioId: string; sequence: string; iterations: number; budgetSeconds: number; priority: number; reason: string }>
-  formalResults?: Array<{ resultFile: string; status: string; mode: string; scenarioId?: string; traces: string[] }>
-  specGaps?: Array<{ id: string; category: string; title: string; confidence: string }>
-  verificationIntents?: Array<{ id: string; scenarioId: string; objective: string; status: string; priority: number; recommendedMethods: string[]; boundaries: Array<{ object: string; values: string[] }> }>
-  coverageHoles?: Array<{ id: string; scenarioId: string; classification: string; confidence: string; reason: string; recommendedAction: string; blocking: boolean }>
-  structuralSummary?: { fsm: number; cfgNodes: number; dependencies: number; cones: number; protocols: Array<{ protocol: string; module: string }> }
-}
-
-const EMPTY_INVENTORY: ProjectInventory = {
-  rtl: [], logs: [], waveforms: [], verification: [], synthesis: [], artifacts: []
-}
-
-function BottomPanel({
-  tab,
-  projectId,
-  verifLog,
-  gate,
-  agentStreaming,
-  onOpenFile,
-  onRefresh,
-  onAskAgent
-}: BottomPanelProps): React.JSX.Element {
-  const { t } = useTranslation()
-  const [inventory, setInventory] = useState<ProjectInventory>(EMPTY_INVENTORY)
-  const [loading, setLoading] = useState(false)
-  const [waveformStatus, setWaveformStatus] = useState('')
-  const [intelligence, setIntelligence] = useState<VerificationIntelligenceSummary | null>(null)
-  const [intelligenceView, setIntelligenceView] = useState<'scenario' | 'intent' | 'holes' | 'interaction' | 'schedule' | 'formal'>('scenario')
-
-  const refreshInventory = useCallback(async () => {
-    setLoading(true)
-    try {
-      const files = flattenFiles(await window.moonglass.fs.tree(projectId))
-      const verification = files.filter((file) => /(^|\/)verification\//i.test(file))
-      const synthesis = files.filter((file) => /(^|\/)imp\/(constraints|synthesis)\//i.test(file))
-      const intelligencePath = 'verification/intelligence/verification-state.json'
-      if (files.includes(intelligencePath)) {
-        try {
-          const result = await window.moonglass.fs.readFile(projectId, intelligencePath)
-          setIntelligence(result ? JSON.parse(result.content) as VerificationIntelligenceSummary : null)
-        } catch { setIntelligence(null) }
-      } else setIntelligence(null)
-      setInventory({
-        rtl: files.filter((file) => /(^|\/)rtl\/.*\.(v|sv)$/i.test(file)),
-        logs: files.filter((file) => /\.(log|out)$/i.test(file)),
-        waveforms: files.filter((file) => /\.(vcd|fst)$/i.test(file)),
-        verification,
-        synthesis,
-        artifacts: files.filter((file) => /\.(log|out|rpt|json|xml|vcd|fst|sdc|v|html)$/i.test(file))
-      })
-    } finally {
-      setLoading(false)
-    }
-  }, [projectId])
-
-  useEffect(() => {
-    let active = true
-    if (active) void refreshInventory()
-    return () => { active = false }
-  }, [projectId, agentStreaming, refreshInventory])
-
-  const failedGates = gate?.results.filter((result) => !result.passed) ?? []
-  const errorLogs = verifLog.filter((entry) => /失败|错误|error|fail|❌/i.test(entry))
-  const warningLogs = verifLog.filter((entry) => /警告|warning|⚠/i.test(entry))
-
-  const toolbar = (
-    <div className="mb-2 flex items-center gap-2">
-      <button
-        onClick={() => { void refreshInventory(); onRefresh() }}
-        disabled={loading}
-        className="console-action"
-      >
-        <RotateCw size={13} className={loading ? 'animate-spin' : ''} />
-        {t('common.refresh')}
-      </button>
-      <span className="text-[11px] text-zinc-400">{t('workspace.console.trackableArtifacts', { count: inventory.artifacts.length })}</span>
-    </div>
-  )
-
-  if (tab === 'problems') {
-    return (
-      <div className="flex h-full flex-col">
-        {toolbar}
-        <div className="mb-2 flex items-center gap-3 text-xs">
-          <span className="problem-count problem-count-error">{t('workspace.console.errors', { count: failedGates.length + errorLogs.length })}</span>
-          <span className="problem-count problem-count-warning">{t('workspace.console.warnings', { count: warningLogs.length })}</span>
-          <button
-            onClick={() => onAskAgent('请检查工程控制台中的门禁失败、Lint、仿真和综合问题，定位根因，修改对应文件并重新运行相关工具验证。')}
-            disabled={agentStreaming}
-            className="console-action ml-auto"
-          >
-            {t('workspace.console.askAgentFix')}
-          </button>
-        </div>
-        <div className="console-list flex-1 overflow-auto">
-          {failedGates.map((result) => (
-            <div
-              key={result.checkId}
-              className="console-row"
-              onDoubleClick={() => {
-                const reference = extractFileReference(result.message)
-                if (reference) onOpenFile(reference)
-              }}
-              title={extractFileReference(result.message) ? t('workspace.console.openProblemFile') : result.message}
-            >
-              <AlertTriangle size={14} className="shrink-0 text-red-500" />
-              <strong className="shrink-0 text-xs text-zinc-700">{result.checkName}</strong>
-              <span className="truncate text-xs text-zinc-500" title={result.message}>{result.message}</span>
-              <span className="ml-auto shrink-0 text-[10px] text-zinc-400">{t('workspace.console.gateBadge')}</span>
-            </div>
-          ))}
-          {[...errorLogs, ...warningLogs].map((entry, index) => (
-            <div
-              key={`${entry}-${index}`}
-              className="console-row"
-              onDoubleClick={() => {
-                const reference = extractFileReference(entry)
-                if (reference) onOpenFile(reference)
-              }}
-              title={extractFileReference(entry) ? t('workspace.console.openProblemFile') : entry}
-            >
-              <TerminalSquare size={14} className="shrink-0 text-amber-500" />
-              <span className="truncate font-mono text-xs text-zinc-600" title={entry}>{entry}</span>
-            </div>
-          ))}
-          {failedGates.length + errorLogs.length + warningLogs.length === 0 && (
-            <div className="console-empty">{t('workspace.problems.empty')}</div>
-          )}
-        </div>
-      </div>
-    )
-  }
-
-  if (tab === 'runs') {
-    return (
-      <div className="flex h-full flex-col">
-        {toolbar}
-        {verifLog.length > 0 && (
-          <div className="console-list mb-2 max-h-24 overflow-auto">
-            {verifLog.map((entry, index) => (
-              <div key={index} className="console-row font-mono text-xs text-zinc-600">{entry}</div>
-            ))}
-          </div>
-        )}
-        <FileRows
-          files={inventory.logs}
-          empty={t('workspace.runs.empty')}
-          onOpenFile={onOpenFile}
-        />
-      </div>
-    )
-  }
-
-  if (tab === 'verification') {
-    return (
-      <div className="flex h-full flex-col">
-        {toolbar}
-        <div className="mb-2 grid grid-cols-6 gap-2">
-          <ConsoleMetric label={t('workspace.verification.metricArtifacts')} value={inventory.verification.length} />
-          <ConsoleMetric label="Scenario" value={intelligence?.scenarioCount ?? 0} />
-          <ConsoleMetric label={t('workspace.verification.metricCriticalOpen')} value={intelligence?.criticalOpen.length ?? 0} />
-          <ConsoleMetric label={t('workspace.verification.metricFormalEvidence')} value={intelligence?.formalResults?.length ?? 0} />
-          <ConsoleMetric label={t('workspace.verification.metricIntents')} value={intelligence?.verificationIntents?.length ?? 0} />
-          <ConsoleMetric label={t('workspace.verification.metricSpecGaps')} value={intelligence?.specGaps?.length ?? 0} />
-        </div>
-        {intelligence && (
-          <div className="mb-2 flex items-center gap-1" aria-label={t('workspace.verification.viewsAria')}>
-            {([['scenario', t('workspace.verification.viewScenario')], ['intent', t('workspace.verification.viewIntent')], ['holes', t('workspace.verification.viewHoles')], ['interaction', t('workspace.verification.viewInteraction')], ['schedule', t('workspace.verification.viewSchedule')], ['formal', t('workspace.verification.viewFormal')]] as const).map(([value, label]) => (
-              <button key={value} onClick={() => setIntelligenceView(value)} className={`console-action ${intelligenceView === value ? 'border-emerald-500 text-emerald-600' : ''}`}>{label}</button>
-            ))}
-            <span className="ml-auto truncate text-[10px] text-zinc-400" title={intelligence.analyzer?.limitations.join('；')}>{t('workspace.verification.analyzer', { engine: intelligence.analyzer?.engine ?? t('workspace.verification.analyzerLegacy') })}{intelligence.analyzer?.version ? ` · ${intelligence.analyzer.version}` : ''}</span>
-          </div>
-        )}
-        {intelligence?.structuralSummary && <div className="mb-2 truncate text-[10px] text-zinc-400" title={intelligence.structuralSummary.protocols.map((item) => `${item.module}:${item.protocol}`).join('；')}>{t('workspace.verification.structuralSummary', { fsm: intelligence.structuralSummary.fsm, cfg: intelligence.structuralSummary.cfgNodes, deps: intelligence.structuralSummary.dependencies, coi: intelligence.structuralSummary.cones, protocols: intelligence.structuralSummary.protocols.length })}</div>}
-        {!intelligence && (
-          <div className="console-empty mb-2 flex items-center justify-between gap-3">
-            <span>{t('workspace.verification.noIntelligence')}</span>
-            <button
-              onClick={() => onAskAgent('请调用 build_verification_intelligence，基于当前规格、RTL 结构事实和覆盖率反馈生成风险与 Scenario 看板，并说明最高优先级场景的选择依据。')}
-              disabled={agentStreaming}
-              className="console-action shrink-0"
-            >
-              {t('workspace.verification.buildIntelligence')}
-            </button>
-          </div>
-        )}
-        {intelligence && intelligenceView === 'scenario' && intelligence.scenarios.length > 0 && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.scenarioBoardAria')}>
-            {intelligence.scenarios.slice(0, 12).map((scenario) => (
-              <button
-                key={scenario.id}
-                onDoubleClick={() => onOpenFile(scenario.evidence?.[0] ?? 'verification/intelligence/scenario-registry.json')}
-                className="console-row w-full text-left"
-                title={t('workspace.verification.openScenarioRegistry')}
-              >
-                <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{scenario.id}</strong>
-                <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{scenario.title}</span>
-                <span className="shrink-0 font-mono text-[10px] text-zinc-500">P={scenario.priority.toFixed(3)}</span>
-                <span className={`shrink-0 text-[10px] ${['VERIFIED', 'FORMAL_PROVED', 'WAIVED'].includes(scenario.status) ? 'text-emerald-600' : scenario.status === 'FAILED' ? 'text-red-600' : 'text-amber-600'}`}>{scenario.status}</span>
-              </button>
-            ))}
-          </div>
-        )}
-        {intelligence && intelligenceView === 'interaction' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.interactionAria')}>
-            {(intelligence.interactionGraph?.edges ?? []).slice(0, 40).map((edge) => {
-              const source = intelligence.interactionGraph?.nodes.find((node) => node.id === edge.from)?.source
-              return <button key={edge.id} onDoubleClick={() => source?.file && onOpenFile(source.file)} className="console-row w-full text-left" title={source?.file ? t('workspace.verification.jumpToEvidence') : edge.id}>
-                <strong className="shrink-0 font-mono text-[10px] text-sky-600">{edge.type}</strong>
-                <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{edge.from} → {edge.to}</span>
-                <span className="shrink-0 text-[10px] text-zinc-400">{edge.confidence}</span>
-              </button>
-            })}
-            {(intelligence.interactionGraph?.edges.length ?? 0) === 0 && <div className="console-empty">{t('workspace.verification.noInteractions')}</div>}
-          </div>
-        )}
-        {intelligence && intelligenceView === 'intent' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.intentAria')}>
-            {(intelligence.verificationIntents ?? []).slice(0, 30).map((intent) => <button key={intent.id} onDoubleClick={() => onOpenFile('verification/intelligence/verification-intent-registry.json')} className="console-row w-full text-left" title={t('workspace.verification.openIntentRegistry')}>
-              <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{intent.id}</strong>
-              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{intent.objective}</span>
-              <span className="shrink-0 text-[10px] text-sky-600">{intent.recommendedMethods.join(' + ')}</span>
-              <span className="shrink-0 text-[10px] text-zinc-500">{t('workspace.verification.boundaryCount', { count: intent.boundaries.length })}</span>
-              <span className="shrink-0 text-[10px] text-amber-600">{intent.status}</span>
-            </button>)}
-            {(intelligence.verificationIntents?.length ?? 0) === 0 && <div className="console-empty">{t('workspace.verification.noIntents')}</div>}
-          </div>
-        )}
-        {intelligence && intelligenceView === 'holes' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.holesAria')}>
-            {(intelligence.coverageHoles ?? []).slice(0, 30).map((hole) => <button key={hole.id} onDoubleClick={() => onOpenFile('verification/intelligence/coverage-hole-register.json')} className="console-row w-full text-left" title={`${hole.reason} ${hole.recommendedAction}`}>
-              <strong className={`shrink-0 font-mono text-[11px] ${hole.blocking ? 'text-red-600' : 'text-amber-600'}`}>{hole.classification}</strong>
-              <span className="shrink-0 font-mono text-[10px] text-zinc-500">{hole.scenarioId}</span>
-              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{hole.reason}</span>
-              <span className="shrink-0 text-[10px] text-zinc-400">{hole.confidence}</span>
-            </button>)}
-            {(intelligence.coverageHoles?.length ?? 0) === 0 && <div className="console-empty">{t('workspace.verification.noHoles')}</div>}
-          </div>
-        )}
-        {intelligence && intelligenceView === 'schedule' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.scheduleAria')}>
-            {(intelligence.executionPlan ?? []).map((plan) => <div key={plan.scenarioId} className="console-row" title={plan.reason}>
-              <strong className="shrink-0 font-mono text-[11px] text-emerald-700">{plan.scenarioId}</strong>
-              <span className="min-w-0 flex-1 truncate text-xs text-zinc-600">{plan.sequence}</span>
-              <span className="shrink-0 text-[10px] text-zinc-500">{t('workspace.verification.iterations', { iterations: plan.iterations, budget: plan.budgetSeconds })}</span>
-            </div>)}
-            {(intelligence.executionPlan?.length ?? 0) === 0 && <div className="console-empty">{t('workspace.verification.noScheduled')}</div>}
-          </div>
-        )}
-        {intelligence && intelligenceView === 'formal' && (
-          <div className="console-list mb-2 max-h-32 overflow-y-auto" aria-label={t('workspace.verification.formalAria')}>
-            {(intelligence.formalResults ?? []).map((result) => <button key={result.resultFile} onDoubleClick={() => onOpenFile(result.resultFile)} className="console-row w-full text-left" title={t('workspace.verification.openFormalResult')}>
-              <strong className={`shrink-0 font-mono text-[11px] ${result.status === 'PASS' ? 'text-emerald-600' : result.status === 'FAIL' ? 'text-red-600' : 'text-amber-600'}`}>{result.status}</strong>
-              <span className="shrink-0 text-[10px] text-zinc-500">{result.mode}</span>
-              <span className="min-w-0 flex-1 truncate font-mono text-[11px] text-zinc-600">{result.scenarioId ?? result.resultFile}</span>
-              <span className="shrink-0 text-[10px] text-zinc-400">{t('workspace.verification.traceCount', { count: result.traces.length })}</span>
-            </button>)}
-            {(intelligence.formalResults ?? []).length === 0 && <div className="console-empty">{t('workspace.verification.noFormal')}</div>}
-          </div>
-        )}
-        {inventory.waveforms.length > 0 && (
-          <div className="console-list mb-2 max-h-24 overflow-y-auto">
-            {inventory.waveforms.map((file) => (
-              <div key={file} className="console-row">
-                <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-600">{file}</span>
-                <button
-                  onClick={async () => {
-                    setWaveformStatus(t('workspace.verification.openingWaveform', { file }))
-                    const result = await window.moonglass.eda.openWaveform(projectId, file)
-                    setWaveformStatus(result.ok ? t('workspace.verification.waveformOpened', { file }) : t('workspace.verification.waveformFailed', { error: result.error ?? '' }))
-                  }}
-                  className="console-action shrink-0"
-                  title={t('workspace.verification.openWaveformTitle')}
-                >
-                  {t('workspace.verification.openWaveform')}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-        {waveformStatus && <p className="text-xs text-zinc-500">{waveformStatus}</p>}
-        <FileRows
-          files={inventory.verification.filter((file) => !/\.(vcd|fst)$/i.test(file))}
-          empty={t('workspace.verification.empty')}
-          onOpenFile={onOpenFile}
-        />
-      </div>
-    )
-  }
-
-  if (tab === 'synthesis') {
-    return (
-      <div className="flex h-full flex-col">
-        {toolbar}
-        <div className="mb-2 grid grid-cols-3 gap-2">
-          <ConsoleMetric label={t('workspace.synthesis.metricArtifacts')} value={inventory.synthesis.length} />
-          <ConsoleMetric label={t('workspace.synthesis.metricConstraints')} value={inventory.synthesis.filter((file) => /\.sdc$/i.test(file)).length} />
-          <ConsoleMetric label={t('workspace.synthesis.metricReports')} value={inventory.synthesis.filter((file) => /\.(rpt|json|log)$/i.test(file)).length} />
-        </div>
-        <FileRows files={inventory.synthesis} empty={t('workspace.synthesis.empty')} onOpenFile={onOpenFile} />
-      </div>
-    )
-  }
-
-  return (
-    <div className="flex h-full flex-col">
-      {toolbar}
-      <FileRows files={inventory.artifacts} empty={t('workspace.artifacts.empty')} onOpenFile={onOpenFile} />
-    </div>
-  )
-}
-
-function ConsoleMetric({ label, value }: { label: string; value: number }): React.JSX.Element {
-  return (
-    <div className="console-metric">
-      <span>{label}</span>
-      <strong>{value}</strong>
-    </div>
-  )
-}
-
-function FileRows({ files, empty, onOpenFile }: { files: string[]; empty: string; onOpenFile: (path: string) => void }): React.JSX.Element {
-  const { t } = useTranslation()
-  if (files.length === 0) return <div className="console-empty">{empty}</div>
-  return (
-    <div className="console-list flex-1 overflow-auto">
-      {files.map((file) => (
-        <button key={file} onDoubleClick={() => onOpenFile(file)} className="console-row w-full text-left" title={t('workspace.console.doubleClickOpen')}>
-          <FileOutput size={14} className="shrink-0 text-sky-600" />
-          <span className="min-w-0 flex-1 truncate font-mono text-xs text-zinc-600">{file}</span>
-          <span className="shrink-0 text-[10px] uppercase text-zinc-400">{file.split('.').pop()}</span>
-        </button>
-      ))}
-    </div>
-  )
 }

@@ -50,6 +50,18 @@ export const workspace: WorkspaceMessages = {
     bug: 'bug fix'
   },
 
+  artifactDrift: {
+    title: 'Phase Artifacts Out of Sync with Records',
+    description: 'The database marks the phases below as completed, but their artifact directories no longer exist on disk. Choose how to proceed.',
+    entryHint: 'Recorded as completed, but the artifact directories no longer exist: {paths}',
+    resetDownstream: 'Also reset records of completed downstream phases (QA/SYNTH conclusions were built on deleted evidence)',
+    keepHint: 'After keeping the current state, you can use the "purge & reset" action on the phase board hover menu at any time; if you plan to restore the artifacts yourself, just continue in the original Agent session.',
+    startOver: 'Start from Scratch',
+    purging: 'Purging…',
+    keep: 'Keep as Is',
+    progress: 'Purging drifted phase records ({index}/{total})…'
+  },
+
   verifBar: {
     statusLabel: 'VERIF Status:',
     refresh: 'Refresh VERIF status',
@@ -63,7 +75,9 @@ export const workspace: WorkspaceMessages = {
     corner: '③ Corner Waves',
     cornerTitle: 'Run corner scenarios by topic wave (W2)',
     signoff: '④ Sign-off',
-    signoffTitle: 'Coverage / Formal / Mutation / residual-risk approval (W3)'
+    signoffTitle: 'Coverage / Formal / Mutation / residual-risk approval (W3)',
+    expertActions: 'Expert Actions',
+    expertActionsHint: 'Manually advance verification by wave (for users familiar with the wave methodology); following the primary action is usually enough'
   },
 
   synthBar: {
@@ -74,88 +88,7 @@ export const workspace: WorkspaceMessages = {
 
   tabs: {
     chat: '💬 Chat',
-    problems: 'Problems',
-    runs: 'Runs',
-    verification: 'Verification',
-    synthesis: 'Synthesis',
-    artifacts: 'Artifacts'
-  },
-
-  console: {
-    title: 'Engineering Console',
-    maximize: 'Maximize console',
-    expand: 'Expand console',
-    collapse: 'Collapse console',
-    trackableArtifacts: '{count} trackable artifacts',
-    errors: '{count} errors',
-    warnings: '{count} warnings',
-    askAgentFix: 'Ask Agent to Fix',
-    openProblemFile: 'Double-click to open the problem file and locate the issue',
-    gateBadge: 'Gate',
-    doubleClickOpen: 'Double-click to open'
-  },
-
-  problems: {
-    empty: 'No known issues. Diagnostics from Lint, verification, or synthesis runs will appear here.'
-  },
-
-  runs: {
-    empty: 'No run records yet. Live status and persisted logs will be collected here once tools start.'
-  },
-
-  verification: {
-    metricArtifacts: 'Artifacts',
-    metricCriticalOpen: 'Critical Open',
-    metricFormalEvidence: 'Formal Evidence',
-    metricIntents: 'Intents',
-    metricSpecGaps: 'Spec Gaps',
-    viewsAria: 'Verification intelligence views',
-    viewScenario: 'Scenarios',
-    viewIntent: 'Intents',
-    viewHoles: 'Holes',
-    viewInteraction: 'Interactions',
-    viewSchedule: 'Schedule',
-    viewFormal: 'Formal',
-    analyzer: 'Analyzer: {engine}',
-    analyzerLegacy: 'legacy model',
-    structuralSummary: 'FSM {fsm} · CFG {cfg} · Deps {deps} · COI {coi} · Protocols {protocols}',
-    noIntelligence: 'No Verification Intelligence model yet.',
-    buildIntelligence: 'Build Intelligence Model',
-    scenarioBoardAria: 'Verification Intelligence scenario board',
-    openScenarioRegistry: 'Double-click to open the full Scenario Registry',
-    interactionAria: 'Feature Interaction Graph',
-    jumpToEvidence: 'Double-click to jump to structural evidence',
-    noInteractions: 'No interaction edges to display.',
-    intentAria: 'Verification Intent',
-    openIntentRegistry: 'Double-click to open the full Verification Intent Registry',
-    boundaryCount: '{count} boundaries',
-    noIntents: 'No Verification Intents yet.',
-    holesAria: 'Coverage hole classification',
-    noHoles: 'No pending coverage holes.',
-    scheduleAria: 'Verification execution queue',
-    iterations: '{iterations} runs · {budget}s',
-    noScheduled: 'Critical scenarios are closed; nothing left to schedule.',
-    formalAria: 'Formal verification evidence',
-    openFormalResult: 'Double-click to open formal-result.json',
-    traceCount: '{count} traces',
-    noFormal: 'No formal evidence yet. Formal candidates can be proven by the main Agent with SymbiYosys.',
-    openingWaveform: 'Opening {file}...',
-    waveformOpened: 'Opened {file} with GTKWave',
-    waveformFailed: 'Open failed: {error}',
-    openWaveformTitle: 'Open waveform with GTKWave',
-    openWaveform: 'Open Waveform',
-    empty: 'No verification results yet. After simulation, result.json, JUnit, coverage, logs, and waveforms will appear under verification/results/.'
-  },
-
-  synthesis: {
-    metricArtifacts: 'Artifacts',
-    metricConstraints: 'Constraint Files',
-    metricReports: 'Reports',
-    empty: 'No synthesis artifacts yet. SDC, netlists, area, and timing reports will appear here after synthesis.'
-  },
-
-  artifacts: {
-    empty: 'No trackable artifacts yet. Logs, reports, waveforms, netlists, and result files from tools will be collected here.'
+    verifRun: '🔬 Verification Runs'
   },
 
   viewer: {
@@ -184,6 +117,7 @@ export const workspace: WorkspaceMessages = {
     gateBlocked: 'Gate checks not fully passed ({count} Error-level checks failed).\n\nContinue advancing to {phase} anyway?\nFailed checks remain as known issues flagged with a red exclamation mark.',
     rollback: 'Rolling back to {phase} marks later-phase outputs as obsolete. Confirm rollback?',
     enterDuringManaged: 'A managed run is in progress and depends on the phase order; switching phases manually may break the orchestration. Switch anyway?',
+    manualTakeover: 'The autonomous verification loop is running.\n\nPause it and execute this action manually instead?',
     resetNoArtifacts: '  - No phase artifacts',
     resetArchive: 'Archive & Restart',
     resetPurge: 'Permanently Delete',
@@ -223,6 +157,8 @@ export const workspace: WorkspaceMessages = {
     signoffStart: 'Starting W3 sign-off...',
     signoffDone: 'Sign-off complete',
     phaseResetFailed: 'Phase operation failed: {error}',
+    driftPurging: 'Artifact drift detected: purging records of {phase} ({index}/{total})…',
+    driftPurged: 'Started from scratch: purged records and sessions of {count} drifted phase(s)',
     archived: 'Archived {count} files of {phase} to {path}; restarted with a clean session',
     purged: 'Permanently deleted {count} files of {phase} and its session; not restarted',
     dashboardGenerated: 'Dashboard generated: {path}',
@@ -235,7 +171,12 @@ export const workspace: WorkspaceMessages = {
     managedDecisionSendFailed: 'Managed run: failed to send auto-decision, retry {attempt}/3: {error}',
     managedTaskSessionFailed: 'Managed run: failed to start task session, continuing in the current session: {error}',
     managedChangeFailed: 'Managed run: change response for {phase} failed, risk recorded, continuing: {error}',
-    managedVerifBatches: 'Managed run: VERIF batch orchestration finished {count} batches ({stoppedBy}): {message}',
+    managedRunLoopStarted: 'Managed run: verification run loop started (default budgets); waiting for a terminal or paused state…',
+    managedRunLoopCompleted: 'Managed run: verification run loop completed ({beats} steps); continuing to gate / QA',
+    managedRunLoopHalted: 'Managed run: verification run loop halted at "{state}" ({reason}); managed run stopped. Go to the "Verification Runs" tab to handle it, then resume the loop and advance manually',
+    managedRunLoopStopFailed: 'Failed to stop the verification run loop: {error}',
+    runLoopStarted: 'Verification run loop started',
+    runLoopPauseFailed: 'Failed to pause the verification run loop: {error} (continuing the manual action anyway)',
     managedAgentFailed: 'Managed run: Agent error in {phase}, risk recorded, continuing to gate checks: {error}',
     managedGateCarried: 'Managed run: {phase} gate still has {count} blockers; marked unsigned and advancing',
     managedGateRecoveryFailed: 'Managed run: gate-recovery Agent error, continuing to the next round: {error}',

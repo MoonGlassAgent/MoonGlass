@@ -8,8 +8,9 @@
  */
 
 import { useEffect, useState } from 'react'
-import { CheckCircle2, Download, ExternalLink, RefreshCw, XCircle } from 'lucide-react'
+import { CheckCircle2, Download, ExternalLink, MinusCircle, RefreshCw, Stethoscope, XCircle } from 'lucide-react'
 import type {
+  EnvSelfCheckReport,
   InstallMissingSummary,
   LlmProviderConfig,
   LlmProviderTestResult,
@@ -461,6 +462,9 @@ function EdaDetectSection(): React.JSX.Element {
   const [installing, setInstalling] = useState<string | null>(null)
   const [installMessage, setInstallMessage] = useState('')
   const [installMissingSummary, setInstallMissingSummary] = useState<InstallMissingSummary | null>(null)
+  const [selfChecking, setSelfChecking] = useState(false)
+  const [selfCheckReport, setSelfCheckReport] = useState<EnvSelfCheckReport | null>(null)
+  const [selfCheckError, setSelfCheckError] = useState('')
 
   const detect = async (force = false): Promise<void> => {
     setDetecting(true)
@@ -552,6 +556,19 @@ function EdaDetectSection(): React.JSX.Element {
     }
   }
 
+  const runSelfCheck = async (): Promise<void> => {
+    setSelfChecking(true)
+    setSelfCheckError('')
+    setSelfCheckReport(null)
+    try {
+      setSelfCheckReport(await window.moonglass.eda.runEnvironmentSelfCheck())
+    } catch (error) {
+      setSelfCheckError(t('settings.eda.selfCheckFailed', { message: error instanceof Error ? error.message : String(error) }))
+    } finally {
+      setSelfChecking(false)
+    }
+  }
+
   const categories: Array<{ id: NonNullable<ToolDetection['category']>; labelKey: MessageKey; detailKey: MessageKey }> = [
     { id: 'runtime', labelKey: 'settings.eda.categories.runtime.label', detailKey: 'settings.eda.categories.runtime.detail' },
     { id: 'build', labelKey: 'settings.eda.categories.build.label', detailKey: 'settings.eda.categories.build.detail' },
@@ -608,6 +625,14 @@ function EdaDetectSection(): React.JSX.Element {
             <RefreshCw size={14} className={detecting ? 'animate-spin' : ''} />
             {detecting ? t('settings.eda.detecting') : t('settings.eda.redetect')}
           </button>
+          <button
+            onClick={() => void runSelfCheck()}
+            disabled={selfChecking || installing !== null}
+            className="flex items-center gap-2 rounded bg-violet-600 px-4 py-2 text-sm text-white hover:bg-violet-500 disabled:opacity-50"
+          >
+            <Stethoscope size={14} className={selfChecking ? 'animate-pulse' : ''} />
+            {selfChecking ? t('settings.eda.selfChecking') : t('settings.eda.selfCheck')}
+          </button>
         </div>
       </div>
 
@@ -644,6 +669,78 @@ function EdaDetectSection(): React.JSX.Element {
               ))}
             </div>
           )}
+        </div>
+      )}
+
+      {selfChecking && (
+        <div className="environment-feedback">
+          <RefreshCw size={15} className="animate-spin" />
+          {t('settings.eda.selfCheckRunning')}
+        </div>
+      )}
+      {selfCheckError && (
+        <div className="environment-feedback environment-feedback-error">
+          <XCircle size={15} />
+          {selfCheckError}
+        </div>
+      )}
+
+      {selfCheckReport && (
+        <div className="mb-3 rounded border border-zinc-200 bg-zinc-50 px-3 py-2 text-xs">
+          <p className="font-medium text-zinc-700">
+            {t('settings.eda.selfCheckResult', {
+              passed: selfCheckReport.passedCount,
+              total: selfCheckReport.totalCount,
+              ranAt: new Date(selfCheckReport.ranAt).toLocaleString()
+            })}
+          </p>
+          <ul className="mt-2 space-y-1.5">
+            {selfCheckReport.items.map((item) => (
+              <li key={item.id} className="flex items-start gap-2">
+                {item.passed ? (
+                  <CheckCircle2 size={15} className="mt-0.5 shrink-0 text-emerald-600" />
+                ) : item.skipped ? (
+                  <MinusCircle size={15} className="mt-0.5 shrink-0 text-zinc-400" />
+                ) : (
+                  <XCircle size={15} className="mt-0.5 shrink-0 text-red-600" />
+                )}
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <strong className="text-zinc-700">{t(`settings.eda.selfCheckItems.${item.id}`)}</strong>
+                    <span
+                      className={
+                        item.passed
+                          ? 'font-semibold text-emerald-700'
+                          : item.skipped
+                            ? 'font-medium text-zinc-500'
+                            : 'font-semibold text-red-700'
+                      }
+                    >
+                      {item.passed
+                        ? t('settings.eda.selfCheckStatusPass')
+                        : item.skipped
+                          ? t('settings.eda.selfCheckStatusSkipped')
+                          : t('settings.eda.selfCheckStatusFail')}
+                    </span>
+                    <span className="text-zinc-400">{(item.durationMs / 1000).toFixed(1)}s</span>
+                    {!item.passed && item.installId && (
+                      <button
+                        onClick={() => void installBundle(item.installId!)}
+                        disabled={installing !== null || selfChecking}
+                        className="environment-install-button"
+                      >
+                        <Download size={12} />
+                        {t('settings.eda.selfCheckGoInstall')}
+                      </button>
+                    )}
+                  </div>
+                  <p className={`mt-0.5 whitespace-pre-wrap break-all ${item.passed ? 'text-zinc-500' : item.skipped ? 'text-zinc-400' : 'text-red-600'}`}>
+                    {item.message}
+                  </p>
+                </div>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
 
@@ -689,12 +786,20 @@ function EdaDetectSection(): React.JSX.Element {
                       <strong className="text-sm text-zinc-700">{tool.tool}</strong>
                       <span className={`environment-importance importance-${tool.importance}`}>{tool.importance === 'required' ? t('settings.eda.importance.required') : tool.importance === 'recommended' ? t('settings.eda.importance.recommended') : t('settings.eda.importance.optional')}</span>
                       <span className={tool.found ? 'text-xs text-emerald-700' : 'text-xs text-zinc-400'}>{tool.found ? t('settings.eda.statusReady') : t('settings.eda.statusNotFound')}</span>
+                      {tool.found && tool.versionCompatible === false && (
+                        <span className="rounded border border-amber-300 bg-amber-50 px-1.5 py-0.5 text-[10px] font-medium text-amber-700" title={tool.versionHint}>
+                          {t('settings.eda.versionIncompatible')}
+                        </span>
+                      )}
                       {tool.found && <span className="rounded border border-zinc-200 px-1.5 py-0.5 text-[10px] text-zinc-500">{tool.source === 'bundled' ? t('settings.eda.source.bundled') : tool.source === 'managed' ? t('settings.eda.source.managed') : t('settings.eda.source.system')}</span>}
                       {!tool.found && tool.builtin && <span className="rounded border border-red-200 px-1.5 py-0.5 text-[10px] text-red-600">{t('settings.eda.builtinError')}</span>}
                     </div>
                     <p className="mt-0.5 text-xs text-zinc-500">{tool.description}</p>
                     {tool.found && (
                       <p className="mt-0.5 truncate font-mono text-[10px] text-zinc-400" title={tool.path}>{tool.version ?? tool.path}</p>
+                    )}
+                    {tool.found && tool.versionCompatible === false && tool.versionHint && (
+                      <p className="mt-0.5 text-xs text-amber-700">{tool.versionHint}</p>
                     )}
                     {!tool.found && tool.builtin && <p className="mt-0.5 text-xs text-red-600">{t('settings.eda.builtinErrorDetail')}</p>}
                   </div>

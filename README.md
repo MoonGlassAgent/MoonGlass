@@ -2,7 +2,7 @@
 
 MoonGlass 是面向 ASIC/SoC 工程师的芯片开发全流程 AI 工作台。它把需求、规格、架构、RTL、验证、质量和综合组织成一条可追踪、可审查、可恢复的工程链，让 Agent 的工作结果不仅是“生成了一段代码”，而是能够逐步形成设计文件、验证证据、问题记录和交付报告。
 
-当前版本：**v0.9.8** ｜ Windows x64
+当前产品版本：**v1.1.8** ｜ Windows x64 ｜ [本轮公开更新说明](./RELEASE-NOTES-v1.1.8-ZH-CN.md)
 
 [下载 v0.9.8 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v0.9.8) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MoonGlass-AIGV验证方法学.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
 

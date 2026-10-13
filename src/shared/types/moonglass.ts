@@ -255,6 +255,10 @@ export interface ToolDetection {
   installUrl?: string
   builtin?: boolean
   source?: 'bundled' | 'managed' | 'system'
+  /** 探测到的版本是否落在 MoonGlass 支持范围内（仅对有版本要求的工具如 cocotb 设置；found 不受影响） */
+  versionCompatible?: boolean
+  /** 版本不兼容时的中文升级指引（主进程/探测侧生成） */
+  versionHint?: string
 }
 
 export interface ToolInstallResult {
@@ -288,6 +292,28 @@ export interface WaveformOpenResult {
   ok: boolean
   viewer?: string
   error?: string
+}
+
+// ==================== 用户侧环境自检（T6 env doctor） ====================
+
+/** 环境自检单项结果：每项对应一条最小端到端链路（编译/综合/形式验证/仿真） */
+export interface EnvSelfCheckItem {
+  id: 'icarus' | 'verible' | 'yosys' | 'sby' | 'cocotb'
+  passed: boolean
+  /** 工具未安装时跳过（passed=false，message 指引安装） */
+  skipped?: boolean
+  /** 中文明细：成功时的版本号/结论，或失败原因 */
+  message: string
+  durationMs: number
+  /** 失败/跳过时指向对应安装 bundle（'oss-cad-suite' | 'verible' | 'python-cocotb'），UI 据此指引安装入口 */
+  installId?: string
+}
+
+export interface EnvSelfCheckReport {
+  items: EnvSelfCheckItem[]
+  passedCount: number
+  totalCount: number
+  ranAt: string
 }
 
 // ==================== 工艺库管理 ====================
@@ -428,6 +454,13 @@ export interface LlmProviderConfig {
   apiKey: string
   /** 用户可用的模型 ID 列表（可增删） */
   models: string[]
+  /**
+   * 随每个 API 请求附加的自定义请求头（可选）。
+   * 值中的 `{{sessionId}}` 占位符在注入 pi 时按会话替换为稳定短哈希
+   * （见主进程 provider-headers.ts；OpenCode Go 自 2026-09-06 起强制
+   * x-opencode-session 会话头，缺失报 400 MissingSessionID）。
+   */
+  headers?: Record<string, string>
   enabled: boolean
   /** 预置 Provider 不可删除（字段可改） */
   builtin: boolean
@@ -452,6 +485,13 @@ export interface LlmProviderTestResult {
   availableModelCount?: number
   /** 用户配置的每个模型是否存在于 Provider 返回列表 */
   models: LlmModelTestResult[]
+}
+
+/** 阶段产物漂移条目：库记录显示该阶段已完成，但其全部产物路径已从磁盘消失。 */
+export interface ArtifactDriftEntry {
+  phase: Phase
+  /** 已不存在的产物相对路径（相对项目工作目录） */
+  missingPaths: string[]
 }
 
 export type PhaseResetMode = 'archive' | 'purge'
@@ -560,17 +600,41 @@ export interface AgentSessionInfo {
   backgroundRunningPhases?: Phase[]
 }
 
+/** 单个项目的会话活动聚合（AgentService.sessionActivity 返回，项目卡片徽标据此渲染） */
+export interface ProjectSessionActivity {
+  /** 项目存在存活会话（前台或后台）；仅有上轮中断标记而无存活会话时也会出现在聚合结果中（hasSession 为 false） */
+  hasSession: boolean
+  /** 任一会话正在流式执行（进行中） */
+  running: boolean
+  /** 进行中的会话展示名列表（卡片 tooltip 用） */
+  runningSessions: string[]
+  /** 上一轮被应用退出中断的会话展示名（启动时一次性消费，本轮保留；无则省略） */
+  interrupted?: string[]
+}
+
 /** VERIF 批次完成判定（上下文治理第 3 批，决策 4：绑定工具登记证据，不读会话文本） */
 export interface VerifBatchVerdict {
-  /** 全齐：所有场景已登记 scenario_hits 且 posture 晚于批次开始 */
+  /**
+   * 批次会话契约是否完成：全部场景有登记，且态势在批次开始后重建。
+   * 语义边界——complete ≠ 场景通过 ≠ 验证进展 ≠ 签核；它只说明本批会话按约定交付了登记与态势。
+   */
   complete: boolean
   /** 未在任何 verification/results/&#42;&#42;/scenario_hits.json 中登记的场景 ID */
   missingScenarioIds: string[]
+  /**
+   * 本批窗口内取得登记的场景（本批新增执行证据）。与 replayedScenarioIds 互补；旧数据可能缺失。
+   */
+  freshScenarioIds?: string[]
+  /**
+   * 仅有早于本批开始的登记的场景：本批未产生新的执行证据，只是重放了历史登记。
+   * 这是"空转批次"的可观测信号，供展示层与进展判定使用；旧数据可能缺失。
+   */
+  replayedScenarioIds?: string[]
   /** verification-posture.json 的 generatedAt；不存在或不可解析为 null */
   postureGeneratedAt: string | null
   /** posture 是否晚于批次开始时间 */
   postureFresh: boolean
-  /** 结构化缺失说明（供熔断报告） */
+  /** 结构化缺失说明（供熔断报告与展示层） */
   reasons: string[]
 }
 
@@ -582,9 +646,15 @@ export interface VerifBatchRunResult {
   scenarioIds: string[]
   startedAt: string
   finishedAt: string
-  status: 'completed' | 'circuit-broken' | 'error'
+  /**
+   * completed=证据齐；circuit-broken=熔断（会话异常 / watchdog / 证据缺失 / 诊断停滞）；
+   * no-evidence=会话正常 settle 但无执行证据（场景无需执行 / 会话纯分析，属合法出口而非故障，
+   * 循环内记入 verif-batch-loop.json 的 deferredScenarioIds 延后重选，不熔断停止循环）；
+   * error=批次派发异常
+   */
+  status: 'completed' | 'circuit-broken' | 'no-evidence' | 'error'
   verdict: VerifBatchVerdict
-  /** 熔断原因（watchdog / diagnostic-control 无进展 / 证据缺失 / 会话异常） */
+  /** 熔断原因（watchdog / diagnostic-control 无进展 / 证据缺失 / 会话异常）；no-evidence 时为 null */
   circuitBreaker: string | null
   errorMessage: string | null
   /** 批次会话 JSONL 的归档文件路径；延迟归档下仅当该批次超出保留窗口被真正归档时才有值 */
@@ -601,6 +671,183 @@ export interface VerifBatchLoopResult {
   message: string
 }
 
+// ==================== 验证运行循环（VERIF-RUN-LOOP 批 2，设计文档 §4/§6/§9.1） ====================
+
+/** 外层循环状态机 11 态（设计文档 §4.1；idle=未运行，planning=W0 无态势规划，running/judging 为执行与证据判定，repairing=修复门控挂起） */
+export type VerifRunLoopState =
+  | 'idle'
+  | 'planning'
+  | 'running'
+  | 'judging'
+  | 'repairing'
+  | 'paused-human'
+  | 'paused-breaker'
+  | 'signoff-review'
+  | 'gate-check'
+  | 'completed'
+  | 'stopped'
+
+/** 波段（waveProgress 首个 in-progress 条目；无则 null） */
+export type VerifRunWave = 'W0' | 'W1' | 'W2' | 'W3'
+
+/** 当前拍已派发的动作（无则 null） */
+export interface VerifRunLoopCurrent {
+  kind: string
+  actionId: string | null
+  sessionName: string
+  dispatchedAt: string
+  /** 决策来源徽标（批 3 起规则/LLM/工程师三源均有值；升级会话为 'llm'） */
+  source: 'rule' | 'llm' | 'human'
+  /** 决策账本条目 ID（批 3 decision-ledger 接入后回填；规则自动拍为其 rule-auto 记录 id） */
+  decisionId: string
+}
+
+/** 暂停结构化记录（§5.1 暂停即落盘；kind=human 待人处置，kind=breaker 熔断待人处置） */
+export interface VerifRunLoopPause {
+  kind: 'human' | 'breaker'
+  reason: string
+  detail: string
+  pendingItems: string[]
+  since: string
+}
+
+/** 预算水位（§6：循环步数/token/墙钟；连续无进展步数由 lastBeats 前导 advanced=false 计数推导） */
+export interface VerifRunLoopBudget {
+  beats: number
+  maxBeats: number
+  tokensUsed: number
+  maxTokens: number
+  startedAt: string
+  maxWallMinutes: number
+  /** 连续无进展步数熔断阈值（入账本：继续时不再丢回默认值；旧账本缺失按默认解释） */
+  noProgressLimit?: number
+  /** 墙钟累计基数（分钟）：手动继续开窗重置前滚入的历史时长；墙钟预算比较的是当前窗口（now - startedAt） */
+  wallResetBase?: number
+}
+
+/** 最近拍摘要（新在前，滚动 ≤20 条） */
+export interface VerifRunLoopBeatEntry {
+  beat: number
+  summary: string
+  decisionId: string
+  verdict: string
+  advanced: boolean
+}
+
+/** 收口计划（战略层数据面，规则算战略：纯函数推导、LLM 不参与计算）。
+ *  W1 收口四判据（clauses-covered/no-open-failures/no-pending-repairs/signoff-regression）；
+ *  W2/W3 本期只留 wave 与空 criteria（totalCount 0），不展开。 */
+export interface VerifRunClosurePlan {
+  /** 目标波段（无在跑波段时按 W1 收口口径预估） */
+  wave: string
+  /** 当前运行策略（确定性触发器评估；deep-dive 攻坚派发本期不实现，只留标记与账本） */
+  strategy: 'normal' | 'converge-first' | 'deep-dive' | 'steady-regression'
+  /** 当前策略生效时刻（ISO）；同策略不重复切换，切换时刷新 */
+  strategySince: string
+  criteria: Array<{ id: string; met: boolean }>
+  metCount: number
+  totalCount: number
+}
+
+/** 进展预测（战略层数据面，确定性纯函数产出；展示时带"样本不足"降权，不假精确）。 */
+export interface RunLoopForecast {
+  /** 当前已闭环条款（specClauseCovered 口径）；无条款数据为 null */
+  covered: number | null
+  /** 条款总数；无条款数据为 null */
+  total: number | null
+  /** 自循环启动的平均闭环速率（条款/小时）；运行 ≤0.5h 或无条款数据为 null */
+  ratePerHour: number | null
+  /** 近 ≤10 步 advanced=true 比例 0-1（无拍记录 → 0） */
+  recentAdvanceRatio: number
+  /** 预计剩余闭环时长区间（小时）；数据不足或速率为 0 → null */
+  etaHours: { low: number; high: number } | null
+  /** 按当前速率，各维度预算耗尽前能走完的条款数；任一度量数据不足 → 整体 null */
+  budgetProjection: {
+    steps: { projectedClauses: number }
+    tokens: { projectedClauses: number }
+    wallMinutes: { projectedClauses: number }
+  } | null
+  /** 预算约束判定：任一度量投影 < 剩余条款 → insufficient；余量 <20% → tight；无速率数据 → unknown */
+  binding: 'sufficient' | 'tight' | 'insufficient' | 'unknown'
+  /** 置信度：步数 ≥5 且近 ≤10 步有进展 → medium，否则 low */
+  confidence: 'low' | 'medium'
+}
+
+/** 覆盖式循环账本（verification/results/run-loop.json，§9.1；原子写 + 缺字段归一） */
+export interface VerifRunLoopLedger {
+  version: 1
+  updatedAt: string
+  /** 代际标记：每次启动生成新 id；残留（僵尸）循环苏醒时 id 不符即静默退出、禁止写账 */
+  loopId: string
+  state: VerifRunLoopState
+  wave: VerifRunWave | null
+  beat: number
+  current: VerifRunLoopCurrent | null
+  pause: VerifRunLoopPause | null
+  budget: VerifRunLoopBudget
+  lastBeats: VerifRunLoopBeatEntry[]
+  /** 收口计划（可选字段：战略层每拍重算尽力落盘；旧账本缺失按无计划处理） */
+  closurePlan?: VerifRunClosurePlan
+  /** 进展预测（可选字段：与 closurePlan 同拍重算尽力落盘；旧账本缺失按无预测处理） */
+  forecast?: RunLoopForecast
+}
+
+/** 启动选项（均可选；缺省见主进程 verif-run-loop.ts 的 DEFAULT_*，§13 待决策 2 实测后调） */
+export interface VerifRunLoopStartOptions {
+  maxBeats?: number
+  maxTokens?: number
+  maxWallMinutes?: number
+  noProgressLimit?: number
+}
+
+// ==================== 验证运行循环决策账本（VERIF-RUN-LOOP 批 3，设计文档 §3.2/§3.3/§9.2） ====================
+
+/** 决策来源：规则自动 / LLM 提案 / 工程师指令（§3.3 工程师决策不审批，直接 approved） */
+export type VerifRunDecisionSource = 'rule' | 'llm' | 'human'
+
+/** 决策登记触发（§9.2 trigger 口径；rule-auto=规则层每拍自动记账，user-instruction=工程师在会话中明确指示；
+ *  strategy-switch=战略层运行策略切换记账（规则自动，source 恒为 'rule'）） */
+export type VerifRunDecisionTrigger = 'rule-auto' | 'rule-stall' | 'breaker-recovery' | 'user-instruction' | 'manual-override' | 'strategy-switch'
+
+/** 决策动作形态：derived=引用推导内核已知动作 id（需规则层白名单校验）；custom=自由指令（actionId 恒为 null） */
+export interface VerifRunDecisionAction {
+  kind: 'derived' | 'custom'
+  /** derived 时为推导内核已知动作 id（src/shared/verification-guidance 的 VERIFICATION_DERIVED_ACTION_IDS）；custom 时为 null */
+  actionId: string | null
+  prompt: string
+  /** 期望产出（合法性校验：approved 前必须非空；规则自动记录允许空串） */
+  expectedOutput: string
+  /** 停止条件（同 expectedOutput 口径） */
+  stopCriteria: string
+}
+
+/** 决策生命周期：proposed=待人审批（顾问模式默认）→ approved/rejected → executed=已派发执行 → superseded=被取代 */
+export type VerifRunDecisionStatus = 'proposed' | 'approved' | 'rejected' | 'executed' | 'superseded'
+
+/** 执行结果回填（按证据裁决：拍判定 advanced/no-progress；会话异常记 failed；未执行恒为 null） */
+export type VerifRunDecisionOutcome = 'advanced' | 'no-progress' | 'failed' | null
+
+/** 决策账本条目（id=DEC-<8hex>；追加式，新在前，滚动 ≤100 条） */
+export interface VerifRunDecision {
+  id: string
+  createdAt: string
+  source: VerifRunDecisionSource
+  trigger: string
+  action: VerifRunDecisionAction
+  /** ≤200 字 */
+  rationale: string
+  /** 证据锚点（相对工作区的账本/证据文件路径） */
+  evidenceRefs: string[]
+  status: VerifRunDecisionStatus
+  outcome: VerifRunDecisionOutcome
+}
+
+/** 追加式决策账本（verification/results/decision-ledger.json，§9.2；原子写 + 缺字段归一 + ≤100 截断） */
+export interface VerifRunDecisionLedger {
+  version: 1
+  decisions: VerifRunDecision[]
+}
+
 /** 波段进度条目（W1-W3，展示层契约，引擎侧生产；W0 冒烟已废弃，旧快照可能仍含 W0 条目，渲染端需容错） */
 export interface WaveProgressEntry {
   id: 'W0' | 'W1' | 'W2' | 'W3'
@@ -611,6 +858,8 @@ export interface WaveProgressEntry {
   /** W1 专用：可验证规格条款总数 / 已覆盖数 */
   specClauseTotal?: number
   specClauseCovered?: number
+  /** W1 专用：曾通过但证据陈旧（待回归）的条款数；引擎透出，区别于从未验证 */
+  stalePassedCount?: number
   /** W2 专用：增补波主题列表 */
   topics?: Array<{ name: string; scenarioCount: number; passedCount: number }>
 }
@@ -619,12 +868,14 @@ export interface WaveProgressEntry {
 export interface SpecMapping {
   clauseTotal: number
   coveredClause: number
+  /** 曾通过但证据陈旧（待回归）的条款数（引擎透出，区别于从未验证） */
+  stalePassedCount?: number
   /** 文档性条款数（不参与完备性分母） */
   documentaryCount?: number
   /** 无映射条款（execution-summary 精简形状） */
   unmappedClause?: Array<{ specId: string; clause: string }>
   /** 全量条款映射（posture/state 完整形状，状态机 UNMAPPED/MAPPED_UNTESTED/PASSED/FAILED/WAIVED） */
-  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[]; channel?: string }>
+  clauses?: Array<{ clauseId: string; parentId: string; text: string; status: string; intentIds: string[]; scenarioIds: string[]; evidence: string[]; channel?: string; stalePassed?: boolean }>
 }
 
 /** Pi 当前会话累计用量；不同 Provider 可能省略费用或上下文估算。 */
@@ -666,6 +917,10 @@ export interface VerificationExecutedCase {
   errorMessage?: string
   /** 场景级阻断标签（来自 scenario_hits.json 的 blocker，如 RTL_L2_*） */
   blocker?: string
+  /** BUG-VERIF-BIND-001：该执行记录对应的场景 ID（scenario_hits 来源行才有） */
+  scenarioId?: string
+  /** BUG-VERIF-BIND-001：批次级绑定用例（scenarioIds 路径登记的运行用例集合；精确单用例在 testName） */
+  boundTestcases?: string[]
   timeSec?: number
 }
 

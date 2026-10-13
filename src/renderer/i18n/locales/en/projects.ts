@@ -42,5 +42,15 @@ export const projects: ProjectsMessages = {
   progress: 'Progress {resolved}/{total} ({percent}%)',
   updatedAt: 'Updated {time}',
   deleteTitle: 'Delete project',
-  deleteConfirm: 'Delete project "{name}"?'
+  deleteConfirm: 'Delete project "{name}"?',
+  // 会话活动徽标（Agent 会话实时状态）
+  sessionRunning: 'Session Running',
+  sessionRunningTooltip: 'Running sessions: {sessions}',
+  sessionIdle: 'Idle · Ready for Input',
+  sessionIdleTooltip: 'The current turn is complete; you can continue typing',
+  managedRunning: 'Managed · {phase}',
+  managedRunningTooltip: 'Managed run in progress: current {phase}, target {target} (started {since})',
+  // 上轮被应用退出中断（会话历史保留，续跑只需在原会话继续输入）
+  sessionInterrupted: 'Interrupted · Ready to Resume',
+  sessionInterruptedTooltip: 'Sessions interrupted on last quit: {sessions}; history is preserved, keep typing to resume'
 }

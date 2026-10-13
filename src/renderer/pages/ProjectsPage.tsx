@@ -2,12 +2,26 @@
  * 项目列表页（规格书 §5.2）
  */
 
-import { useEffect, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Cpu, FolderOpen, Plus, ScanSearch } from 'lucide-react'
-import { PHASE_ORDER, type ChipProject, type Phase, type ProjectImportAssessment } from '@shared/types'
+import { PHASE_ORDER, type ChipProject, type Phase, type ProjectImportAssessment, type ProjectSessionActivity } from '@shared/types'
 import { ProjectCard } from '../components/ProjectCard'
 import { phaseLabel, useTranslation } from '../i18n'
 import { useAppStore } from '../store/appStore'
+import { useManagedStore } from '../store/managedStore'
+
+/** 项目卡片自定义顺序的 localStorage 键 */
+const PROJECT_ORDER_KEY = 'moonglass:project-order'
+
+/** 读取用户自定义卡片顺序；损坏时回退为空（按创建时间稳定排序） */
+function loadProjectOrder(): string[] {
+  try {
+    const parsed: unknown = JSON.parse(localStorage.getItem(PROJECT_ORDER_KEY) ?? '[]')
+    return Array.isArray(parsed) ? parsed.filter((item): item is string => typeof item === 'string') : []
+  } catch {
+    return []
+  }
+}
 
 export function ProjectsPage(): React.JSX.Element {
   const { t } = useTranslation()
@@ -29,10 +43,170 @@ export function ProjectsPage(): React.JSX.Element {
   const [editName, setEditName] = useState('')
   const [editDescription, setEditDescription] = useState('')
   const [editError, setEditError] = useState('')
+  const [sessionActivity, setSessionActivity] = useState<Record<string, ProjectSessionActivity>>({})
+  const managedByProject = useManagedStore((state) => state.byProject)
+  /** 用户自定义卡片顺序（localStorage 持久化）；未保存过的项目按创建时间稳定排序追加在后 */
+  const [customOrder, setCustomOrder] = useState<string[]>(loadProjectOrder)
+  /** 长按拖拽状态：正在拖动的卡片、指针位置与抓取点偏移 */
+  const [dragState, setDragState] = useState<{ id: string; x: number; y: number; offsetX: number; offsetY: number; width: number; height: number } | null>(null)
+  /** 拖拽过程中的实时顺序（松手时持久化） */
+  const [liveOrder, setLiveOrder] = useState<string[] | null>(null)
+  const longPressRef = useRef<{ timer: number; startX: number; startY: number } | null>(null)
+  const suppressClickRef = useRef(false)
+  const gridRef = useRef<HTMLDivElement>(null)
+  /** FLIP 动画：重排前各卡片的位置快照 */
+  const positionsRef = useRef<Map<string, DOMRect>>(new Map())
+
+  // 卡片展示顺序：自定义顺序优先，新建/未保存的项目按创建时间升序稳定追加——
+  // 主进程 list() 按 updatedAt 排序会导致"点进项目回来位置变了"，这里覆盖为稳定顺序
+  const orderedProjects = useMemo(() => {
+    const byId = new Map(projects.map((p) => [p.id, p]))
+    const ordered: ChipProject[] = []
+    for (const id of customOrder) {
+      const project = byId.get(id)
+      if (project) {
+        ordered.push(project)
+        byId.delete(id)
+      }
+    }
+    const rest = [...byId.values()].sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+    return [...ordered, ...rest]
+  }, [projects, customOrder])
+
+  const displayProjects = liveOrder
+    ? liveOrder.flatMap((id) => orderedProjects.filter((p) => p.id === id))
+    : orderedProjects
+
+  const persistOrder = (ids: string[]): void => {
+    setCustomOrder(ids)
+    localStorage.setItem(PROJECT_ORDER_KEY, JSON.stringify(ids))
+  }
+
+  /** 重排前捕获各卡片位置，供 useLayoutEffect 做 FLIP 位移动画 */
+  const capturePositions = (): void => {
+    const map = new Map<string, DOMRect>()
+    gridRef.current?.querySelectorAll('[data-project-card]').forEach((el) => {
+      const id = el.getAttribute('data-project-card')
+      if (id) map.set(id, el.getBoundingClientRect())
+    })
+    positionsRef.current = map
+  }
+
+  // FLIP：展示顺序变化后，把位置变化的卡片从旧位置平滑滑动到新位置（"挤开"效果）
+  useLayoutEffect(() => {
+    const prev = positionsRef.current
+    if (prev.size === 0) return
+    positionsRef.current = new Map()
+    gridRef.current?.querySelectorAll('[data-project-card]').forEach((el) => {
+      const id = el.getAttribute('data-project-card')
+      const before = id ? prev.get(id) : undefined
+      if (!before) return
+      const after = el.getBoundingClientRect()
+      const dx = before.left - after.left
+      const dy = before.top - after.top
+      if (dx === 0 && dy === 0) return
+      const htmlEl = el as HTMLElement
+      htmlEl.style.transition = 'none'
+      htmlEl.style.transform = `translate(${dx}px, ${dy}px)`
+      requestAnimationFrame(() => {
+        htmlEl.style.transition = 'transform 180ms ease'
+        htmlEl.style.transform = ''
+      })
+    })
+  }, [displayProjects])
+
+  /** 长按卡片（350ms）进入拖拽；按住期间允许移动（肌肉记忆的先按后拖），仅松手取消 */
+  const handleCardPointerDown = (id: string) => (event: React.PointerEvent<HTMLDivElement>): void => {
+    if (event.button !== 0 || dragState) return
+    const rect = event.currentTarget.getBoundingClientRect()
+    const { clientX, clientY } = event
+    const timer = window.setTimeout(() => {
+      longPressRef.current = null
+      suppressClickRef.current = true
+      capturePositions()
+      setLiveOrder(orderedProjects.map((p) => p.id))
+      setDragState({ id, x: clientX, y: clientY, offsetX: clientX - rect.left, offsetY: clientY - rect.top, width: rect.width, height: rect.height })
+    }, 350)
+    longPressRef.current = { timer, startX: clientX, startY: clientY }
+  }
+
+  const cancelLongPress = (): void => {
+    const pending = longPressRef.current
+    if (!pending) return
+    window.clearTimeout(pending.timer)
+    longPressRef.current = null
+  }
+
+  // 拖拽中的全局指针监听：实时重排 + 松手持久化 + Esc 取消
+  useEffect(() => {
+    if (!dragState) return
+    const draggedId = dragState.id
+    const onPointerMove = (event: PointerEvent): void => {
+      const x = event.clientX
+      const y = event.clientY
+      setDragState((current) => (current ? { ...current, x, y } : current))
+      const targetEl = document.elementFromPoint(x, y)?.closest('[data-project-card]')
+      const targetId = targetEl?.getAttribute('data-project-card')
+      if (!targetId || targetId === draggedId) return
+      const rect = targetEl!.getBoundingClientRect()
+      const inRowBand = y >= rect.top && y <= rect.bottom
+      const insertBefore = inRowBand ? x < rect.left + rect.width / 2 : y < rect.top + rect.height / 2
+      setLiveOrder((current) => {
+        if (!current) return current
+        const from = current.indexOf(draggedId)
+        let to = current.indexOf(targetId)
+        if (from < 0 || to < 0) return current
+        if (!insertBefore) to += 1
+        if (from === to || from + 1 === to) return current
+        const next = [...current]
+        next.splice(from, 1)
+        next.splice(from < to ? to - 1 : to, 0, draggedId)
+        capturePositions()
+        return next
+      })
+    }
+    const onPointerUp = (): void => {
+      setLiveOrder((current) => {
+        if (current) persistOrder(current)
+        return null
+      })
+      setDragState(null)
+      // click 在 pointerup 后同步派发，需等它过完再解除抑制
+      window.setTimeout(() => { suppressClickRef.current = false }, 0)
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') {
+        setLiveOrder(null)
+        setDragState(null)
+        window.setTimeout(() => { suppressClickRef.current = false }, 0)
+      }
+    }
+    window.addEventListener('pointermove', onPointerMove)
+    window.addEventListener('pointerup', onPointerUp)
+    window.addEventListener('keydown', onKeyDown)
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove)
+      window.removeEventListener('pointerup', onPointerUp)
+      window.removeEventListener('keydown', onKeyDown)
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dragState !== null])
 
   useEffect(() => {
     void refreshProjects()
   }, [refreshProjects])
+
+  // 会话活动徽标轮询（3s，离开页面清理；失败保留旧数据不闪烁）
+  useEffect(() => {
+    let cancelled = false
+    const load = async (): Promise<void> => {
+      const activity = await window.moonglass.agent.getSessionActivity().catch(() => null)
+      if (!cancelled && activity) setSessionActivity(activity)
+    }
+    void load()
+    const timer = window.setInterval(() => void load(), 3_000)
+    return () => { cancelled = true; window.clearInterval(timer) }
+  }, [])
 
   const handleCreate = async (): Promise<void> => {
     if (!name.trim()) return
@@ -284,19 +458,59 @@ export function ProjectsPage(): React.JSX.Element {
           <Cpu className="mx-auto mb-3" size={38} strokeWidth={1.3} />
           <p>{t('projects.emptyState')}</p>
         </div>
-      ) : (
-        <div className="grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3">
-          {projects.map((p) => (
-            <ProjectCard
-              key={p.id}
-              project={p}
-              onDelete={handleDelete}
-              onMigrate={migratingProjectId ? undefined : handleMigrate}
-              onEdit={beginEdit}
-            />
-          ))}
+      ) : (<>
+        <div ref={gridRef} className={`grid grid-cols-1 gap-4 lg:grid-cols-2 xl:grid-cols-3 ${dragState ? 'select-none' : ''}`}>
+          {displayProjects.map((p) => {
+            const isDragged = dragState?.id === p.id
+            return (
+              <div
+                key={p.id}
+                data-project-card={p.id}
+                className="relative"
+                style={isDragged && dragState ? { height: dragState.height } : undefined}
+                onPointerDown={handleCardPointerDown(p.id)}
+                onPointerUp={cancelLongPress}
+                onPointerCancel={cancelLongPress}
+                onClickCapture={(event) => {
+                  // 长按拖拽结束后抑制随后的 click，避免误进项目
+                  if (suppressClickRef.current) {
+                    event.preventDefault()
+                    event.stopPropagation()
+                  }
+                }}
+              >
+                {isDragged ? (
+                  // 拖拽中：原位置渲染占位框，其他卡片实时挤开排位
+                  <div className="flex h-full items-center justify-center rounded-lg border-2 border-dashed border-sky-300 bg-sky-50/40 text-xs text-sky-500">
+                    {p.name}
+                  </div>
+                ) : (
+                  <ProjectCard
+                    project={p}
+                    activity={sessionActivity[p.id]}
+                    managed={managedByProject[p.id]}
+                    onDelete={handleDelete}
+                    onMigrate={migratingProjectId ? undefined : handleMigrate}
+                    onEdit={beginEdit}
+                  />
+                )}
+              </div>
+            )
+          })}
         </div>
-      )}
+        {/* 拖拽幽灵卡：跟随指针的简化卡片 */}
+        {dragState && (
+          <div
+            className="pointer-events-none fixed z-50 rounded-lg border border-sky-300 bg-white p-4 opacity-90 shadow-xl"
+            style={{ left: dragState.x - dragState.offsetX, top: dragState.y - dragState.offsetY, width: dragState.width }}
+          >
+            <div className="font-semibold text-zinc-900">{orderedProjects.find((p) => p.id === dragState.id)?.name}</div>
+            <div className="mt-1 text-xs text-zinc-500">
+              {phaseLabel(orderedProjects.find((p) => p.id === dragState.id)?.currentPhase ?? 'REQ_SPEC')}
+            </div>
+          </div>
+        )}
+      </>)}
     </div>
   )
 }

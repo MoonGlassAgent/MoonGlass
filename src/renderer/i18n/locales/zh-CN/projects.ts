@@ -42,7 +42,17 @@ export const projects = {
   progress: '进度 {resolved}/{total}（{percent}%）',
   updatedAt: '更新于 {time}',
   deleteTitle: '删除项目',
-  deleteConfirm: '确认删除项目「{name}」？'
+  deleteConfirm: '确认删除项目「{name}」？',
+  // 会话活动徽标（Agent 会话实时状态）
+  sessionRunning: '会话进行中',
+  sessionRunningTooltip: '进行中的会话：{sessions}',
+  sessionIdle: '空闲 · 可继续输入',
+  sessionIdleTooltip: '当前轮对话已完成，可以继续输入',
+  managedRunning: '托管中 · {phase}',
+  managedRunningTooltip: '一键托管运行中：当前 {phase}，终点 {target}（开始于 {since}）',
+  // 上轮被应用退出中断（会话历史保留，续跑只需在原会话继续输入）
+  sessionInterrupted: '上轮中断 · 可继续输入',
+  sessionInterruptedTooltip: '上轮退出时中断的会话：{sessions}；历史已保留，继续输入即可续跑'
 }
 
 export type ProjectsMessages = typeof projects

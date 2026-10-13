@@ -8,7 +8,9 @@ import type {
   AgentSessionInfo,
   AgentSessionStats,
   AgentUiMessage,
+  ArtifactDriftEntry,
   ChipProject,
+  EnvSelfCheckReport,
   FileContentResult,
   FileTreeNode,
   GateCheckResult,
@@ -22,6 +24,7 @@ import type {
   PhaseResetMode,
   PhaseResetPreview,
   PhaseResetResult,
+  ProjectSessionActivity,
   PythonRunRequest,
   PythonRunResult,
   ToolDetection,
@@ -29,6 +32,7 @@ import type {
   ToolInstallResult,
   VerifBatchLoopResult,
   VerifBatchRunResult,
+  VerifRunLoopStartOptions,
   WaveformOpenResult
 } from './types/moonglass'
 import type { OpenProcessLibrary, ProcessLibraryRecord } from './types/moonglass'
@@ -47,7 +51,8 @@ export const IPC = {
     Update: 'project:update',
     Delete: 'project:delete',
     Migrate: 'project:migrate',
-    GenerateDashboard: 'project:generate-dashboard'
+    GenerateDashboard: 'project:generate-dashboard',
+    ReconcileArtifacts: 'project:reconcile-artifacts'
   },
   Phase: {
     Advance: 'phase:advance',
@@ -67,7 +72,9 @@ export const IPC = {
     InstallMissing: 'eda:install-missing',
     GetInstallStatus: 'eda:get-install-status',
     OpenInstallPage: 'eda:open-install-page',
-    OpenWaveform: 'eda:open-waveform'
+    OpenWaveform: 'eda:open-waveform',
+    /** 用户侧环境自检（T6 env doctor）：主进程逐项执行最小端到端检查 */
+    SelfCheck: 'eda:self-check'
   },
   Python: {
     Run: 'python:run'
@@ -87,6 +94,8 @@ export const IPC = {
     /** 只读窥视指定会话的消息（解析会话 JSONL，不 attach / 不切换 / 不 spawn） */
     GetSessionMessages: 'agent:get-session-messages',
     GetSessionStats: 'agent:get-session-stats',
+    /** 全部项目的会话活动聚合（项目卡片徽标轮询）；只含有存活会话的项目 */
+    GetSessionActivity: 'agent:get-session-activity',
     SetContextWindowOverride: 'agent:set-context-window-override',
     ResetSession: 'agent:reset-session',
     /** 开启任务粒度会话（M1）：新会话零历史继承，会话头带 parentSession 血缘 */
@@ -101,7 +110,16 @@ export const IPC = {
     /** VERIF 批次编排（第 3 批）：单个批次 / 循环派发 */
     RunVerifBatch: 'agent:run-verif-batch',
     RunVerifBatches: 'agent:run-verif-batches',
-    StopVerifBatches: 'agent:stop-verif-batches'
+    StopVerifBatches: 'agent:stop-verif-batches',
+    /** 验证运行循环（VERIF-RUN-LOOP 批 2）：外层循环启动/暂停/恢复/停止；状态读取走 fs.readJson(run-loop.json) + 既有 watch */
+    StartVerifRunLoop: 'agent:start-verif-run-loop',
+    PauseVerifRunLoop: 'agent:pause-verif-run-loop',
+    ResumeVerifRunLoop: 'agent:resume-verif-run-loop',
+    StopVerifRunLoop: 'agent:stop-verif-run-loop',
+    /** 循环决策层（批 3，§3.3）：工程师对挂起决策给出批准/否决；决策账本 verification/results/decision-ledger.json */
+    DecideVerifRunDecision: 'agent:decide-verif-run-decision',
+    /** 模块级轻量 UT（MODULE-UT）：发起指定模块的独立 UT 会话；锁账本 verification/results/ut-sessions.json */
+    StartModuleUt: 'agent:start-module-ut'
   },
   Fs: {
     Tree: 'fs:tree',
@@ -109,7 +127,14 @@ export const IPC = {
     ReadJson: 'fs:read-json',
     WriteText: 'fs:write-text',
     OpenExternal: 'fs:open-external',
-    VerificationStatus: 'fs:verification-status'
+    VerificationStatus: 'fs:verification-status',
+    /** 验证工作台结论快照（只读投影：条款计数 + 证据有效性 + 签核状态，主进程侧核对当前 RTL 版本） */
+    VerificationWorkbench: 'fs:verification-workbench',
+    /** 订阅/退订项目 verification/ 目录监视（引用计数；仅 .json 变更触发推送） */
+    WatchVerification: 'fs:watch-verification',
+    UnwatchVerification: 'fs:unwatch-verification',
+    /** 主进程 → 渲染进程推送：verification/ 下 JSON 产物发生变化（send，非 invoke） */
+    VerificationChanged: 'verification:changed'
   },
   Coverage: {
     Detail: 'coverage:detail'
@@ -155,6 +180,8 @@ export interface MoonGlassApi {
     delete(id: string): Promise<boolean>
     migrate(id: string, destinationPath: string): Promise<ProjectMigrationResult>
     generateDashboard(id: string): Promise<{ path: string; generatedAt: string; opened: boolean }>
+    /** 阶段产物漂移对账：返回记录已完成但产物已全部从磁盘消失的阶段清单 */
+    reconcileArtifacts(projectId: string): Promise<ArtifactDriftEntry[]>
   }
   phase: {
     /** 推进阶段（先跑门禁检查，Error 级失败则阻断并返回未推进的原状态；
@@ -172,7 +199,7 @@ export interface MoonGlassApi {
     /** 完成最终综合阶段并将项目标记为完成 */
     completeProject(projectId: string): Promise<ChipProject | null>
     previewReset(projectId: string, phase: Phase, mode: PhaseResetMode): Promise<PhaseResetPreview>
-    reset(projectId: string, phase: Phase, mode: PhaseResetMode): Promise<PhaseResetResult>
+    reset(projectId: string, phase: Phase, mode: PhaseResetMode, options?: { resetDownstream?: boolean }): Promise<PhaseResetResult>
   }
   eda: {
     /** 默认返回持久缓存；force=true 时重新扫描开发环境和 EDA 工具。 */
@@ -184,6 +211,8 @@ export interface MoonGlassApi {
     openInstallPage(url: string): Promise<boolean>
     /** 使用 GTKWave 打开项目内的 VCD/FST 波形文件 */
     openWaveform(projectId: string, relPath: string): Promise<WaveformOpenResult>
+    /** 用户侧环境自检（T6）：逐项执行最小端到端检查并返回 PASS/FAIL/跳过明细与修复指引 */
+    runEnvironmentSelfCheck(): Promise<EnvSelfCheckReport>
   }
   python: {
     run(req: PythonRunRequest): Promise<PythonRunResult>
@@ -208,6 +237,8 @@ export interface MoonGlassApi {
     getSessionMessages(projectId: string, sessionName: string): Promise<AgentUiMessage[]>
     /** 当前活动会话的 Token、费用和上下文窗口统计。 */
     getSessionStats(projectId: string): Promise<AgentSessionStats | null>
+    /** 全部项目的会话活动聚合（项目列表页卡片徽标轮询）；只含有存活会话的项目 */
+    getSessionActivity(): Promise<Record<string, ProjectSessionActivity>>
     /** 为当前会话所选模型自定义上下文窗口上限（Token，null 恢复自动判定）；按模型持久化，跨项目生效 */
     setContextWindowOverride(projectId: string, contextWindow: number | null): Promise<void>
     /** 创建平行会话（不关闭当前会话）。name 可选，默认自动生成 review-<时间戳> */
@@ -241,6 +272,19 @@ export interface MoonGlassApi {
     runVerifBatches(projectId: string, options?: { batchSize?: number; maxBatches?: number }): Promise<VerifBatchLoopResult>
     /** 停止 VERIF 批次编排：中止进行中的批次会话并不再派发新批次 */
     stopVerifBatches(projectId: string): Promise<void>
+    /** 启动 VERIF 验证运行循环（批 2，仅 VERIF 阶段、同项目单循环）；状态读取走 fs.readJson + 既有 watch，不经 IPC */
+    startVerifRunLoop(projectId: string, options?: VerifRunLoopStartOptions): Promise<void>
+    pauseVerifRunLoop(projectId: string): Promise<void>
+    /** 恢复：清暂停并重新推导续跑（paused-human/paused-breaker 态） */
+    /** 恢复循环；可传 options 抬高预算上限（须严格大于当前消耗，计数不归零）；手动继续时墙钟开窗重置 */
+    resumeVerifRunLoop(projectId: string, options?: VerifRunLoopStartOptions): Promise<void>
+    stopVerifRunLoop(projectId: string): Promise<void>
+    /** 循环决策层（批 3，§3.3）：工程师对挂起的 LLM 提案给出批准/否决，可附修改后的指令；
+     *  批准后循环拾取执行（合法性校验不过 → 记 rejected 并抛错） */
+    decideVerifRunDecision(projectId: string, decisionId: string, verdict: 'approved' | 'rejected', editedPrompt?: string): Promise<void>
+    /** 模块级轻量 UT（MODULE-UT）：对 rtl/ 指定模块发起独立 UT 会话（probe 隔离，主循环互斥挂起）；
+     *  同模块 UT 已在跑 / 模块不存在 / 非 VERIF 阶段 / 无可用 provider 时 reject */
+    startModuleUt(projectId: string, moduleName: string): Promise<{ utId: string }>
     /** 订阅流式事件，返回退订函数 */
     onEvent(cb: (payload: AgentEventPayload) => void): () => void
   }
@@ -255,9 +299,20 @@ export interface MoonGlassApi {
     writeText(projectId: string, relPath: string, content: string): Promise<boolean>
     /** 读取验证环境与用例执行状态（环境是否搭建、已执行/未完成用例及 pass/fail）。 */
     verificationStatus(projectId: string): Promise<import('./types/moonglass').VerificationRunStatus>
+    /**
+     * 验证工作台结论快照：区分"记录通过"与"当前有效通过"，标注证据缺失/过期/待重验，
+     * 并在缺少评估时给出 unknown 而不是"零 blocker 即就绪"。只读，不触发调度。
+     */
+    verificationWorkbench(projectId: string): Promise<import('./verification-workbench').VerificationWorkbenchSnapshot | null>
     /** 在系统默认程序中打开文件（如 .html 用浏览器、.xml 用浏览器/编辑器） */
     /** 在系统浏览器/默认程序中打开项目文件；路径必须相对项目工作区。 */
     openExternal(projectId: string, relPath: string): Promise<boolean>
+    /** 开始监视项目 verification/ 目录（幂等、引用计数）；引擎产物/证据 JSON 变化时推送 VerificationChanged */
+    watchVerification(projectId: string): Promise<void>
+    /** 退订监视（引用计数归零才真正关闭 watcher） */
+    unwatchVerification(projectId: string): Promise<void>
+    /** 订阅 verification/ 变更推送，返回退订函数 */
+    onVerificationChanged(cb: (payload: { projectId: string }) => void): () => void
   }
   coverage: {
     /** 读取 verification/results/<scenario>/ 下的 Verilator 覆盖率明细（优先缓存，回退解析 coverage.dat） */

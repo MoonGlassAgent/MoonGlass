@@ -14,6 +14,7 @@ import { DECISION_RESPONSE_PREFIX, serializeDecisionResponses } from '@shared/ag
 import { FILE_REFERENCE_SOURCE, isFileReference } from '@shared/file-reference'
 import { useChatStore } from '../store/chatStore'
 import { useTranslation, phaseLabel, t } from '../i18n'
+import { ProposedDecisionCard, type VerifRunDecisionEntryView } from './verif-run'
 
 interface SessionInfo {
   name: string
@@ -32,9 +33,44 @@ function isBatchSession(name: string): boolean {
   return name.includes('--batch-') || name.includes('--fix-')
 }
 
+/**
+ * 聊天输入框事件诊断（排查间歇性"无法键入"）：
+ * localStorage 置 moonglass:chat-input-debug=1 并刷新后，把组合输入(IME)/按键/
+ * 输入/焦点/disabled 变化/长任务打到 console。取证后删除该 flag 即可关闭。
+ */
+function chatInputDebug(event: string, detail?: unknown): void {
+  if (localStorage.getItem('moonglass:chat-input-debug') !== '1') return
+  console.log(`[chat-input] ${new Date().toISOString().slice(11, 23)} ${event}`, detail ?? '')
+}
+
+/** 长任务观察（仅在诊断 flag 开启时安装，随组件卸载清理） */
+function installChatInputDebugObservers(textarea: HTMLTextAreaElement): (() => void) | null {
+  if (localStorage.getItem('moonglass:chat-input-debug') !== '1') return null
+  let lastDisabled = textarea.disabled
+  const mutation = new MutationObserver(() => {
+    if (textarea.disabled !== lastDisabled) {
+      lastDisabled = textarea.disabled
+      chatInputDebug('disabled-flap', { disabled: textarea.disabled })
+    }
+  })
+  mutation.observe(textarea, { attributes: true, attributeFilter: ['disabled'] })
+  let perf: PerformanceObserver | null = null
+  try {
+    perf = new PerformanceObserver((list) => {
+      for (const entry of list.getEntries()) chatInputDebug('longtask', { ms: Math.round(entry.duration) })
+    })
+    perf.observe({ entryTypes: ['longtask'] })
+  } catch { /* 环境不支持 longtask 观察 */ }
+  return () => { mutation.disconnect(); perf?.disconnect() }
+}
+
 interface ChatPanelProps {
   projectId: string
   phase: Phase
+  /** 验证运行循环待审批决策（VERIF-RUN-LOOP §7.1：请示进会话底部）；空数组/缺省不渲染 */
+  loopDecisions?: VerifRunDecisionEntryView[]
+  /** 循环决策批准/否决回调（经 agent:decide-verif-run-decision IPC 落账本） */
+  onLoopDecision?: (decisionId: string, verdict: 'approved' | 'rejected') => Promise<void>
 }
 
 function formatTokens(value: number): string {
@@ -180,10 +216,10 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
         <span
           key={session.name}
           title={`${t('chat.tabs.sessionTitle', { label: session.label, count: session.messageCount })}${session.modelLabel ? t('chat.tabs.sessionTitleModel', { model: session.modelLabel }) : t('chat.tabs.sessionTitleNoModel')}`}
-          className={`flex max-w-48 shrink-0 items-center rounded-t border-x border-t text-xs ${
+          className={`flex max-w-44 shrink-0 items-center rounded-full border text-[11px] ${
             session.isActive
-              ? 'border-blue-300 bg-blue-50 font-medium text-blue-700'
-              : 'border-transparent text-zinc-500 hover:bg-zinc-50 hover:text-zinc-800'
+              ? 'border-sky-300 bg-sky-50 font-medium text-sky-700'
+              : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:bg-white hover:text-zinc-700'
           }`}
         >
           <button
@@ -195,8 +231,10 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
               else void select(session.name)
             }}
             title={isBatchSession(session.name) ? t('chat.tabs.peekBatch') : undefined}
-            className="min-w-0 truncate px-3 py-1.5 disabled:opacity-50"
+            className="min-w-0 truncate px-2.5 py-0.5 disabled:opacity-50"
           >
+            {/* 会话身份的上下文指示点（进行中脉冲），不再是"选中页签"语义 */}
+            {session.isActive && <span className={`mr-1 inline-block size-1.5 rounded-full align-middle ${session.isRunning ? 'animate-pulse bg-sky-500' : 'bg-sky-400'}`} />}
             {session.name === 'main' ? t('chat.mainSession') : session.label.replace(/\s*\([^)]*\)$/, '')}
             {isBatchSession(session.name) && (
               <span className={`ml-1 text-[10px] font-normal ${session.isRunning ? 'text-amber-600' : 'opacity-60'}`}>
@@ -214,7 +252,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
               onClick={() => void close(session)}
               aria-label={t('chat.tabs.closeAria', { label: session.label })}
               title={t('chat.tabs.closeTitle')}
-              className="mr-1 flex h-5 w-5 shrink-0 items-center justify-center rounded text-zinc-400 hover:bg-red-100 hover:text-red-600 disabled:opacity-50"
+              className="mr-1 flex h-4 w-4 shrink-0 items-center justify-center rounded-full text-zinc-400 hover:bg-red-100 hover:text-red-600 disabled:opacity-50"
             >
               ×
             </button>
@@ -228,7 +266,7 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
           setShowDialog(true)
         }}
         title={t('chat.tabs.newTaskTitle')}
-        className="flex h-7 w-7 shrink-0 items-center justify-center rounded text-base text-zinc-500 hover:bg-zinc-100 hover:text-blue-700"
+        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-sm text-zinc-500 hover:bg-white hover:text-sky-700"
       >
         +
       </button>
@@ -377,7 +415,7 @@ function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; 
   )
 }
 
-export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Element {
+export function ChatPanel({ projectId, phase, loopDecisions, onLoopDecision }: ChatPanelProps): React.JSX.Element {
   const { t } = useTranslation()
   const {
     sessionInfo,
@@ -413,6 +451,15 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const [contextLimitError, setContextLimitError] = useState('')
   const historyDraftRef = useRef('')
   const bottomRef = useRef<HTMLDivElement>(null)
+  const composerRef = useRef<HTMLTextAreaElement>(null)
+
+  // 输入框事件诊断观察器（仅 moonglass:chat-input-debug=1 时安装）
+  useEffect(() => {
+    const el = composerRef.current
+    if (!el) return
+    const cleanup = installChatInputDebugObservers(el)
+    return () => cleanup?.()
+  }, [])
 
   const inputHistory = useMemo(
     () => messages
@@ -554,8 +601,14 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
   const pendingDecisions = messages
     .flatMap((message) => message.decisionRequest ? [message.decisionRequest] : [])
     .filter((request) => !decisionResponses.has(request.id))
+  /** 待确认决策 ID 集合：这些卡片不在原消息位置渲染，统一提升到底部 */
+  const pendingDecisionIds = new Set(pendingDecisions.map((request) => request.id))
   const completedDraftCount = pendingDecisions.filter((request) => Boolean(decisionDrafts[request.id])).length
   const allDecisionsReady = pendingDecisions.length > 0 && completedDraftCount === pendingDecisions.length
+  /** 滚动到会话底部（待确认决策集中区） */
+  const scrollToPending = useCallback((): void => {
+    bottomRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }, [])
   const selectedModelValue = sessionInfo?.selectedModel
     ? JSON.stringify([sessionInfo.selectedModel.providerId, sessionInfo.selectedModel.modelId])
     : ''
@@ -855,6 +908,8 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
               decisionDisabled={streaming}
               onDecision={handleDecisionDraft}
               decisionDraft={m.decisionRequest ? decisionDrafts[m.decisionRequest.id] : undefined}
+              decisionHoisted={m.decisionRequest ? pendingDecisionIds.has(m.decisionRequest.id) : false}
+              onScrollToPending={scrollToPending}
             />
           ))}
           {streaming && messages.at(-1)?.role !== 'assistant' && (
@@ -862,18 +917,43 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
           )}
         </div>
         {pendingDecisions.length > 0 && (
-          <div className="mt-3 flex items-center justify-between gap-3 rounded border border-blue-200 bg-blue-50 px-4 py-3">
-            <span className="text-xs text-blue-800">
+          <div className="mt-3 space-y-3 rounded border border-blue-200 bg-blue-50/60 p-3">
+            <span className="block text-xs font-medium text-blue-800">
               {t('chat.pendingDecisions', { done: completedDraftCount, total: pendingDecisions.length })}
+              <span className="ml-1 font-normal text-blue-600">{t('chat.decision.hoistedHint')}</span>
             </span>
-            <button
-              type="button"
-              disabled={!allDecisionsReady || streaming}
-              onClick={submitAllDecisions}
-              className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              {t('chat.submitAllDecisions')}
-            </button>
+            {/* 待确认项集中渲染在会话最新位置，不再随消息流被顶上去 */}
+            {pendingDecisions.map((request) => (
+              <DecisionCard
+                key={request.id}
+                request={request}
+                disabled={streaming}
+                onSubmit={handleDecisionDraft}
+                draft={decisionDrafts[request.id]}
+              />
+            ))}
+            <div className="flex items-center justify-end gap-3 border-t border-blue-200 pt-2">
+              <button
+                type="button"
+                disabled={!allDecisionsReady || streaming}
+                onClick={submitAllDecisions}
+                className="rounded bg-blue-600 px-4 py-2 text-xs font-medium text-white hover:bg-blue-500 disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                {t('chat.submitAllDecisions')}
+              </button>
+            </div>
+          </div>
+        )}
+        {/* 验证运行循环决策请示（VERIF-RUN-LOOP §7.1：提案在会话底部集中呈卡，批准/否决直达循环账本） */}
+        {loopDecisions && onLoopDecision && loopDecisions.some((decision) => decision.status === 'proposed') && (
+          <div className="mt-3 space-y-3 rounded border border-violet-200 bg-violet-50/60 p-3">
+            <span className="block text-xs font-medium text-violet-800">
+              {t('verifRun.loop.decisionsTitle')}
+              <span className="ml-1 font-normal text-violet-600">{t('verifRun.loop.proposedHint')}</span>
+            </span>
+            {loopDecisions.filter((decision) => decision.status === 'proposed').map((decision) => (
+              <ProposedDecisionCard key={decision.id || `${decision.createdAt}-${decision.action.prompt}`} decision={decision} onDecide={onLoopDecision} />
+            ))}
           </div>
         )}
         <div ref={bottomRef} />
@@ -924,14 +1004,21 @@ export function ChatPanel({ projectId, phase }: ChatPanelProps): React.JSX.Eleme
         />
         <div className="flex w-full items-end gap-2">
           <textarea
+            ref={composerRef}
             value={input}
             onChange={(e) => {
+              chatInputDebug('input', { len: e.target.value.length, disabled: e.target.disabled })
               setInput(e.target.value)
               setHistoryIndex(null)
               historyDraftRef.current = e.target.value
             }}
+            onCompositionStart={() => chatInputDebug('compositionstart')}
+            onCompositionEnd={(e) => chatInputDebug('compositionend', { len: e.currentTarget.value.length })}
+            onFocus={() => chatInputDebug('focus')}
+            onBlur={() => chatInputDebug('blur', { activeElement: document.activeElement?.tagName ?? 'null' })}
             onPaste={handlePaste}
             onKeyDown={(e) => {
+              chatInputDebug('keydown', { key: e.key, composing: e.nativeEvent.isComposing, disabled: e.currentTarget.disabled })
               if (!e.nativeEvent.isComposing && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
                 const beforeCursor = e.currentTarget.value.slice(0, e.currentTarget.selectionStart)
                 const afterCursor = e.currentTarget.value.slice(e.currentTarget.selectionEnd)
@@ -1000,13 +1087,18 @@ function MessageBubbleImpl({
   decisionResponse,
   decisionDisabled,
   onDecision,
-  decisionDraft
+  decisionDraft,
+  decisionHoisted,
+  onScrollToPending
 }: {
   msg: AgentUiMessage
   decisionResponse?: AgentDecisionResponse
   decisionDisabled: boolean
   onDecision: (request: AgentDecisionRequest, selectedIds: string[], customText: string) => void
   decisionDraft?: { selectedIds: string[]; customText: string }
+  /** 未确认的决策卡被提升到会话底部集中处理；原位置只留占位标记 */
+  decisionHoisted?: boolean
+  onScrollToPending?: () => void
 }): React.JSX.Element {
   const { t, locale } = useTranslation()
   const thinkingRef = useRef<HTMLDetailsElement>(null)
@@ -1040,6 +1132,18 @@ function MessageBubbleImpl({
 
   if (msg.role === 'tool') {
     if (msg.decisionRequest) {
+      // 待确认项已提升到底部：原位置留可点击的占位标记，避免用户在长会话中翻找
+      if (decisionHoisted) {
+        return (
+          <button
+            type="button"
+            onClick={onScrollToPending}
+            className="message-tool w-full max-w-2xl self-start rounded border border-dashed border-blue-300 bg-blue-50/50 px-3 py-1.5 text-left text-xs text-blue-600 hover:bg-blue-50"
+          >
+            ▸ {t('chat.decision.hoisted', { title: msg.decisionRequest.title })}
+          </button>
+        )
+      }
       return (
         <DecisionCard
           request={msg.decisionRequest}

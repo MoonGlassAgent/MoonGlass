@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { AlertTriangle, ArrowLeft, ArrowRight, CheckCircle2, ChevronDown, ChevronRight, Circle, FileSearch, Play, RefreshCw, ShieldCheck, Wrench, XCircle } from 'lucide-react'
 import type { ChipProject, SpecMapping, VerificationRunStatus, WaveProgressEntry } from '@shared/types'
@@ -6,12 +6,35 @@ import { useChatStore } from '../store/chatStore'
 import { deriveTopRisks, deriveVerificationActions, deriveVerificationSteps, topicExplanation, type ExplainedRisk } from '../verification-guidance'
 import { useTranslation, type MessageKey } from '../i18n'
 import { CoverageDetailPanel } from '../components/CoverageDetailPanel'
+import { GlossaryTip } from '../components/GlossaryTip'
+import {
+  DiagnosticTimelineSection,
+  RootCauseChainSection,
+  normalizeDiagnosticControl,
+  normalizeRootCauseRecords,
+  normalizeRtlFixOutcomes,
+  type DiagnosticControlView,
+  type RootCauseRecordView,
+  type RtlFixOutcomeView,
+  type UtEscalationTimelineEvent
+} from '../components/verif-run'
+import { useVerificationChanged } from '../hooks/useVerificationChanged'
 
 interface RiskMarker { id: string; taxonomyId?: string; title: string; riskStatement?: string; rationale?: string; failureModes?: string[]; observableEffects?: string[]; object: string; features: string[]; structuralComplexity: number; interaction: number; riskScore: number; confidence: string; source: { file: string; line?: number } }
 interface SpecGap { id: string; category: string; title: string; description?: string; impact: string; action: string; confidence: string; requirementIds: string[]; rtlObjects: string[]; sources?: Array<{ file: string; line?: number }> }
 interface Intent { id: string; scenarioId: string; objective: string; rationale?: string; failureMode?: string; sourceIds?: string[]; status: string; priority: number; recommendedMethods: string[]; preconditions?: string[]; stimulusProcedure?: string[]; observationPoints?: string[]; expectedResults?: string[]; passCriteria?: string[]; boundaries: Array<{ object: string; values: string[] }>; evidence: string[]; wave?: string; topic?: string }
 /** 用例全景行数据源：scenario-registry.json 的场景条目（posture 精简快照不含 scenarios，单独读取） */
-interface PanoramaScenario { id: string; title?: string; wave?: string; topic?: string; status?: string; state?: { closure?: string } }
+interface PanoramaScenario { id: string; title?: string; wave?: string; topic?: string; status?: string; state?: { closure?: string }; /** 方案 C 批 1 §3.3 失败摘要透传字段：仅 FAIL 证据携带 */ failureSummary?: string; /** AIGV 修订 §7.3：CONFIG_DERIVED 配置点场景的来源标记 */ origin?: string; configPoint?: { class: string; refs: string[] } }
+interface UtEscalationRecord { id: string; module: string; reason: string; failureSignature?: string | null; rootCauseId?: string | null; topScenarioIds?: string[]; createdAt: string; status: 'active' | 'retired'; retiredReason?: string | null }
+/** 配置覆盖矩阵视图（posture.configCoverage，§4.5 采集文件的引擎归一化结果；字段缺省宽容解析） */
+interface ConfigCoverageView {
+  generatedAt: string
+  rtlHash: string | null
+  topModule: string | null
+  stale: boolean
+  coverpoints: Array<{ id: string; field: string; buckets: Array<{ label: string; hits: number }>; hitBuckets: number; bucketCount: number; hitRate: number; totalHits: number }>
+  crosses: Array<{ id: string; fields: string[]; bins: Array<{ key: string; hits: number }>; hitBins: number; binCount: number; hitRate: number; totalHits: number }>
+}
 interface CoverageHole { id: string; scenarioId: string; scenarioTitle?: string; classification: string; confidence: string; reason: string; missingTarget?: string; requiredStimulus?: string[]; requiredObservation?: string[]; closureEvidence?: string[]; recommendedAction: string; blocking: boolean }
 interface VerificationState {
   generatedAt: string
@@ -39,6 +62,10 @@ interface VerificationState {
   residualRiskRegister?: Array<{ id: string; category: string; title: string; impact: string; approved: boolean; approvalRequired: boolean; approval?: { approver: string; rationale: string; approvedAt: string } }>
   signoffPackage?: { packageId: string; status: string; summary: string; blockers: string[]; warnings: string[]; evidenceFiles: string[] }
   moduleVerificationStrategy?: ModuleVerificationStrategy
+  /** UT 例外登记表（§3.2：策略表 UT_EXCEPTION 徽标悬浮与诊断时间线事件点数据源） */
+  utEscalations?: UtEscalationRecord[]
+  /** 配置覆盖矩阵（§4.5：缺文件/损坏时引擎不写该字段，页面不渲染配置覆盖区块） */
+  configCoverage?: ConfigCoverageView
   structuralSummary?: { fsm: number; cfgNodes: number; dependencies: number; cones: number; protocols: Array<{ protocol: string; module: string }> }
   analyzer?: { engine: string; version?: string; limitations: string[] }
   waveProgress?: WaveProgressEntry[]
@@ -49,14 +76,22 @@ interface VerificationState {
   /** blockedBySpecCount 由引擎写入 specMapping（共享类型未声明，页面本地扩展） */
   specMapping?: SpecMapping & { blockedBySpecCount?: number }
 }
-interface DiagnosticControl { mode: 'NORMAL_DEBUG' | 'DIAGNOSTIC_ENHANCEMENT' | 'CLOSED'; activeCase: string; recommendation: string; attempts: Array<{ diagnosticLevel: string; passed: boolean; createdAt: string; observations: string[] }> }
+/** 模块验证策略两态（AIGV 修订 §3.1）：渲染端本地镜像引擎 normalizeModuleVerificationLevel（types.ts:261），禁止 import 引擎包。 */
+type ModuleVerificationLevel = 'TOP_SIGNOFF' | 'COVERED_BY_TOP' | 'UT_EXCEPTION'
+/** 旧四级枚举（旧策略文件读取兼容；引擎已不再产生） */
+type LegacyModuleVerificationLevel = 'STATIC_ONLY' | 'UNIT_SMOKE' | 'UNIT_FOCUSED' | 'IP_SIGNOFF'
+const normalizeModuleVerificationLevel = (level: string | null | undefined): ModuleVerificationLevel => {
+  if (level === 'TOP_SIGNOFF' || level === 'COVERED_BY_TOP' || level === 'UT_EXCEPTION') return level
+  return level === 'IP_SIGNOFF' ? 'TOP_SIGNOFF' : 'COVERED_BY_TOP'
+}
 interface ModuleVerificationStrategy {
   topModules: string[]
-  summary: { STATIC_ONLY: number; UNIT_SMOKE: number; UNIT_FOCUSED: number; IP_SIGNOFF: number }
+  /** 新两态 summary；旧四级文件无对应键，计数一律按 modules 归一化重算 */
+  summary: Partial<Record<ModuleVerificationLevel | LegacyModuleVerificationLevel, number>>
   modules: Array<{
     module: string
     role: string
-    level: 'STATIC_ONLY' | 'UNIT_SMOKE' | 'UNIT_FOCUSED' | 'IP_SIGNOFF'
+    level: ModuleVerificationLevel | LegacyModuleVerificationLevel
     riskScore: number
     reasons: string[]
     oracleStrategies: string[]
@@ -79,6 +114,21 @@ const CLAUSE_STATUS_LABELS: Record<string, { labelKey: MessageKey; cls: string }
 }
 /** 识别被误当为 Spec Gap 的 markdown 版本历史表格行等垃圾数据。 */
 const looksLikeGarbage = (text: string): boolean => /\|\s*\d+\.\d+\s*\|/.test(text) || /版本历史|变更描述|日期|作者/.test(text)
+/** posture.configCoverage 宽容归一化：顶层结构不符按无数据处理（页面不渲染配置覆盖区块）。 */
+const normalizeConfigCoverage = (raw: unknown): ConfigCoverageView | undefined => {
+  if (!raw || typeof raw !== 'object') return undefined
+  const data = raw as Record<string, unknown>
+  if (!Array.isArray(data.coverpoints) || !Array.isArray(data.crosses)) return undefined
+  const view = data as unknown as ConfigCoverageView
+  return {
+    generatedAt: typeof view.generatedAt === 'string' ? view.generatedAt : '',
+    rtlHash: typeof view.rtlHash === 'string' ? view.rtlHash : null,
+    topModule: typeof view.topModule === 'string' ? view.topModule : null,
+    stale: view.stale === true,
+    coverpoints: Array.isArray(view.coverpoints) ? view.coverpoints : [],
+    crosses: Array.isArray(view.crosses) ? view.crosses : []
+  }
+}
 const pause = (milliseconds: number): Promise<void> => new Promise((resolve) => window.setTimeout(resolve, milliseconds))
 const HOLE_LABELS: Record<string, MessageKey> = {
   C1_UNREACHABLE: 'verification.holeLabels.C1_UNREACHABLE', C2_CONSTRAINT_BLOCKED: 'verification.holeLabels.C2_CONSTRAINT_BLOCKED', C3_STIMULUS_MISSING: 'verification.holeLabels.C3_STIMULUS_MISSING',
@@ -102,7 +152,7 @@ const HEAT_LEVEL_KEYS: MessageKey[] = ['verification.heatLevels.low', 'verificat
 const PANORAMA_WAVE_LABELS: Record<string, string> = { smoke: 'W1', basic: 'W1', corner: 'W2', signoff: 'W3' }
 type PanoramaCategory = 'failed' | 'specBlocked' | 'planned' | 'unplanned' | 'verified' | 'waived'
 type PanoramaFilter = 'all' | 'failing' | 'pending' | 'unplanned'
-interface PanoramaRow { id: string; what: string; waveLabel: string; topic?: string; topicWhy?: string; tests: Array<{ label: string; status?: string }>; category: PanoramaCategory; why: string; whyTitle?: string; when: string; planOrder: number }
+interface PanoramaRow { id: string; what: string; waveLabel: string; topic?: string; topicWhy?: string; configPoint?: { class: string; refs: string[] }; tests: Array<{ label: string; status?: string }>; category: PanoramaCategory; why: string; whyTitle?: string; when: string; planOrder: number; /** BUG-VERIF-BIND-001：无用例时的语义区分——豁免/Formal/静态审查的场景没有 testcase 是设计使然，不得显示"未绑定" */ noTestReason?: 'waived' | 'formal' | 'static' }
 const PANORAMA_STATUS_META: Record<PanoramaCategory, { labelKey: MessageKey; cls: string }> = {
   failed: { labelKey: 'verification.panorama.statusFailed', cls: 'bg-red-100 text-red-700' },
   specBlocked: { labelKey: 'verification.panorama.statusSpecBlocked', cls: 'bg-orange-100 text-orange-700' },
@@ -151,14 +201,22 @@ function buildPanoramaRows(state: VerificationState, scenarios: PanoramaScenario
     list.push(hole)
     holesByScenario.set(hole.scenarioId, list)
   }
-  // 场景↔用例绑定：cocotb 测试函数名内嵌 scn_<8hex> 对应 SCN-XXXXXXXX
+  // 场景↔用例绑定：cocotb 测试函数名内嵌 scn_<8hex> 对应 SCN-XXXXXXXX（路径 B）；
+  // BUG-VERIF-BIND-001：scenarioIds 路径（A）经 scenario_hits 的 testName/boundTestcases
+  // 透传到 executed 行（带 scenarioId），此处直接反查；docstring 注释引用由 FileService 补绑
   const boundTests = (scenarioId: string): Array<{ label: string; status?: string }> => {
     const hex = scenarioId.replace(/^SCN-/i, '').toLowerCase()
-    if (!hex) return []
-    const token = `scn_${hex}`
     const byLabel = new Map<string, { label: string; status?: string }>()
-    for (const plannedCase of runStatus?.planned ?? []) if (plannedCase.name?.toLowerCase().includes(token)) byLabel.set(plannedCase.testId || plannedCase.name, { label: plannedCase.testId || plannedCase.name })
-    for (const executedCase of runStatus?.executed ?? []) if (executedCase.testName?.toLowerCase().includes(token)) byLabel.set(executedCase.testId || executedCase.testName, { label: executedCase.testId || executedCase.testName, status: executedCase.status })
+    if (hex) {
+      const token = `scn_${hex}`
+      for (const plannedCase of runStatus?.planned ?? []) if (plannedCase.name?.toLowerCase().includes(token)) byLabel.set(plannedCase.testId || plannedCase.name, { label: plannedCase.testId || plannedCase.name })
+      for (const executedCase of runStatus?.executed ?? []) if (executedCase.testName?.toLowerCase().includes(token)) byLabel.set(executedCase.testId || executedCase.testName, { label: executedCase.testId || executedCase.testName, status: executedCase.status })
+    }
+    for (const executedCase of runStatus?.executed ?? []) {
+      if (executedCase.scenarioId !== scenarioId) continue
+      const names = executedCase.testName ? [executedCase.testName] : (executedCase.boundTestcases ?? [])
+      for (const name of names) if (name) byLabel.set(executedCase.testId || name, { label: executedCase.testId || name, status: executedCase.status })
+    }
     return [...byLabel.values()]
   }
   const categoryOf = (status: string): PanoramaCategory =>
@@ -175,20 +233,31 @@ function buildPanoramaRows(state: VerificationState, scenarios: PanoramaScenario
     const waveGated = category === 'planned' && batchIndex === undefined && (waveKey === 'corner' || waveKey === 'signoff') && !basicDone
     let why = t('verification.panorama.whyNone')
     let whyTitle: string | undefined
-    if (category === 'specBlocked') why = t('verification.panorama.whySpecBlocked')
+    // 方案 C 批 3 §4.4：失败行贯通场景失败摘要（scenario-registry 透传字段，无则回退'—'）
+    if (category === 'failed' && scenario.failureSummary) { why = scenario.failureSummary; whyTitle = scenario.failureSummary }
+    else if (category === 'specBlocked') why = t('verification.panorama.whySpecBlocked')
     else if (category === 'planned') {
-      const hole = (holesByScenario.get(scenario.id) ?? []).sort((a, b) => Number(b.blocking) - Number(a.blocking))[0]
-      if (hole && HOLE_EXPLANATIONS[hole.classification]) { why = t(HOLE_EXPLANATIONS[hole.classification]); whyTitle = hole.reason }
-      else if (waveGated) why = t('verification.panorama.whyWaveGate')
-      else if (batchIndex !== undefined) why = t('verification.panorama.whyInPlan')
-      else why = t('verification.panorama.whyOutOfPlan')
+      // AIGV 修订 §7.3：未执行配置点场景的 why 列显示其字段组合描述（config-space 派生口径）
+      if (scenario.configPoint?.refs.length) { why = t('verification.panorama.whyConfigPoint', { refs: scenario.configPoint.refs.join('、') }); whyTitle = why }
+      else {
+        const hole = (holesByScenario.get(scenario.id) ?? []).sort((a, b) => Number(b.blocking) - Number(a.blocking))[0]
+        if (hole && HOLE_EXPLANATIONS[hole.classification]) { why = t(HOLE_EXPLANATIONS[hole.classification]); whyTitle = hole.reason }
+        else if (waveGated) why = t('verification.panorama.whyWaveGate')
+        else if (batchIndex !== undefined) why = t('verification.panorama.whyInPlan')
+        else why = t('verification.panorama.whyOutOfPlan')
+      }
     }
     const when = category !== 'planned' ? t('verification.panorama.whenNone')
       : batchIndex !== undefined ? (batchIndex === 0 ? t('verification.panorama.whenNextBatch') : t('verification.panorama.whenBatchN', { n: batchIndex + 1 }))
         : waveGated ? t('verification.panorama.whenWaveGate')
           : t('verification.panorama.whenNone')
     const rowTopic = scenario.topic ?? intent?.topic
-    return { id: scenario.id, what: intent?.objective || scenario.title || scenario.id, waveLabel: PANORAMA_WAVE_LABELS[waveKey] ?? '—', topic: rowTopic, topicWhy: waveKey === 'corner' && rowTopic ? topicExplanation(rowTopic) : undefined, tests: boundTests(scenario.id), category, why, whyTitle, when, planOrder: batchIndex ?? Number.MAX_SAFE_INTEGER }
+    const methods = intent?.recommendedMethods ?? []
+    const noTestReason = category === 'waived' ? 'waived' as const
+      : methods.includes('formal-candidate') ? 'formal' as const
+        : methods.includes('static') ? 'static' as const
+          : undefined
+    return { id: scenario.id, what: intent?.objective || scenario.title || scenario.id, waveLabel: PANORAMA_WAVE_LABELS[waveKey] ?? '—', topic: rowTopic, topicWhy: waveKey === 'corner' && rowTopic ? topicExplanation(rowTopic) : undefined, configPoint: scenario.configPoint, tests: boundTests(scenario.id), category, why, whyTitle, when, planOrder: batchIndex ?? Number.MAX_SAFE_INTEGER, noTestReason }
   })
   // 无场景的验证点：UNMAPPED 规格条款
   const unmappedClauses = state.specMapping?.clauses?.length
@@ -201,12 +270,16 @@ function buildPanoramaRows(state: VerificationState, scenarios: PanoramaScenario
 }
 
 /** 用例全景区块：每个验证点一行，回答“验什么、用哪些用例、状态、为什么没执行、什么时候执行”。 */
-function CasePanoramaSection({ state, scenarios, runStatus }: { state: VerificationState; scenarios: PanoramaScenario[]; runStatus: VerificationRunStatus | null }): React.JSX.Element {
+function CasePanoramaSection({ state, scenarios, runStatus, hasDiagnostic }: { state: VerificationState; scenarios: PanoramaScenario[]; runStatus: VerificationRunStatus | null; hasDiagnostic: boolean }): React.JSX.Element {
   const { t, locale } = useTranslation()
   const [filter, setFilter] = useState<PanoramaFilter>('all')
   const [expanded, setExpanded] = useState(false)
   // locale 变化时行内文案需重新推导（t 读取当前语言）
   const rows = useMemo(() => buildPanoramaRows(state, scenarios, runStatus, t), [state, scenarios, runStatus, locale])
+  // 失败行"查看诊断"：锚点平滑滚动到诊断账本时间线区块（诊断账本缺失时不显示链接）
+  const jumpToDiagnostic = (): void => {
+    document.getElementById('verif-diagnostic-timeline')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  }
   const activeFilter = PANORAMA_FILTERS.find((item) => item.id === filter) ?? PANORAMA_FILTERS[0]
   const filtered = rows.filter(activeFilter.match)
   const collapsed = !expanded && filtered.length > PANORAMA_COLLAPSE_LIMIT
@@ -231,11 +304,11 @@ function CasePanoramaSection({ state, scenarios, runStatus }: { state: Verificat
         </tr></thead>
         <tbody>
           {visible.map((row) => { const meta = PANORAMA_STATUS_META[row.category]; return <tr key={row.id} className="border-t border-zinc-100 align-top">
-            <td className="px-2 py-2"><div className="truncate text-zinc-800" title={row.what}>{row.what}</div><div className="mt-0.5 truncate font-mono text-[10px] text-zinc-400">{row.id}</div></td>
+            <td className="px-2 py-2"><div className="truncate text-zinc-800" title={row.what}>{row.what}</div><div className="mt-0.5 flex items-center gap-1.5"><span className="truncate font-mono text-[10px] text-zinc-400">{row.id}</span>{row.configPoint && <span className="shrink-0 rounded bg-sky-100 px-1 py-0.5 text-[10px] font-medium text-sky-700" title={`${t('verification.panorama.configPointBadgeHint')} · ${row.configPoint.class} · ${row.configPoint.refs.join('、')}`}>{t('verification.panorama.configPointBadge')}</span>}</div></td>
             <td className="px-2 py-2 text-zinc-600" title={row.topicWhy ?? row.topic}>{row.waveLabel}{row.topic ? ` · ${row.topic}` : ''}</td>
-            <td className="px-2 py-2">{row.tests.length > 0 ? <div className="flex flex-wrap gap-1">{row.tests.map((test) => <span key={test.label} className={`inline-block max-w-full truncate px-1 py-0.5 font-mono text-[10px] ${test.status === 'PASS' ? 'bg-emerald-50 text-emerald-700' : test.status === 'FAIL' || test.status === 'ERROR' ? 'bg-red-50 text-red-700' : 'bg-zinc-100 text-zinc-600'}`} title={test.label}>{test.label}</span>)}</div> : <span className="text-zinc-400" title={t('verification.run.unmappedHint')}>{t('verification.panorama.noTests')}</span>}</td>
+            <td className="px-2 py-2">{row.tests.length > 0 ? <div className="flex flex-wrap gap-1">{row.tests.map((test) => <span key={test.label} className={`inline-block max-w-full truncate px-1 py-0.5 font-mono text-[10px] ${test.status === 'PASS' ? 'bg-emerald-50 text-emerald-700' : test.status === 'FAIL' || test.status === 'ERROR' ? 'bg-red-50 text-red-700' : 'bg-zinc-100 text-zinc-600'}`} title={test.label}>{test.label}</span>)}</div> : row.noTestReason === 'waived' ? <span className="text-zinc-400" title={t('verification.panorama.noTestsWaivedHint')}>{t('verification.panorama.noTestsWaived')}</span> : row.noTestReason === 'formal' ? <span className="text-zinc-400" title={t('verification.panorama.noTestsFormalHint')}>{t('verification.panorama.noTestsFormal')}</span> : row.noTestReason === 'static' ? <span className="text-zinc-400">{t('verification.panorama.noTestsStatic')}</span> : <span className="text-zinc-400" title={t('verification.run.unmappedHint')}>{t('verification.panorama.noTests')}</span>}</td>
             <td className="px-2 py-2"><span className={`inline-block px-1.5 py-0.5 text-[10px] font-semibold ${meta.cls}`}>{t(meta.labelKey)}</span></td>
-            <td className="px-2 py-2 text-zinc-600" title={row.whyTitle}>{row.why === '—' ? <span className="text-zinc-300">—</span> : row.why}</td>
+            <td className="px-2 py-2 text-zinc-600" title={row.whyTitle}>{row.why === '—' ? <span className="text-zinc-300">—</span> : row.why}{row.category === 'failed' && hasDiagnostic && <button type="button" onClick={jumpToDiagnostic} className="ml-1.5 whitespace-nowrap text-sky-700 hover:underline">{t('verification.panorama.viewDiagnosis')}</button>}</td>
             <td className="px-2 py-2 text-zinc-600">{row.when === '—' ? <span className="text-zinc-300">—</span> : row.when}</td>
           </tr> })}
           {visible.length === 0 && <tr><td colSpan={6} className="px-2 py-6 text-center text-zinc-400">{t('verification.panorama.empty')}</td></tr>}
@@ -266,6 +339,81 @@ function CollapsibleSection({ title, subtitle, aside, children }: { title: strin
       <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500">{t('verification.collapsible.technicalDetails')}</span>
       {subtitle && <span className="min-w-0 truncate text-xs text-zinc-400">{subtitle}</span>}
       {aside && <span className="ml-auto shrink-0">{aside}</span>}
+    </button>
+    {open && <div className="border-t border-zinc-100">{children}</div>}
+  </section>
+}
+
+/**
+ * 配置覆盖矩阵（AIGV 修订 §7.2，L1/L2 边界、默认折叠）：字段覆盖桶命中率进度条 +
+ * 关键交叉命中率 + 未覆盖配置点清单（前 20，交接 Agent 构造 TOP 用例）。无数据不渲染。
+ */
+function ConfigCoverageSection({ coverage, runningAction, onHandoff }: { coverage: ConfigCoverageView; runningAction: string | null; onHandoff: (id: string, prompt: string) => void }): React.JSX.Element {
+  const { t } = useTranslation()
+  // 未命中配置点清单：字段桶 hits=0 与交叉 bin hits=0 合并，展示前 20
+  const uncovered: string[] = []
+  for (const point of coverage.coverpoints) {
+    for (const bucket of point.buckets) if (bucket.hits === 0) uncovered.push(`${point.field} = ${bucket.label}`)
+  }
+  for (const cross of coverage.crosses) {
+    for (const bin of cross.bins) if (bin.hits === 0) uncovered.push(`${cross.fields.join(' × ')}：${bin.key}`)
+  }
+  const shown = uncovered.slice(0, 20)
+  const ratePercent = (rate: number): string => `${Math.round(rate * 100)}%`
+  const barCls = (rate: number): string => rate >= 1 ? 'bg-emerald-500' : rate >= 0.5 ? 'bg-amber-400' : 'bg-red-400'
+  // 交接 Agent 的 prompt 不受 i18n 约束（发主 Agent 的任务描述，固定中文）
+  const handoffPrompt = `请为以下未覆盖配置点构造面向 TOP 的验证用例（testcase 一律面向 TOP：先按 config-space.json 写配置序列，再跑业务流量并校验规格期望行为；完成后经 run_simulation(scenarioIds=[...]) 登记 scenario_hits，配置覆盖埋点会随回归自动回传 config-coverage.json）：\n${shown.map((item, index) => `${index + 1}. ${item}`).join('\n')}\n未覆盖配置点共 ${uncovered.length} 个${uncovered.length > shown.length ? `（此处列出前 ${shown.length} 个，其余按 verification/results/${coverage.topModule ?? '<top>'}/config-coverage.json 全量清单补齐）` : ''}。`
+  return <CollapsibleSection
+    title={t('verification.configCoverage.title')}
+    subtitle={t('verification.configCoverage.subtitle')}
+    aside={<span className="flex items-center gap-3 text-[11px]">
+      <span className={`shrink-0 px-1.5 py-0.5 font-semibold ${coverage.stale ? 'bg-amber-100 text-amber-700' : 'bg-emerald-100 text-emerald-700'}`} title={coverage.stale ? t('verification.configCoverage.staleHint') : t('verification.configCoverage.freshHint')}>{coverage.stale ? t('verification.configCoverage.staleBadge') : t('verification.configCoverage.freshBadge')}</span>
+      {coverage.topModule && <span className="shrink-0 font-mono text-zinc-500">{t('verification.configCoverage.topModule', { module: coverage.topModule })}</span>}
+    </span>}
+  >
+    <div className="grid grid-cols-2 gap-5 p-5 pt-4">
+      <div>
+        <div className="text-xs font-medium text-zinc-600">{t('verification.configCoverage.coverpointSection')}</div>
+        <div className="mt-2 space-y-2.5">
+          {coverage.coverpoints.map((point) => <div key={point.id}>
+            <div className="flex items-center justify-between gap-2 text-[11px]"><span className="min-w-0 truncate font-mono text-zinc-700" title={point.field}>{point.field}</span><span className="shrink-0 text-zinc-500" title={point.buckets.map((bucket) => t('verification.configCoverage.bucketHint', { label: bucket.label, hits: bucket.hits })).join('\n')}>{t('verification.configCoverage.hitRate', { rate: ratePercent(point.hitRate), hit: point.hitBuckets, total: point.bucketCount })}</span></div>
+            <div className="mt-1 flex h-2 items-center rounded bg-zinc-100"><span className={`h-2 rounded ${barCls(point.hitRate)}`} style={{ width: `${Math.round(point.hitRate * 100)}%` }} /></div>
+          </div>)}
+          {coverage.coverpoints.length === 0 && <div className="text-xs text-zinc-400">{t('verification.configCoverage.emptyCoverpoints')}</div>}
+        </div>
+      </div>
+      <div>
+        <div className="text-xs font-medium text-zinc-600">{t('verification.configCoverage.crossSection')}</div>
+        <div className="mt-2 space-y-2.5">
+          {coverage.crosses.map((cross) => <div key={cross.id}>
+            <div className="flex items-center justify-between gap-2 text-[11px]"><span className="min-w-0 truncate font-mono text-zinc-700" title={cross.fields.join(' × ')}>{cross.fields.join(' × ')}</span><span className="shrink-0 text-zinc-500" title={cross.bins.map((bin) => t('verification.configCoverage.bucketHint', { label: bin.key, hits: bin.hits })).join('\n')}>{t('verification.configCoverage.hitRate', { rate: ratePercent(cross.hitRate), hit: cross.hitBins, total: cross.binCount })}</span></div>
+            <div className="mt-1 flex h-2 items-center rounded bg-zinc-100"><span className={`h-2 rounded ${barCls(cross.hitRate)}`} style={{ width: `${Math.round(cross.hitRate * 100)}%` }} /></div>
+          </div>)}
+          {coverage.crosses.length === 0 && <div className="text-xs text-zinc-400">{t('verification.configCoverage.emptyCrosses')}</div>}
+        </div>
+      </div>
+    </div>
+    <div className="border-t border-zinc-100 px-5 py-4">
+      <div className="flex items-center justify-between gap-3">
+        <div className="text-xs font-medium text-zinc-600">{t('verification.configCoverage.uncoveredSection', { count: uncovered.length })}</div>
+        {shown.length > 0 && <button type="button" disabled={runningAction !== null} onClick={() => onHandoff('config-coverage-handoff', handoffPrompt)} className="inline-flex shrink-0 items-center gap-1 rounded border border-emerald-600 px-2.5 py-1 text-[11px] font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50" title={t('verification.configCoverage.handoffHint')}><Wrench size={12} />{runningAction === 'config-coverage-handoff' ? t('verification.agentRunning') : t('verification.configCoverage.handoff')}</button>}
+      </div>
+      {shown.length > 0
+        ? <ul className="mt-2 grid grid-cols-2 gap-x-4 gap-y-1 text-[11px] text-zinc-600">{shown.map((item) => <li key={item} className="truncate font-mono" title={item}>{item}</li>)}</ul>
+        : <div className="mt-2 text-xs text-emerald-700">{t('verification.configCoverage.uncoveredEmpty')}</div>}
+    </div>
+  </CollapsibleSection>
+}
+
+/** L2 技术细节分区：专家向区块统一收进一个默认收起的分区，标题栏带区块计数徽标。 */
+function TechnicalDetailsSection({ count, children }: { count: number; children: React.ReactNode }): React.JSX.Element {  const { t } = useTranslation()
+  const [open, setOpen] = useState(false)
+  return <section className="border-b border-zinc-200 bg-white">
+    <button type="button" onClick={() => setOpen((value) => !value)} title={t(open ? 'verification.collapsible.collapse' : 'verification.collapsible.expand')} className="flex w-full items-center gap-2 px-5 py-3 text-left hover:bg-zinc-50">
+      {open ? <ChevronDown size={15} className="shrink-0 text-zinc-400" /> : <ChevronRight size={15} className="shrink-0 text-zinc-400" />}
+      <span className="text-sm font-semibold">{t('verification.l2.title')}</span>
+      <span className="shrink-0 rounded bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-500">{t('verification.l2.count', { count })}</span>
+      <span className="min-w-0 truncate text-xs text-zinc-400">{t('verification.l2.subtitle')}</span>
     </button>
     {open && <div className="border-t border-zinc-100">{children}</div>}
   </section>
@@ -364,7 +512,9 @@ export function VerificationPosturePage(): React.JSX.Element {
   const [project, setProject] = useState<ChipProject | null>(null)
   const [state, setState] = useState<VerificationState | null>(null)
   const [risks, setRisks] = useState<RiskMarker[]>([])
-  const [diagnostic, setDiagnostic] = useState<DiagnosticControl | null>(null)
+  const [diagnostic, setDiagnostic] = useState<DiagnosticControlView | null>(null)
+  const [fixOutcomes, setFixOutcomes] = useState<RtlFixOutcomeView[] | null>(null)
+  const [rootCauses, setRootCauses] = useState<RootCauseRecordView[] | null>(null)
   const [runStatus, setRunStatus] = useState<VerificationRunStatus | null>(null)
   const [scenarioRows, setScenarioRows] = useState<PanoramaScenario[]>([])
   const [loading, setLoading] = useState(true)
@@ -375,7 +525,13 @@ export function VerificationPosturePage(): React.JSX.Element {
   const ensureAgent = useChatStore((store) => store.ensure)
   const sendAgentPrompt = useChatStore((store) => store.sendAndWait)
 
+  // 防重入：手动刷新、行动后重载与 verification:changed 推送可能并发触发 load；
+  // 进行中的加载不重复进入，期间到达的请求记入 pendingReloadRef 合并为尾随重载
+  const loadingRef = useRef(false)
+  const pendingReloadRef = useRef(false)
   const load = useCallback(async () => {
+    if (loadingRef.current) { pendingReloadRef.current = true; return }
+    loadingRef.current = true
     setLoading(true); setError('')
     // 操作级验证状态独立加载，不因 AIGV 态势缺失而失败
     try {
@@ -408,22 +564,38 @@ export function VerificationPosturePage(): React.JSX.Element {
       setState({
         generatedAt: parsed.generatedAt ?? new Date(0).toISOString(), rtlHash: parsed.rtlHash ?? '', scenarioCount: parsed.scenarioCount ?? 0,
         criticalOpen: parsed.criticalOpen ?? [], verificationIntents: parsed.verificationIntents ?? [], specGaps: parsed.specGaps ?? [], coverageHoles: parsed.coverageHoles ?? [],
-        regressions: parsed.regressions ?? [], formalResults: parsed.formalResults ?? [], closureAssessment: parsed.closureAssessment, verificationSpace: parsed.verificationSpace, explorationRound: parsed.explorationRound, explorationHistory: parsed.explorationHistory, multiOracle: parsed.multiOracle, mutationAssessment: parsed.mutationAssessment, residualRiskRegister: parsed.residualRiskRegister, signoffPackage: parsed.signoffPackage, moduleVerificationStrategy: parsed.moduleVerificationStrategy, structuralSummary: parsed.structuralSummary, analyzer: parsed.analyzer, waveProgress: parsed.waveProgress, executionClusters: parsed.executionClusters, executionPlan: parsed.executionPlan, specMapping: parsed.specMapping
+        regressions: parsed.regressions ?? [], formalResults: parsed.formalResults ?? [], closureAssessment: parsed.closureAssessment, verificationSpace: parsed.verificationSpace, explorationRound: parsed.explorationRound, explorationHistory: parsed.explorationHistory, multiOracle: parsed.multiOracle, mutationAssessment: parsed.mutationAssessment, residualRiskRegister: parsed.residualRiskRegister, signoffPackage: parsed.signoffPackage, moduleVerificationStrategy: parsed.moduleVerificationStrategy, utEscalations: Array.isArray(parsed.utEscalations) ? parsed.utEscalations : [], configCoverage: normalizeConfigCoverage(parsed.configCoverage), structuralSummary: parsed.structuralSummary, analyzer: parsed.analyzer, waveProgress: parsed.waveProgress, executionClusters: parsed.executionClusters, executionPlan: parsed.executionPlan, specMapping: parsed.specMapping
       })
       try {
         const riskFile = await window.moonglass.fs.readJson(projectId, 'verification/intelligence/risk-register.json') as { risks?: RiskMarker[] } | null
         setRisks(riskFile?.risks ?? [])
       } catch { setRisks([]) }
       try {
-        setDiagnostic(await window.moonglass.fs.readJson(projectId, 'verification/results/diagnostic-control.json') as DiagnosticControl)
+        // 诊断账本归一化为时间线视图（方案 C 批 3）：缺字段/坏类型按无账本处理
+        setDiagnostic(normalizeDiagnosticControl(await window.moonglass.fs.readJson(projectId, 'verification/results/diagnostic-control.json')))
       } catch { setDiagnostic(null) }
+      // RTL 修复判定账本（L0“修复未收敛”待办与 L1 根因链修复徽标共用，同一次加载归一化）
+      try {
+        setFixOutcomes(normalizeRtlFixOutcomes(await window.moonglass.fs.readJson(projectId, 'verification/results/rtl-fix-outcomes.json')))
+      } catch { setFixOutcomes(null) }
+      // 根因链（方案 C 批 3 §4.2）：与修复判定账本同一次加载读取，不重复读文件
+      try {
+        setRootCauses(normalizeRootCauseRecords(await window.moonglass.fs.readJson(projectId, 'verification/results/root-causes.json')))
+      } catch { setRootCauses(null) }
     } catch (caught) {
-      setState(null); setRisks([]); setDiagnostic(null); setScenarioRows([])
+      setState(null); setRisks([]); setDiagnostic(null); setFixOutcomes(null); setRootCauses(null); setScenarioRows([])
       setError(caught instanceof Error ? caught.message : String(caught))
-    } finally { setLoading(false) }
+    } finally {
+      loadingRef.current = false
+      setLoading(false)
+      // 加载期间到达的刷新请求（文件变更推送/手动刷新）合并为一次尾随重载
+      if (pendingReloadRef.current) { pendingReloadRef.current = false; void load() }
+    }
   }, [projectId])
 
   useEffect(() => { void load() }, [load])
+  // verification/ 产物与证据 JSON 变化时自动重载（主进程已去抖 + 仅 .json；卸载自动退订）
+  useVerificationChanged(projectId, load)
 
   const summary = useMemo(() => {
     const intents = state?.verificationIntents ?? []
@@ -438,13 +610,19 @@ export function VerificationPosturePage(): React.JSX.Element {
     return { intents: intents.length, closed, closure: intents.length ? Math.round(closed * 100 / intents.length) : 0, failedFormal, failedRegression, blockingHoles, highGaps, blockers }
   }, [state])
 
+  // 签核结论推导：只认显式评估结果（closureAssessment.status 的三态）。
+  // 缺失或无法识别的评估一律"未确认"——旧实现用 summary.blockers === 0 推断"具备签核条件"（绿色），
+  // 让"没有评估且没有阻断记录"看起来像"验证已通过"，是界面结论不可信的直接来源。
+  // 派生阻断记录仍然算阻断（bad），但"零阻断 + 无评估"绝不能再被判成就绪。
+  const closureAssessment = state?.closureAssessment
+  const closureStatus = closureAssessment?.status
   const signoff = !state ? { label: t('verification.signoff.noDataLabel'), detail: t('verification.signoff.noDataDetail'), tone: 'warn' as const }
-    : state.closureAssessment?.status === 'READY_FOR_HUMAN_SIGNOFF' ? { label: t('verification.signoff.awaitingHumanLabel'), detail: t('verification.signoff.awaitingHumanDetail'), tone: 'good' as const }
-      : state.closureAssessment?.status === 'CONDITIONALLY_READY' ? { label: t('verification.signoff.conditionalLabel'), detail: t('verification.signoff.conditionalDetail', { count: state.closureAssessment.residualRisks.length + state.closureAssessment.warnings.length }), tone: 'warn' as const }
-        : state.closureAssessment?.status === 'NOT_READY' ? { label: t('verification.signoff.notReadyLabel'), detail: t('verification.signoff.notReadyDetail', { count: state.closureAssessment.blockers.length }), tone: 'bad' as const }
-    : summary.intents === 0 ? { label: t('verification.signoff.staleModelLabel'), detail: t('verification.signoff.staleModelDetail'), tone: 'warn' as const }
-      : summary.blockers === 0 ? { label: t('verification.signoff.readyLabel'), detail: t('verification.signoff.readyDetail'), tone: 'good' as const }
-      : { label: t('verification.signoff.notReadyLabel'), detail: t('verification.signoff.blockedDetail', { count: summary.blockers }), tone: 'bad' as const }
+    : closureStatus === 'READY_FOR_HUMAN_SIGNOFF' ? { label: t('verification.signoff.awaitingHumanLabel'), detail: t('verification.signoff.awaitingHumanDetail'), tone: 'good' as const }
+      : closureStatus === 'CONDITIONALLY_READY' ? { label: t('verification.signoff.conditionalLabel'), detail: t('verification.signoff.conditionalDetail', { count: (closureAssessment?.residualRisks.length ?? 0) + (closureAssessment?.warnings.length ?? 0) }), tone: 'warn' as const }
+        : closureStatus === 'NOT_READY' ? { label: t('verification.signoff.notReadyLabel'), detail: t('verification.signoff.notReadyDetail', { count: closureAssessment?.blockers.length ?? 0 }), tone: 'bad' as const }
+          : summary.intents === 0 ? { label: t('verification.signoff.staleModelLabel'), detail: t('verification.signoff.staleModelDetail'), tone: 'warn' as const }
+            : summary.blockers > 0 ? { label: t('verification.signoff.notReadyLabel'), detail: t('verification.signoff.blockedDetail', { count: summary.blockers }), tone: 'bad' as const }
+              : { label: t('verification.signoff.unconfirmedLabel'), detail: t('verification.signoff.unconfirmedDetail'), tone: 'warn' as const }
 
   // locale 变化时引导文案需重新推导（t 读取当前语言）
   const actions = useMemo(() => state ? deriveVerificationActions(state) : [], [state, locale])
@@ -454,6 +632,8 @@ export function VerificationPosturePage(): React.JSX.Element {
   const openTopRisks = useMemo(() => topRisks.filter((item) => item.level !== 'accepted'), [topRisks])
   const acceptedTopRisks = useMemo(() => topRisks.filter((item) => item.level === 'accepted'), [topRisks])
   const steps = useMemo(() => deriveVerificationSteps(state), [state, locale])
+  // UT 例外登记事件点（§7.4）：诊断时间线叠加；active/retired 都展示（签核审计可见例外历史）
+  const utEscalationEvents = useMemo<UtEscalationTimelineEvent[]>(() => (state?.utEscalations ?? []).map((item) => ({ id: item.id, module: item.module, reason: item.reason, createdAt: item.createdAt, status: item.status, rootCauseId: item.rootCauseId })), [state])
   const primaryAction = actions[0]
   const specGaps = useMemo(() => (state?.specGaps ?? []).filter((gap) => !looksLikeGarbage(gap.title ?? '')), [state])
   const topIntents = useMemo(() => (state?.verificationIntents ?? []).slice(0, 15), [state])
@@ -487,14 +667,17 @@ export function VerificationPosturePage(): React.JSX.Element {
     const currentIndex = batches.findIndex((batch) => batch.some((id) => closureOf.get(id) === 'OPEN'))
     return { current: currentIndex === -1 ? batches.length : currentIndex + 1, total: batches.length }
   }, [state, scenarioRows])
+  const l0StaleSuffix = (state?.specMapping?.stalePassedCount ?? 0) > 0
+    ? t('verification.l0.staleSuffix', { stale: state!.specMapping!.stalePassedCount! })
+    : ''
   const l0Headline = currentWave && state?.specMapping
     ? currentWave.id === 'W1' && state.specMapping.clauseTotal > state.specMapping.coveredClause
-      ? t('verification.l0.headlineW1', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal, remaining: state.specMapping.clauseTotal - state.specMapping.coveredClause, batch: w1Batch ? t('verification.l0.headlineW1Batch', { current: w1Batch.current, total: w1Batch.total }) : '' })
-      : t('verification.l0.headline', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal })
+      ? t('verification.l0.headlineW1', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal, remaining: state.specMapping.clauseTotal - state.specMapping.coveredClause, batch: w1Batch ? t('verification.l0.headlineW1Batch', { current: w1Batch.current, total: w1Batch.total }) : '' }) + l0StaleSuffix
+      : t('verification.l0.headline', { wave: currentWave.label, covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal }) + l0StaleSuffix
     : `${signoff.label}：${signoff.detail}`
   const l0Pending = useMemo(() => {
     if (!state) return []
-    const items: Array<{ id: string; label: string; hint: string; prompt: string }> = []
+    const items: Array<{ id: string; label: string; hint: string; prompt: string; tip?: string }> = []
     // 规格待澄清 = 高置信度 Spec Gap（文档级 TBD）+ BLOCKED_BY_SPEC 场景（specMapping.blockedBySpecCount）
     const clarifyCount = specGaps.filter((gap) => gap.confidence === 'high').length + (state.specMapping?.blockedBySpecCount ?? 0)
     if (clarifyCount > 0) {
@@ -502,6 +685,7 @@ export function VerificationPosturePage(): React.JSX.Element {
         id: 'l0-clarify-spec',
         label: t('verification.l0.clarifySpec', { count: clarifyCount }),
         hint: t('verification.l0.clarifySpecHint'),
+        tip: t('verification.glossary.clarifySpec'),
         prompt: '请协助澄清规格：读取 verification/intelligence/spec-gap-register.json 中的高置信度规格缺口，以及 scenario-registry.json 中状态为 BLOCKED_BY_SPEC 的场景，逐条列出需要我决策的规格语义问题（给出可选答案与你的建议），等我逐条回答后更新追踪关系并重新生成验证态势；涉及外部可见语义变化的必须由我决策，不要自行猜测。'
       })
     }
@@ -512,12 +696,50 @@ export function VerificationPosturePage(): React.JSX.Element {
         id: 'l0-approve-residual',
         label: t('verification.l0.approveResidual', { count: residualPending }),
         hint: t('verification.terms.residualPending'),
+        tip: t('verification.glossary.approveResidual'),
         prompt: '请读取 residual-risk-register.json，列出所有待审批的残余风险（approvalRequired 且未批准），逐项说明风险点、影响与你的建议（补证据关闭或接受豁免），等我逐项决定；我确认接受的由具名审批人写入 signoff-approvals.json，然后重新生成验证态势。'
       })
     }
+    // 诊断卡壳 = 诊断增强模式下最近 3 次尝试诊断等级无爬升（持平或下降），需要人工参与定位
+    if (diagnostic?.mode === 'DIAGNOSTIC_ENHANCEMENT' && diagnostic.attempts.length >= 3) {
+      const recentLevels = diagnostic.attempts.slice(-3).map((attempt) => /^L(\d+)$/i.exec(attempt.diagnosticLevel ?? '')?.[1])
+      if (recentLevels.every((level) => level !== undefined)) {
+        const [a, b, c] = recentLevels.map((level) => Number(level))
+        if (b <= a && c <= b) {
+          items.push({
+            id: 'l0-diagnostic-stuck',
+            label: t('verification.l0.diagnosticStuck', { case: diagnostic.activeCase }),
+            hint: t('verification.l0.diagnosticStuckHint'),
+            prompt: `请协助定位诊断中的 bug ${diagnostic.activeCase}：读取 verification/results/diagnostic-control.json 与相关失败证据，梳理当前失败指纹（failureSignature）与已排除的假设，列出需要我人工判断的问题清单（每个问题给出你的倾向建议与依据），等我回答后再继续提升诊断等级；不要继续盲目重复同一诊断等级的尝试。`
+          })
+        }
+      }
+    }
+    // 修复未收敛 = 同一场景最新两条修复判定均为 STILL_FAIL（账本新在前，按场景首现顺序最多列 3 条）
+    if (fixOutcomes?.length) {
+      const latestByScenario = new Map<string, string[]>()
+      for (const outcome of fixOutcomes) {
+        if (!outcome.scenarioId || !outcome.judgment) continue
+        const list = latestByScenario.get(outcome.scenarioId) ?? []
+        if (list.length < 2) { list.push(outcome.judgment); latestByScenario.set(outcome.scenarioId, list) }
+      }
+      let listed = 0
+      for (const [scenarioId, judgments] of latestByScenario) {
+        if (listed >= 3) break
+        if (judgments.length === 2 && judgments.every((judgment) => judgment === 'STILL_FAIL')) {
+          listed += 1
+          items.push({
+            id: `l0-fix-not-converged-${scenarioId}`,
+            label: t('verification.l0.fixNotConverged', { scenario: scenarioId }),
+            hint: t('verification.l0.fixNotConvergedHint'),
+            prompt: `场景 ${scenarioId} 连续两次修复后仍失败。请读取 verification/results/rtl-fix-outcomes.json 与 root-causes.json，汇总该场景的根因链与修复历史（每次修复的假设、改动与判定），给出需要我判断的选项（例如换修复思路、回退改动、扩大诊断范围），等我选择后再动手；在此之前不要对该场景做新的 RTL 修改。`
+          })
+        }
+      }
+    }
     return items
     // locale 变化时文案需重新推导
-  }, [state, specGaps, locale])
+  }, [state, specGaps, diagnostic, fixOutcomes, locale])
 
   const runAction = useCallback(async (id: string, prompt: string) => {
     setRunningAction(id); setActionMessage(t('verification.action.connecting'))
@@ -531,6 +753,19 @@ export function VerificationPosturePage(): React.JSX.Element {
       setActionMessage(t('verification.action.failed', { message: caught instanceof Error ? caught.message : String(caught) }))
     } finally { setRunningAction(null) }
   }, [ensureAgent, load, projectId, sendAgentPrompt, t])
+
+  // 诊断证据打开（方案 C 批 3 §4.3）：账本 evidence 口径为 verification/results/ 相对路径或绝对路径，
+  // 统一归一为工作区相对路径后走 openExternal（工作区外的绝对路径由主进程 resolveProjectFile 拒绝）
+  const openDiagnosticEvidence = useCallback(async (path: string): Promise<void> => {
+    const workspace = project?.workspacePath?.replace(/\\/g, '/').replace(/\/$/, '')
+    let relPath = path.replace(/\\/g, '/')
+    if (workspace && /^([a-zA-Z]:[\\/]|\/)/.test(relPath) && relPath.toLowerCase().startsWith(`${workspace.toLowerCase()}/`)) {
+      relPath = relPath.slice(workspace.length + 1)
+    } else if (!/^(verification\/|[a-zA-Z]:[\\/]|\/)/.test(relPath)) {
+      relPath = `verification/results/${relPath}`
+    }
+    await window.moonglass.fs.openExternal(projectId, relPath)
+  }, [project, projectId])
 
   const heat = useMemo(() => Array.from({ length: 25 }, (_, index) => {
     const row = 4 - Math.floor(index / 5); const column = index % 5
@@ -567,6 +802,10 @@ export function VerificationPosturePage(): React.JSX.Element {
   /** Top 风险行（未处理列表与已接受折叠区共用）。 */
   const renderRiskRow = (item: ExplainedRisk, index: number): React.JSX.Element => <div key={item.risk.id} className="grid grid-cols-[28px_minmax(0,1fr)_auto] gap-3 py-3"><div className={`flex h-6 w-6 items-center justify-center text-xs font-semibold text-white ${item.level === 'confirmed' ? 'bg-red-600' : item.level === 'specGap' ? 'bg-amber-600' : item.level === 'accepted' ? 'bg-emerald-600' : 'bg-zinc-700'}`}>{index + 1}</div><div className="min-w-0"><div className="flex items-center gap-2"><strong className="text-sm">{item.risk.title}</strong><span className="shrink-0 bg-zinc-100 px-1.5 py-0.5 text-[10px] text-zinc-600">{t(RISK_LEVEL_LABELS[item.level])}</span><span className="font-mono text-[10px] text-zinc-400">{item.risk.id}</span></div><p className="mt-1 text-xs text-zinc-700"><b>{t('verification.risks.risk')}</b>{item.risk.riskStatement}</p><div className="mt-1 text-[11px] text-zinc-500"><b>{t('verification.risks.object')}</b><span className="font-mono">{item.risk.object}</span>{item.risk.source?.file ? <span className="ml-1 text-zinc-400">（{item.risk.source.file}{item.risk.source.line ? `:${item.risk.source.line}` : ''}）</span> : null}</div><div className="mt-1 text-xs text-zinc-600"><b>{t('verification.risks.gap')}</b>{item.gap}</div><div className="mt-1 text-xs text-red-700"><b>{t('verification.risks.impact')}</b>{item.impact}</div><div className="mt-1 text-xs text-emerald-700"><b>{t('verification.risks.recommendation')}</b>{item.recommendation}</div></div><button disabled={runningAction !== null} onClick={() => void runAction(item.risk.id, item.prompt)} className="self-center rounded border border-zinc-300 p-2 text-zinc-500 hover:border-emerald-500 hover:text-emerald-700 disabled:opacity-40" title={t('verification.risks.handoff')}><Wrench size={15} /></button></div>
 
+  // L2 技术细节分区计数：常驻 5 区块（9 格指标 / 模块风险分布 / 5×5 热力图 / Intent 明细 / Spec Gap 与覆盖缺口双栏）
+  // + 条件渲染的验证空间快照与模块验证策略
+  const l2Count = 5 + (state?.verificationSpace ? 1 : 0) + (state?.moduleVerificationStrategy ? 1 : 0)
+
   return <div className="flex h-full min-h-0 flex-col bg-zinc-50 text-zinc-900">
     <header className="flex h-16 shrink-0 items-center gap-4 border-b border-zinc-200 bg-white px-5">
       <Link to="/workspace/$projectId" params={{ projectId }} className="flex items-center gap-1 text-sm text-zinc-500 hover:text-emerald-700"><ArrowLeft size={16} /> {t('verification.navWorkspace')}</Link>
@@ -583,23 +822,27 @@ export function VerificationPosturePage(): React.JSX.Element {
     {state && <section className="border-b border-zinc-200 bg-white p-5">
         <div className="space-y-3 rounded border border-zinc-200 bg-zinc-50/60 p-4">
           <p className="text-base font-semibold text-zinc-900">{l0Headline}</p>
-          <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2">
+          {/* 统一待办队列：规格澄清/豁免审批/诊断卡壳/修复未收敛；无待办时整个区块不渲染 */}
+          {l0Pending.length > 0 && <div className="rounded border border-amber-200 bg-amber-50 px-3 py-2">
             <div className="text-xs font-semibold text-amber-800">{t('verification.l0.needYou')}</div>
-            {l0Pending.length > 0 ? <div className="mt-1.5 flex flex-wrap gap-2">
-              {l0Pending.map((item) => <button key={item.id} type="button" disabled={runningAction !== null} onClick={() => void runAction(item.id, item.prompt)} title={item.hint} className="inline-flex items-center gap-1 rounded border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-800 hover:border-amber-500 hover:bg-amber-100 disabled:opacity-50">{item.label}<ArrowRight size={12} /></button>)}
-            </div> : <p className="mt-1 text-xs text-amber-700">{t('verification.l0.nothingForYou')}</p>}
-          </div>
+            <div className="mt-1.5 flex flex-wrap gap-2">
+              {l0Pending.map((item) => <button key={item.id} type="button" disabled={runningAction !== null} onClick={() => void runAction(item.id, item.prompt)} title={item.hint} className="inline-flex items-center gap-1 rounded border border-amber-300 bg-white px-2.5 py-1 text-xs font-medium text-amber-800 hover:border-amber-500 hover:bg-amber-100 disabled:opacity-50">{item.tip ? <GlossaryTip tip={item.tip}>{item.label}</GlossaryTip> : item.label}<ArrowRight size={12} /></button>)}
+            </div>
+          </div>}
           <p className="text-xs text-zinc-600"><b className="text-zinc-700">{t('verification.l0.machineDoing')}</b>{primaryAction ? `${primaryAction.title} —— ${primaryAction.detail}` : t('verification.l0.machineIdle')}</p>
         </div>
       </section>}
-    {state && <CasePanoramaSection state={state} scenarios={scenarioRows} runStatus={runStatus} />}
+    {state && <CasePanoramaSection state={state} scenarios={scenarioRows} runStatus={runStatus} hasDiagnostic={diagnostic !== null} />}
     <VerificationRunSection status={runStatus} />
     {!state ? <div className="flex min-h-64 items-center justify-center p-8"><div className="max-w-lg border border-dashed border-zinc-300 bg-white p-8 text-center">
       <FileSearch className="mx-auto text-zinc-400" size={30} /><h2 className="mt-3 text-base font-semibold">{t('verification.emptyTitle')}</h2>
       <p className="mt-2 text-sm text-zinc-500">{error || t('verification.emptyHint')}</p>
       <div className="mt-4 flex justify-center gap-2"><button onClick={() => void load()} className="rounded border border-zinc-300 bg-white px-4 py-2 text-sm text-zinc-700 hover:border-emerald-500">{t('verification.reload')}</button><Link to="/workspace/$projectId" params={{ projectId }} className="inline-flex rounded bg-emerald-600 px-4 py-2 text-sm text-white hover:bg-emerald-500">{t('verification.backToWorkspace')}</Link></div>
     </div></div> : <>
-      {diagnostic && <section className={`border-b px-5 py-3 ${diagnostic.mode === 'DIAGNOSTIC_ENHANCEMENT' ? 'border-violet-200 bg-violet-50' : diagnostic.mode === 'CLOSED' ? 'border-emerald-200 bg-emerald-50' : 'border-sky-200 bg-sky-50'}`}><div className="flex items-start gap-4"><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="text-sm">{t('verification.diagnostic.title')}</strong><span className="bg-white px-2 py-0.5 font-mono text-[10px] text-zinc-600">{diagnostic.mode}</span><span className="font-mono text-[10px] text-zinc-500">{diagnostic.activeCase}</span></div><p className="mt-1 text-xs text-zinc-600">{diagnostic.recommendation}</p></div><div className="shrink-0 text-right"><div className="text-lg font-semibold text-violet-700">{diagnostic.attempts.at(-1)?.diagnosticLevel ?? 'L0'}</div><div className="text-[10px] text-zinc-500">{t('verification.diagnostic.records', { count: diagnostic.attempts.length })}</div></div></div></section>}
+      {/* 诊断账本时间线（方案 C 批 3 §4.3）：摘要行常驻 + 展开 attempts 时间线/L 等级爬升/失败指纹；锚点 id 供用例全景失败行"查看诊断"跳转 */}
+      {diagnostic && <section id="verif-diagnostic-timeline" className="scroll-mt-2 border-b border-zinc-200 bg-white px-5 py-3">
+        <DiagnosticTimelineSection diagnostic={diagnostic} onOpenEvidence={(path) => void openDiagnosticEvidence(path)} utEscalations={utEscalationEvents} />
+      </section>}
       <section className={`border-b px-5 py-4 ${signoff.tone === 'good' ? 'border-emerald-200 bg-emerald-50' : signoff.tone === 'bad' ? 'border-red-200 bg-red-50' : 'border-amber-200 bg-amber-50'}`}>
         <div className="flex items-start gap-4">
           <div className="min-w-0 flex-1">
@@ -622,14 +865,29 @@ export function VerificationPosturePage(): React.JSX.Element {
       <section className="border-b border-zinc-200 bg-white px-5 py-4"><div className="mb-3 flex items-end justify-between"><div><h2 className="text-sm font-semibold">{state.waveProgress ? t('verification.steps.titleWaves') : t('verification.steps.titleLegacy')}</h2><p className="mt-1 text-xs text-zinc-500">{state.waveProgress ? t('verification.steps.subtitleWaves') : t('verification.steps.subtitleLegacy')}</p></div><span className="text-xs text-zinc-400">{t('verification.progress.nextStep')}{primaryAction?.title ?? t('verification.steps.keepEvidence')}</span></div><div className="grid gap-2" style={{ gridTemplateColumns: `repeat(${steps.length}, minmax(0, 1fr))` }}>{steps.map((step, index) => <div key={step.id} className="relative min-w-0 border-t-2 pt-2" style={{ borderColor: step.status === 'completed' ? '#10b981' : step.status === 'blocked' ? '#ef4444' : step.status === 'running' ? '#f59e0b' : '#d4d4d8' }}><div className="flex items-center gap-1.5"><span className={`h-2 w-2 shrink-0 rounded-full ${step.status === 'completed' ? 'bg-emerald-500' : step.status === 'blocked' ? 'bg-red-500' : step.status === 'running' ? 'bg-amber-500' : 'bg-zinc-300'}`} /><strong className="truncate text-xs">{step.label}</strong>{index < steps.length - 1 && <ArrowRight size={12} className="ml-auto text-zinc-300" />}</div><div className="mt-1 truncate text-[10px] text-zinc-500" title={step.title ?? step.detail}>{step.detail}</div></div>)}</div></section>
       {state.specMapping && <section className="border-b border-zinc-200 bg-white px-5 py-4"><div className="mb-3 flex items-end justify-between"><div><h2 className="text-sm font-semibold">{t('verification.mapping.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.mapping.subtitle')}</p></div><span className={`text-sm font-semibold ${state.specMapping.coveredClause === state.specMapping.clauseTotal ? 'text-emerald-700' : 'text-amber-700'}`}>{t('verification.mapping.completeness', { covered: state.specMapping.coveredClause, total: state.specMapping.clauseTotal })}{typeof state.specMapping.documentaryCount === 'number' ? ` · ${t('verification.mapping.documentary', { count: state.specMapping.documentaryCount })}` : ''}</span></div>{clauseRows.length > 0 ? <div className="max-h-[28rem] overflow-auto border-y border-zinc-200"><table className="w-full table-fixed text-left text-xs"><thead className="sticky top-0 bg-zinc-50 text-zinc-500"><tr><th className="w-24 px-2 py-2 font-medium">{t('verification.mapping.colStatus')}</th><th className="w-44 px-2 py-2 font-medium">{t('verification.mapping.colClauseId')}</th><th className="px-2 py-2 font-medium">{t('verification.mapping.colClause')}</th></tr></thead><tbody>{clauseRows.map((clause) => { const badge = CLAUSE_STATUS_LABELS[clause.status]; return <tr key={clause.specId} className="border-t border-zinc-100 align-top"><td className="px-2 py-1.5"><span className={`inline-block px-1.5 py-0.5 text-[10px] font-semibold ${badge?.cls ?? 'bg-zinc-100 text-zinc-600'}`}>{badge ? t(badge.labelKey) : clause.status}</span></td><td className="px-2 py-1.5 font-mono text-zinc-700">{clause.specId}</td><td className="px-2 py-1.5 text-zinc-600" title={clause.clause}>{clause.clause}</td></tr>})}</tbody></table></div> : <div className="flex items-center gap-2 px-2 py-4 text-sm text-emerald-700"><CheckCircle2 size={16} />{t('verification.mapping.allMapped')}</div>}</section>}
 
-      {state.verificationSpace && <CollapsibleSection title={t('verification.space.title')} aside={<span className="font-mono text-[10px] text-zinc-400">{state.verificationSpace.snapshotId}</span>}>
-        <div className="grid grid-cols-[1.3fr_repeat(6,minmax(80px,0.7fr))] bg-zinc-900 px-5 py-3 text-white"><div className="min-w-0"><div className="text-[10px] text-zinc-400">Verification Space Snapshot</div><div className="truncate font-mono text-xs text-emerald-300">{state.verificationSpace.snapshotId}</div><div className="mt-1 text-[10px] text-zinc-400">{t('verification.space.round', { round: state.explorationRound?.roundId ?? '-', selected: state.explorationRound?.selectedScenarioIds.length ?? 0, cost: state.explorationRound?.expectedCostSeconds ?? 0 })}</div><div title={state.explorationHistory?.saturation.status === 'EMPIRICALLY_SATURATED' ? t('verification.terms.explorationSaturated') : undefined} className={`mt-1 text-[10px] ${state.explorationHistory?.saturation.status === 'STALLED' ? 'text-red-300' : state.explorationHistory?.saturation.status === 'EMPIRICALLY_SATURATED' ? 'text-emerald-300' : 'text-amber-300'}`}>{t('verification.space.exploration', { status: state.explorationHistory?.saturation.status ?? t('verification.space.statusNone'), explanation: state.explorationHistory?.saturation.explanation ?? t('verification.space.explanationNone') })}</div></div>{[[t('verification.space.candidates'), state.verificationSpace.candidateCount], ['Negative', state.verificationSpace.negativeCount], ['Feature', state.verificationSpace.dimensions.features], ['Boundary', state.verificationSpace.dimensions.boundaries], ['Interaction', state.verificationSpace.dimensions.interactions], ['State', state.verificationSpace.dimensions.systemStates]].map(([label, value]) => <div key={String(label)} className="border-l border-zinc-700 px-3"><div className="text-[10px] text-zinc-400">{label}</div><div className="mt-1 text-lg font-semibold">{value}</div></div>)}</div>
-      </CollapsibleSection>}
-
       <div className="grid grid-cols-[minmax(520px,1.25fr)_minmax(360px,0.75fr)] gap-px border-b border-zinc-200 bg-zinc-200">
         <section className="bg-white p-5"><div className="mb-3"><h2 className="text-sm font-semibold">{t('verification.risks.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.risks.subtitle')}</p></div><div className="divide-y divide-zinc-100 border-y border-zinc-200">{openTopRisks.map(renderRiskRow)}{openTopRisks.length === 0 && <div className="py-8 text-center text-sm text-zinc-400">{acceptedTopRisks.length > 0 ? t('verification.risks.allAccepted') : t('verification.risks.empty')}</div>}</div>{acceptedTopRisks.length > 0 && <details className="mt-3 rounded border border-zinc-200"><summary className="cursor-pointer px-3 py-2 text-xs font-medium text-zinc-600 hover:bg-zinc-50">{t('verification.risks.acceptedTitle', { count: acceptedTopRisks.length })}</summary><div className="divide-y divide-zinc-100 border-t border-zinc-200 px-3">{acceptedTopRisks.map(renderRiskRow)}</div></details>}</section>
         <section className="bg-white p-5"><div className="mb-3"><h2 className="text-sm font-semibold">{t('verification.actions.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.actions.subtitle')}</p></div><div className="divide-y divide-zinc-100 border-y border-zinc-200">{actions.map((action) => <button key={action.id} disabled={runningAction !== null} onClick={() => void runAction(action.id, action.prompt)} className="flex w-full items-start gap-3 py-3 text-left hover:bg-zinc-50 disabled:opacity-50"><span className={`mt-0.5 px-1.5 py-0.5 text-[10px] font-semibold ${action.priority === 'P0' ? 'bg-red-100 text-red-700' : action.priority === 'P1' ? 'bg-amber-100 text-amber-700' : 'bg-zinc-100 text-zinc-600'}`}>{action.priority}</span><span className="min-w-0 flex-1"><strong className="block text-xs text-zinc-800">{action.title}</strong><span className="mt-1 block text-[11px] text-zinc-500">{action.detail}</span></span><ArrowRight size={14} className="mt-1 shrink-0 text-zinc-400" /></button>)}</div></section>
       </div>
+
+      <section className="border-b border-zinc-200 bg-white p-5"><h2 className="text-sm font-semibold">{t('verification.blockers.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.blockers.subtitle')}</p>
+        <div className="mt-4 max-h-72 overflow-auto border-y border-zinc-200">
+          {state.criticalOpen.map((id) => <div key={id} className="flex items-center gap-2 border-b border-zinc-100 px-2 py-2 text-xs"><XCircle size={14} className="text-red-500" /><strong className="font-mono text-red-700">{id}</strong><span className="text-zinc-500">{t('verification.blockers.criticalOpen')}</span></div>)}
+          {state.coverageHoles.filter((item) => item.blocking).map((hole) => <div key={hole.id} className="flex items-center gap-2 border-b border-zinc-100 px-2 py-2 text-xs"><AlertTriangle size={14} className="text-amber-500" /><strong className="font-mono text-amber-700" title={HOLE_EXPLANATIONS[hole.classification] ? t(HOLE_EXPLANATIONS[hole.classification]) : undefined}>{HOLE_LABELS[hole.classification] ? t(HOLE_LABELS[hole.classification]) : hole.classification}</strong><span className="min-w-0 flex-1 truncate text-zinc-500" title={hole.reason}>{hole.scenarioId} · {hole.reason}</span></div>)}
+          {(state.residualRiskRegister ?? []).filter((item) => item.approvalRequired && !item.approved).map((risk) => <div key={risk.id} className="flex items-center gap-2 border-b border-zinc-100 px-2 py-2 text-xs" title={t('verification.terms.residualPending')}><AlertTriangle size={14} className="text-violet-500" /><strong className="font-mono text-violet-700">{risk.id}</strong><span className="min-w-0 flex-1 truncate text-zinc-500" title={risk.impact}>{risk.title} · {t('verification.blockers.notApproved')}</span></div>)}
+          {summary.blockers === 0 && <div className="flex items-center gap-2 px-2 py-6 text-sm text-emerald-700"><CheckCircle2 size={16} />{t('verification.blockers.empty')}</div>}
+        </div>
+      </section>
+
+      {/* 根因链（方案 C 批 3 §4.2）：假设提出/证伪/确认链 + confirmed 条目的修复判定徽标；有记录或修复判定时才渲染，避免空态刷屏 */}
+      {((rootCauses?.length ?? 0) > 0 || (fixOutcomes?.length ?? 0) > 0) && <section className="border-b border-zinc-200 bg-white p-5">
+        <RootCauseChainSection records={rootCauses ?? []} fixOutcomes={fixOutcomes ?? []} />
+      </section>}
+
+      <TechnicalDetailsSection count={l2Count}>
+      {state.verificationSpace && <CollapsibleSection title={t('verification.space.title')} aside={<span className="font-mono text-[10px] text-zinc-400">{state.verificationSpace.snapshotId}</span>}>
+        <div className="grid grid-cols-[1.3fr_repeat(6,minmax(80px,0.7fr))] bg-zinc-900 px-5 py-3 text-white"><div className="min-w-0"><div className="text-[10px] text-zinc-400">Verification Space Snapshot</div><div className="truncate font-mono text-xs text-emerald-300">{state.verificationSpace.snapshotId}</div><div className="mt-1 text-[10px] text-zinc-400">{t('verification.space.round', { round: state.explorationRound?.roundId ?? '-', selected: state.explorationRound?.selectedScenarioIds.length ?? 0, cost: state.explorationRound?.expectedCostSeconds ?? 0 })}</div><div title={state.explorationHistory?.saturation.status === 'EMPIRICALLY_SATURATED' ? t('verification.terms.explorationSaturated') : undefined} className={`mt-1 text-[10px] ${state.explorationHistory?.saturation.status === 'STALLED' ? 'text-red-300' : state.explorationHistory?.saturation.status === 'EMPIRICALLY_SATURATED' ? 'text-emerald-300' : 'text-amber-300'}`}>{t('verification.space.exploration', { status: state.explorationHistory?.saturation.status ?? t('verification.space.statusNone'), explanation: state.explorationHistory?.saturation.explanation ?? t('verification.space.explanationNone') })}</div></div>{[[t('verification.space.candidates'), state.verificationSpace.candidateCount], ['Negative', state.verificationSpace.negativeCount], ['Feature', state.verificationSpace.dimensions.features], ['Boundary', state.verificationSpace.dimensions.boundaries], ['Interaction', state.verificationSpace.dimensions.interactions], ['State', state.verificationSpace.dimensions.systemStates]].map(([label, value]) => <div key={String(label)} className="border-l border-zinc-700 px-3"><div className="text-[10px] text-zinc-400">{label}</div><div className="mt-1 text-lg font-semibold">{value}</div></div>)}</div>
+      </CollapsibleSection>}
 
       <section className="grid grid-cols-9 border-b border-zinc-200 bg-white py-4">
         <Metric label={t('verification.metrics.overall')} value={signoff.label} detail={signoff.detail} tone={signoff.tone} />
@@ -643,9 +901,24 @@ export function VerificationPosturePage(): React.JSX.Element {
         <Metric label={t('verification.metrics.regression')} value={state.regressions.length} detail={t('verification.metrics.regressionFailed', { count: summary.failedRegression })} tone={summary.failedRegression ? 'bad' : 'good'} />
       </section>
 
-      {state.moduleVerificationStrategy && <CollapsibleSection title={t('verification.strategy.title')} subtitle={t('verification.strategy.subtitle')} aside={<span className="flex gap-4 text-[11px]"><span>{t('verification.strategy.signoff')} <b className="text-emerald-700">{state.moduleVerificationStrategy.summary.IP_SIGNOFF}</b></span><span>{t('verification.strategy.focused')} <b className="text-red-700">{state.moduleVerificationStrategy.summary.UNIT_FOCUSED}</b></span><span>{t('verification.strategy.smoke')} <b className="text-amber-700">{state.moduleVerificationStrategy.summary.UNIT_SMOKE}</b></span><span>{t('verification.strategy.static')} <b className="text-zinc-700">{state.moduleVerificationStrategy.summary.STATIC_ONLY}</b></span></span>}>
-        <div className="p-5 pt-4"><div className="max-h-96 overflow-auto border-y border-zinc-200"><table className="w-full table-fixed text-left text-[11px]"><thead className="sticky top-0 bg-zinc-50 text-zinc-500"><tr><th className="w-44 px-2 py-2 font-medium">{t('verification.strategy.colModule')}</th><th className="w-28 px-2 py-2 font-medium">{t('verification.strategy.colLevel')}</th><th className="w-28 px-2 py-2 font-medium">{t('verification.strategy.colRole')}</th><th className="w-60 px-2 py-2 font-medium">{t('verification.strategy.colOracle')}</th><th className="px-2 py-2 font-medium">{t('verification.strategy.colGolden')}</th></tr></thead><tbody>{state.moduleVerificationStrategy.modules.map((plan) => <tr key={plan.module} className="border-t border-zinc-100 align-top"><td className="px-2 py-2"><strong className="font-mono text-zinc-800">{plan.module}</strong><div className="mt-1 text-[10px] text-zinc-400">{plan.standaloneTestbench ? t('verification.strategy.standaloneTb') : t('verification.strategy.reuseTop')}</div></td><td className="px-2 py-2"><span className={`px-1.5 py-0.5 font-semibold ${plan.level === 'IP_SIGNOFF' ? 'bg-emerald-100 text-emerald-700' : plan.level === 'UNIT_FOCUSED' ? 'bg-red-100 text-red-700' : plan.level === 'UNIT_SMOKE' ? 'bg-amber-100 text-amber-700' : 'bg-zinc-100 text-zinc-600'}`}>{plan.level}</span></td><td className="px-2 py-2 text-zinc-600"><div>{plan.role}</div><div className="mt-1 font-mono text-zinc-400">{plan.riskScore.toFixed(3)}</div></td><td className="px-2 py-2 text-zinc-600">{plan.oracleStrategies.length ? plan.oracleStrategies.join(' + ') : t('verification.strategy.staticRules')}</td><td className="px-2 py-2"><div className={plan.goldenModel.recommendation === 'RECOMMENDED' ? 'font-semibold text-emerald-700' : plan.goldenModel.recommendation === 'OPTIONAL' ? 'font-medium text-amber-700' : 'text-zinc-500'}>{plan.goldenModel.recommendation}</div><div className="mt-1 text-zinc-500">{plan.goldenModel.rationale}</div><div className="mt-1 text-[10px] text-zinc-400">{plan.reasons.join(' ')}</div></td></tr>)}</tbody></table></div></div>
-      </CollapsibleSection>}
+      {state.moduleVerificationStrategy && (() => {
+        // 两态化展示（AIGV 修订 §7.1）：旧四级值经本地镜像映射归一；summary 计数按归一化结果重算（兼容旧文件）
+        const plans = state.moduleVerificationStrategy.modules.map((plan) => ({ ...plan, levelNorm: normalizeModuleVerificationLevel(plan.level) }))
+        const activeEscalationByModule = new Map((state.utEscalations ?? []).filter((item) => item.status === 'active').map((item) => [item.module, item]))
+        const countOf = (level: ModuleVerificationLevel): number => plans.filter((plan) => plan.levelNorm === level).length
+        const signoffStatusLabel = state.closureAssessment?.status === 'READY_FOR_HUMAN_SIGNOFF' ? t('verification.signoff.awaitingHumanLabel') : state.closureAssessment?.status === 'CONDITIONALLY_READY' ? t('verification.signoff.conditionalLabel', { count: (state.closureAssessment.residualRisks.length + state.closureAssessment.warnings.length) }) : state.closureAssessment?.status === 'NOT_READY' ? t('verification.signoff.notReadyLabel', { count: state.closureAssessment.blockers.length }) : t('verification.signoff.noDataLabel')
+        return <CollapsibleSection title={t('verification.strategy.title')} subtitle={t('verification.strategy.subtitle')} aside={<span className="flex gap-4 text-[11px]"><span>{t('verification.strategy.countTop')} <b className="text-emerald-700">{countOf('TOP_SIGNOFF')}</b></span><span>{t('verification.strategy.countException')} <b className="text-amber-700">{countOf('UT_EXCEPTION')}</b></span><span>{t('verification.strategy.countCovered')} <b className="text-zinc-700">{countOf('COVERED_BY_TOP')}</b></span></span>}>
+          <div className="p-5 pt-4"><div className="max-h-96 overflow-auto border-y border-zinc-200"><table className="w-full table-fixed text-left text-[11px]"><thead className="sticky top-0 bg-zinc-50 text-zinc-500"><tr><th className="w-44 px-2 py-2 font-medium">{t('verification.strategy.colModule')}</th><th className="w-32 px-2 py-2 font-medium">{t('verification.strategy.colLevel')}</th><th className="w-28 px-2 py-2 font-medium">{t('verification.strategy.colRole')}</th><th className="w-60 px-2 py-2 font-medium">{t('verification.strategy.colOracle')}</th><th className="px-2 py-2 font-medium">{t('verification.strategy.colGolden')}</th></tr></thead><tbody>{plans.map((plan) => {
+            const escalation = plan.levelNorm === 'UT_EXCEPTION' ? activeEscalationByModule.get(plan.module) : undefined
+            const escalationTitle = escalation ? `${t('verification.strategy.utExceptionBadgeHint')}\n${t('verification.strategy.utExceptionReason')}${escalation.reason}${escalation.rootCauseId ? `\n${t('verification.strategy.utExceptionRootCause')}${escalation.rootCauseId}` : ''}` : t('verification.strategy.levelUtExceptionHint')
+            return <tr key={plan.module} className="border-t border-zinc-100 align-top"><td className="px-2 py-2"><strong className="font-mono text-zinc-800">{plan.module}</strong><div className="mt-1 text-[10px] text-zinc-400">{plan.standaloneTestbench ? t('verification.strategy.standaloneTb') : t('verification.strategy.reuseTop')}</div></td><td className="px-2 py-2">{plan.levelNorm === 'TOP_SIGNOFF'
+              ? <span className="px-1.5 py-0.5 font-semibold bg-emerald-100 text-emerald-700" title={t('verification.strategy.levelTopSignoffHint')}>{t('verification.strategy.levelTopSignoff')}</span>
+              : plan.levelNorm === 'UT_EXCEPTION'
+                ? <span className="px-1.5 py-0.5 font-semibold bg-amber-100 text-amber-700" title={escalationTitle}>{t('verification.strategy.levelUtException')}</span>
+                : <span className="px-1.5 py-0.5 font-semibold bg-zinc-100 text-zinc-600" title={t('verification.strategy.levelCoveredHint')}>{t('verification.strategy.levelCovered')}</span>}{plan.levelNorm === 'TOP_SIGNOFF' && <div className="mt-1 text-[10px] text-emerald-700" title={t('verification.strategy.topSignoffStatusHint')}>{t('verification.strategy.topSignoffStatus', { status: signoffStatusLabel })}</div>}</td><td className="px-2 py-2 text-zinc-600"><div>{plan.role}</div><div className="mt-1 font-mono text-zinc-400">{plan.riskScore.toFixed(3)}</div></td><td className="px-2 py-2 text-zinc-600">{plan.oracleStrategies.length ? plan.oracleStrategies.join(' + ') : t('verification.strategy.staticRules')}</td><td className="px-2 py-2"><div className={plan.goldenModel.recommendation === 'RECOMMENDED' ? 'font-semibold text-emerald-700' : plan.goldenModel.recommendation === 'OPTIONAL' ? 'font-medium text-amber-700' : 'text-zinc-500'}>{plan.goldenModel.recommendation}</div><div className="mt-1 text-zinc-500">{plan.goldenModel.rationale}</div><div className="mt-1 text-[10px] text-zinc-400">{plan.reasons.join(' ')}</div></td></tr>
+          })}</tbody></table></div></div>
+        </CollapsibleSection>
+      })()}
 
       <section className="border-b border-zinc-200 bg-white p-5">
         <div className="mb-3 flex items-end justify-between gap-3">
@@ -690,15 +963,6 @@ export function VerificationPosturePage(): React.JSX.Element {
         </div>
       </CollapsibleSection>
 
-      <section className="border-b border-zinc-200 bg-white p-5"><h2 className="text-sm font-semibold">{t('verification.blockers.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.blockers.subtitle')}</p>
-        <div className="mt-4 max-h-72 overflow-auto border-y border-zinc-200">
-          {state.criticalOpen.map((id) => <div key={id} className="flex items-center gap-2 border-b border-zinc-100 px-2 py-2 text-xs"><XCircle size={14} className="text-red-500" /><strong className="font-mono text-red-700">{id}</strong><span className="text-zinc-500">{t('verification.blockers.criticalOpen')}</span></div>)}
-          {state.coverageHoles.filter((item) => item.blocking).map((hole) => <div key={hole.id} className="flex items-center gap-2 border-b border-zinc-100 px-2 py-2 text-xs"><AlertTriangle size={14} className="text-amber-500" /><strong className="font-mono text-amber-700" title={HOLE_EXPLANATIONS[hole.classification] ? t(HOLE_EXPLANATIONS[hole.classification]) : undefined}>{HOLE_LABELS[hole.classification] ? t(HOLE_LABELS[hole.classification]) : hole.classification}</strong><span className="min-w-0 flex-1 truncate text-zinc-500" title={hole.reason}>{hole.scenarioId} · {hole.reason}</span></div>)}
-          {(state.residualRiskRegister ?? []).filter((item) => item.approvalRequired && !item.approved).map((risk) => <div key={risk.id} className="flex items-center gap-2 border-b border-zinc-100 px-2 py-2 text-xs" title={t('verification.terms.residualPending')}><AlertTriangle size={14} className="text-violet-500" /><strong className="font-mono text-violet-700">{risk.id}</strong><span className="min-w-0 flex-1 truncate text-zinc-500" title={risk.impact}>{risk.title} · {t('verification.blockers.notApproved')}</span></div>)}
-          {summary.blockers === 0 && <div className="flex items-center gap-2 px-2 py-6 text-sm text-emerald-700"><CheckCircle2 size={16} />{t('verification.blockers.empty')}</div>}
-        </div>
-      </section>
-
       <section className="bg-white p-5"><div className="mb-3 flex items-end justify-between"><div><h2 className="text-sm font-semibold">{t('verification.intents.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.intents.subtitle')}</p></div><span className="text-xs text-zinc-400">{state.verificationIntents.length > 15 ? t('verification.intents.showing', { total: state.verificationIntents.length }) : t('verification.intents.count', { total: state.verificationIntents.length })} · RTL {state.rtlHash.slice(0, 10)}</span></div>
         <div className="max-h-[620px] overflow-auto border-y border-zinc-200">{topIntents.map((intent) => <article key={intent.id} className="border-b border-zinc-100 p-4"><div className="flex items-start gap-3"><div className="min-w-0 flex-1"><div className="flex items-center gap-2"><strong className="font-mono text-xs text-emerald-700">{intent.id}</strong><span className="font-mono text-[10px] text-zinc-400">{intent.scenarioId}</span><span className={`px-2 py-0.5 text-[10px] ${statusTone(intent.status)}`} title={intent.status === 'BLOCKED_BY_SPEC' ? t('verification.terms.blockedBySpec') : undefined}>{intent.status}</span><span className="text-[10px] text-sky-700">{intent.recommendedMethods.join(' + ')}</span></div><h3 className="mt-2 text-sm font-semibold leading-6 text-zinc-800">{intent.objective}</h3>{intent.failureMode && <p className="mt-1 text-xs text-red-700"><b>{t('verification.intents.failureMode')}</b>{intent.failureMode}</p>}</div><span className="font-mono text-xs text-zinc-500">P={intent.priority.toFixed(3)}</span></div><div className="mt-3 grid grid-cols-3 gap-4 text-[11px]"><div><b className="text-zinc-700">{t('verification.intents.stimulus')}</b><ol className="mt-1 list-decimal space-y-1 pl-4 text-zinc-500">{(intent.stimulusProcedure ?? intent.preconditions ?? []).map((item) => <li key={item}>{item}</li>)}</ol></div><div><b className="text-zinc-700">{t('verification.intents.observation')}</b><ul className="mt-1 list-disc space-y-1 pl-4 text-zinc-500">{(intent.observationPoints ?? []).map((item) => <li key={item}>{item}</li>)}</ul></div><div><b className="text-zinc-700">{t('verification.intents.passCriteria')}</b><ul className="mt-1 list-disc space-y-1 pl-4 text-zinc-500">{(intent.passCriteria ?? intent.expectedResults ?? []).map((item) => <li key={item}>{item}</li>)}</ul></div></div><div className="mt-3 text-[10px] text-zinc-400">{t('verification.intents.footer', { boundaries: intent.boundaries?.length ?? 0, evidence: intent.evidence.length, sources: (intent.sourceIds ?? []).join(', ') || t('verification.intents.sourcesNone') })}</div></article>)}</div>
       </section>
@@ -707,6 +971,10 @@ export function VerificationPosturePage(): React.JSX.Element {
         <section className="bg-white p-5"><h2 className="text-sm font-semibold">{t('verification.gaps.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.gaps.subtitle')}</p><div className="mt-3 max-h-80 overflow-auto border-y border-zinc-200">{specGaps.map((gap) => <div key={gap.id} className="border-b border-zinc-100 px-2 py-3"><div className="flex items-center gap-2"><strong className="font-mono text-xs text-amber-700">{gap.id}</strong><span className="bg-amber-50 px-2 py-0.5 text-[10px] text-amber-700">{SPEC_GAP_CATEGORY_LABELS[gap.category] ? t(SPEC_GAP_CATEGORY_LABELS[gap.category]) : gap.category}</span><span className="ml-auto text-[10px] text-zinc-400">{gap.confidence}</span></div><div className="mt-1 text-xs font-medium text-zinc-700">{gap.title}</div><div className="mt-1 text-[11px] text-zinc-500">{t('verification.gaps.impact')}{gap.impact}</div><div className="mt-1 text-[11px] text-emerald-700">{t('verification.gaps.action')}{gap.action}</div>{gap.sources?.[0] && <div className="mt-1 font-mono text-[10px] text-zinc-400">{gap.sources[0].file}{gap.sources[0].line ? `:${gap.sources[0].line}` : ''}</div>}</div>)}{specGaps.length === 0 && <div className="p-6 text-sm text-emerald-700">{t('verification.gaps.empty')}</div>}</div></section>
         <section className="bg-white p-5"><h2 className="text-sm font-semibold">{t('verification.holes.title')}</h2><p className="mt-1 text-xs text-zinc-500">{t('verification.holes.subtitle')}{state.coverageHoles.length > 20 ? t('verification.holes.showingFirst', { total: state.coverageHoles.length }) : ''}</p><div className="mt-3 max-h-[520px] overflow-auto border-y border-zinc-200">{topHoles.map((hole) => <div key={hole.id} className="border-b border-zinc-100 px-2 py-3"><div className="flex items-center gap-2"><strong className={`text-xs ${hole.blocking ? 'text-red-700' : 'text-amber-700'}`} title={HOLE_EXPLANATIONS[hole.classification] ? t(HOLE_EXPLANATIONS[hole.classification]) : undefined}>{HOLE_LABELS[hole.classification] ? t(HOLE_LABELS[hole.classification]) : hole.classification}</strong><span className="font-mono text-[10px] text-zinc-400">{hole.scenarioId}</span><span className="ml-auto text-[10px] text-zinc-400">{hole.confidence}</span></div><div className="mt-1 text-xs font-medium text-zinc-700">{hole.missingTarget ?? hole.scenarioTitle ?? hole.reason}</div><div className="mt-2 text-[11px] text-zinc-500"><b>{t('verification.holes.stimulus')}</b>{hole.requiredStimulus?.join(t('verification.guidance.clauseJoin')) ?? hole.recommendedAction}</div><div className="mt-1 text-[11px] text-zinc-500"><b>{t('verification.holes.observation')}</b>{hole.requiredObservation?.join(t('verification.guidance.clauseJoin')) ?? t('verification.holes.observationFallback')}</div><div className="mt-1 text-[11px] text-emerald-700"><b>{t('verification.holes.closure')}</b>{hole.closureEvidence?.join(t('verification.guidance.clauseJoin')) ?? t('verification.holes.closureFallback')}</div></div>)}{state.coverageHoles.length === 0 && <div className="p-6 text-sm text-emerald-700">{t('verification.holes.empty')}</div>}</div></section>
       </div>
+      </TechnicalDetailsSection>
+
+      {/* 配置覆盖矩阵（AIGV 修订 §7.2，L1/L2 边界、默认折叠）：引擎无数据时不渲染 */}
+      {state.configCoverage && <ConfigCoverageSection coverage={state.configCoverage} runningAction={runningAction} onHandoff={(id, prompt) => void runAction(id, prompt)} />}
 
       <CoverageDetailPanel projectId={projectId} regressions={state.regressions} />
 

@@ -16,6 +16,7 @@
     <h1>验证态势页详解与工程使用指南</h1>
     <div class="subtitle">看懂“验证到哪里、主要风险是什么、证据是否可信、下一步该做什么”，并把页面从结果看板真正用成验证收敛控制台。</div>
     <div class="meta"><span>适用产品：MoonGlass ASIC Design Agent</span><span>适用版本：v0.9.5+</span><span>日期：2026-09-14</span><span>联系：moonglassagent@126.com</span></div>
+    <div class="callout warn"><b>2026-09-29 修订：</b>模块验证策略由四级分级修订为“TOP 优先，UT 例外”两态，并新增配置空间模型（详见 docs/AIGV-TOP-FIRST-STRATEGY-ZH-CN.md）；第 12 章已按新口径改写。</div>
   </header>
 
   <div class="layout">
@@ -42,7 +43,7 @@
         ↓
 风险热区：最可能藏有高影响问题的结构在哪里？
         ↓
-模块分层策略：这些模块分别要验证到什么深度？
+模块策略两态：TOP 必过、UT 例外是否登记合规？
         ↓
 Verification Intent：具体要证明什么行为？
         ↓
@@ -52,7 +53,7 @@ Coverage Hole：预期明确后，还缺激励、观察、工具还是证据？<
         <table><thead><tr><th>区域</th><th>第一眼看什么</th><th>出现什么必须行动</th><th>通常交给谁</th></tr></thead><tbody>
           <tr><td><b>总体签核阻断项</b></td><td>红色 blocker 数量及第一条原因</td><td>任何未关闭 blocker</td><td>验证负责人协调；按问题分给规格、RTL、验证或工具链负责人</td></tr>
           <tr><td><b>风险热区</b></td><td>右上/最热区域中的模块和对象</td><td>高热对象没有对应 Intent，或只有普通冒烟</td><td>架构师确认风险，验证工程师补策略</td></tr>
-          <tr><td><b>模块分层验证策略</b></td><td>顶层是否为 IP_SIGNOFF；高风险子模块是否为 UNIT_FOCUSED</td><td>核心仲裁器/FIFO/协议模块被降为 STATIC_ONLY，或简单 glue 被过度验证</td><td>验证负责人调整层级与 Oracle</td></tr>
+          <tr><td><b>模块验证策略</b></td><td>顶层是否为 TOP_SIGNOFF；active UT 例外模块是否有独立环境与必过证据</td><td>核心模块未经登记直接单建 Testbench，或例外用例 PASS 被当作 TOP 证据</td><td>验证负责人审核例外登记与 Oracle</td></tr>
           <tr><td><b>Verification Intent 闭环</b></td><td>关键 Intent 的状态、目标、激励、观察和通过标准</td><td>FAILED、OPEN，或文字只有分类而没有可执行语义</td><td>验证工程师实现，设计工程师协助裁决</td></tr>
           <tr><td><b>规格缺口</b></td><td>缺口类型、影响和源码/文档来源</td><td>SPEC_UNDEFINED、TEMPORAL_UNDEFINED 或高影响 RTL_WITHOUT_SPEC</td><td>规格/架构责任人先裁决</td></tr>
           <tr><td><b>Coverage Hole</b></td><td>分类、具体缺失目标、所需激励和关闭证据</td><td>blocking=true，尤其 C3/C4/C5/C6</td><td>验证环境、Checker、规格或工具链负责人</td></tr>
@@ -172,20 +173,19 @@ RTL Structure → Risk → Verification Intent → Scenario
       </section>
 
       <section id="module"><h2>12. 模块验证策略</h2>
-        <p>复杂 IP 不应对每个子模块机械执行同等重量的全流程。MoonGlass 根据模块角色、风险、是否顶层和可观察性分层：</p>
-        <table><thead><tr><th>级别</th><th>适用对象</th><th>典型要求</th></tr></thead><tbody>
-          <tr><td>STATIC_ONLY</td><td>简单 glue、纯组合映射或已被顶层充分覆盖的低风险模块。</td><td>Lint、结构检查、顶层证据；通常不单建 Testbench。</td></tr>
-          <tr><td>UNIT_SMOKE</td><td>独立边界有限、主要在顶层体现功能的子模块。</td><td>基础冒烟、关键复位/握手，再由顶层完成完整闭环。</td></tr>
-          <tr><td>UNIT_FOCUSED</td><td>协议、状态机、算术、缓存、仲裁等高风险子模块。</td><td>定向场景、Checker/Assertion，必要时采用 Golden Model。</td></tr>
-          <tr><td>IP_SIGNOFF</td><td>顶层和最终外部行为。</td><td>完整 Intent、Scenario、Coverage、Multi-Oracle、Mutation 与签核证据。</td></tr>
+        <p>MoonGlass 采用“TOP 优先，UT 例外”策略：默认只针对整个设计（TOP）搭建一套验证环境，全部场景锚定顶层接口与规格条款；子模块不再按四级分级建独立环境，仅诊断升级后 probe 仍无法定位时，经登记（<code>ut-escalations.json</code>）的例外模块才单独建 Testbench。配置完备性由配置空间模型保障：规格寄存器章节抽取为 <code>config-space.json</code>，按业务/边界/非法/动态四类配置点派生 Corner 场景，仿真环境自动回传配置覆盖。</p>
+        <table><thead><tr><th>层级</th><th>适用对象</th><th>典型要求</th></tr></thead><tbody>
+          <tr><td>TOP_SIGNOFF</td><td>顶层和最终外部行为。</td><td>完整 Intent、Scenario、Coverage、Multi-Oracle、Mutation 与签核证据。</td></tr>
+          <tr><td>COVERED_BY_TOP</td><td>其余全部子模块。</td><td>Lint、结构检查与全设计覆盖率，经 TOP 场景间接验证；通常不单建 Testbench。</td></tr>
+          <tr><td>UT_EXCEPTION</td><td>诊断升级后 probe 仍无法定位、经登记的例外模块。</td><td>定向场景、Checker/Assertion，必要时采用 Golden Model；修复后须回到 TOP 回归确认。</td></tr>
         </tbody></table>
         <p><b>Golden Model 推荐</b>不是固定规则：RECOMMENDED 表示该模块有可独立计算的参考语义；OPTIONAL 表示收益取决于风险；NOT_NEEDED 表示静态规则或顶层 Oracle 已足够。</p>
         <h3>12.1 在页面上按什么顺序看</h3>
-        <ol><li><b>先找 Top Modules。</b>最终对外行为所在顶层通常应为 <code>IP_SIGNOFF</code>，否则先确认是否识别错顶层。</li><li><b>再按 Risk Score 从高到低看子模块。</b>仲裁、FIFO、跨边界计数、协议状态机、错误恢复等高风险模块通常不能只有 STATIC_ONLY。</li><li><b>看 Role 和 Reasons。</b>确认分层理由符合真实架构，而不是只由文件大小决定。</li><li><b>看 Standalone Testbench。</b>需要独立精确裁决的模块应有独立环境；主要功能只在顶层显现的模块可以复用顶层 Testbench。</li><li><b>最后看 Oracle 与 Golden Model。</b>判断当前 Checker 是否足以裁决，而不是机械要求每个模块都建 Golden Model。</li></ol>
-        <h3>12.2 怎样识别分层不合理</h3>
+        <ol><li><b>先找 Top Modules。</b>最终对外行为所在顶层应为 <code>TOP_SIGNOFF</code>，否则先确认是否识别错顶层。</li><li><b>再看 COVERED_BY_TOP 的覆盖面。</b>仲裁、FIFO、跨边界计数、协议状态机、错误恢复等高风险对象应优先体现在 TOP 场景与配置点中，而不是依赖单建环境。</li><li><b>看 UT_EXCEPTION 登记。</b>确认例外模块的升级理由符合真实诊断历史，而不是预防性堆环境。</li><li><b>看 Standalone Testbench。</b>仅登记为例外的模块应有独立环境；主要功能只在顶层显现的模块复用顶层 Testbench。</li><li><b>最后看 Oracle 与 Golden Model。</b>判断当前 Checker 是否足以裁决，而不是机械要求每个模块都建 Golden Model。</li></ol>
+        <h3>12.2 怎样识别策略不合理</h3>
         <table><thead><tr><th>页面现象</th><th>可能问题</th><th>建议调整</th></tr></thead><tbody>
-          <tr><td>DMA 顶层是 UNIT_SMOKE</td><td>只验证了能启动，未覆盖完整外部行为</td><td>升为 IP_SIGNOFF，绑定所有关键规格与场景</td></tr>
-          <tr><td>round-robin arbiter 是 STATIC_ONLY</td><td>公平性、同拍请求和饥饿风险没有动态裁决</td><td>升为 UNIT_FOCUSED，增加并发序列与公平性 Assertion</td></tr>
+          <tr><td>DMA 顶层未达 TOP_SIGNOFF</td><td>只验证了能启动，未覆盖完整外部行为</td><td>补齐 TOP 端到端场景，绑定所有关键规格与场景</td></tr>
+          <tr><td>round-robin arbiter 只有 Lint 证据</td><td>公平性、同拍请求和饥饿风险没有动态裁决</td><td>在 TOP 场景增加并发序列与公平性 Assertion；诊断无果再登记 UT 例外</td></tr>
           <tr><td>纯复位同步器执行完整 Golden Model 回归</td><td>验证投入与风险不匹配</td><td>采用静态检查、Assertion 或短冒烟即可</td></tr>
           <tr><td>FIFO 标记 Golden Model OPTIONAL，但存在丢数/乱序风险</td><td>参考队列可显著提高定位能力</td><td>人工调整为 RECOMMENDED，并增加队列模型/scoreboard</td></tr>
         </tbody></table>
@@ -196,7 +196,7 @@ RTL Structure → Risk → Verification Intent → Scenario
         <ul><li><b>结构复杂度高：</b>状态机多、控制流分支多、依赖锥大或多写者。</li><li><b>交互强度高：</b>多个功能、通道、状态、时序条件或协议相互作用。</li><li><b>高热区使用：</b>检查是否有对应 Intent、边界、异常激励和独立 Oracle。</li><li><b>低热区使用：</b>通常可采用静态检查或冒烟，但仍受规格关键性约束。</li></ul>
         <h3>13.1 四个象限怎么读</h3>
         <table><thead><tr><th>位置</th><th>含义</th><th>验证策略</th></tr></thead><tbody>
-          <tr><td><b>右上：高复杂 + 高交互</b></td><td>最优先区域，如共享总线仲裁、并发 DMA 通道、错误恢复状态机。</td><td>UNIT_FOCUSED/IP_SIGNOFF；定向交互场景、Assertion、独立 Oracle，必要时 Formal。</td></tr>
+          <tr><td><b>右上：高复杂 + 高交互</b></td><td>最优先区域，如共享总线仲裁、并发 DMA 通道、错误恢复状态机。</td><td>TOP 优先覆盖；诊断无果登记 UT_EXCEPTION 后单建环境。定向交互场景、Assertion、独立 Oracle，必要时 Formal。</td></tr>
           <tr><td><b>左上：低复杂 + 高交互</b></td><td>模块自身简单，但连接很多，例如 ready/valid glue、复位传播。</td><td>重点做集成层场景和接口 Assertion，不一定单建重型环境。</td></tr>
           <tr><td><b>右下：高复杂 + 低交互</b></td><td>内部算法复杂但外部耦合较少，例如 CRC、编码器、地址计算。</td><td>独立 Golden Model、边界向量、Mutation 往往有效。</td></tr>
           <tr><td><b>左下：低复杂 + 低交互</b></td><td>通常是低风险结构。</td><td>Lint、静态规则和冒烟为主，但关键安全/复位要求不能仅凭热度降级。</td></tr>

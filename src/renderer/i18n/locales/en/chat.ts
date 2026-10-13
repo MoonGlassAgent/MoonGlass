@@ -108,6 +108,8 @@ export const chat: ChatMessages = {
     drafted: 'This item is done; waiting for other confirmations',
     waitingAgent: 'Waiting for the agent to finish this turn',
     noImmediateTrigger: 'Completing this item does not trigger the next turn immediately',
-    complete: 'Complete This Item'
+    complete: 'Complete This Item',
+    hoisted: 'Pending decision "{title}" has been moved to the bottom of the conversation. Click to jump.',
+    hoistedHint: '(Pending decisions are gathered here — no need to scroll back)'
   }
 }
