@@ -125,7 +125,7 @@ const byId = new Map(availableModels.map((m) => [m.id, m]))
 const expectedContexts = {
   'deepseek-v4-pro': { contextWindow: 777_777, maxTokens: 8_888 }, // payload 覆盖 > 登记表 1M
   'my-selfhost-model': { contextWindow: 333_333, maxTokens: 4_096 }, // 仅 payload 覆盖值
-  'deepseek-chat': { contextWindow: 128_000, maxTokens: 8_192 } // 无覆盖且登记表缺失 → 兼容回退
+  'deepseek-chat': { contextWindow: 1_048_576, maxTokens: 65_536 } // 无覆盖且登记表缺失 → 兼容回退（2026-10-13 起为 1M/64K 主流假设）
 }
 for (const [id, expected] of Object.entries(expectedContexts)) {
   const model = byId.get(id)

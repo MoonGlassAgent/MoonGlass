@@ -70,10 +70,13 @@ const rules: Array<{ pattern: RegExp; value: ModelContextMetadata }> = [
   { pattern: /^llama-3\.3-70b-versatile$/i, value: { contextWindow: 131_072, maxTokens: 32_768, source: '第三方一致标注（Groq 官方页未直连）', verified: false } }
 ]
 
+// 兼容回退（2026-10-13 用户拍板）：未登记型号按现代主流假设 1M 上下文/64K 输出——
+// 模型发展趋势下用户不会选用太弱的模型；代价是自部署小上下文模型会被高估
+// （超限时报 API 错误而非提前压缩），登记表覆盖的型号不受影响
 export const FALLBACK_MODEL_CONTEXT: ModelContextMetadata = {
-  contextWindow: 128_000,
-  maxTokens: 8_192,
-  source: 'MoonGlass 兼容回退值',
+  contextWindow: 1_048_576,
+  maxTokens: 65_536,
+  source: 'MoonGlass 兼容回退值（1M/64K 主流假设）',
   verified: false
 }
 
