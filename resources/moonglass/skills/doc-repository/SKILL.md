@@ -42,7 +42,7 @@ docs/
 - Keep traceability states within `草稿 / 冻结 / 验证 / 已验证 / 已验收 / 开放 / 关闭`.
 - State assumptions, unresolved items, acceptance criteria, and source evidence.
 - Link related documents using relative paths.
-- Treat `microarchitecture.md` as optional for a simple single-module design. Create it when internal pipelines, state machines, scheduling, datapaths, or module interactions need a separate review surface.
+- Treat `microarchitecture.md` as optional for a simple single-module design. Create it when internal pipelines, state machines, scheduling, datapaths, or module interactions need a separate review surface. 一旦创建，粒度必须能直接指导 RTL 开发：每个非平凡模块写清接口信号与参数（位宽/方向/默认值/握手）、状态机（状态/转移条件/每态行为）或流水线各级行为、寄存器与存储语义（地址/字段/读写行为/复位值/副作用）、边界与异常处理（空满/越界/非法配置/并发）、关键时序关系（延迟拍数/吞吐/反压）。判定标准：RTL 开发会话只凭本文档与规格即可实现，无需重新做设计决策；只写"做什么"不写"怎么做"视为不合格。
 - Treat `clock_reset.md` as optional for a single-clock, single-reset design without CDC/RDC. Create it for multiple clock/reset domains, generated or gated clocks, reset sequencing, CDC/RDC, or special low-power behavior.
 - When either optional document is omitted, retain the necessary concise description and rationale in `architecture.md`.
 - Templates are available in `assets/templates/`; adapt them to the project

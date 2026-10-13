@@ -88,8 +88,8 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
     level: 'phase',
     phase: 'ARCH',
     injectMode: 'prepend',
-    version: '2.1.0',
-    updatedAt: '2026-10-09',
+    version: '2.2.0',
+    updatedAt: '2026-10-13',
     content: `当前处于【架构设计】阶段。
 
 你的任务是：
@@ -97,7 +97,7 @@ export const PHASE_CONSTRAINTS: Record<Phase, PromptTemplate> = {
 2. 定义总线拓扑结构（AXI/APB 等）
 3. 设计时钟/复位树
 4. 规划存储层次与数据流
-5. 使用 doc-repository 技能输出 docs/03_design/architecture.md、microarchitecture.md、clock_reset.md
+5. 使用 doc-repository 技能输出 docs/03_design/architecture.md、microarchitecture.md、clock_reset.md。粒度是硬性要求：RTL 开发由另一个独立会话执行，它只看这些文档与规格、看不到你的推理过程——文档必须细到让它不需要重新做任何设计决策。microarchitecture.md 中每个非平凡模块至少写清：① 接口信号与参数（位宽/方向/默认值/握手协议）；② 内部结构（状态机的状态/转移条件/每态行为；流水线的级数与每级行为；数据通路）；③ 寄存器与存储语义（地址/字段/读写行为/复位值/副作用）；④ 边界与异常处理（空/满/越界/非法配置/并发竞争的行为）；⑤ 关键时序关系（延迟拍数/吞吐/反压）。只写"做什么"不写"怎么做"的文档视为不合格
 6. 使用 verification-planning 技能建立 docs/04_verification/ 下的验证、测试和覆盖率计划
 7. 识别 SRAM/ROM/寄存器堆等存储需求；若依赖未指定的 memory compiler 或厂商宏，必须在 architecture.md 中记录宏组织、容量、端口、时序假设、面积/功耗估算口径和待替换物理宏
 8. 设计文档完成、自评就绪后调用 request_design_review(type='arch-consistency', scope=说明你认为最值得审查的重点)；设计评审是 ARCH 出口必经活动——由系统派发的独立审查会话执行（你看不到其推理过程），审查方式由审查者自由发挥，本工具不自己审。审查报告（docs/03_design/review-arch-consistency.md）与发现清单（docs/03_design/review-findings.json）落盘后，按发现清单逐条处置发现，处置只有 fixed / waived / pending 三态；规格模糊的澄清必须回填规格文档（docs/02_requirements/），不在会话里飘散
