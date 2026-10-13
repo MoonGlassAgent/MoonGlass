@@ -37,9 +37,25 @@ const piReal = realpathSync(PI_PKG)
 const piPkgJson = JSON.parse(readFileSync(join(piReal, 'package.json'), 'utf-8'))
 console.log(`[stage-pi] pi-coding-agent@${piPkgJson.version}  <- ${piReal}`)
 
-// Windows 杀毒软件会瞬时持锁新建文件/目录，rm 偶发 EPERM——Node 内建重试即可覆盖
+// Windows 杀毒软件会瞬时持锁新建文件/目录，rm 偶发 EPERM——内建重试窗口（8×300ms）
+// 在扫描高峰仍可能不够，这里再包一层更耐心的应用层重试（最多约 30s）
 const RM_OPTS = { recursive: true, force: true, maxRetries: 8, retryDelay: 300 }
-rmSync(OUT, RM_OPTS)
+function rmWithRetry(path, opts = RM_OPTS) {
+  const sleepMs = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+  let lastError
+  for (let attempt = 0; attempt < 30; attempt++) {
+    try {
+      rmSync(path, opts)
+      return
+    } catch (error) {
+      if (error?.code !== 'EPERM' && error?.code !== 'EBUSY') throw error
+      lastError = error
+      sleepMs(1000)
+    }
+  }
+  throw lastError
+}
+rmWithRetry(OUT)
 mkdirSync(join(OUT, 'node_modules'), { recursive: true })
 
 // pi-coding-agent 本体（仅 dist + package.json，与打包运行时需要的一致）
@@ -121,13 +137,13 @@ function prune(dir) {
     const p = join(dir, entry.name)
     if (entry.isDirectory()) {
       if (PRUNE_DIR.has(entry.name)) {
-        rmSync(p, RM_OPTS)
+        rmWithRetry(p)
         pruned++
         continue
       }
       prune(p)
     } else if (PRUNE_FILE.test(entry.name)) {
-      rmSync(p, { maxRetries: 8, retryDelay: 300 })
+      rmWithRetry(p, { maxRetries: 8, retryDelay: 300 })
       pruned++
     }
   }
