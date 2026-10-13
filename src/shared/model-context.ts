@@ -6,11 +6,13 @@ export interface ModelContextMetadata {
 }
 
 /**
- * 模型上下文登记表（2026-09-11 按各厂商官方文档刷新，调研记录见 交流/交流_20260908.txt）。
+ * 模型上下文登记表（2026-09-11 按各厂商官方文档刷新，调研记录见 交流/交流_20260908.txt；
+ * 2026-10-10 补充 claude 5.5 家族）。
  * verified=true 表示官方页面直接确认；false 为官方未公布输出上限或间接核实（取保守值）。
  * 注意：本文件与 resources/moonglass/pi-bridge/model-context.ts 是两份副本（桥接被复制到
  * userData 运行，禁止跨目录 import），修改必须两侧同步。
- * 聚合商（OpenRouter/Together/硅基流动）的带前缀模型 ID 不在此表覆盖范围内。
+ * 聚合商（OpenRouter/Together/硅基流动等）的带供应商前缀 ID（如 anthropic/claude-sonnet-5.5）
+ * 由 resolveModelContext 剥离前缀并归一版本点写法后匹配，无需在本表重复登记。
  */
 const rules: Array<{ pattern: RegExp; value: ModelContextMetadata }> = [
   // DeepSeek：2026-09 官方 API 事实主力仅 deepseek-flash（V4.1-Flash，1M/384K）；
@@ -22,6 +24,8 @@ const rules: Array<{ pattern: RegExp; value: ModelContextMetadata }> = [
   // gpt-6-luna / gpt-6-sol：OpenCode Go 目录在售（2026-09），官方页未直连，按旗舰线口径间接核实
   { pattern: /^gpt-6-(?:luna|sol)$/i, value: { contextWindow: 1_050_000, maxTokens: 128_000, source: 'OpenAI 官方（间接核实）', verified: false } },
   // Anthropic：1M 均为默认（非 beta）；haiku 4.5 固定 200K 无 1M 变体
+  // opus-5-5/sonnet-5-5（2026-09 发布）：多家聚合商一致标注 1M/128K，官方页未直连核实
+  { pattern: /^claude-(?:opus-5-5|sonnet-5-5)$/i, value: { contextWindow: 1_048_576, maxTokens: 128_000, source: 'Anthropic 官方（第三方一致标注，未直连核实）', verified: false } },
   { pattern: /^claude-(?:opus-5|sonnet-5|fable-5-1)$/i, value: { contextWindow: 1_048_576, maxTokens: 128_000, source: 'Anthropic 官方', verified: true } },
   { pattern: /^claude-(?:opus-4-[678]|sonnet-4-6)$/i, value: { contextWindow: 1_048_576, maxTokens: 128_000, source: 'Anthropic 官方（输出上限页面口径曾不一致）', verified: false } },
   { pattern: /^claude-haiku-4-5/i, value: { contextWindow: 200_000, maxTokens: 64_000, source: 'Anthropic 官方', verified: true } },
@@ -74,6 +78,15 @@ export const FALLBACK_MODEL_CONTEXT: ModelContextMetadata = {
 }
 
 export function resolveModelContext(modelId: string): ModelContextMetadata | null {
-  const normalized = modelId.trim()
-  return rules.find((rule) => rule.pattern.test(normalized))?.value ?? null
+  const trimmed = modelId.trim()
+  // 聚合商前缀剥离（anthropic/claude-sonnet-5.5 → claude-sonnet-5.5）：实测 OpenRouter
+  // 渠道 ID 带供应商前缀导致全部落空回退 128K/8K。注意顺序：先试原样（openai/gpt-oss-120b
+  // 这类 Groq 登记条目自带斜杠），再试剥离，最后试版本点写法归一（5.5 → 5-5）。
+  const unprefixed = trimmed.includes('/') ? trimmed.slice(trimmed.lastIndexOf('/') + 1) : trimmed
+  const dashed = unprefixed.replace(/(\d)\.(\d)/g, '$1-$2')
+  for (const candidate of [trimmed, unprefixed, dashed]) {
+    const hit = rules.find((rule) => rule.pattern.test(candidate))
+    if (hit) return hit.value
+  }
+  return null
 }

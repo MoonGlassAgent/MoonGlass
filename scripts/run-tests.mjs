@@ -48,7 +48,8 @@ const suites = {
     'scripts/artifact-drift-smoke.mjs',
     'scripts/design-review-smoke.mjs',
     'scripts/design-review-dispatch-smoke.mjs',
-    'scripts/module-ut-smoke.mjs'
+    'scripts/module-ut-smoke.mjs',
+    'scripts/model-context-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',
