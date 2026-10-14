@@ -19,6 +19,14 @@
 
 ## 下载说明
 
-本次为公开源码与文档同步，未创建或上传 v1.1.8 GitHub Release。已有二进制请查看 [GitHub Releases](https://github.com/MoonGlassAgent/MoonGlass/releases)。历史 SHA256SUMS.txt 对应原已发布文件，不用于本轮本地绿色版。
+绿色版已补充到 [v1.1.8 GitHub Release](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.1.8)，发布日期为 2026-10-14，包生成于 2026-10-13。
+
+- 文件：`MoonGlass-1.1.8-Windows-x64-Green-v1.1.8-20261013.zip`
+- 大小：370,692,386 字节（约 353.5 MiB）
+- SHA-256：`13F2C1522467D0A8EB1B0E5FAAB8357AF0D1B9070C4563C7588C86F51208B31B`
+- 完整解压后运行 `MoonGlass.exe` 或 `Start-MoonGlass.bat`。数据写入程序目录的 userdata。
+- 含 MIC_NPU 演示工程和内置运行时，不含用户 API Key、模型配置或 Agent 会话。
+
+Release 标签指向公开仓库提交，不推送私有开发标签或历史。完整二进制与公开框架不是一一对应的可复现构建关系。
 
 MoonGlass 的授权、商业使用边界与商标政策保持不变。
