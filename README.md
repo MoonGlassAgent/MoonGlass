@@ -1,5 +1,7 @@
 # MoonGlass ASIC Design Agent
 
+[English](./README.en.md) | 简体中文
+
 MoonGlass 是面向 ASIC/SoC 工程师的芯片开发全流程 AI 工作台。它把需求、规格、架构、RTL、验证、质量和综合组织成一条可追踪、可审查、可恢复的工程链，让 Agent 的工作结果不仅是“生成了一段代码”，而是能够逐步形成设计文件、验证证据、问题记录和交付报告。
 
 当前产品版本：**v1.1.8** ｜ Windows x64 ｜ [本轮公开更新说明](./RELEASE-NOTES-v1.1.8-ZH-CN.md)
@@ -59,17 +61,17 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 | RTL Design Browser | 层次树、源码、信号列表、Driver/Load 追踪和跨层次定位 |
 | IP 模板库 | 用户导入 IP 路径，自动识别、索引并在架构、RTL 和验证阶段提供复用建议 |
 | 多模型服务 | OpenAI 兼容接口及多个 Provider；连接测试、模型切换、失败恢复和状态保持 |
-| 主题与交付 | 浅色、深色、跟随系统；Windows 安装包和包含 MIC_NPU Demo 的绿色版 |
+| 主题与交付 | 浅色、深色、跟随系统；Windows x64 ZIP 绿色版，包含 MIC_NPU Demo，无需安装 |
 
 ## 界面预览
 
-![MoonGlass 项目总览](./docs/images/v086/01-projects.png)
+以下为 v1.1.8 英文界面的真实截图，使用隔离的 MIC_NPU 演示数据。工程文件和注释保留原语言。
 
-![MoonGlass VERIF 工作区](./docs/images/v086/02-workspace-verif.png)
+![MoonGlass 英文项目总览](./docs/images/en/projects-v1.1.8.png)
 
-![验证态势全屏视图](./docs/images/v086/03-verification-posture.png)
+![MoonGlass 英文工程工作区](./docs/images/en/workspace-v1.1.8.png)
 
-![RTL Design Browser](./docs/images/v086/04-design-browser.png)
+![MoonGlass 英文 RTL Design Browser](./docs/images/en/rtl-browser-v1.1.8.png)
 
 ## 快速开始
 
@@ -83,20 +85,11 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 
 完整说明：[MoonGlass 用户手册](./docs/USER-MANUAL-ZH-CN.md) ｜ [HTML 快速手册](./docs/MoonGlass快速使用手册.html)
 
-## 从源码运行
+## 公开源码范围
 
-要求：Node.js ≥ 22，pnpm ≥ 10。Python 3.10+ 和 EDA 工具可由设置页检测，也可以使用系统中已有安装。
+本仓库用于阅读、讨论和展示公开 UI、流程框架、共享接口及文档，不是完整应用的构建仓库。仓库没有 `package.json`，不能在这里执行 `pnpm install` 或启动完整应用。
 
-```bash
-pnpm install
-pnpm dev
-pnpm typecheck
-pnpm test
-pnpm build
-pnpm dist
-```
-
-公开仓库仅包含公开范围内的 UI、流程框架、共享接口和文档；完整绿色版由项目发布流程构建，公开源码与 Release 二进制并非一一对应的可复现构建关系。
+请通过 [Release](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.1.8) 下载 Windows x64 ZIP 绿色版。完整 Agent、EDA、解析与验证执行实现不在公开范围内，详见 [公开源码范围说明](./PUBLIC-SOURCE-SCOPE.md)。公开源码与 Release 二进制并非一一对应的可复现构建关系。
 
 ## 工程思想
 
@@ -118,7 +111,6 @@ MoonGlass 同时作为一个工程实验平台，持续整理 ASIC Agent、证�
 - [MoonGlass AIGV 方法学](./docs/MoonGlass-AIGV验证方法学.html)
 - [MoonGlass AIGV 2.0 白皮书](./docs/MoonGlass-AIGV-2.0白皮书.html)
 - [长时 Agent 芯片开发工程学](./docs/MoonGlass长时Agent芯片开发工程学.html)
-- [总体工程报告](./reports/overall-report.md)
 
 欢迎通过 GitHub Issues 讨论复现问题、验证策略、工具链适配、AIGV 语义和工程改进建议。
 
