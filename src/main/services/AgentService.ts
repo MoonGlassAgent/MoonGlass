@@ -24,7 +24,7 @@ import { basename, dirname, join, resolve } from 'node:path'
 import { renameSyncWithRetry } from './atomic-write.ts'
 import { buildSystemPrompt } from '@moonglass/prompts'
 import { buildBatchPrompt, buildVerificationIntelligence, recordExplorationRound } from '@moonglass/verification-intelligence-engine'
-import type { AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, ImageAttachment, IpLibraryRecord, Phase, ProjectSessionActivity, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict, VerifRunDecision, VerifRunLoopLedger, VerifRunLoopStartOptions } from '@shared/types'
+import type { AgentDecisionRequest, AgentSessionInfo, AgentSessionStats, AgentStreamEvent, AgentUiMessage, ImageAttachment, IpLibraryRecord, Phase, ProjectSessionActivity, VerifBatchLoopResult, VerifBatchRunResult, VerifBatchVerdict, VerifRunDecision, VerifRunLoopLedger, VerifRunLoopStartOptions } from '@shared/types'
 import { PHASE_LABELS } from '@shared/types'
 import { FALLBACK_MODEL_CONTEXT, resolveModelContext } from '@shared/model-context'
 import type { ModelContextMetadata } from '@shared/model-context'
@@ -32,6 +32,7 @@ import { humanizeLlmError, isStalled, LLM_STALL_THRESHOLD_MS, switchModelWithPro
 import { parseDecisionRequest, parseDecisionResponse, parseDecisionResponses } from '@shared/agent-interaction'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import type { ProjectService } from './ProjectService.ts'
+import type { NotificationService } from './NotificationService.ts'
 import type { LlmProviderService } from './LlmProviderService.ts'
 import type { AgentModelStore } from './AgentModelStore.ts'
 import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
@@ -465,6 +466,8 @@ export class AgentService implements MoonGlassService {
   private llm: LlmProviderService
   private modelStore: AgentModelStore
   private phaseEngine: PhaseEngine
+  /** 桌面通知服务（application.ts 可选注入；未注入时不发系统通知，行为同旧版） */
+  private notifier: NotificationService | null = null
 
   constructor(
     projects: ProjectService,
@@ -476,6 +479,22 @@ export class AgentService implements MoonGlassService {
     this.llm = llm
     this.modelStore = modelStore
     this.phaseEngine = phaseEngine
+  }
+
+  /** 注入桌面通知服务（可选 setter，避免构造函数连锁改动），见 NotificationService */
+  attachNotifier(notifier: NotificationService): void {
+    this.notifier = notifier
+  }
+
+  /** 结构化决策请求待人：发桌面通知提醒用户回来处置（同一请求 id 在一次待人窗口内只弹一次） */
+  private notifyDecisionRequestAttention(projectId: string, decisionRequest: AgentDecisionRequest | undefined): void {
+    if (!decisionRequest) return
+    this.notifier?.notifyHumanAttention(
+      projectId,
+      'decision-request',
+      `决策请求「${decisionRequest.title}」待处置`,
+      `decision:${decisionRequest.id}`
+    )
   }
 
   start(): void {
@@ -505,12 +524,14 @@ export class AgentService implements MoonGlassService {
 
     // Phase 4：将 eda-bridge 共享实现复制到 pi-bridge 目录，供 moonglass-tools.ts 相对导入
     const edaBridgeDir = join(this.bridgeDir, 'eda-bridge')
-    mkdirSync(edaBridgeDir, { recursive: true })
+    mkdirSync(join(edaBridgeDir, 'src'), { recursive: true })
+    // 复制保留 src/ 布局：与 packages 源目录结构一致，跨包相对导入
+    // （如 verification-intelligence/src → ../../eda-bridge/src/slang-runner）在桥接运行时同样成立
     const copyEda = (name: string): void => {
       const src = app.isPackaged
-        ? join(resourcesDir, 'pi-bridge', 'eda-bridge', name)
+        ? join(resourcesDir, 'pi-bridge', 'eda-bridge', 'src', name)
         : join(resourcesDir, 'packages', 'eda-bridge', 'src', name)
-      if (existsSync(src)) copyFileSync(src, join(edaBridgeDir, name))
+      if (existsSync(src)) copyFileSync(src, join(edaBridgeDir, 'src', name))
       else console.error(`[agent-service] 未找到 EDA 桥接源文件: ${src}`)
     }
     copyEda('tool-runner.ts')
@@ -520,14 +541,15 @@ export class AgentService implements MoonGlassService {
     copyEda('rtl-files.ts')
     copyEda('formal.ts')
     copyEda('dead-logic.ts') // 死逻辑检查（moonglass-tools.ts 的 check_dead_logic 相对导入）
+    copyEda('slang-runner.ts') // slang AST 统一运行底座（structural-analyzer 经相对路径导入）
 
     const verificationIntelligenceDir = join(this.bridgeDir, 'verification-intelligence')
-    mkdirSync(verificationIntelligenceDir, { recursive: true })
+    mkdirSync(join(verificationIntelligenceDir, 'src'), { recursive: true })
     for (const name of ['engine.ts', 'types.ts', 'structural-analyzer.ts']) {
       const src = app.isPackaged
-        ? join(resourcesDir, 'verification-intelligence', name)
+        ? join(resourcesDir, 'verification-intelligence', 'src', name)
         : join(resourcesDir, 'packages', 'verification-intelligence-engine', 'src', name)
-      if (existsSync(src)) copyFileSync(src, join(verificationIntelligenceDir, name))
+      if (existsSync(src)) copyFileSync(src, join(verificationIntelligenceDir, 'src', name))
       else console.error(`[agent-service] 未找到 Verification Intelligence 源文件: ${src}`)
     }
 
@@ -3058,7 +3080,9 @@ argument-hint: "<模块名>"
     this.emit(projectId, {
       type: 'status',
       message: `模块 UT 已派发：${module}（独立会话 ${sessionName}${model ? `，模型 ${model}` : ''}）——主验证循环互斥挂起中，UT 期间 rtl/ 由该会话独占修改`
-    })
+      // 带 sessionName 标记：渲染端按"后台会话通知"刷新会话标签列表（否则 UT 标签不出现），
+      // status 类型同时仍进入当前聊天流
+    }, sessionName)
     // UT prompt 执行放后台：settle（正常/异常/超时）后释放锁并通知（runModuleUtSession 兜全出口）
     void this.runModuleUtSession(projectId, session, utId, module, rtlFiles, workspace).catch((error) => {
       console.error('[agent-service] 模块 UT 会话执行异常（应由 runModuleUtSession 兜住）', error)
@@ -3113,12 +3137,19 @@ argument-hint: "<模块名>"
       this.emit(projectId, {
         type: 'status',
         message: `模块 UT 完成：${module}（报告 ${reportDir}）；UT 结果属 probe 隔离产物，不免除 TOP 级全量重回归`
-      })
+        // 带 sessionName：渲染端识别为后台会话通知并刷新会话标签/运行徽标
+      }, session.activeSessionName)
     } else {
+      // 中断必须直达当前聊天（用户要看到"锁已释放、现场可能半截"），故 error 不带 sessionName；
+      // 另发一条带标记的 status 供渲染端刷新会话标签列表
       this.emit(projectId, {
         type: 'error',
         message: `模块 UT 中断：${module}（${note ?? '未知原因'}）；锁已释放，RTL 可能留有半截修改，请确认现场后再恢复主验证循环`
       })
+      this.emit(projectId, {
+        type: 'status',
+        message: `模块 UT 会话 ${session.activeSessionName} 已结束（${outcome}）`
+      }, session.activeSessionName)
     }
   }
 
@@ -3765,6 +3796,13 @@ argument-hint: "<模块名>"
           since: new Date().toISOString()
         }), loopId)
       this.emit(projectId, { type: 'status', message: `验证运行循环暂停待人：LLM 决策提案 ${newProposed.map((item) => item.id).join('、')} 待审批（llm-decision-pending）` })
+      // 桌面通知提醒用户回来审批（episodeKey=提案 id 集合：同一批提案只弹一次，新提案批次可再弹）
+      this.notifier?.notifyHumanAttention(
+        projectId,
+        'llm-decision-pending',
+        `LLM 决策提案 ${newProposed.map((item) => item.id).join('、')} 待审批，请在决策卡片中批准或否决`,
+        `proposals:${newProposed.map((item) => item.id).join('、')}`
+      )
       this.startRunLoopEvidencePoller(projectId)
       return 'paused'
     }
@@ -3792,9 +3830,17 @@ argument-hint: "<模块名>"
    */
   private async enterRunLoopBreaker(projectId: string, workspace: string, reason: string, detail: string, loopId = ''): Promise<'paused' | 'resumed' | 'stopped'> {
     if (isDirectBreakerReason(reason)) {
+      const since = new Date().toISOString()
       if (!this.patchRunLoopLedger(workspace, (ledger) =>
-        applyRunLoopPause(ledger, { kind: 'breaker', reason, detail, since: new Date().toISOString() }), loopId)) throw new RunLoopSupersededError()
+        applyRunLoopPause(ledger, { kind: 'breaker', reason, detail, since }), loopId)) throw new RunLoopSupersededError()
       this.emit(projectId, { type: 'status', message: `验证运行循环熔断（${reason}）：${detail}` })
+      // 桌面通知提醒用户回来处置（episodeKey=熔断原因+暂停时间：再次熔断属新 episode，可再弹）
+      this.notifier?.notifyHumanAttention(
+        projectId,
+        'paused-breaker',
+        `验证运行循环熔断（${reason}）：${detail}`,
+        `breaker:${reason}:${since}`
+      )
       return 'paused'
     }
     const outcome = await this.dispatchRunLoopEscalation(projectId, workspace, 'breaker-recovery', `${reason}：${detail}`, reason, loopId)
@@ -3912,15 +3958,23 @@ argument-hint: "<模块名>"
       this.emit(projectId, { type: 'status', message: '验证运行循环完成：VERIF → QA 门禁通过。请在阶段看板确认推进到 QA。' })
       return 'completed'
     }
+    const pauseSince = new Date().toISOString()
     this.patchRunLoopLedger(workspace, (ledger) =>
       applyRunLoopPause(ledger, {
         kind: 'human',
         reason: 'gate-blocked',
         detail: `VERIF → QA 门禁失败 ${failed.length} 项：${failed.map((item) => `${item.checkName}（${item.message}）`).join('；')}`,
         pendingItems: failed.map((item) => item.checkName),
-        since: new Date().toISOString()
+        since: pauseSince
       }), loopId)
     this.emit(projectId, { type: 'status', message: `验证运行循环暂停待人：门禁未通过（${failed.length} 项失败）` })
+    // 桌面通知提醒用户回来处置（episodeKey=暂停时间：证据变化续跑后再次门禁失败属新 episode，可再弹）
+    this.notifier?.notifyHumanAttention(
+      projectId,
+      'gate-blocked',
+      `VERIF → QA 门禁未通过（${failed.length} 项失败）：${failed.map((item) => item.checkName).join('、')}`,
+      `gate:${pauseSince}`
+    )
     this.startRunLoopEvidencePoller(projectId)
     return 'blocked'
   }
@@ -4156,7 +4210,7 @@ argument-hint: "<模块名>"
     if (!session) return []
     // Session JSONL 是持久化事实源。直接读取它可以避免长任务期间 Pi RPC 忙碌，
     // 也不会因 get_messages 超时把整个工作区拖入错误状态。
-    return this.mapMessagesForUi(readPiSessionMessages(session.currentSessionFile))
+    return this.mapMessagesForUi(readPiSessionMessages(session.currentSessionFile), projectId)
   }
 
   /**
@@ -4171,11 +4225,11 @@ argument-hint: "<模块名>"
     if (dirname(targetFile) !== dir) throw new Error('会话路径越界')
     const resolvedFile = existsSync(targetFile) ? targetFile : resolve(dir, 'archive', `session-${sessionName}.jsonl`)
     if (!existsSync(resolvedFile)) return []
-    return this.mapMessagesForUi(readPiSessionMessages(resolvedFile))
+    return this.mapMessagesForUi(readPiSessionMessages(resolvedFile), projectId)
   }
 
-  /** pi 消息数组 → 渲染端 UI 消息（超长时只保留最近 UI_HISTORY_MAX 条） */
-  private mapMessagesForUi(piMessages: PiMessage[]): AgentUiMessage[] {
+  /** pi 消息数组 → 渲染端 UI 消息（超长时只保留最近 UI_HISTORY_MAX 条）。projectId 用于结构化决策请求的桌面通知 */
+  private mapMessagesForUi(piMessages: PiMessage[], projectId: string): AgentUiMessage[] {
     const toolInputs = new Map<string, { toolName: string; input: string }>()
     for (const message of piMessages) {
       if (message.role !== 'assistant') continue
@@ -4190,7 +4244,7 @@ argument-hint: "<模块名>"
         })
       }
     }
-    const mapped = piMessages.flatMap((message, index) => this.mapMessage(message, index, toolInputs))
+    const mapped = piMessages.flatMap((message, index) => this.mapMessage(message, index, toolInputs, projectId))
     if (mapped.length <= UI_HISTORY_MAX) return mapped
     return [
       {
@@ -4379,14 +4433,16 @@ argument-hint: "<模块名>"
         this.flushStreamEvents(projectId)
         const result = (event.result ?? {}) as { content?: Array<{ text?: string }> }
         const output = (result.content ?? []).map((c) => c.text ?? '').join('\n')
+        const decisionRequest = parseDecisionRequest(output)
         this.emit(projectId, {
           type: 'tool-end',
           toolName: String(event.toolName ?? ''),
           toolCallId: String(event.toolCallId ?? ''),
           isError: Boolean(event.isError),
           output: output.length > TOOL_OUTPUT_MAX ? output.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : output,
-          decisionRequest: parseDecisionRequest(output)
+          decisionRequest
         }, sessionName)
+        this.notifyDecisionRequestAttention(projectId, decisionRequest)
         break
       }
       case 'tool_execution_update': {
@@ -4426,7 +4482,8 @@ argument-hint: "<模块名>"
   private mapMessage(
     m: PiMessage,
     index: number,
-    toolInputs: Map<string, { toolName: string; input: string }>
+    toolInputs: Map<string, { toolName: string; input: string }>,
+    projectId: string
   ): AgentUiMessage[] {
     const ts = m.timestamp ?? Date.now()
     const id = `${ts}-${index}`
@@ -4487,6 +4544,8 @@ argument-hint: "<模块名>"
       const blocks = (m.content as Array<{ text?: string }> | undefined) ?? []
       const text = blocks.map((b) => b.text ?? '').join('\n')
       const toolInput = m.toolCallId ? toolInputs.get(m.toolCallId) : undefined
+      const decisionRequest = parseDecisionRequest(text)
+      this.notifyDecisionRequestAttention(projectId, decisionRequest)
       return [
         {
           id,
@@ -4497,7 +4556,7 @@ argument-hint: "<模块名>"
           isError: m.isError,
           text: text.length > TOOL_OUTPUT_MAX ? text.slice(0, TOOL_OUTPUT_MAX) + '\n…（截断）' : text,
           timestamp: ts,
-          decisionRequest: parseDecisionRequest(text)
+          decisionRequest
         }
       ]
     }

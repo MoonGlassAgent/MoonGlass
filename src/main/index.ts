@@ -181,7 +181,9 @@ function createMainWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
-  electronApp.setAppUserModelId('com.moonglass.asic-design-agent')
+  // Windows toast 通知按 AppUserModelID 归因：必须与 electron-builder.yml 的 appId
+  // 保持一致，否则通知归到 Electron 名下或干脆不显示（开发模式同样需要）。
+  electronApp.setAppUserModelId('com.moonglass.studio')
 
   app.on('browser-window-created', (_, window) => {
     optimizer.watchWindowShortcuts(window)

@@ -49,7 +49,8 @@ const suites = {
     'scripts/design-review-smoke.mjs',
     'scripts/design-review-dispatch-smoke.mjs',
     'scripts/module-ut-smoke.mjs',
-    'scripts/model-context-smoke.mjs'
+    'scripts/model-context-smoke.mjs',
+    'scripts/notification-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

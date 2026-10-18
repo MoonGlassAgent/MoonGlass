@@ -14,6 +14,7 @@ import { EdaService } from '../services/EdaService'
 import { LlmProviderService } from '../services/LlmProviderService'
 import { AgentModelStore } from '../services/AgentModelStore'
 import { AgentService } from '../services/AgentService'
+import { NotificationService } from '../services/NotificationService'
 import { FileService } from '../services/FileService'
 import { CoverageService } from '../services/CoverageService'
 import { DesignBrowserService } from '../services/DesignBrowserService'
@@ -31,6 +32,7 @@ export interface ApplicationServices {
   llm: LlmProviderService
   modelStore: AgentModelStore
   agent: AgentService
+  notifications: NotificationService
   files: FileService
   coverage: CoverageService
   designBrowser: DesignBrowserService
@@ -50,6 +52,11 @@ export function createApplication(): ApplicationServices {
   const llm = new LlmProviderService()
   const modelStore = new AgentModelStore()
   const agent = new AgentService(projects, llm, modelStore, phaseEngine)
+  // 桌面通知标题需要项目名，故在 projects 之后创建；经可选 setter 注入 AgentService（构造参数不动）
+  const notifications = new NotificationService({
+    resolveProjectName: (projectId) => projects.get(projectId)?.name ?? projectId
+  })
+  agent.attachNotifier(notifications)
   const files = new FileService(projects)
   const coverage = new CoverageService(projects)
   const designBrowser = new DesignBrowserService(userDataDir)
@@ -70,11 +77,12 @@ export function createApplication(): ApplicationServices {
     .register(llm)
     .register(modelStore)
     .register(agent)
+    .register(notifications)
     .register(files)
     .register(coverage)
     .register(designBrowser)
     .register(processLibraries)
     .register(ipLibraries)
 
-  return { lifecycle, db, projects, phaseEngine, python, eda, llm, modelStore, agent, files, coverage, designBrowser, processLibraries, ipLibraries }
+  return { lifecycle, db, projects, phaseEngine, python, eda, llm, modelStore, agent, notifications, files, coverage, designBrowser, processLibraries, ipLibraries }
 }
