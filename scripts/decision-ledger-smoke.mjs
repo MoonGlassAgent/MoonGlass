@@ -4,7 +4,8 @@
 // （approved 可覆盖 prompt / rejected / 非 proposed 拒绝）、合法性校验各拒绝分支
 // （停止条件/期望产出/prompt 长度/rationale 长度/derived 白名单/custom actionId/
 // 拍数/token/墙钟预算）、执行后 outcome 回填、升级 settle 的新提案集合、
-// pi 工具事件提取。与 verif-run-loop-smoke 同模式：node:module 注册别名钩子后动态 import TS 源码。
+// pi 工具事件提取、humanSummary（决策语言人性化）登记往返/缺字段归一/超长截断。
+// 与 verif-run-loop-smoke 同模式：node:module 注册别名钩子后动态 import TS 源码。
 import assert from 'node:assert/strict'
 import { register } from 'node:module'
 register('./ts-alias-hooks.mjs', import.meta.url)
@@ -15,6 +16,7 @@ const { join } = await import('node:path')
 
 const {
   DECISION_ID_PATTERN,
+  DECISION_HUMAN_SUMMARY_MAX,
   DECISION_LEDGER_LIMIT,
   DECISION_PROMPT_MAX,
   DECISION_RATIONALE_MAX,
@@ -94,6 +96,24 @@ updateDecisionLedger(workspace, (ledger) => {
   ledger.decisions = [...ledger.decisions, ...many]
 })
 assert.equal(readLedgerFile().decisions.length, DECISION_LEDGER_LIMIT)
+
+// A4. humanSummary（决策语言人性化）：登记往返 / 缺字段归一兼容 / >300 字截断
+assert.equal(DECISION_HUMAN_SUMMARY_MAX, 300)
+const summary = 'BIST 状态寄存器的 fail_cnt 位域被 RTL 截断成 16 位，与 register_map v0.2 的 32 位定义不符；需要你裁决：修 RTL 还是改规格'
+writeDecisionLedger(workspace, { version: 1, decisions: [
+  makeDecision({ id: 'DEC-SUM000001', humanSummary: summary }),   // 有摘要 → 往返保留
+  makeDecision({ id: 'DEC-SUM000002' }),                          // 旧数据无摘要 → 归一兼容（undefined）
+  makeDecision({ id: 'DEC-SUM000003', humanSummary: '超'.repeat(DECISION_HUMAN_SUMMARY_MAX + 50) }), // 超长 → 截断到 300
+  makeDecision({ id: 'DEC-SUM000004', humanSummary: 42 })         // 非字符串 → 丢弃为 undefined
+] })
+const summarized = readDecisionLedger(workspace)
+assert.equal(summarized.decisions[0].humanSummary, summary)
+assert.equal(summarized.decisions[1].humanSummary, undefined)
+assert.equal(summarized.decisions[2].humanSummary.length, DECISION_HUMAN_SUMMARY_MAX)
+assert.equal(summarized.decisions[3].humanSummary, undefined)
+// 规则自动记账不带 humanSummary（schema 可选字段，账本保持纯净）
+const ruleRecordNoSummary = appendRunLoopRuleDecision(workspace, { actionId: 'run-batch', prompt: 'p2' })
+assert.equal(ruleRecordNoSummary.humanSummary, undefined)
 
 // ── B. 规则层自动决策记账（§4.2：source='rule'/trigger='rule-auto'/status='executed'）──
 
@@ -258,4 +278,4 @@ assert.equal(extractRunLoopDecisionProposal({ ...proposalEvent, isError: true })
 assert.equal(extractRunLoopDecisionProposal({ ...proposalEvent, toolName: 'record_root_cause' }), null)
 assert.equal(extractRunLoopDecisionProposal({ type: 'tool_execution_end', toolName: 'propose_run_decision', isError: false, result: {} }), null)
 
-console.log('decision-ledger-smoke: OK（归一化+截断/rule-auto 记账+outcome 回填/双源登记/decide 迁移/合法性校验九分+通过分支/升级新提案集合/工具事件提取）')
+console.log('decision-ledger-smoke: OK（归一化+截断/humanSummary 往返+缺字段兼容+300 字截断/rule-auto 记账+outcome 回填/双源登记/decide 迁移/合法性校验九分+通过分支/升级新提案集合/工具事件提取）')

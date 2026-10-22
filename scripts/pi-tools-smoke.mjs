@@ -199,7 +199,11 @@ for (const marker of [
   'stopCriteria',
   'decision-ledger.json',
   "input.source === 'human' ? 'approved' : 'proposed'",
-  '工程师指令不审批'
+  '工程师指令不审批',
+  // 决策语言人性化：humanSummary（IP 行为语言摘要）schema 标记 + 三段式指引 + 编排术语禁入
+  'humanSummary',
+  'IP 行为语言',
+  '闭环计数/批次/波次/态势/拍/熔断/账本'
 ]) {
   if (!toolsSource.includes(marker)) {
     console.error(`[schema] moonglass-tools.ts 缺少标记：${marker}`)

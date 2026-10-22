@@ -850,6 +850,12 @@ export interface VerifRunDecision {
   rationale: string
   /** 证据锚点（相对工作区的账本/证据文件路径） */
   evidenceRefs: string[]
+  /**
+   * 给工程师的 IP 行为语言摘要（可选字段，旧账本数据缺此字段照常归一）：
+   * 哪个信号/寄存器/场景、实测到了什么、与规格哪里不符、需要工程师裁决什么；
+   * 归一化时 >300 字截断到 300（不报错）。
+   */
+  humanSummary?: string
   status: VerifRunDecisionStatus
   outcome: VerifRunDecisionOutcome
 }

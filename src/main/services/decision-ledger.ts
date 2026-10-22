@@ -24,6 +24,8 @@ import { VERIFICATION_DERIVED_ACTION_IDS } from '@shared/verification-guidance'
 export const DECISION_LEDGER_LIMIT = 100
 /** rationale 长度上限（§9.2：≤200 字） */
 export const DECISION_RATIONALE_MAX = 200
+/** 工程师可读摘要长度上限（决策语言人性化：humanSummary ≤300 字，超长归一化截断） */
+export const DECISION_HUMAN_SUMMARY_MAX = 300
 /** 决策动作 prompt 长度上限（批 3 合法性校验：≤4000 字） */
 export const DECISION_PROMPT_MAX = 4000
 /** 决策 ID 形态：DEC-<8hex>（§9.2） */
@@ -67,6 +69,10 @@ function normalizeDecision(value: unknown): VerifRunDecision | null {
     item.status === 'proposed' || item.status === 'approved' || item.status === 'rejected' ||
     item.status === 'executed' || item.status === 'superseded' ? item.status : 'rejected'
   const source = item.source === 'llm' || item.source === 'human' ? item.source : 'rule'
+  // humanSummary 透传：仅字符串保留（旧数据无此字段 → undefined），>300 字截断到 300（不报错）
+  const humanSummary = typeof item.humanSummary === 'string'
+    ? item.humanSummary.slice(0, DECISION_HUMAN_SUMMARY_MAX)
+    : undefined
   return {
     id: String(item.id ?? ''),
     createdAt: String(item.createdAt ?? ''),
@@ -75,6 +81,7 @@ function normalizeDecision(value: unknown): VerifRunDecision | null {
     action: normalizeAction(item.action),
     rationale: String(item.rationale ?? ''),
     evidenceRefs: Array.isArray(item.evidenceRefs) ? item.evidenceRefs.map(String) : [],
+    humanSummary,
     status,
     outcome: normalizeOutcome(item.outcome)
   }

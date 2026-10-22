@@ -994,7 +994,7 @@ scripts/
 - MoonGlass IP 模板库统一索引路径：${ipLibraryIndex.replace(/\\/g, '/')}。优先调用 \`ip_search\` 缩小候选，再用 \`ip_inspect\` 核对模板名称、类型、topModule、RTL/验证/文档文件；库规模很大时不得把整份 index.json 读入上下文，也不得只凭页面分类或目录名猜测可用模板。
 - IP 库使用指南：${ipLibraryGuide.replace(/\\/g, '/')}。在 REQ_SPEC/ARCH 阶段先检索现有能力并说明采用或不采用理由；RTL 阶段优先评估 componentKind 为 rtl-ip/mixed 的候选；VERIF 阶段优先评估 verification-component/mixed 的 VIP、BFM、monitor、driver 和 testbench 资源。
 - IP 库源目录默认只读，不得直接修改。采用 IP 前必须核对 protocols、interfaceRoles、topModule、依赖、时钟复位、许可证和质量证据；信息不足时请求用户确认。需要适配时在项目中生成 wrapper/adapter，并在阶段文档中记录 IP 库名称、源路径与采用理由。
-- 当需求、规格、架构或约束存在两种以上合理选项并需要用户决定时，必须调用 \`request_user_decision\`，不要只在普通文本中列出编号让用户手工回复。单选和多选默认允许用户补充自己的要求；选项应说明关键面积、性能、功耗、验证或交付影响，并且最多标记一个推荐项。调用后停止继续决策，等待用户回答。
+- 当需求、规格、架构或约束存在两种以上合理选项并需要用户决定时，必须调用 \`request_user_decision\`，不要只在普通文本中列出编号让用户手工回复。单选和多选默认允许用户补充自己的要求；选项应说明关键面积、性能、功耗、验证或交付影响，并且最多标记一个推荐项。决策卡的标题与 prompt 必须用 IP 行为语言：从具体信号/寄存器/场景的行为现状说起（实测到了什么、与规格哪里不符、需要工程师裁决什么），编排术语（批次/闭环/态势/拍/熔断等）禁止出现在标题与 prompt 首段。调用后停止继续决策，等待用户回答。
 - 不得在根目录或旧式平铺目录创建阶段产出；不得虚构工具结果。
 `
 

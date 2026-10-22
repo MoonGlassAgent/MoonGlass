@@ -688,7 +688,7 @@ export function buildRunLoopEscalationPrompt(trigger: RunLoopEscalationTrigger, 
     '',
     '请严格按以下步骤工作：',
     '1. 读取压缩态势：verification/intelligence/execution-summary.json、verification/results/run-loop.json、verification/results/decision-ledger.json、verification/results/diagnostic-control.json（后两者可能不存在，按空账本处理），归因停滞/熔断的真实原因；',
-    `2. 给出下一步行动提案并调用 propose_run_decision 登记：trigger 必须传 '${trigger}'；action 需含 kind（derived 引用推导内核已知动作 id，或 custom 自由指令）、prompt（具体可执行指令）、expectedOutput（必填非空）、stopCriteria（必填非空）；rationale ≤200 字；evidenceRefs 填你实际读取的证据文件路径；`,
+    `2. 给出下一步行动提案并调用 propose_run_decision 登记：trigger 必须传 '${trigger}'；action 需含 kind（derived 引用推导内核已知动作 id，或 custom 自由指令）、prompt（具体可执行指令）、expectedOutput（必填非空）、stopCriteria（必填非空）；rationale ≤200 字；evidenceRefs 填你实际读取的证据文件路径；humanSummary 必填（≤300 字，IP 行为语言：哪个信号/寄存器/场景实测到了什么、与规格哪里不符、要工程师裁决什么；编排术语禁止进入）；好坏对照——坏：「闭环计数 3 拍未改善，建议切换 converge-first」；好：「BIST 状态寄存器的 fail_cnt 位域被 RTL 截断成 16 位，与 register_map v0.2 的 32 位定义不符；需要你裁决：修 RTL 还是改规格」；编排细节（闭环计数/波次/账本）只写进 action.prompt 的执行指令；`,
     '3. 提案登记后循环会以决策卡片呈给工程师审批（顾问模式，默认不自动执行）；登记完即可结束本会话，不要重复提交相同提案。'
   ].join('\n')
 }
