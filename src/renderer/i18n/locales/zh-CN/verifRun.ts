@@ -77,6 +77,8 @@ export const verifRun = {
     /** 会话底部循环请示区的副标题提示 */
     proposedHint: '（验证循环暂停待人：批准后自动续跑，否决转熔断处置）',
     rationaleLabel: '理由',
+    humanSummary: '工程师摘要',
+    techDetails: '技术细节',
     promptLabel: '动作指令',
     expectedLabel: '预期产出',
     stopCriteriaLabel: '停止条件',

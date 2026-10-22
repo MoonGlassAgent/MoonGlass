@@ -157,6 +157,14 @@
 - 修复：SessionTabs 对未运行中的批次会话渲染 × 关闭按钮（复用既有 closeSession 链路：删除 JSONL + 清理模型登记，运行中批次仍不显示）；主进程 closeSession 增加保护——正在运行的 VERIF 批次会话（activeVerifBatches 命中）拒绝关闭并提示先停止托管，防止编排循环的 settle 等待悬空。
 - 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke` 通过。
 
+## 2026-10-21：决策卡人性化改版（DECISION-LANGUAGE-UI-GUIDANCE）
+
+- 渲染端对接主进程已落地的 `humanSummary` 字段（IP 行为语言工程师摘要）：
+  - `VerifRunDecisionEntryView` 加可选 `humanSummary`，归一化透传；
+  - ProposedDecisionCard 改版：摘要为主视觉（完整显示不截断，带"工程师摘要"标签），rationale/动作指令/预期产出/停止条件/证据数收进"技术细节"折叠区（默认收起）；无 humanSummary 的旧提案回退 rationale 主视觉（与改版前一致）；批准/否决/错误处理不动；RunLoopCard 与 ChatPanel 请示区复用同组件，两处同时生效。
+- i18n：verifRun.loop 新增 humanSummary/techDetails 双语键。
+- 验证：`pnpm typecheck`、`typecheck:root`（恰 11 条既有）、`pnpm build` 通过；playwright 实拍新版卡（摘要主视觉 + 折叠）与旧版卡（rationale 回退）两种形态及展开态。
+
 ## 2026-10-21：Ctrl/Alt+Enter 显式换行修复
 
 - 问题：输入框 placeholder 宣称 Ctrl/Alt/Shift+Enter 换行，但实测 Ctrl+Enter 与 Alt+Enter 按键被吞（Electron/Chromium 下这两个组合的默认换行丢失），用户报"不是换行"。
