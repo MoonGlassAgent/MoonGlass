@@ -32,6 +32,8 @@ export const verifRun: Messages['verifRun'] = {
     historyTitle: 'Completed batches (this loop)',
     verdictCompleted: 'Completed',
     verdictCircuitBroken: 'Circuit broken',
+    legacyNoLabels: 'This batch entry predates scenario title snapshots, so only scenario IDs are available; run a new batch to see what is being verified',
+    scenarioUntitled: '(no title snapshot)',
     updatedAt: 'Updated at {time}'
   },
   loop: {
@@ -235,5 +237,18 @@ export const verifRun: Messages['verifRun'] = {
     utEscalationActive: 'active',
     utEscalationRetired: 'Retired',
     utEscalationRootCause: 'Related root cause record'
+  },
+  ut: {
+    title: 'Module UT',
+    start: 'Start Module UT',
+    activeBadge: 'UT running ×{count}',
+    activeLine: 'Module UT running ({count}): {modules} — main loop mutually suspended',
+    activeNoNames: 'Module UT running ({count}) — main loop mutually suspended',
+    idleHint: 'Launch an isolated UT session for an RTL submodule: minimal env, fast iteration (probe-isolated, not part of the main evidence chain).',
+    dialogTitle: 'Start Module UT',
+    modulePlaceholder: 'Type or pick a module name under rtl/',
+    confirm: 'Start',
+    starting: 'Dispatching…',
+    emptyModule: 'Please enter a module name',
   }
 }

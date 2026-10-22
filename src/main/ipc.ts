@@ -424,7 +424,7 @@ export function registerIpcHandlers(services: ApplicationServices): void {
     designBrowser.elaborate(projectId, projects.workspaceDir(projectId), topModule)
   )
   ipcMain.handle(IPC.DesignBrowser.GetCached, (_e, projectId: string) =>
-    designBrowser.getCached(projectId)
+    designBrowser.getCached(projectId, projects.workspaceDir(projectId))
   )
   ipcMain.handle(IPC.DesignBrowser.ReadSource, (_e, projectId: string, source: string) =>
     designBrowser.readSource(projects.workspaceDir(projectId), source)

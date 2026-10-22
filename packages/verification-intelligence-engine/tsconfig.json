@@ -2,8 +2,9 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": {
     "noEmit": true,
-    "allowImportingTsExtensions": true,
-    "rootDir": "src"
+    "allowImportingTsExtensions": true
+    // 无 rootDir：包以 TS 源码直接交付（无构建步骤），且 src 跨包相对导入
+    // ../../eda-bridge/src/slang-runner（pi-bridge 复制布局要求），rootDir 约束不适用
   },
   "include": ["src/**/*.ts"]
 }

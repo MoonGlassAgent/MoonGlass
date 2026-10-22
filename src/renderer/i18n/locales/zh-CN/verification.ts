@@ -70,6 +70,8 @@ export const verification = {
     issueEvidenceUnconfirmed: '证据待重验',
     issueEvidenceNewer: '证据晚于态势，需重新评估',
     showDetails: '展开条款明细',
+    expandCard: '展开明细',
+    collapseCard: '收起明细',
     hideDetails: '收起条款明细'
   },
   action: {

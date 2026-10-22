@@ -114,6 +114,7 @@ import {
   releaseModuleUt
 } from './module-ut.ts'
 import { aggregateSessionActivity, type SessionActivitySource } from './session-activity.ts'
+import { collectPendingActions, scanSessionPendingDecisions } from './pending-actions.ts'
 import { consumeInterruptedSessions, writeInterruptedSessions, type InterruptedSessionRecord } from './interrupted-sessions.ts'
 import { resolveProviderHeaders } from './provider-headers.ts'
 import { buildArtifactIndexSection } from './artifact-index.ts'
@@ -135,6 +136,8 @@ export interface SessionSummary {
   isActive: boolean
   /** 会话进程仍在后台运行（如 VERIF 批次会话）；UI 据此区分"运行中可刷新"与"历史可回看" */
   isRunning: boolean
+  /** 该会话未答复的待确认决策数（>0 时标签显示待人处理标记） */
+  pendingDecisions?: number
 }
 
 /**
@@ -763,6 +766,14 @@ export class AgentService implements MoonGlassService {
       }
       entry.interrupted ??= []
       if (!entry.interrupted.includes(record.sessionName)) entry.interrupted.push(record.sessionName)
+    }
+    // 待人处理聚合（磁盘事实源）：无存活会话的空闲项目同样需要上卡（"在等用户决策"恰恰是空闲态）
+    for (const project of this.projects.list()) {
+      const pending = collectPendingActions(this.workspaceDir(project.id), this.sessionDir(project.id))
+      if (!pending) continue
+      const entry = result[project.id] ?? { hasSession: false, running: false, runningSessions: [] }
+      entry.pendingActions = pending
+      result[project.id] = entry
     }
     return result
   }
@@ -1838,10 +1849,12 @@ argument-hint: "<模块名>"
           modelLabel: storedModel ? `${storedModel.providerId} / ${storedModel.modelId}` : '',
           selectedModel: storedModel ?? null,
           isActive: active ? active.currentSessionFile === filePath : false,
-          isRunning: runningFiles.has(resolve(filePath))
+          isRunning: runningFiles.has(resolve(filePath)),
+          // 待人标记：会话内未答复的决策请求数（mtime 缓存扫描，开销可控）
+          pendingDecisions: scanSessionPendingDecisions(filePath).size
         })
       }
-    } catch { /* 无可枚举的会话目录 */ }
+    } catch (listError) { console.error('[agent-service] listSessions 枚举失败:', listError) }
 
     // 按修改时间排序（最新的在前）
     summaries.sort((a, b) => a.name === 'main' ? -1 : b.name === 'main' ? 1 : b.name.localeCompare(a.name))

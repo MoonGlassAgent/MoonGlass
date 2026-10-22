@@ -22,7 +22,8 @@ import {
   type RtlFixJudgment,
   type RtlFixOutcomeView,
   type VerifBatchLoopView,
-  type VerifLoopState
+  type VerifLoopState,
+  type VerifScenarioLabelView
 } from './types'
 
 export interface VerifRunPanelProps {
@@ -65,6 +66,40 @@ const JUDGMENT_META: Record<RtlFixJudgment, { labelKey: MessageKey; cls: string 
   UNKNOWN: { labelKey: 'verifRun.fix.judgment.UNKNOWN', cls: 'bg-zinc-100 text-zinc-600' }
 }
 
+/**
+ * 批次场景的语义标签列表（可读性，2026-10-05）：把 `SCN-XXXXXXXX` 换成人能读懂的一句话。
+ *
+ * 口径：标签是**派发时快照**（主进程随账本落盘），因此这里只显示快照本身，
+ * 绝不用当前注册表回填历史批次的语义——旧账本缺快照时明确说明并只显示场景 ID。
+ */
+function ScenarioLabelList({ labels, scenarioIds }: {
+  labels?: VerifScenarioLabelView[]
+  scenarioIds: string[]
+}): React.JSX.Element {
+  const { t } = useTranslation()
+  if (!labels?.length) return <div className="mt-1.5 rounded border border-dashed border-zinc-200 px-2 py-1">
+    <div className="text-[11px] text-amber-700">{t('verifRun.batch.legacyNoLabels')}</div>
+    <div className="mt-0.5 font-mono text-[11px] text-zinc-500">{scenarioIds.join(' / ') || '—'}</div>
+  </div>
+  return <ul className="mt-1.5 space-y-0.5">
+    {labels.map((label) => <li key={label.id} className="flex items-baseline gap-2">
+      <span className="min-w-0 flex-1 text-xs text-zinc-700">{label.title || <span className="text-zinc-400">{t('verifRun.batch.scenarioUntitled')}</span>}</span>
+      {/* 标题已含条款 ID 时不再重复挂 chip（CLAUSE_DERIVED 的标题形如「基础功能（REQ-X#a）：…」） */}
+      {label.requirementIds.filter((id) => !label.title.includes(id)).map((id) => (
+        <span key={id} className="shrink-0 rounded bg-zinc-100 px-1 font-mono text-[10px] text-zinc-600">{id}</span>
+      ))}
+      <span className="shrink-0 font-mono text-[10px] text-zinc-400" title={label.id}>{label.id}</span>
+    </li>)}
+  </ul>
+}
+
+/** 历史批次的可读摘要：标题为主（截断 + tooltip），场景 ID 退到 tooltip。 */
+function historySummary(labels: VerifScenarioLabelView[] | undefined, scenarioIds: string[]): { text: string; title: string } {
+  if (!labels?.length) return { text: scenarioIds.join(' / ') || '—', title: scenarioIds.join(' / ') }
+  const parts = labels.map((label) => label.title || label.id)
+  return { text: parts.join('；'), title: parts.join('\n') }
+}
+
 /** 批次进度卡。 */
 function BatchProgressCard({ loop, onStartBasicVerification, onContinueInChat }: {
   loop: VerifBatchLoopView | null
@@ -87,14 +122,16 @@ function BatchProgressCard({ loop, onStartBasicVerification, onContinueInChat }:
         <Play size={13} />{t('verifRun.batch.startBasic')}
       </button>}
     </div> : <>
-      {loop.currentBatch && <div className="mt-3 flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
-        <strong className="text-zinc-800">{t('verifRun.batch.currentBatch', { index: loop.currentBatch.index })}</strong>
-        <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${loop.currentBatch.phase === 'settling' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
-          {t(loop.currentBatch.phase === 'settling' ? 'verifRun.batch.phaseSettling' : 'verifRun.batch.phaseDispatched')}
-        </span>
-        <span className="font-mono text-zinc-600">{loop.currentBatch.scenarioIds.join(' / ') || '—'}</span>
-        {loop.currentBatch.sessionName && <span className="font-mono text-[10px] text-zinc-400">{loop.currentBatch.sessionName}</span>}
-        {loop.currentBatch.dispatchedAt && <span className="text-[10px] text-zinc-400">{t('verifRun.batch.dispatchedAt', { time: formatVerifTimestamp(loop.currentBatch.dispatchedAt) })}</span>}
+      {loop.currentBatch && <div className="mt-3">
+        <div className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs">
+          <strong className="text-zinc-800">{t('verifRun.batch.currentBatch', { index: loop.currentBatch.index })}</strong>
+          <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${loop.currentBatch.phase === 'settling' ? 'bg-amber-100 text-amber-700' : 'bg-sky-100 text-sky-700'}`}>
+            {t(loop.currentBatch.phase === 'settling' ? 'verifRun.batch.phaseSettling' : 'verifRun.batch.phaseDispatched')}
+          </span>
+          {loop.currentBatch.sessionName && <span className="font-mono text-[10px] text-zinc-400">{loop.currentBatch.sessionName}</span>}
+          {loop.currentBatch.dispatchedAt && <span className="text-[10px] text-zinc-400">{t('verifRun.batch.dispatchedAt', { time: formatVerifTimestamp(loop.currentBatch.dispatchedAt) })}</span>}
+        </div>
+        <ScenarioLabelList labels={loop.currentBatch.scenarios} scenarioIds={loop.currentBatch.scenarioIds} />
       </div>}
 
       {loop.state === 'awaiting-rtl-fix' && loop.rtlFixWait && <div className="mt-3 rounded border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800">
@@ -113,15 +150,23 @@ function BatchProgressCard({ loop, onStartBasicVerification, onContinueInChat }:
       {loop.history.length > 0 && <div className="mt-3">
         <div className="text-[11px] font-medium text-zinc-500">{t('verifRun.batch.historyTitle')}</div>
         <div className="mt-1 divide-y divide-zinc-100 border-y border-zinc-200">
-          {loop.history.map((entry) => <div key={`${entry.index}-${entry.settledAt}`} className="flex items-center gap-2 py-1.5 text-xs">
-            {entry.verdict === 'completed'
-              ? <CheckCircle2 size={13} className="shrink-0 text-emerald-600" />
-              : <XCircle size={13} className="shrink-0 text-red-600" />}
-            <span className="shrink-0 font-medium text-zinc-700">{t('verifRun.batch.currentBatch', { index: entry.index })}</span>
-            <span className="shrink-0 font-mono text-[11px] text-zinc-500">{entry.scenarioIds.join(' / ') || '—'}</span>
-            <span className="min-w-0 flex-1 truncate text-zinc-400" title={entry.reason}>{entry.reason}</span>
-            <span className="shrink-0 text-[10px] text-zinc-400">{formatVerifTimestamp(entry.settledAt)}</span>
-          </div>)}
+          {loop.history.map((entry) => {
+            const summary = historySummary(entry.scenarios, entry.scenarioIds)
+            return <div key={`${entry.index}-${entry.settledAt}`} className="py-1.5 text-xs">
+              <div className="flex items-center gap-2">
+                {entry.verdict === 'completed'
+                  ? <CheckCircle2 size={13} className="shrink-0 text-emerald-600" />
+                  : <XCircle size={13} className="shrink-0 text-red-600" />}
+                <span className="shrink-0 font-medium text-zinc-700">{t('verifRun.batch.currentBatch', { index: entry.index })}</span>
+                {/* 已验证内容为主位；场景 ID 与"如何判定"退到 tooltip */}
+                <span className="min-w-0 flex-1 truncate text-zinc-600" title={summary.title}>{summary.text}</span>
+                <span className="shrink-0 text-[10px] text-zinc-400" title={`${entry.scenarioIds.join(' / ')}\n${entry.reason}`}>{formatVerifTimestamp(entry.settledAt)}</span>
+              </div>
+              {/* 熔断批次的 reason 是失败原因，必须可见；completed 的 reason 只是判定依据（多为
+                  "证据齐全：scenario_hits 已登记且 posture 已重建"），不占主视觉，收进 tooltip */}
+              {entry.verdict !== 'completed' && entry.reason && <p className="mt-0.5 pl-5 text-[11px] text-red-700">{entry.reason}</p>}
+            </div>
+          })}
         </div>
       </div>}
     </>}

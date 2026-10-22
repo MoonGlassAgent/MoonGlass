@@ -19,6 +19,10 @@ export const chat = {
   tabs: {
     confirmClose: '确认关闭平行会话“{label}”？\n\n该会话的聊天历史将被删除。',
     sessionTitle: '{label}，{count} 条消息',
+    pendingDecisions: '待确认决策 {count} 项',
+    pendingNotice: '待确认决策：{title}',
+    pendingNoticeHint: '共 {count} 个预设选项，只读回看中不可操作',
+    goToSession: '前往该会话处理',
     sessionTitleModel: '，模型 {model}',
     sessionTitleNoModel: '，尚未选择模型',
     peekBatch: '查看批次会话（只读）',
@@ -81,6 +85,7 @@ export const chat = {
   submitAllDecisions: '提交全部确认并继续',
   inputPlaceholderStreaming: 'Agent 回复中…',
   inputPlaceholder: '输入消息，Enter 发送，↑/↓ 回顾历史，Ctrl/Alt/Shift+Enter 换行',
+  composerResizeHint: '拖拽调节输入框高度，双击复位',
   aborting: '正在中止…',
   abort: '中止',
   send: '发送',

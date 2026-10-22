@@ -654,6 +654,35 @@ export function deriveDiagnosticReplay(attempts: DiagnosticAttemptView[]): Diagn
   return entries
 }
 
+
+/** 模块 UT 会话账本视图（verification/results/ut-sessions.json；主进程契约落地前按宽松形状解析） */
+export interface UtSessionsView {
+  /** 进行中的 UT 数（活跃计数制：多模块可并行，全部结束才归零） */
+  active: number
+  /** 进行中的模块名列表（账本条目可解析出模块名时给出） */
+  modules: string[]
+}
+
+/** ut-sessions.json 归一化；非对象返回 null。active 优先取显式计数，否则按活跃条目数推导。 */
+export function normalizeUtSessions(raw: unknown): UtSessionsView | null {
+  const data = asRecord(raw)
+  if (!data) return null
+  const sessions = Array.isArray(data.sessions) ? data.sessions : []
+  const activeEntries = sessions.filter((entry) => {
+    const record = asRecord(entry)
+    if (!record) return false
+    return record.state === 'active' || record.state === 'running' || record.active === true
+  })
+  const modules = activeEntries
+    .map((entry) => {
+      const record = asRecord(entry)
+      return record ? asString(record.module ?? record.moduleName ?? record.name) : ''
+    })
+    .filter(Boolean)
+  const active = typeof data.active === 'number' && Number.isFinite(data.active) ? data.active : activeEntries.length
+  return { active, modules }
+}
+
 /** 时间戳显示：ISO → 本地化字符串；非法/空值原样返回（页面既有惯例 new Date(...).toLocaleString()）。 */
 export function formatVerifTimestamp(iso: string): string {
   if (!iso) return ''

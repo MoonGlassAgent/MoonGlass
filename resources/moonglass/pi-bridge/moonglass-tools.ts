@@ -6,7 +6,7 @@
  *
  * 加载方式：AgentService spawn pi 时通过 `-e` 加载本文件。
  * 本文件复制到 userData/moonglass/pi-bridge/ 后由 pi 的 jiti 加载。
- * 共享的 EDA 工具执行层与 Verilator 仿真实现来自同目录下的 `eda-bridge/`，
+ * 共享的 EDA 工具执行层与 Verilator 仿真实现来自同目录下的 `eda-bridge/src/`（与 packages 源布局一致），
  * 由 AgentService 启动时从 packages/eda-bridge/src/ 复制过来。
  */
 
@@ -22,14 +22,14 @@ import {
   toolEnv,
   VERILATOR_CANDIDATES,
   YOSYS_CANDIDATES
-} from './eda-bridge/tool-runner'
-import { runCocotbSimulation, runVerilatorSimulation, resolveMaxWaveformGB, parseVerilatorCoverageDetail } from './eda-bridge/simulation'
-import { generateSdc, runLogicSynthesis } from './eda-bridge/synthesis'
-import { runFormalVerification } from './eda-bridge/formal'
-import { runDesignLint } from './eda-bridge/lint'
-import { analyzeDeadLogic, writeDeadLogicReport } from './eda-bridge/dead-logic'
-import { collectRtlFiles, readRtlInputs } from './eda-bridge/rtl-files'
-import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause, computeRtlHash, registerUtEscalation, retireUtEscalation, registerConfigSpace } from './verification-intelligence/engine.ts'
+} from './eda-bridge/src/tool-runner'
+import { runCocotbSimulation, runVerilatorSimulation, resolveMaxWaveformGB, parseVerilatorCoverageDetail } from './eda-bridge/src/simulation'
+import { generateSdc, runLogicSynthesis } from './eda-bridge/src/synthesis'
+import { runFormalVerification } from './eda-bridge/src/formal'
+import { runDesignLint } from './eda-bridge/src/lint'
+import { analyzeDeadLogic, writeDeadLogicReport } from './eda-bridge/src/dead-logic'
+import { collectRtlFiles, readRtlInputs } from './eda-bridge/src/rtl-files'
+import { buildVerificationIntelligence, recordExplorationRound, registerVerificationHypotheses, reviewScenarioClosure, refineVerificationIntents, recordScenarioAdjudication, registerVerificationIntents, recordRootCause, computeRtlHash, registerUtEscalation, retireUtEscalation, registerConfigSpace } from './verification-intelligence/src/engine.ts'
 import { createRtlWriteGuard } from './rtl-write-guard.ts'
 
 type DiagnosticLevel = 'L0' | 'L1' | 'L2' | 'L3' | 'L4' | 'L5'

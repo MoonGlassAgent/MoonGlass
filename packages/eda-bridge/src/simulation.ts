@@ -309,7 +309,7 @@ function readResult(path: string): Record<string, unknown> {
  * 同一 RTL 输入。RTL 变更后旧数据一律不得继承——否则旧 RTL 的覆盖率会被盖上当前
  * rtlHash 混入门禁判定（陈旧 PASS 污染防线，与引擎 rtlHash 新鲜度同口径）。
  */
-function hashRtlInputs(rtlFiles: string[]): string {
+export function hashRtlInputs(rtlFiles: string[]): string {
   const hash = createHash('sha256')
   for (const file of [...rtlFiles].sort()) {
     hash.update(file).update('\0')
@@ -811,6 +811,12 @@ export async function runVerilatorSimulation(
     '--build',
     '--exe',
     '-Wno-fatal',
+    // DEFECT: without --top-module Verilator picks its own default top (the
+    // first/least-instantiated module of the file list, e.g. psram_reset_sync),
+    // so the generated V<top>.h never matches the user C++ TB and the build
+    // fails with a missing "V<topModule>.h".
+    '--top-module',
+    topModule,
     '--Mdir',
     objDir,
     ...(trace ? ['--trace'] : []),

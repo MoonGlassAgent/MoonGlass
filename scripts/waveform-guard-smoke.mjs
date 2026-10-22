@@ -19,19 +19,20 @@ function check(name, condition, detail = '') {
 
 const root = resolve('out', `waveform-guard-smoke-${process.pid}`)
 const bridgeDir = join(root, 'bridge')
-mkdirSync(join(bridgeDir, 'eda-bridge'), { recursive: true })
-mkdirSync(join(bridgeDir, 'verification-intelligence'), { recursive: true })
+mkdirSync(join(bridgeDir, 'eda-bridge', 'src'), { recursive: true })
+mkdirSync(join(bridgeDir, 'verification-intelligence', 'src'), { recursive: true })
 
 // 与 pi-tools-smoke 一致：把 pi-bridge 扩展与共享实现复制到独立目录后 import。
 // 放在仓库 out/ 下而非系统临时目录，是为了让 Node 沿目录树解析到仓库 node_modules。
+// 复制保留 src/ 布局（与 packages 源目录一致），与 AgentService 运行时复制口径统一。
 for (const f of ['moonglass-tools.ts', 'rtl-write-guard.ts']) {
   writeFileSync(join(bridgeDir, f), readFileSync(join('resources', 'moonglass', 'pi-bridge', f), 'utf-8'))
 }
-for (const f of ['tool-runner.ts', 'rtl-files.ts', 'simulation.ts', 'synthesis.ts', 'lint.ts', 'formal.ts', 'dead-logic.ts']) {
-  writeFileSync(join(bridgeDir, 'eda-bridge', f), readFileSync(join('packages', 'eda-bridge', 'src', f), 'utf-8'))
+for (const f of ['tool-runner.ts', 'rtl-files.ts', 'simulation.ts', 'synthesis.ts', 'lint.ts', 'formal.ts', 'dead-logic.ts', 'slang-runner.ts']) {
+  writeFileSync(join(bridgeDir, 'eda-bridge', 'src', f), readFileSync(join('packages', 'eda-bridge', 'src', f), 'utf-8'))
 }
 for (const f of ['engine.ts', 'types.ts', 'structural-analyzer.ts']) {
-  writeFileSync(join(bridgeDir, 'verification-intelligence', f), readFileSync(join('packages', 'verification-intelligence-engine', 'src', f), 'utf-8'))
+  writeFileSync(join(bridgeDir, 'verification-intelligence', 'src', f), readFileSync(join('packages', 'verification-intelligence-engine', 'src', f), 'utf-8'))
 }
 // moonglass-tools.ts 运行时依赖 typebox（pnpm 下仅在 .pnpm 虚拟存储中），建 junction 使其可解析
 const pnpmDir = join(process.cwd(), 'node_modules', '.pnpm')

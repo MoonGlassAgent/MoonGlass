@@ -2,6 +2,28 @@
 
 本文件记录开发过程中的功能修改与验证结果。版本正式发布时，再将对应内容整理到 Release Notes。
 
+## 2026-10-08：Design Browser v3——slang 前端 + RTL 级数据模型
+
+> 设计稿：`docs/DESIGN-BROWSER-V3-SLANG-FRONTEND-ZH-CN.md`。trace 端点硬口径 G1：任意信号每一行端点都能读出「哪个模块的哪段源码在驱动/使用它」，零 `$` 单元名。
+
+- **slang 调用收敛（eda-bridge/slang-runner.ts，新增）**：`SLANG_CANDIDATES` 候选常量约定 + `MOONGLASS_SLANG_PATH` 覆盖（与 dead-logic 同口径）+ `toolEnv` MinGW 隔离 PATH；`--ast-json --ast-json-source-info --ignore-unknown-modules` 调用，AST 落 `<cacheDir>/<rtlHash>.json` 缓存（目录由调用方传入，本包不感知 userData；缓存命中不再调用 slang——slang 临时不可用也能复用上次 AST）；128MB 消费上限沿用 structural-analyzer 历史口径，超限/失败/缺失以判别联合返回，由消费方回退。同步实现（spawnSync）：verification 结构分析链路是同步 API，tool-runner 的 locateTool 为异步，故定位用 spawnSync 复刻同等口径。
+- **structural-analyzer 收编**：删除私有 `executable()`/`analyzerEnv()`（原 :22-40），改调 slang-runner；AST 不再用完即删（缓存化，limitations 文案同步更新为「按 rtlHash 缓存复用」）；产出契约不变。`buildVerificationIntelligence(workspaceDir, options?)` 新增可选 `slangCacheDir` 透传，主进程调用方传 `<userData>/moonglass/slang-ast-cache` 与 Design Browser 共享缓存。pi-bridge 复制布局同步保留 `src/` 一层（electron-builder extraResources / AgentService copyEda / moonglass-tools.ts 导入 / pi-tools-smoke），使跨包相对导入 `../../eda-bridge/src/slang-runner.ts` 在桥接运行时同样成立。
+- **DesignDatabase v3（design-browser-engine）**：`types.ts` 演进为 v2/v3 判别联合——v3（`version: 3, frontend: 'slang'`）新增 `parameters`（值取 elaborated 子实例体 Parameter.initializer 源文本，参数特化逐实例免费获得）、`signals`（Net/Variable 源码形态，kind wire/reg/logic + type 原文 + isPort）、`processes`（always_ff/comb/latch/always/assign/initial/final 块级清单，clock/reset 从 EventList 提取，drives/reads 由 Assignment.left/表达式 NamedValue 推导，位选取基名）、`instances`（pin→expr 源文本/signal 连接表，纯 NamedValue 才记 signal，其余保守回读源码文本）；`DesignCell`/`nets` 等 v2 字段整体退役为 `*V2` 后缀形态（Yosys 回退专用，冻结）。新增 `elaborate-v3.ts` 纯函数构建器（副作用仅限读工作区 RTL 源文件回读表达式源码区间）。
+- **trace 语义 v3（trace.ts 重写）**：端点从「port | $cell」升级为三态 `port | instancePin | statement`；drivers = 写 S 的语句 + input/inout 端口 + 输出 pin 连接，loads = 读 S 的语句 + output/inout 端口 + 输入 pin 连接；statement 为本层终点，instancePin 经 connections 正向下钻、port 经父实例连接表反向跨层，父侧复杂表达式（位选/拼接）保守终止（宁缺毋假）。**口径变化如实记录：v3 trace 是语句级（一个 always 块一个端点），不再是 bit 级连通图**；位宽不匹配等细节交由 lint 链负责。v2 追踪函数保留为 `traceNetV2/continueTraceV2`（冻结）。
+- **回退与兼容（DesignBrowserService）**：`elaborate` 先试 slang v3，任何不可用（缺失/elaboration 失败/AST 超限/构建异常）回退 Yosys v2 并在 diagnostics 显式登记降级原因；`rtlInputHash` 两种前端同口径（files + libraries）；`getCached` 仅接受 `version===3`（内存/磁盘两路径，v2 一律判过期重新 elaborate），`rtlStale` 语义原样保留；IPC 通道形状不变。中文路径零特殊处理：`repairMojibakePath` 随 v3 删除（source_file 即工作区相对路径，与 formal.ts 防线同口径），`readSource` 相对候选基于工作区解析。**已知退化**：v2 回退形态在中文路径工作区的源码定位可能受 Yosys mojibake 影响（不再修复，v2 冻结）。
+- **渲染端双形态迁移**：SignalPanel nets→signals（isPort 直接分组 + kind 徽标入 i18n）；TracePanel 三态端点（PORT/PIN/STMT 徽标入 i18n，statement 端点显示过程块种类 + 源码位置）；Inspector cell 详情→实例详情（参数覆盖表 + pin→连接信号/表达式表，连接可点击跳信号）+ 新增 process 详情视图（clock/reset、drives/reads 列表点击跳信号）；HierarchyPanel 实例 tooltip 显示参数覆盖；双击下钻改用 instances（v2 是 cells）；SourcePanel 取词支持 `u_child.sig` 层次引用（下钻子实例并选中 sig）；全局搜索 nets→signals。v2 路径冻结不删。
+- 验证：`pnpm typecheck` 5 子包全过；`typecheck:root` 维持既有 11 项基线零新增；core 套件全绿（48 scripts；design-browser-smoke 扩至 58 断言：v3 fixture 字段映射/三态端点语义/端点零 `$`/参数取值/AST 缓存命中/回退登记/v2 缓存判过期/中文路径零特殊处理）；`pnpm build` 通过；真实项目冒烟（MoonglassNPU 10 模块 slang 前端 elaborate）抽样 10 信号端点零 `$` 且全部带工作区相对源码位置，跨层下钻/上溯正常。
+
+## 2026-10-08：Design Browser Phase A 可用性修复包
+
+- **A1 cell 详情连接表显式化**：Inspector 中 cell pin 不再只显示 `{n} bit`，改为从当前模块 nets 建 bit→netName 反查表逐 pin 显示所连 net 名（逗号连接、去重、过长 truncate + title）；Yosys 常量 bit（'0'/'1'/'x'/'z'）原样显示，全部未命中时回退原始 bit 数。
+- **A2 信号面板端口分组**：SignalPanel 分「端口」（方向徽标 in/out/inout + 位宽）与「内部信号」（traces 排除与端口同名项）两区，点击端口与点击 net 同路径（onSelect(port.name)），搜索框对两区同时过滤，选中态高亮不变。
+- **A3 缓存 RTL 变更失效检测**：`eda-bridge` 导出 `hashRtlInputs()`、`rtl-files` 导出 `isMacroViewFile()`；`DesignDatabase` 加可选 `rtlInputHash`（version 保持 2，向后兼容）；`elaborate()` 落缓存前挂输入哈希；`getCached(projectId, workspaceDir)` 改为返回 `{ database, rtlStale }`——重算当前输入哈希与缓存比对，缓存无哈希或哈希计算失败一律按已变更处理（内存/磁盘两路径同口径）；IPC 契约（ipc-contract / ipc.ts 传 workspaceDir / preload 透传）三端同步；渲染端头部数据库信息旁新增琥珀色「RTL 已变更，建议重新解析」徽标。
+- **A4 截断显性化 + net 搜索上下文定位**：全局搜索各组记录总数，截断时组尾显示「仅显示前 N 条 · 共 M 条」（zinc-400 小字）；层次过滤列表（上限 100）同式样提示；Trace 跨边界分支端点截断（上限 100）显示「+N 更多端点」；net 搜索结果定位优先级改为 ①当前实例所属模块即目标模块→保持当前实例 ②当前实例子树内第一个匹配实例 ③回退全局第一个实例。
+- **A5 顶层候选口径对齐**：`listTopModules` 改用与 `parseFilelist` 同一输入来源（数组型 filelistSyn ?? files ?? 字符串型 filelist 文件 ?? readRtlInputs 兜底），并显式排除 manifest 声明的 libraryFiles / simulationFiles 命中的文件，保留互斥宏视图（`isMacroViewFile`）过滤，避免库 blackbox 视图/行为模型污染根模块判定。
+- **A6 i18n 收编**：数据库信息行、Cell/Instance、SIGNALS、nets 计数、HIERARCHY、Diagnostics、Signal、DRIVERS、LOADS / FANOUT 及 A1-A4 新增文案全部迁入 `designBrowser` 命名空间（zh-CN 源 + en typeof 约束），组件内零硬编码文案。
+- 验证：`pnpm typecheck` 5 包全过；`typecheck:root` 维持既有 11 项基线零新增；core **48** scripts 全绿（含 design-browser-smoke 18 断言）；`pnpm build` 通过；另以临时行为脚本实测 A3/A5 服务层语义（哈希落缓存、变更/无哈希/失败三态 rtlStale、filelistSyn 优先、library/sim/macro 视图排除）11 项全过后已清理。
+
 ## 2026-10-05：解析内核重写 + 运行时口径统一 + 验证工作台结论层（v1.1.0 回退后重做）
 
 > 背景：v1.1.1（Codex 轮，验证工作台四期 + verification-work 调度）经评估回退，本轮在 v1.1.0 上重做。
@@ -134,6 +156,90 @@
 - 问题：会话标签栏中已完成的 VERIF 批次会话（"查看"徽标）无关闭按钮，完成记录不断堆积无法清理。
 - 修复：SessionTabs 对未运行中的批次会话渲染 × 关闭按钮（复用既有 closeSession 链路：删除 JSONL + 清理模型登记，运行中批次仍不显示）；主进程 closeSession 增加保护——正在运行的 VERIF 批次会话（activeVerifBatches 命中）拒绝关闭并提示先停止托管，防止编排循环的 settle 等待悬空。
 - 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke` 通过。
+
+## 2026-10-21：Ctrl/Alt+Enter 显式换行修复
+
+- 问题：输入框 placeholder 宣称 Ctrl/Alt/Shift+Enter 换行，但实测 Ctrl+Enter 与 Alt+Enter 按键被吞（Electron/Chromium 下这两个组合的默认换行丢失），用户报"不是换行"。
+- 修复：onKeyDown 对 Ctrl/Alt+Enter 显式 preventDefault + 手动在光标处插入换行并恢复光标位置；Enter 发送与 Shift+Enter 默认换行不受影响。
+- 验证：playwright 实测 Shift/Ctrl/Alt+Enter 各插入一个换行；`pnpm typecheck`、`typecheck:root`（恰 11 条既有）、`pnpm build` 通过。
+
+## 2026-10-21：聊天输入框自由调高
+
+- 输入框顶边新增拖拽调节轨（悬停显示把手）：上拖加高、下拖压低（40px ~ 视口高 55% 夹取），高度持久化 localStorage（`moonglass:composer-height`），双击调节轨复位默认两行。
+- 验证：`pnpm typecheck`、`typecheck:root`（恰 11 条既有）、`pnpm build` 通过；playwright 实测拖动 58px→222px 并持久化、双击复位 58px 且清除持久化。
+
+## 2026-10-18：品牌 Logo 焕新（月亮+眼镜 / MoonGlass 月之幻镜）
+
+- 侧边栏小图标：新形象左部"月亮+眼镜"图标的方形裁切（512×512），同步替换 `resources/moonglass/logo.png`（electron-builder 打包图标同图，win/mac/linux 三端一致）。
+- 悬停放大弹层：从方形小图改为完整横幅版 Logo（`assets/logo-banner.png`），弹层布局由"左图右字"改为"横幅置顶 + 名称/标语在下"（CSS grid 单列）。
+- 验证：`pnpm build` 通过；playwright 实拍悬停弹层正确展示新横幅。
+
+## 2026-10-18：只读回看中的待确认决策降级为提示卡
+
+- 问题：批次/修复会话的只读回看（BatchSessionPeek）里，未答复的决策卡以完整交互形态呈现（选项可点但点了无效），误导用户。
+- 修复：只读回看中未答复的决策卡降级为橙色提示卡（决策标题 + 选项数 + "只读回看中不可操作"说明 + 「前往该会话处理」按钮——切换到该会话并关闭回看）；已答复的决策仍按原样展示（回看价值：当时决定了什么）。
+- 验证：`pnpm typecheck`、`typecheck:root`（恰 11 条既有）、`pnpm build`、`agent-interaction-smoke` 通过。
+
+## 2026-10-18：会话标签待人处理标记 + listSessions 静音失败修复
+
+- 需求：会话弹出待确认决策卡后，对应会话标签应有醒目标记，用户一眼知道哪个会话需要人工介入。
+- 实现：`listSessions` 为每个会话附带 `pendingDecisions`（复用 pending-actions 的 mtime 缓存扫描）；SessionTabs 药丸在待确认决策 >0 时切换为橙色脉冲点 + 计数 + 橙色描边底色（优先级高于"当前会话"指示点），并新增 4s 轻量轮询（决策到达即时亮标，不等 sessionInfo 变化）。
+- 顺带修复（联调抓获）：listSessions 的 `catch {}` 静音吞掉一切异常——一次漏 import 就导致会话列表整体变空且无任何日志；改为 console.error 记录。
+- 流程缺口记录：`pnpm typecheck` 只覆盖 workspace 子包，主进程/渲染进程 TS 实际由 `typecheck:root` 覆盖（本次漏 import 即被后者拦截）——以后主/渲染改动验证须跑 typecheck:root。
+- 验证：`pnpm typecheck`、`typecheck:root`（恰 11 条既有报错）、`pnpm build`、`pending-actions-smoke`、`agent-interaction-smoke` 通过；playwright 实拍标签徽标（橙色脉冲 1 计数）正确。
+
+## 2026-10-18：项目卡片「待处理」通知徽标
+
+- 需求：项目列表只能看到会话/托管状态，看不到"哪些项目在等用户做决策"。
+- 实现：`AgentService.sessionActivity` 聚合时按项目并入磁盘事实源的待人处理项（空闲项目同样上卡——"等用户决策"恰恰是空闲态）：
+  - 会话待确认决策：扫描项目会话 JSONL 的 DECISION_REQUEST/RESPONSE 标记（@shared/agent-interaction 同口径解析），未答复即待人，按 mtime 缓存（3s 轮询成本可控）；
+  - 循环待裁决提案：decision-ledger.json 中 status=proposed 条目。
+- 卡片：琥珀色「待处理 N」铃铛徽标置于状态徽标之前（"需要用户"是最高优先级信号），tooltip 列出待处理项标题（前 6 条）。
+- 新增 `src/main/services/pending-actions.ts`（纯函数可测）；冒烟 `scripts/pending-actions-smoke.mjs`（计数/缓存失效/空态，注册进 core 套件）；E2E `scripts/e2e-project-pending-badge.mjs` 实拍验证徽标与计数。
+- 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke` 通过。
+
+## 2026-09-15：模块 UT 渲染端落地（MODULE-UT-UI-HANDOFF 三项）
+
+- 背景：模块级轻量 UT（设计文档 docs/MODULE-UT-DESIGN-ZH-CN）：对 RTL 子模块派发独立子会话快速迭代，probe 隔离不进主证据链。
+- 「发起模块 UT」入口：验证运行页签新增「模块 UT」卡（位于自动验证循环与批次编排之间），内联表单输入模块名，候选下拉由文件树 rtl/ 目录自动推导（module-filename 口径）；调用已落地的 `agent:start-module-ut` 契约，错误直接红条透出。
+- UT 状态呈现：验证运行数据加载链新增第 7 份账本 `verification/results/ut-sessions.json`（宽松形状归一化 normalizeUtSessions，active 计数 + 模块名列表），活跃时卡片显示脉冲徽标与"模块 UT 进行中（N 个）：…—— 主循环互斥挂起中"状态行，随 verification/ 目录变更订阅自动刷新。
+- 主进程补丁（联调发现）：startModuleUt 的派发/完成 status 事件补带 sessionName 标记——此前按无标记广播，渲染端"后台会话通知"识别不了，UT 会话标签不刷新出现；中断路径保持 error 直达当前聊天（用户必须看到"锁已释放、现场可能半截"），另发带标记 status 供刷新。
+- §3 软建议（修复密集提示）按交接文档首期不做（主进程软建议消息已作为普通 status 透出）。
+- 验证：`pnpm typecheck`、`pnpm build` 通过；`scripts/e2e-module-ut-card.mjs` 端到端实拍：UT 卡徽标/状态行、表单候选、真实派发（无立即报错）、UT 会话标签出现于对话组、账本登记新模块，全部通过。
+
+## 2026-09-15：VERIF 工作台垂直空间重排（信息密度平衡）
+
+- 背景：模块级轻量 UT（设计文档 docs/MODULE-UT-DESIGN-ZH-CN）：对 RTL 子模块派发独立子会话快速迭代，probe 隔离不进主证据链；主进程侧派发/互斥/恢复在途。
+- 「发起模块 UT」入口：验证运行页签新增「模块 UT」卡（位于自动验证循环与批次编排之间），内联表单输入模块名，候选下拉由文件树 rtl/ 目录自动推导（module-filename 口径）；主进程 startModuleUt 契约未生效时显示明确提示而非崩溃。
+- UT 状态呈现：验证运行数据加载链新增第 7 份账本 `verification/results/ut-sessions.json`（宽松形状归一化 normalizeUtSessions，active 计数 + 模块名列表），活跃时卡片显示脉冲徽标与"模块 UT 进行中（N 个）：…—— 主循环互斥挂起中"状态行，随 verification/ 目录变更订阅自动刷新。
+- §3 软建议（修复密集提示）按交接文档首期不做。
+- 验证：`pnpm typecheck`、`pnpm build` 通过；`scripts/e2e-module-ut-card.mjs`（隔离 userData + initialPhase=VERIF 造环境）截图复核卡片徽标/状态行/表单/契约未生效报错全部正确。
+
+## 2026-09-15：VERIF 工作台垂直空间重排（信息密度平衡）
+
+- 问题：VERIF 阶段上部静态卡片（当前目标/主行动 + 验证结论）占位大、密度低，真正要操作的验证运行决策卡列表被挤在小区域。
+- 验证向导卡改为单行状态带：当前目标（截断 + 悬停详情）+ 主行动按钮右置（详细说明与预期产出移入 tooltip），次要行动/专家操作收成行内折叠链接，展开后以双列网格呈现。
+- 验证结论卡默认折叠为一行摘要（条款合计/有效通过/待重验/未验证/失败 + 证据状态 + 签核状态 + 阻断数），点"展开明细"才显示完整指标行、证据缺失清单与条款明细（条款明细再单独折叠，沿用原键）；i18n 补 expandCard/collapseCard。
+- 验证：`pnpm typecheck`、`pnpm build` 通过。
+
+## 2026-09-15：会话名被默认名覆盖修复 + 存量数据修复
+
+- 根因：spawnSession 对一切会话（含已具名的任务/批次/修复会话）固定传 `--name "<项目> / <阶段>"`，pi 启动时把它追加为新 session_info；listSessions 按最后一条取名 → 任务会话名在磁盘上被默认名覆盖，重启后暴露为"会话名变了"。与 switchSession 的 `set_session_name(磁盘标签)` 对冲，反复切换产生成对乒乓条目。
+- 源头修复：spawnSession 的 `--name` 改为优先沿用目标文件的磁盘标签（storedSessionLabel），仅全新会话用默认名。
+- 存量修复：`scripts/repair-session-names.mjs`（预演/`--apply`，自动备份 .bak.jsonl）——仅修复"自定义名被默认名覆盖"的文件（25 个）；旧版单会话跨阶段文件（两端都是斜杠式默认名）与逻辑名时代文件按规则跳过（末条更接近最终阶段，不回滚）。
+- 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke`、`session-transcript-smoke`、`pi-rpc-smoke` 通过。
+
+## 2026-09-15：关闭会话报错修复（会话文件不存在）
+
+- 问题：关闭当前活动的任务会话时报错"会话文件不存在：…session-phase-verif.jsonl"。根因：closeSession 关闭活动会话时先 `switchSession` 切回阶段主会话，而主会话文件可能从未产生或已被留存扫描清理，switchSession 的 existsSync 守卫直接抛错，关闭动作整体失败。
+- 修复：① `switchSession` 容许目标文件缺失——spawn 路径本就由 pi 自动创建空白会话（其调用方只有标签点击与内部新建，均不受影响）；② `closeSession` 对目标文件缺失改为幂等成功——仅清理模型登记，若它是当前活动会话则兜底切回（新建空白）主会话。
+- 验证：`pnpm typecheck`、`pnpm build`、`agent-interaction-smoke`、`session-transcript-smoke` 通过。
+
+## 2026-09-15：会话标签包络进「对话」组，两级页签视觉区分
+
+- 问题：「验证运行」等主视图页签选中时，旁边的会话标签也用选中态高亮，两个层级视觉混淆，用户疑惑当前在哪个视图。
+- 调整：「对话」主页签与全部会话标签共享一个浅底包络容器（对话 + 分隔线 + 会话药丸），明确表示会话隶属于对话视图；会话标签从页签形态（rounded-t border-x border-t）改为药丸形态（rounded-full pill + 身份指示点，进行中脉冲），active 只表示"当前会话"上下文，不再是"选中视图"语义；验证运行/文件页签保持原页签态。新建任务「+」移入组内。
+- 验证：`pnpm typecheck`、`pnpm build` 通过；playwright 截图复核（对话组包络 + 文件页签选中对照，并抓掉了一个重复挂载 SessionTabs 的编辑事故）。
 
 ## 2026-09-15：长按拖拽二次失败修复 + 聊天输入诊断探针
 

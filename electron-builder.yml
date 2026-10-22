@@ -23,9 +23,9 @@ extraResources:
   - from: resources/moonglass/pi-bridge
     to: pi-bridge
   - from: packages/eda-bridge/src
-    to: pi-bridge/eda-bridge
+    to: pi-bridge/eda-bridge/src
   - from: packages/verification-intelligence-engine/src
-    to: verification-intelligence
+    to: verification-intelligence/src
   - from: resources/moonglass/ip-library
     to: ip-library
   - from: resources/moonglass/rules

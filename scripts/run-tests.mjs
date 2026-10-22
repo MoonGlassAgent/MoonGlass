@@ -44,6 +44,7 @@ const suites = {
     'scripts/download-mirror-smoke.mjs',
     'scripts/clk-rst-comb-lint-smoke.mjs',
     'scripts/lint-rules-smoke.mjs',
+    'scripts/pending-actions-smoke.mjs',
     'scripts/dead-logic-smoke.mjs',
     'scripts/artifact-drift-smoke.mjs',
     'scripts/design-review-smoke.mjs',

@@ -30,6 +30,10 @@ export const verifRun = {
     historyTitle: '本次循环已完成批次',
     verdictCompleted: '正常完成',
     verdictCircuitBroken: '熔断',
+    /** 场景标题快照缺失（旧账本）：只显示场景 ID，不用当前注册表回填历史语义 */
+    legacyNoLabels: '该批次记录早于「场景标题快照」，只能显示场景 ID；跑一次新批次即可看到验证内容',
+    /** 快照里有该场景但标题为空（派发时注册表不可读或 ID 未命中） */
+    scenarioUntitled: '（无标题快照）',
     updatedAt: '更新于 {time}'
   },
   loop: {
@@ -233,5 +237,18 @@ export const verifRun = {
     utEscalationActive: 'active',
     utEscalationRetired: '已退役',
     utEscalationRootCause: '关联根因记录'
+  },
+  ut: {
+    title: '模块 UT',
+    start: '发起模块 UT',
+    activeBadge: 'UT 进行中 ×{count}',
+    activeLine: '模块 UT 进行中（{count} 个）：{modules} —— 主循环互斥挂起中',
+    activeNoNames: '模块 UT 进行中（{count} 个）—— 主循环互斥挂起中',
+    idleHint: '对某个 RTL 子模块发起独立 UT 会话：最简环境快速迭代（probe 隔离，不进主验证证据链）。',
+    dialogTitle: '发起模块 UT',
+    modulePlaceholder: '输入或选择 rtl/ 下的模块名',
+    confirm: '发起',
+    starting: '派发中…',
+    emptyModule: '请输入模块名',
   }
 }

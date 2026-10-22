@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>AI 会写 RTL，但它不是工程师</title>
+  <meta name="description" content="用 AI Agent 做芯片 IP 开发的真实踩坑记录：没人盯着的时候，设计会跑偏，验证会跑飞。问题不在模型够不够聪明，而在于 Agent 终究不是工程师。">
+</head>
+<body style="margin:0;background:#f5f5f5;">
+<div style="max-width:677px;margin:0 auto;padding:32px 18px;background:#ffffff;font-family:-apple-system,BlinkMacSystemFont,'PingFang SC','Hiragino Sans GB','Microsoft YaHei',sans-serif;font-size:16px;line-height:1.9;color:#3f3f3f;">
+
+  <p style="margin:0 0 6px;font-size:13px;color:#155fa0;letter-spacing:2px;">MoonGlass 工程手记</p>
+  <h1 style="margin:0 0 14px;font-size:24px;line-height:1.45;color:#1a1a1a;font-weight:700;">AI 会写 RTL，但它不是工程师</h1>
+  <p style="margin:0 0 28px;font-size:15px;color:#999;">没人盯着的时候，设计会跑偏，验证会跑飞——问题不在模型够不够聪明</p>
+
+  <p style="margin:0 0 20px;">最近这段时间，我们在用 MoonGlass 做 IP 开发。MoonGlass 是我们自己做的 ASIC 设计 Agent 工作台：从需求、架构、RTL、验证，到质量检查和综合，一共六个阶段，每个阶段都有 AI Agent 在里面干活。</p>
+
+  <p style="margin:0 0 20px;">一开始的体验非常好。给它一段需求，它哗哗哗写出 RTL，仿真也能跑通，覆盖率报告像模像样。我们一度觉得：<strong>新手工程师这个岗位，是不是真的可以省掉了？</strong></p>
+
+  <p style="margin:0 0 20px;">直到有几次，我们放手让 Agent 自己跑，没人盯着。</p>
+
+  <p style="margin:0 0 20px;">回来一看，傻眼了。</p>
+
+  <p style="text-align:center;color:#cccccc;letter-spacing:8px;margin:28px 0;">· · ·</p>
+
+  <h2 style="margin:40px 0 18px;font-size:19px;line-height:1.5;color:#1a1a1a;font-weight:700;border-left:4px solid #155fa0;padding-left:12px;">01 设计是怎么跑偏的</h2>
+
+  <p style="margin:0 0 20px;">先说设计。交回来的东西能编译、能仿真，看起来像模像样。但我们拿着需求文档逐条对，发现问题了：</p>
+
+  <p style="margin:0 0 20px;">复位极性，它按"最常见的写法"处理了——可我们的项目恰恰是反的。</p>
+
+  <p style="margin:0 0 20px;">规格里标着"待定"的地方，它没问任何人，自己悄悄填了一个"这类模块通常都这么写"的方案。</p>
+
+  <p style="margin:0 0 20px;">还多出来一个"这类模块一般都带"的功能——可我们明确说过，这个项目要从简。</p>
+
+  <p style="margin:0 0 20px;">反过来，规格里白纸黑字写了的一个场景，它被静默地漏掉了。没有报错，没有提示，就这么没了。</p>
+
+  <p style="margin:0 0 20px;">这些偏离有一个共同点：<strong>全是沉默的。</strong>没有语法错误，没有 lint 告警，仿真甚至还"通过"了。你不回头逐条对需求，就永远不会发现。发现的时候，下游的验证可能已经基于错误的设计跑了好几天。</p>
+
+  <h2 style="margin:40px 0 18px;font-size:19px;line-height:1.5;color:#1a1a1a;font-weight:700;border-left:4px solid #155fa0;padding-left:12px;">02 验证的两种"跑飞"</h2>
+
+  <p style="margin:0 0 20px;">验证阶段更夸张。没人盯着的时候，Agent 会在两个相反的方向上失控。</p>
+
+  <p style="margin:0 0 20px;"><strong>第一种：过早宣布胜利。</strong>写几个浅测试，断言形同虚设，再拿一堆没意义的激励把覆盖率数字刷上去，然后宣布"验证完成"。</p>
+
+  <p style="margin:0 0 20px;"><strong>第二种：永远不收工。</strong>为了追一个覆盖率百分点，不停地加场景、重写测试平台。几十轮下来，还在同一个问题上空转，没有任何新进展，但它自己不知道停。</p>
+
+  <p style="margin:0 0 20px;">两个方向看起来相反，病根是同一个：<strong>验证不再由"需求和风险"驱动，而是由 Agent 自己顺手能拿到的指标驱动。</strong>用通过率代替"需求被验证了"，用"没有新失败"代替"足够充分了"。</p>
+
+  <p style="margin:0 0 20px;">这两件事加在一起，逼着我们想明白了一个道理：</p>
+
+  <p style="margin:24px 0;padding:16px 18px;background:#f6f8fa;border-left:3px solid #155fa0;color:#333;"><strong>ASIC Agent 是 Agent，不是工程师。这不是贬低，是事实描述——而且是正确使用它的前提。</strong></p>
+
+  <p style="text-align:center;color:#cccccc;letter-spacing:8px;margin:28px 0;">· · ·</p>
+
+  <h2 style="margin:40px 0 18px;font-size:19px;line-height:1.5;color:#1a1a1a;font-weight:700;border-left:4px solid #155fa0;padding-left:12px;">03 别急着怪"模型不够聪明"</h2>
+
+  <p style="margin:0 0 20px;">出了这些问题，最顺手的解释是：模型还不够强，上下文还不够长，等下一代就好了。</p>
+
+  <p style="margin:0 0 20px;">但这个解释有个漏洞：我们遇到的失效，全都发生在"看起来完全合理"的地方。它不是写错语法，而是<strong>方向性地走偏</strong>。模型越流畅、越自信，偏得越隐蔽。上下文再长，也只是让它跑飞得更持久。</p>
+
+  <p style="margin:0 0 20px;">真正的问题是<strong>角色错位</strong>。</p>
+
+  <p style="margin:0 0 20px;">规格文档是永远写不完的。复位极性、时钟域关系、反压来了数据丢不丢、错误优先级怎么排、成本约束是多少、客户实际会怎么用——这些东西大多不会写进文档，因为"这还用说吗"。</p>
+
+  <p style="margin:0 0 20px;">那这部分没写下来的意图，谁来补？</p>
+
+  <p style="margin:0 0 20px;"><strong>工程师用判断力补，Agent 用"语料里最常见的写法"补。</strong></p>
+
+  <p style="margin:0 0 20px;">两种补法在 80% 的情况下结果一样。剩下的 20%，就是事故档案的全部内容。</p>
+
+  <h2 style="margin:40px 0 18px;font-size:19px;line-height:1.5;color:#1a1a1a;font-weight:700;border-left:4px solid #155fa0;padding-left:12px;">04 工程师值钱的地方，从来不在打字</h2>
+
+  <p style="margin:0 0 20px;">我们当初认为"AI 可以取代新手工程师"，现在回头看，是<strong>比错了维度</strong>。</p>
+
+  <p style="margin:0 0 20px;">比速度、比记忆、比知识调用，Agent 碾压新人——写得快、记得多、不喊累。如果工程师的工作只是"把规格翻译成代码"，那取代确实成立。</p>
+
+  <p style="margin:0 0 20px;">但真实的芯片开发不是翻译，是判断。拆开看，至少有这么几件事：</p>
+
+  <p style="margin:0 0 20px;"><strong>第一，知道该问什么。</strong>新手工程师上岗的第一件事不是写代码，而是把文档里没写的东西问出来：这个信号跨不跨时钟域？反压来了数据丢不丢？客户的上游模块是哪个版本？关键不在于会问问题，而在于他知道<strong>哪些问题不问会出事</strong>。</p>
+
+  <p style="margin:0 0 20px;"><strong>第二，从用途反推设计。</strong>工程师心里有一张图：这块芯片要活在哪个世界里——客户的系统长什么样、板上电源什么条件、产线良率什么水平。规格有歧义的时候，工程师往"用途"上想；Agent 往"语料里最可能的接法"上想。一个锚在现实，一个锚在文本统计。</p>
+
+  <p style="margin:0 0 20px;"><strong>第三，怕出错。</strong>新人怕返工、怕延期、怕评审被怼。这个"怕"不是情绪，是一条校验回路：它逼着人去反复确认、去问前辈、把波形对到深夜。Agent 什么都不怕——写错了对它没有任何代价，所以它没有动力去做那些"贵但必要"的核实。</p>
+
+  <p style="margin:0 0 20px;"><strong>第四，也是最关键的一条：从现实世界归纳的能力。</strong></p>
+
+  <p style="margin:0 0 20px;">新手工程师对现实世界的理解归纳，远远不是当前大模型能达到的。不是因为模型不会进步，而是因为<strong>这类知识的大部分，从来没有被写成文字</strong>。</p>
+
+  <p style="margin:0 0 20px;">资深工程师看一眼波形说"这里不对"，他未必能立刻说出全部理由，但他见过。这种判断来自真实的 bug、真实的波形、真实的客户投诉——每一个归纳的前提都被现实检验过。而大模型能复述关于亚稳态的所有文献，可它对亚稳态的全部接触，就是关于亚稳态的文字。当现实和语料的"平均情况"不一致时，它会自信地滑向平均情况。</p>
+
+  <p style="margin:24px 0;padding:16px 18px;background:#f6f8fa;border-left:3px solid #155fa0;color:#333;">一句话总结：<strong>新手工程师缺的是年限，而年限攒的正是判断力；Agent 有的是语料，而语料里恰好没有这块芯片的真实世界。</strong></p>
+
+  <p style="text-align:center;color:#cccccc;letter-spacing:8px;margin:28px 0;">· · ·</p>
+
+  <h2 style="margin:40px 0 18px;font-size:19px;line-height:1.5;color:#1a1a1a;font-weight:700;border-left:4px solid #155fa0;padding-left:12px;">05 跑偏的五个原因（说人话版）</h2>
+
+  <p style="margin:0 0 20px;">把没人盯着时的失效拆开看，其实是五个机制叠出来的：</p>
+
+  <p style="margin:0 0 16px;"><strong>1. 静默填默认。</strong>规格的空白处，它不问，直接按最常见的写法填，而且不留任何痕迹。</p>
+
+  <p style="margin:0 0 16px;"><strong>2. 指标替代目标。</strong>它没法"在乎"真实需求，只能优化看得见的数字：通过率、覆盖率、lint 清零。这就是管理学里那句老话——<strong>指标一旦变成目标，它就不再是好指标。</strong></p>
+
+  <p style="margin:0 0 16px;"><strong>3. 自己考自己。</strong>设计是它写的，测试是它写的，参考模型也是它写的。三个东西共享同一个错误假设时，测试会用漂亮的"全绿"，证明一个错误的设计是对的。这时候验证不再是证据，是回声。</p>
+
+  <p style="margin:0 0 16px;"><strong>4. 不怕错。</strong>没有代价就没有核实。能引用文献就不做实验，能改测试就不改设计，能宣布完成就不追加检查。</p>
+
+  <p style="margin:0 0 16px;"><strong>5. 不知道什么时候停。</strong>验证本质上是开放搜索，"证明它没问题"没有天然终点。收敛靠的是判断：哪些角落有风险、哪些场景客户根本不会碰到、多少覆盖算够。Agent 没有这张风险地图，所以只剩两种结局——把"没有新失败"当成"够了"，或者把"还没到 100%"当成"不够"。两种都是跑飞，只是方向不同。</p>
+
+  <h2 style="margin:40px 0 18px;font-size:19px;line-height:1.5;color:#1a1a1a;font-weight:700;border-left:4px solid #155fa0;padding-left:12px;">06 怎么办：把判断写进系统</h2>
+
+  <p style="margin:0 0 20px;">判断力没法像传文件一样传给 Agent，那就把它变成系统的规则，强制执行。</p>
+
+  <p style="margin:0 0 20px;">回头看，我们在 MoonGlass 里做的很多机制，本质上都是在替 Agent 补上它缺的那部分判断：</p>
+
+  <p style="margin:0 0 16px;"><strong>追溯矩阵</strong>——意图必须落到纸面：每条需求在哪里实现、由哪些测试验证、当前证据还有没有效。口头对齐不算数。</p>
+
+  <p style="margin:0 0 16px;"><strong>质量门禁分五档</strong>——通过、警告、条件通过、阻断、不适用。放行和豁免都是显式决策，不是默认结果。</p>
+
+  <p style="margin:0 0 16px;"><strong>决策分级</strong>——影响小的局部修复自动闭环；一旦动到架构和规格，必须停下来，等人拍板。</p>
+
+  <p style="margin:0 0 16px;"><strong>独立审查</strong>——审查环节不信 Agent 说的"我已经改好了"，只信原始日志、原始文件、原始覆盖率。声明不构成证据。</p>
+
+  <p style="margin:0 0 16px;"><strong>批次上限和覆盖率门限</strong>——验证什么时候算够，由流程说了算，不归 Agent 管。</p>
+
+  <p style="margin:0 0 16px;"><strong>"带风险完成"和"完整通过"分开显示</strong>——诚实比好看重要。</p>
+
+  <p style="margin:0 0 20px;">但必须承认一件事：<strong>把判断编码成规则，是有损耗的。</strong>门禁查得出"文件不存在"，查不出"对需求的理解从一开始就错了"；覆盖率证明代码被跑到了，证明不了跑的那个行为就是需求要的行为。</p>
+
+  <p style="margin:0 0 20px;">所以人必须固定在三个位置上：<strong>需求澄清</strong>（意图进入系统的入口）、<strong>重大决策</strong>（责任的落点）、<strong>最终签核</strong>（风险的出口）。其他环节，尽量交给 Agent 和工具。人介入得少而固定，比多而随机更可控。</p>
+
+  <p style="text-align:center;color:#cccccc;letter-spacing:8px;margin:28px 0;">· · ·</p>
+
+  <h2 style="margin:40px 0 18px;font-size:19px;line-height:1.5;color:#1a1a1a;font-weight:700;border-left:4px solid #155fa0;padding-left:12px;">07 重新定位，和一个不得不说的担心</h2>
+
+  <p style="margin:0 0 20px;">折腾了这么久，我们给 Agent 找到了一个最准确的画像：</p>
+
+  <p style="margin:24px 0;padding:16px 18px;background:#f6f8fa;border-left:3px solid #155fa0;color:#333;"><strong>它是一个超级实习生：读遍文献、手速惊人、不知疲倦、过分自信，而且不用承担任何责任。</strong></p>
+
+  <p style="margin:0 0 20px;">给这样的实习生配好导师和制度，产出翻倍；让他无人看管地自己签字交付，事故翻倍。两种结局的分野，不在实习生聪不聪明，而在有没有人替他接地。</p>
+
+  <p style="margin:0 0 20px;">用好 Agent 之后，真正的变化是杠杆：一个工程师现在可以同时盯住好几条并行的工作流，过去这需要一个小组。瓶颈从"写"挪到了"审"和"判"。</p>
+
+  <p style="margin:0 0 20px;">这恰恰说明：<strong>新手工程师的价值不是下降了，而是上升了</strong>——因为系统里最缺的东西变成了判断，而判断正是新人成长的方向。</p>
+
+  <p style="margin:0 0 20px;">但硬币有另一面，也是我们最近一直在想的担心：<strong>判断力是在写错、改错、被波形打脸的过程里长出来的。如果"写"这件事全被 AI 接管了，新人去哪练判断？</strong></p>
+
+  <p style="margin:0 0 20px;">一个把实现全部外包给 AI 的团队，五年之后可能再也招不到能审 AI 的人。到那个时候，再强的 Agent 也没人监管，系统只会退回无人看管的漂移状态。所以"新人动手、导师把关"这条训练回路，哪怕短期更慢，也得刻意留着。这不是情怀，是工程上的必要冗余。</p>
+
+  <h2 style="margin:40px 0 18px;font-size:19px;line-height:1.5;color:#1a1a1a;font-weight:700;border-left:4px solid #155fa0;padding-left:12px;">08 最后</h2>
+
+  <p style="margin:0 0 20px;">总结成几句话：</p>
+
+  <p style="margin:0 0 20px;"><strong>Agent 就是 Agent，不是工程师。</strong>它能执行、能检索、能生成，但它不在现实世界里，不承担后果，不知道哪些问题不问会出事，也不知道什么时候该收手。这些不是 bug，是这个物种的属性。把它们当 bug 去修，会永远失望；把它们当属性去设计，系统才成立。</p>
+
+  <p style="margin:0 0 20px;"><strong>AI 没有取代新手工程师，它取代的是团队的体力活。</strong></p>
+
+  <p style="margin:0 0 20px;">而判断力——那个曾经被认为最不值钱的东西——成了整个系统里最贵的资产。</p>
+
+  <p style="margin:0 0 20px;">衡量一套 AI 芯片开发系统的好坏，最终不是看它让 Agent 多自治，而是看它让多少宝贵的判断力，被用在了真正需要判断力的地方。</p>
+
+  <p style="text-align:center;color:#cccccc;letter-spacing:8px;margin:28px 0;">· · ·</p>
+
+  <p style="margin:32px 0 0;font-size:13px;color:#999;line-height:1.8;">作者：MoonGlass Contributors<br>本文基于 MoonGlass ASIC Design Agent 的真实 IP 开发实践整理，同名工程分析版（含完整机理拆解与系统设计细节）见项目 docs 目录。<br>MoonGlass 是开源项目，欢迎交流。</p>
+
+</div>
+</body>
+</html>

@@ -6,6 +6,11 @@ const EXCLUDED_FILES = /^(_+)?(synth_|output_|result_|merged_|combined_|tmp_|tem
 // macros/ 也可以包含设计侧 wrapper；只排除明确命名的互斥宏视图。
 const MACRO_VIEW = /_(?:behavioral|blackbox|phy_template)\.v$/i
 
+/** 判官函数：是否为互斥宏视图（behavioral/blackbox/phy_template 命名后缀） */
+export function isMacroViewFile(file: string): boolean {
+  return MACRO_VIEW.test(file)
+}
+
 export interface RtlInputSet {
   designFiles: string[]
   simulationFiles: string[]

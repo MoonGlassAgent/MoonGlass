@@ -610,6 +610,18 @@ export interface ProjectSessionActivity {
   runningSessions: string[]
   /** 上一轮被应用退出中断的会话展示名（启动时一次性消费，本轮保留；无则省略） */
   interrupted?: string[]
+  /** 待用户处理项（会话待确认决策 + 循环待裁决提案）；无时省略 */
+  pendingActions?: ProjectPendingActions
+}
+
+/** 项目级"待人处理"聚合（项目卡片通知徽标的数据源） */
+export interface ProjectPendingActions {
+  /** 会话内待确认决策数（DecisionCard 未答复） */
+  decisionRequests: number
+  /** 验证运行循环待裁决提案数（decision-ledger.json status=proposed） */
+  loopDecisions: number
+  /** 待处理项标题（卡片 tooltip 用，前几条） */
+  titles: string[]
 }
 
 /** VERIF 批次完成判定（上下文治理第 3 批，决策 4：绑定工具登记证据，不读会话文本） */

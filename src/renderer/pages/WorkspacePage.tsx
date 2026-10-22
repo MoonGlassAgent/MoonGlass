@@ -51,13 +51,16 @@ import {
   normalizeRtlFixInProgress,
   normalizeRtlFixOutcomes,
   normalizeRunLoopLedger,
+  normalizeUtSessions,
   normalizeVerifBatchLoop,
   type RootCauseRecordView,
   type RtlFixInProgressView,
   type RtlFixOutcomeView,
+  type UtSessionsView,
   type VerifBatchLoopView,
   type VerifRunDecisionEntryView
 } from '../components/verif-run'
+import { ModuleUtCard } from '../components/verif-run/ModuleUtCard'
 import { GlossaryTip } from '../components/GlossaryTip'
 import { useChatStore } from '../store/chatStore'
 import { useManagedStore } from '../store/managedStore'
@@ -83,6 +86,8 @@ interface VerifRunData {
   rootCauses: RootCauseRecordView[]
   runLoop: VerifRunLoopLedger | null
   decisions: VerifRunDecisionEntryView[]
+  /** 模块 UT 会话账本（ut-sessions.json；null=无账本） */
+  ut: UtSessionsView | null
 }
 
 /** 手动/自动互斥（§7.2 方向盘唯一）：这些状态表示循环持有方向盘，手动动作需先弹确认并暂停循环 */
@@ -326,6 +331,11 @@ export function WorkspacePage(): React.JSX.Element {
     setProject(await window.moonglass.project.get(projectId))
   }, [projectId])
 
+  // 发起模块 UT（MODULE-UT-UI-HANDOFF §1）：契约 agent:start-module-ut 已落地，错误直接透传卡片红条
+  const handleStartModuleUt = useCallback(async (moduleName: string): Promise<void> => {
+    await window.moonglass.agent.startModuleUt(projectId, moduleName)
+  }, [projectId])
+
   // 验证运行页签数据加载：六份 JSON 各自独立读取（单份损坏/缺失不影响其余），归一化后一次性回填
   // 防重入：进行中的加载不重复进入，期间到达的变更推送合并为一次尾随重载（与 VerifStatusBar 同模式）
   const verifRunLoadingRef = useRef(false)
@@ -336,13 +346,14 @@ export function WorkspacePage(): React.JSX.Element {
     const readResult = async (relPath: string): Promise<unknown> => {
       try { return await window.moonglass.fs.readJson(projectId, relPath) } catch { return null }
     }
-    const [batchLoopRaw, outcomesRaw, inProgressRaw, rootCausesRaw, runLoopRaw, decisionsRaw] = await Promise.all([
+    const [batchLoopRaw, outcomesRaw, inProgressRaw, rootCausesRaw, runLoopRaw, decisionsRaw, utSessionsRaw] = await Promise.all([
       readResult('verification/results/verif-batch-loop.json'),
       readResult('verification/results/rtl-fix-outcomes.json'),
       readResult('verification/results/rtl-fix-in-progress.json'),
       readResult('verification/results/root-causes.json'),
       readResult('verification/results/run-loop.json'),
-      readResult('verification/results/decision-ledger.json')
+      readResult('verification/results/decision-ledger.json'),
+      readResult('verification/results/ut-sessions.json')
     ])
     setVerifRunData({
       batchLoop: normalizeVerifBatchLoop(batchLoopRaw),
@@ -350,7 +361,8 @@ export function WorkspacePage(): React.JSX.Element {
       fixInProgress: normalizeRtlFixInProgress(inProgressRaw),
       rootCauses: normalizeRootCauseRecords(rootCausesRaw),
       runLoop: normalizeRunLoopLedger(runLoopRaw),
-      decisions: normalizeDecisionLedger(decisionsRaw)
+      decisions: normalizeDecisionLedger(decisionsRaw),
+      ut: normalizeUtSessions(utSessionsRaw)
     })
     verifRunLoadingRef.current = false
     if (verifRunPendingRef.current) { verifRunPendingRef.current = false; void loadVerifRun() }
@@ -1393,16 +1405,9 @@ export function WorkspacePage(): React.JSX.Element {
         <div className="flex min-w-0 flex-1 flex-col">
           {/* ---- 主区 ---- */}
           <div className="flex min-h-0 flex-1 flex-col">
-            {/* 选项卡条 */}
+            {/* 选项卡条：主视图页签（对话/验证运行/文件）用页签态；会话标签以药丸形态包络进「对话」组，两级视觉不再混淆 */}
             <div className="workspace-tabs flex items-center gap-1 overflow-x-auto border-b border-zinc-200 bg-white px-2 pt-1.5 shrink-0">
-              <button
-                onClick={() => setMainTab('chat')}
-                className={`shrink-0 rounded-t px-3 py-1.5 text-xs ${
-                  mainTab === 'chat' ? 'bg-zinc-100 font-medium text-zinc-800' : 'text-zinc-500 hover:text-zinc-700'
-                }`}
-              >
-                {t('workspace.tabs.chat')}
-              </button>
+              {/* 验证运行置顶最左侧（VERIF 阶段的主要工作视图） */}
               {showVerifRun && (
                 <button
                   onClick={() => setMainTab('verifrun')}
@@ -1413,7 +1418,21 @@ export function WorkspacePage(): React.JSX.Element {
                   {t('workspace.tabs.verifRun')}
                 </button>
               )}
-              <SessionTabs projectId={project.id} onActivate={() => setMainTab('chat')} />
+              {/* 对话组：主页签 + 会话标签共享一个浅底包络容器，明确表示会话隶属于对话视图 */}
+              <div className={`flex shrink-0 items-center gap-1 rounded-t-md border border-b-0 px-1.5 py-1 ${
+                mainTab === 'chat' ? 'border-zinc-300 bg-zinc-100' : 'border-zinc-200 bg-zinc-50/70'
+              }`}>
+                <button
+                  onClick={() => setMainTab('chat')}
+                  className={`shrink-0 rounded px-2.5 py-0.5 text-xs ${
+                    mainTab === 'chat' ? 'bg-white font-medium text-zinc-800 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
+                  }`}
+                >
+                  {t('workspace.tabs.chat')}
+                </button>
+                <span className="h-4 w-px shrink-0 bg-zinc-300" />
+                <SessionTabs projectId={project.id} onActivate={() => setMainTab('chat')} />
+              </div>
               {openFiles.map((f) => (
                 <span
                   key={f.path}
@@ -1449,6 +1468,8 @@ export function WorkspacePage(): React.JSX.Element {
                     onStop={handleRunLoopStop}
                     onDecide={handleRunLoopDecide}
                   />
+                  {/* 模块 UT（MODULE-UT 设计 §1-§4）：发起入口 + UT 锁活跃时的互斥挂起提示 */}
+                  <ModuleUtCard projectId={project.id} ut={verifRunData?.ut ?? null} onStart={handleStartModuleUt} />
                   <VerifRunPanel
                     batchLoop={verifRunData?.batchLoop ?? null}
                     fixOutcomes={verifRunData?.fixOutcomes ?? []}

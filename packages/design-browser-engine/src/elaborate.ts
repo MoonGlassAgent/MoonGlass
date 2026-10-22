@@ -3,13 +3,13 @@ import { dirname, resolve } from 'node:path'
 import { locateTool, run, toolEnv, YOSYS_CANDIDATES } from '@moonglass/eda-bridge/tool-runner'
 import type {
   DesignCell,
-  DesignDatabase,
-  DesignEndpoint,
+  DesignDatabaseV2,
+  DesignEndpointV2,
   DesignInstance,
-  DesignModule,
+  DesignModuleV2,
   DesignNet,
-  DesignPort,
-  DesignSignalTrace,
+  DesignPortV2,
+  DesignSignalTraceV2,
   ElaborateOptions
 } from './types'
 
@@ -53,7 +53,7 @@ function sourceOf(attributes?: Record<string, string | number>): string | undefi
 
 function endpointDirection(
   direction: 'input' | 'output' | 'inout' | undefined
-): DesignEndpoint['direction'] {
+): DesignEndpointV2['direction'] {
   return direction ?? 'unknown'
 }
 
@@ -61,8 +61,8 @@ function buildModule(
   name: string,
   raw: YosysModule,
   moduleNames: Set<string>
-): DesignModule {
-  const ports: DesignPort[] = Object.entries(raw.ports ?? {}).map(([portName, port]) => ({
+): DesignModuleV2 {
+  const ports: DesignPortV2[] = Object.entries(raw.ports ?? {}).map(([portName, port]) => ({
     name: portName,
     direction: port.direction,
     width: port.bits.length,
@@ -84,9 +84,9 @@ function buildModule(
     )
   }))
 
-  const driversByBit = new Map<string, DesignEndpoint[]>()
-  const loadsByBit = new Map<string, DesignEndpoint[]>()
-  const addEndpoint = (index: Map<string, DesignEndpoint[]>, bits: string[], endpoint: DesignEndpoint): void => {
+  const driversByBit = new Map<string, DesignEndpointV2[]>()
+  const loadsByBit = new Map<string, DesignEndpointV2[]>()
+  const addEndpoint = (index: Map<string, DesignEndpointV2[]>, bits: string[], endpoint: DesignEndpointV2): void => {
     for (const bit of bits) {
       const endpoints = index.get(bit)
       if (endpoints) endpoints.push(endpoint)
@@ -94,7 +94,7 @@ function buildModule(
     }
   }
   for (const port of ports) {
-    const endpoint: DesignEndpoint = {
+    const endpoint: DesignEndpointV2 = {
       kind: 'port',
       name: port.name,
       pin: port.name,
@@ -107,7 +107,7 @@ function buildModule(
   for (const [cellName, cell] of Object.entries(raw.cells ?? {})) {
     for (const [pin, rawBits] of Object.entries(cell.connections ?? {})) {
       const direction = endpointDirection(cell.port_directions?.[pin])
-      const endpoint: DesignEndpoint = {
+      const endpoint: DesignEndpointV2 = {
         kind: 'cell',
         name: cellName,
         pin,
@@ -120,8 +120,8 @@ function buildModule(
       if (direction === 'input' || direction === 'inout' || direction === 'unknown') addEndpoint(loadsByBit, bits, endpoint)
     }
   }
-  const endpointsForBits = (index: Map<string, DesignEndpoint[]>, bits: string[]): DesignEndpoint[] => {
-    const found: DesignEndpoint[] = []
+  const endpointsForBits = (index: Map<string, DesignEndpointV2[]>, bits: string[]): DesignEndpointV2[] => {
+    const found: DesignEndpointV2[] = []
     const seen = new Set<string>()
     for (const bit of bits) {
       for (const endpoint of index.get(bit) ?? []) {
@@ -133,7 +133,7 @@ function buildModule(
     }
     return found
   }
-  const traces: DesignSignalTrace[] = nets.map((net) => {
+  const traces: DesignSignalTraceV2[] = nets.map((net) => {
     return {
       net: net.name,
       bits: net.bits,
@@ -156,7 +156,7 @@ function buildHierarchy(
   moduleName: string,
   instanceName: string,
   path: string,
-  modules: Map<string, DesignModule>,
+  modules: Map<string, DesignModuleV2>,
   ancestors = new Set<string>()
 ): DesignInstance {
   const module = modules.get(moduleName)
@@ -187,7 +187,7 @@ function buildHierarchy(
   return node
 }
 
-export async function elaborateDesign(options: ElaborateOptions): Promise<DesignDatabase> {
+export async function elaborateDesign(options: ElaborateOptions): Promise<DesignDatabaseV2> {
   if (options.rtlFiles.length === 0) throw new Error('没有可 elaboration 的 RTL 文件')
   for (const file of options.rtlFiles) if (!existsSync(file)) throw new Error(`RTL 文件不存在: ${file}`)
 
@@ -215,7 +215,7 @@ export async function elaborateDesign(options: ElaborateOptions): Promise<Design
   const moduleNames = new Set(Object.keys(rawModules))
   if (!moduleNames.has(options.topModule)) throw new Error(`顶层模块不存在: ${options.topModule}`)
   const modules = Object.entries(rawModules).map(([name, module]) => buildModule(name, module, moduleNames))
-  const moduleMap = new Map(modules.map((module) => [module.name, module]))
+  const moduleMap = new Map<string, DesignModuleV2>(modules.map((module) => [module.name, module]))
   const diagnostics = modules.flatMap((module) =>
     module.cells
       .filter((cell) => !cell.isInstance && !cell.type.startsWith('$'))
@@ -226,6 +226,7 @@ export async function elaborateDesign(options: ElaborateOptions): Promise<Design
   )
   return {
     version: 2,
+    frontend: 'yosys',
     topModule: options.topModule,
     generatedAt: new Date().toISOString(),
     sourceFiles: options.rtlFiles.map((file) => resolve(file)),

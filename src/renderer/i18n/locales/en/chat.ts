@@ -19,6 +19,10 @@ export const chat: ChatMessages = {
   tabs: {
     confirmClose: 'Close parallel session "{label}"?\n\nThe chat history of this session will be deleted.',
     sessionTitle: '{label}, {count} messages',
+    pendingDecisions: '{count} pending decision(s)',
+    pendingNotice: 'Pending decision: {title}',
+    pendingNoticeHint: '{count} preset options; not actionable in read-only view',
+    goToSession: 'Open this session',
     sessionTitleModel: ', model {model}',
     sessionTitleNoModel: ', no model selected',
     peekBatch: 'View batch session (read-only)',
@@ -81,6 +85,7 @@ export const chat: ChatMessages = {
   submitAllDecisions: 'Submit All & Continue',
   inputPlaceholderStreaming: 'Agent is replying…',
   inputPlaceholder: 'Type a message. Enter to send, ↑/↓ to recall history, Ctrl/Alt/Shift+Enter for a new line',
+  composerResizeHint: 'Drag to resize the input box; double-click to reset',
   aborting: 'Aborting…',
   abort: 'Abort',
   send: 'Send',

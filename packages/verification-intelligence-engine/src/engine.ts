@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync, readdirSync, renameSync, statSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
 import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import type {
   Confidence,
@@ -583,9 +584,9 @@ export function computeRtlHash(workspaceDir: string): string {
   return rtlHashFromInputs(workspace, readRtlInputs(workspace))
 }
 
-function structuralModel(workspace: string): StructuralModel {
+function structuralModel(workspace: string, slangCacheDir?: string): StructuralModel {
   const inputs = readRtlInputs(workspace)
-  return analyzeStructure({ workspace, files: inputs.designFiles, libraryFiles: inputs.libraryFiles, includeDirs: inputs.includeDirs, defines: inputs.defines, topModule: inputs.topModule, inputSource: inputs.inputSource, rtlHash: rtlHashFromInputs(workspace, inputs), featuresOf })
+  return analyzeStructure({ workspace, files: inputs.designFiles, libraryFiles: inputs.libraryFiles, includeDirs: inputs.includeDirs, defines: inputs.defines, topModule: inputs.topModule, inputSource: inputs.inputSource, rtlHash: rtlHashFromInputs(workspace, inputs), slangCacheDir: slangCacheDir ?? join(tmpdir(), 'moonglass-slang-ast-cache'), featuresOf })
 }
 
 /**
@@ -2402,13 +2403,13 @@ function writeExecutionSummary(path: string, workspace: string, state: Verificat
   writeJsonAtomic(path, JSON.parse(serialized))
 }
 
-export function buildVerificationIntelligence(workspaceDir: string): IntelligenceArtifacts {
+export function buildVerificationIntelligence(workspaceDir: string, options?: { slangCacheDir?: string }): IntelligenceArtifacts {
   const workspace = resolve(workspaceDir)
   const outputDir = join(workspace, 'verification', 'intelligence')
   mkdirSync(outputDir, { recursive: true })
   const paths = { requirementModel: join(outputDir, 'requirement-model.json'), structuralModel: join(outputDir, 'structural-model.json'), riskRegister: join(outputDir, 'risk-register.json'), scenarioRegistry: join(outputDir, 'scenario-registry.json'), verificationState: join(outputDir, 'verification-state.json'), verificationPosture: join(outputDir, 'verification-posture.json'), report: join(outputDir, 'verification-intelligence-report.md'), interactionGraph: join(outputDir, 'feature-interaction-graph.json'), executionPlan: join(outputDir, 'scenario-execution-plan.json'), hypotheses: join(outputDir, 'verification-hypotheses.json'), specGaps: join(outputDir, 'spec-gap-register.json'), verificationIntents: join(outputDir, 'verification-intent-registry.json'), coverageHoles: join(outputDir, 'coverage-hole-register.json'), closureAssessment: join(outputDir, 'closure-assessment.json'), verificationSpace: join(outputDir, 'verification-space-snapshot.json'), explorationRound: join(outputDir, 'exploration-round.json'), explorationHistory: join(outputDir, 'exploration-history.json'), oracleRegistry: join(outputDir, 'oracle-registry.json'), oracleEvaluation: join(outputDir, 'oracle-evaluation.json'), mutationAssessment: join(outputDir, 'mutation-assessment.json'), residualRiskRegister: join(outputDir, 'residual-risk-register.json'), signoffPackage: join(outputDir, 'signoff-package.json'), signoffReport: join(outputDir, 'verification-signoff-package.md'), moduleVerificationStrategy: join(outputDir, 'module-verification-strategy.json'), executionSummary: join(outputDir, 'execution-summary.json') }
   const requirements = requirementModel(workspace)
-  const structure = structuralModel(workspace)
+  const structure = structuralModel(workspace, options?.slangCacheDir)
   const risks = deriveRisks(workspace, structure)
   // UT 例外登记表（§3.2）：rebuild 联查 active 例外 → 策略表 UT_EXCEPTION 覆写 + 场景锚点放开；
   // 历史迁移（§8）：发现 <module>_tb（module ∉ topSet）且有 scenario_hits 登记的模块自动登记 active 例外（幂等）。

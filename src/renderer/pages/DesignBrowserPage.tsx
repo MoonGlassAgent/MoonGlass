@@ -2,9 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 import { Link, useParams } from '@tanstack/react-router'
 import { ArrowLeft, ArrowRight, Search } from 'lucide-react'
 import type {
-  DesignCell,
   DesignDatabase,
-  DesignInstance
+  DesignInstance,
+  DesignInstanceRef,
+  DesignModule,
+  DesignModuleV2,
+  DesignProcess
 } from '@moonglass/design-browser-engine'
 import { topContext, type TraceContext } from '@moonglass/design-browser-engine/trace'
 import type { ChipProject } from '@shared/types'
@@ -32,42 +35,101 @@ function savedSize(key: string, fallback: number): number {
 interface NavEntry {
   context: TraceContext
   net: string | null
+  /** v2 = cell 名；v3 = 实例名（v3 无 cell 概念） */
   cell: string | null
-  /** Yosys src 位置串（file:line），空表示不改变源码视图 */
+  /** v3：选中的过程块 id（DesignProcess.id） */
+  process?: string | null
+  /** 源码位置串（file:line，v3 为工作区相对路径），空表示不改变源码视图 */
   source: string | null
 }
 
-interface SearchResults {
-  instances: DesignInstance[]
-  modules: Array<{ name: string; source?: string }>
-  nets: Array<{ module: string; net: string; source?: string }>
+interface SearchGroup<T> {
+  items: T[]
+  /** 未截断前的总匹配数 */
+  total: number
+  truncated: boolean
 }
 
+interface SearchResults {
+  instances: SearchGroup<DesignInstance>
+  modules: SearchGroup<{ name: string; source?: string }>
+  signals: SearchGroup<{ module: string; net: string; source?: string }>
+}
+
+const INSTANCE_RESULT_LIMIT = 8
+const MODULE_RESULT_LIMIT = 8
+const NET_RESULT_LIMIT = 12
+
+/** 搜索下拉每组最多展示条数；截断时组尾显示「仅显示前 N 条 · 共 M 条」 */
 function searchDesign(database: DesignDatabase, query: string): SearchResults {
   const needle = query.trim().toLowerCase()
-  const empty: SearchResults = { instances: [], modules: [], nets: [] }
+  const emptyGroup = <T,>(): SearchGroup<T> => ({ items: [], total: 0, truncated: false })
+  const empty: SearchResults = { instances: emptyGroup(), modules: emptyGroup(), signals: emptyGroup() }
   if (!needle) return empty
   const instances: DesignInstance[] = []
+  let instanceTotal = 0
   const visit = (node: DesignInstance): void => {
-    if (instances.length < 8 && node.path.toLowerCase().includes(needle)) instances.push(node)
+    if (node.path.toLowerCase().includes(needle)) {
+      instanceTotal += 1
+      if (instances.length < INSTANCE_RESULT_LIMIT) instances.push(node)
+    }
     node.children.forEach(visit)
   }
   visit(database.hierarchy)
-  const modules = database.modules
-    .filter((module) => displayModuleName(module.name).toLowerCase().includes(needle))
-    .slice(0, 8)
-    .map((module) => ({ name: module.name, source: module.source }))
-  const nets: SearchResults['nets'] = []
+  const moduleMatches = database.modules.filter((module) =>
+    displayModuleName(module.name).toLowerCase().includes(needle)
+  )
+  // 信号搜索：v3 搜 signals（源码形态），v2 搜 nets（Yosys 优化后形态）
+  const signals: Array<{ module: string; net: string; source?: string }> = []
+  let signalTotal = 0
   for (const module of database.modules) {
-    for (const net of module.nets) {
-      if (nets.length >= 12) break
-      if (net.name.toLowerCase().includes(needle)) {
-        nets.push({ module: module.name, net: net.name, source: net.source })
-      }
+    const entries = 'signals' in module
+      ? module.signals.map((signal) => ({ name: signal.name, source: signal.source }))
+      : module.nets.map((net) => ({ name: net.name, source: net.source }))
+    for (const entry of entries) {
+      if (!entry.name.toLowerCase().includes(needle)) continue
+      signalTotal += 1
+      if (signals.length < NET_RESULT_LIMIT) signals.push({ module: module.name, net: entry.name, source: entry.source })
     }
-    if (nets.length >= 12) break
   }
-  return { instances, modules, nets }
+  return {
+    instances: { items: instances, total: instanceTotal, truncated: instanceTotal > instances.length },
+    modules: {
+      items: moduleMatches
+        .slice(0, MODULE_RESULT_LIMIT)
+        .map((module) => ({ name: module.name, source: module.source })),
+      total: moduleMatches.length,
+      truncated: moduleMatches.length > MODULE_RESULT_LIMIT
+    },
+    signals: { items: signals, total: signalTotal, truncated: signalTotal > signals.length }
+  }
+}
+
+/** 搜索截断提示行（下拉组尾 / 层次过滤列表共用样式） */
+function TruncatedNote({ shown, total }: { shown: number; total: number }): React.JSX.Element {
+  const { t } = useTranslation()
+  return (
+    <p className="px-3 py-1 text-[10px] text-zinc-400">
+      {t('designBrowser.searchTruncated', { shown, total })}
+    </p>
+  )
+}
+
+/** Yosys 常量 bit（'0'/'1'/'x'/'z' 原样字符串） */
+const CONSTANT_BITS = new Set(['0', '1', 'x', 'z'])
+
+/**
+ * cell pin 连接展示：常量 bit 原样显示，普通 bit 反查所属 net 名（逗号连接，去重）；
+ * 全部 bit 均未命中任何 net 且非常量时返回 null，由调用方回退为原始 bit 数。
+ */
+function connectionLabel(bits: string[], bitToNet: Map<string, string>): string | null {
+  const names: string[] = []
+  for (const bit of bits) {
+    const name = CONSTANT_BITS.has(bit) ? bit : bitToNet.get(bit)
+    if (name) names.push(name)
+  }
+  const unique = [...new Set(names)]
+  return unique.length > 0 ? unique.join(', ') : null
 }
 
 export function DesignBrowserPage(): React.JSX.Element {
@@ -82,6 +144,7 @@ export function DesignBrowserPage(): React.JSX.Element {
   }>>([])
   const [top, setTop] = useState('')
   const [database, setDatabase] = useState<DesignDatabase | null>(null)
+  const [rtlStale, setRtlStale] = useState(false)
   const [loading, setLoading] = useState(false)
   const [error, setError] = useState('')
 
@@ -89,6 +152,7 @@ export function DesignBrowserPage(): React.JSX.Element {
   const [context, setContext] = useState<TraceContext | null>(null)
   const [selectedNet, setSelectedNet] = useState<string | null>(null)
   const [selectedCellName, setSelectedCellName] = useState<string | null>(null)
+  const [selectedProcessName, setSelectedProcessName] = useState<string | null>(null)
 
   // 源码浏览器：多 Tab + 当前定位行
   const [tabs, setTabs] = useState<string[]>([])
@@ -127,13 +191,47 @@ export function DesignBrowserPage(): React.JSX.Element {
     window.localStorage.setItem('moonglass.designBrowser.signalHeight', String(signalHeight))
   }, [signalHeight])
 
-  const currentModule = useMemo(
+  const currentModule = useMemo<DesignModule | DesignModuleV2 | null>(
     () => database?.modules.find((module) => module.name === context?.module) ?? null,
     [database, context]
   )
-  const selectedCell = useMemo<DesignCell | null>(
-    () => currentModule?.cells.find((cell) => cell.name === selectedCellName) ?? null,
-    [currentModule, selectedCellName]
+  const isV3 = database?.version === 3
+  /** v3 选中实例（instances[]）；v2 选中 cell（cells[]） */
+  const selectedInstance = useMemo<DesignInstanceRef | null>(() => {
+    if (!currentModule || !('instances' in currentModule) || !selectedCellName) return null
+    return currentModule.instances.find((instance) => instance.name === selectedCellName) ?? null
+  }, [currentModule, selectedCellName])
+  const selectedProcess = useMemo<DesignProcess | null>(() => {
+    if (!currentModule || !('processes' in currentModule) || !selectedProcessName) return null
+    return currentModule.processes.find((process) => process.id === selectedProcessName) ?? null
+  }, [currentModule, selectedProcessName])
+  /** v2 cell 详情数据（冻结路径） */
+  const selectedCell = useMemo(() => {
+    if (!currentModule || !('cells' in currentModule) || !selectedCellName) return null
+    return currentModule.cells.find((cell) => cell.name === selectedCellName) ?? null
+  }, [currentModule, selectedCellName])
+  /** v2：bit id → 所属 net 名：cell pin 的连接 bit 反查 net；同一 bit 有多个 net 别名时先登记者优先 */
+  const bitToNet = useMemo(() => {
+    const map = new Map<string, string>()
+    if (!currentModule || !('nets' in currentModule)) return map
+    for (const net of currentModule.nets) {
+      for (const bit of net.bits) {
+        if (!map.has(bit)) map.set(bit, net.name)
+      }
+    }
+    return map
+  }, [currentModule])
+  /** cell 详情连接表：pin → 所连 net 名（未命中回退原始 bit 数） */
+  const cellConnections = useMemo(
+    () =>
+      selectedCell
+        ? Object.entries(selectedCell.connections).map(([pin, bits]) => ({
+            pin,
+            bits,
+            label: connectionLabel(bits, bitToNet)
+          }))
+        : [],
+    [selectedCell, bitToNet]
   )
   const hasRecommendedTop = tops.some((candidate) => candidate.recommended)
   const searchResults = useMemo(
@@ -161,6 +259,7 @@ export function DesignBrowserPage(): React.JSX.Element {
     setContext(entry.context)
     setSelectedNet(entry.net)
     setSelectedCellName(entry.cell)
+    setSelectedProcessName(entry.process ?? null)
     void showSource(entry.source)
     if (record) {
       historyRef.current = [...historyRef.current.slice(0, histIndex + 1), entry]
@@ -200,10 +299,11 @@ export function DesignBrowserPage(): React.JSX.Element {
       setProject(projectData)
       setTops(candidates)
       const preferred = candidates.find((candidate) => candidate.recommended)
-      const initialTop = preferred?.name ?? cached?.topModule ?? candidates[0]?.name ?? ''
+      const initialTop = preferred?.name ?? cached?.database.topModule ?? candidates[0]?.name ?? ''
       setTop(initialTop)
-      if (cached && (!preferred || cached.topModule === preferred.name)) {
-        adoptDatabase(cached)
+      setRtlStale(cached?.rtlStale ?? false)
+      if (cached && (!preferred || cached.database.topModule === preferred.name)) {
+        adoptDatabase(cached.database)
       } else if (preferred) {
         setLoading(true)
         void window.moonglass.designBrowser.elaborate(projectId, preferred.name)
@@ -221,6 +321,7 @@ export function DesignBrowserPage(): React.JSX.Element {
     setError('')
     try {
       adoptDatabase(await window.moonglass.designBrowser.elaborate(projectId, top))
+      setRtlStale(false)
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : String(reason))
     } finally {
@@ -250,13 +351,77 @@ export function DesignBrowserPage(): React.JSX.Element {
 
   const selectNet = (net: string): void => {
     if (!context) return
-    const source = currentModule?.nets.find((candidate) => candidate.name === net)?.source ?? null
+    const source = currentModule
+      ? 'signals' in currentModule
+        ? currentModule.signals.find((candidate) => candidate.name === net)?.source ?? null
+        : currentModule.nets.find((candidate) => candidate.name === net)?.source ?? null
+      : null
     navigate({ context, net, cell: null, source })
   }
 
-  /** 源码标识符：单击选中，双击跳转定义 / 下钻实例 */
+  /** 源码标识符：单击选中，双击跳转定义 / 下钻实例；v3 支持 u_child.sig 层次引用解析 */
   const handleWord = (word: string, action: 'select' | 'jump'): void => {
     if (!database || !context || !currentModule) return
+    // v3 层次引用 u_child.sig：下钻到子实例上下文并选中 sig
+    if (database.version === 3 && 'instances' in currentModule && word.includes('.')) {
+      const segments = word.split('.')
+      const instanceName = segments[0]
+      const signalName = segments.slice(1).join('.')
+      const instance = currentModule.instances.find((item) => item.name === instanceName)
+      if (instance && signalName) {
+        const childPath = `${context.instancePath}.${instanceName}`
+        const childNode = findInstanceByPath(database.hierarchy, childPath)
+        if (childNode) {
+          const childContext = { instancePath: childPath, module: childNode.module }
+          if (action === 'select') {
+            setContext(childContext)
+            setSelectedNet(signalName)
+            setSelectedCellName(null)
+            setSelectedProcessName(null)
+          } else {
+            const childModule = database.modules.find((module) => module.name === childNode.module)
+            const source = childModule && 'signals' in childModule
+              ? childModule.signals.find((signal) => signal.name === signalName)?.source ?? instance.source ?? null
+              : instance.source ?? null
+            navigate({ context: childContext, net: signalName, cell: null, source })
+          }
+          return
+        }
+      }
+    }
+    if (database.version === 3 && 'signals' in currentModule) {
+      const signal = currentModule.signals.find((candidate) => candidate.name === word)
+      const instance = currentModule.instances.find((candidate) => candidate.name === word)
+      if (action === 'select') {
+        if (signal) {
+          setSelectedNet(word)
+          setSelectedCellName(null)
+          setSelectedProcessName(null)
+        } else if (instance) {
+          setSelectedCellName(word)
+          setSelectedNet(null)
+          setSelectedProcessName(null)
+        }
+        return
+      }
+      if (instance) {
+        // 双击实例名：下钻进入子模块（instances[].name 匹配口径）
+        navigate({
+          context: { instancePath: `${context.instancePath}.${instance.name}`, module: instance.module },
+          net: null,
+          cell: null,
+          source: database.modules.find((module) => module.name === instance.module)?.source ?? instance.source ?? null
+        })
+      } else if (signal) {
+        navigate({ context, net: word, cell: null, source: signal.source ?? null })
+      } else {
+        const module = database.modules.find((candidate) => candidate.name === word)
+        if (module) void showSource(module.source)
+      }
+      return
+    }
+    // v2（Yosys 回退形态，冻结）：nets / cells 口径
+    if (!('nets' in currentModule) || !('cells' in currentModule)) return
     const net = currentModule.nets.find((candidate) => candidate.name === word)
     const cell = currentModule.cells.find((candidate) => candidate.name === word)
     if (action === 'select') {
@@ -293,18 +458,43 @@ export function DesignBrowserPage(): React.JSX.Element {
     navigate(entry)
   }
 
+  /** 按实例路径在层次树中定位实例（用于取当前实例子树） */
+  const findInstanceByPath = (root: DesignInstance, path: string): DesignInstance | null => {
+    if (root.path === path) return root
+    for (const child of root.children) {
+      const found = findInstanceByPath(child, path)
+      if (found) return found
+    }
+    return null
+  }
+  /** 深度优先找子树内模块名的第一个实例 */
+  const findFirstModuleInstance = (root: DesignInstance, moduleName: string): DesignInstance | null => {
+    if (root.module === moduleName) return root
+    for (const child of root.children) {
+      const found = findFirstModuleInstance(child, moduleName)
+      if (found) return found
+    }
+    return null
+  }
+
+  /**
+   * net 归属模块而非实例，定位规则：①当前实例所属模块即目标模块 → 保持当前实例不动；
+   * ②取当前实例子树内该模块的第一个实例；③回退到全局第一个实例。
+   */
   const pickNetResult = (moduleName: string, net: string, source?: string): void => {
     if (!database) return
-    // net 属于模块而非实例：定位到该模块的第一个实例
-    let target: TraceContext = { instancePath: database.hierarchy.path, module: database.topModule }
-    const visit = (node: DesignInstance): boolean => {
-      if (node.module === moduleName) {
-        target = { instancePath: node.path, module: node.module }
-        return true
-      }
-      return node.children.some(visit)
+    let target: TraceContext
+    if (context && context.module === moduleName) {
+      target = context
+    } else {
+      const subtree = context ? findInstanceByPath(database.hierarchy, context.instancePath) : null
+      const hit =
+        (subtree && findFirstModuleInstance(subtree, moduleName)) ??
+        findFirstModuleInstance(database.hierarchy, moduleName)
+      target = hit
+        ? { instancePath: hit.path, module: hit.module }
+        : { instancePath: database.hierarchy.path, module: database.topModule }
     }
-    visit(database.hierarchy)
     pickSearchResult({ context: target, net, cell: null, source: source ?? null })
   }
 
@@ -411,15 +601,15 @@ export function DesignBrowserPage(): React.JSX.Element {
           />
           {searchResults && query.trim() && (
             <div className="absolute right-0 top-full z-30 mt-1 max-h-96 w-96 overflow-auto rounded border border-zinc-300 bg-white shadow-lg">
-              {searchResults.instances.length === 0 &&
-                searchResults.modules.length === 0 &&
-                searchResults.nets.length === 0 && (
+              {searchResults.instances.items.length === 0 &&
+                searchResults.modules.items.length === 0 &&
+                searchResults.signals.items.length === 0 && (
                   <p className="px-3 py-2 text-xs text-zinc-400">{t('designBrowser.noSearchResults')}</p>
                 )}
-              {searchResults.instances.length > 0 && (
+              {searchResults.instances.items.length > 0 && (
                 <div>
                   <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">{t('designBrowser.searchGroups.instances')}</p>
-                  {searchResults.instances.map((node) => (
+                  {searchResults.instances.items.map((node) => (
                     <button
                       key={node.path}
                       type="button"
@@ -437,12 +627,15 @@ export function DesignBrowserPage(): React.JSX.Element {
                       <span className="ml-auto text-zinc-400">{displayModuleName(node.module)}</span>
                     </button>
                   ))}
+                  {searchResults.instances.truncated && (
+                    <TruncatedNote shown={searchResults.instances.items.length} total={searchResults.instances.total} />
+                  )}
                 </div>
               )}
-              {searchResults.modules.length > 0 && (
+              {searchResults.modules.items.length > 0 && (
                 <div>
                   <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">{t('designBrowser.searchGroups.modules')}</p>
-                  {searchResults.modules.map((module) => (
+                  {searchResults.modules.items.map((module) => (
                     <button
                       key={module.name}
                       type="button"
@@ -455,12 +648,15 @@ export function DesignBrowserPage(): React.JSX.Element {
                       {displayModuleName(module.name)}
                     </button>
                   ))}
+                  {searchResults.modules.truncated && (
+                    <TruncatedNote shown={searchResults.modules.items.length} total={searchResults.modules.total} />
+                  )}
                 </div>
               )}
-              {searchResults.nets.length > 0 && (
+              {searchResults.signals.items.length > 0 && (
                 <div>
-                  <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">{t('designBrowser.searchGroups.nets')}</p>
-                  {searchResults.nets.map((item) => (
+                  <p className="bg-zinc-50 px-3 py-1 text-[10px] font-semibold text-zinc-500">{t('designBrowser.searchGroups.signals')}</p>
+                  {searchResults.signals.items.map((item) => (
                     <button
                       key={`${item.module}.${item.net}`}
                       type="button"
@@ -471,6 +667,9 @@ export function DesignBrowserPage(): React.JSX.Element {
                       <span className="ml-auto text-zinc-400">{displayModuleName(item.module)}</span>
                     </button>
                   ))}
+                  {searchResults.signals.truncated && (
+                    <TruncatedNote shown={searchResults.signals.items.length} total={searchResults.signals.total} />
+                  )}
                 </div>
               )}
             </div>
@@ -478,7 +677,18 @@ export function DesignBrowserPage(): React.JSX.Element {
         </div>
         {database && (
           <span className="text-xs text-zinc-500">
-            {database.modules.length} modules · {database.generatedAt.slice(0, 19).replace('T', ' ')}
+            {t('designBrowser.databaseInfo', {
+              count: database.modules.length,
+              time: database.generatedAt.slice(0, 19).replace('T', ' ')
+            })}
+          </span>
+        )}
+        {database && rtlStale && (
+          <span
+            className="rounded border border-amber-300 bg-amber-50 px-2 py-0.5 text-[11px] text-amber-700"
+            title={t('designBrowser.rtlStaleBadge')}
+          >
+            {t('designBrowser.rtlStaleBadge')}
           </span>
         )}
       </header>
@@ -585,9 +795,146 @@ export function DesignBrowserPage(): React.JSX.Element {
                     onJumpSource={(source) => void showSource(source)}
                   />
                 </div>
+              ) : selectedProcess ? (
+                <div className="min-h-0 flex-1 overflow-auto p-3 text-xs">
+                  <p className="text-zinc-400">{t('designBrowser.process.kind')}</p>
+                  <p className="font-mono font-semibold text-zinc-900">
+                    {selectedProcess.id} · {selectedProcess.kind}
+                  </p>
+                  {(selectedProcess.clock || selectedProcess.reset) && (
+                    <p className="mt-1 font-mono text-zinc-500">
+                      {selectedProcess.clock && `@(${selectedProcess.clock})`}
+                      {selectedProcess.reset && ` ${t('designBrowser.process.reset')}: ${selectedProcess.reset}`}
+                    </p>
+                  )}
+                  {selectedProcess.source && (
+                    <button
+                      type="button"
+                      onClick={() => void showSource(selectedProcess.source)}
+                      className="mt-1 block truncate font-mono text-blue-600 hover:underline"
+                      title={selectedProcess.source}
+                    >
+                      {selectedProcess.source}
+                    </button>
+                  )}
+                  <p className="mt-2 text-zinc-400">{t('designBrowser.process.drives')}</p>
+                  {selectedProcess.drives.length === 0 ? (
+                    <p className="text-zinc-400">—</p>
+                  ) : (
+                    selectedProcess.drives.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => selectNet(name)}
+                        className="mr-2 font-mono text-blue-600 hover:underline"
+                      >
+                        {name}
+                      </button>
+                    ))
+                  )}
+                  <p className="mt-2 text-zinc-400">{t('designBrowser.process.reads')}</p>
+                  {selectedProcess.reads.length === 0 ? (
+                    <p className="text-zinc-400">—</p>
+                  ) : (
+                    selectedProcess.reads.map((name) => (
+                      <button
+                        key={name}
+                        type="button"
+                        onClick={() => selectNet(name)}
+                        className="mr-2 font-mono text-blue-600 hover:underline"
+                      >
+                        {name}
+                      </button>
+                    ))
+                  )}
+                </div>
+              ) : selectedInstance && context ? (
+                <div className="min-h-0 flex-1 overflow-auto p-3 text-xs">
+                  <p className="text-zinc-400">{t('designBrowser.instance.kind')}</p>
+                  <p className="font-mono font-semibold text-zinc-900">{selectedInstance.name}</p>
+                  <p className="font-mono text-zinc-500" title={selectedInstance.module}>
+                    {displayModuleName(selectedInstance.module)}
+                  </p>
+                  {selectedInstance.module && (
+                    <button
+                      type="button"
+                      onClick={() =>
+                        navigate({
+                          context: {
+                            instancePath: `${context.instancePath}.${selectedInstance.name}`,
+                            module: selectedInstance.module
+                          },
+                          net: null,
+                          cell: null,
+                          source:
+                            database.modules.find((module) => module.name === selectedInstance.module)
+                              ?.source ?? selectedInstance.source ?? null
+                        })
+                      }
+                      className="mt-2 rounded border border-blue-300 bg-blue-50 px-2 py-1 text-blue-700 hover:bg-blue-100"
+                    >
+                      {t('designBrowser.enterInstance')}
+                    </button>
+                  )}
+                  <p className="mt-2 text-zinc-400">{t('designBrowser.instance.parameters')}</p>
+                  {Object.keys(selectedInstance.parameterOverrides).length === 0 ? (
+                    <p className="text-zinc-400">{t('designBrowser.instance.noParameters')}</p>
+                  ) : (
+                    <table className="w-full">
+                      <tbody>
+                        {Object.entries(selectedInstance.parameterOverrides).map(([name, value]) => (
+                          <tr key={name} className="border-t border-zinc-200">
+                            <th className="py-1 text-left font-mono">{name}</th>
+                            <td className="py-1 text-right font-mono text-zinc-600">{value}</td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  )}
+                  <p className="mt-2 text-zinc-400">{t('designBrowser.instance.connections')}</p>
+                  <table className="w-full">
+                    <tbody>
+                      {selectedInstance.connections.map((connection) => (
+                        <tr key={connection.pin} className="border-t border-zinc-200">
+                          <th className="py-1 text-left font-mono">
+                            <button
+                              type="button"
+                              onClick={() => void showSource(connection.source)}
+                              className="font-mono text-blue-600 hover:underline"
+                              title={connection.source ?? connection.pin}
+                            >
+                              {connection.pin}
+                            </button>
+                          </th>
+                          <td className="py-1 text-right text-zinc-500">
+                            {connection.signal ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  if (connection.signal) selectNet(connection.signal)
+                                }}
+                                className="block max-w-44 truncate font-mono text-blue-600 hover:underline"
+                                title={connection.expr || connection.signal}
+                              >
+                                {connection.signal}
+                              </button>
+                            ) : (
+                              <span
+                                className="block max-w-44 truncate font-mono"
+                                title={connection.expr || t('designBrowser.instance.exprFallback')}
+                              >
+                                {connection.expr || t('designBrowser.instance.exprFallback')}
+                              </span>
+                            )}
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
               ) : selectedCell ? (
                 <div className="min-h-0 flex-1 overflow-auto p-3 text-xs">
-                  <p className="text-zinc-400">Cell / Instance</p>
+                  <p className="text-zinc-400">{t('designBrowser.cellKind')}</p>
                   <p className="font-mono font-semibold text-zinc-900">{selectedCell.name}</p>
                   <p className="font-mono text-zinc-500" title={selectedCell.type}>
                     {displayModuleName(selectedCell.type)}
@@ -615,10 +962,18 @@ export function DesignBrowserPage(): React.JSX.Element {
                   )}
                   <table className="mt-2 w-full">
                     <tbody>
-                      {Object.entries(selectedCell.connections).map(([pin, bits]) => (
+                      {cellConnections.map(({ pin, bits, label }) => (
                         <tr key={pin} className="border-t border-zinc-200">
                           <th className="py-1 text-left font-mono">{pin}</th>
-                          <td className="py-1 text-right text-zinc-500">{bits.length} bit</td>
+                          <td className="py-1 text-right text-zinc-500">
+                            {label ? (
+                              <span className="block max-w-44 truncate font-mono" title={label}>
+                                {label}
+                              </span>
+                            ) : (
+                              t('designBrowser.cellDetail.bitCount', { count: bits.length })
+                            )}
+                          </td>
                         </tr>
                       ))}
                     </tbody>

@@ -65,6 +65,8 @@ export const verification: VerificationMessages = {
     issueEvidenceUnconfirmed: 'Evidence needs revalidation',
     issueEvidenceNewer: 'Evidence newer than snapshot; reassessment required',
     showDetails: 'Show clause details',
+    expandCard: 'Show details',
+    collapseCard: 'Hide details',
     hideDetails: 'Hide clause details'
   },
   action: {

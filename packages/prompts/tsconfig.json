@@ -3,8 +3,14 @@
   "compilerOptions": {
     "noEmit": true,
     "paths": {
-      "@shared/*": ["../../src/shared/*"]
-    }
+      "@shared/*": [
+        "../../src/shared/*"
+      ]
+    },
+    "allowImportingTsExtensions": true
   },
-  "include": ["src/**/*", "../../src/shared/**/*"]
+  "include": [
+    "src/**/*",
+    "../../src/shared/**/*"
+  ]
 }

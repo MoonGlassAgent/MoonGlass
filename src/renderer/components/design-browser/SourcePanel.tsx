@@ -16,7 +16,7 @@ const verilogGrammar = Prism.languages.verilog ?? {
   punctuation: /[{}[\];(),.:#@]/
 }
 
-/** 从鼠标位置提取 Verilog 标识符（单击选中 / 双击跳转共用） */
+/** 从鼠标位置提取 Verilog 标识符（单击选中 / 双击跳转共用）；支持 u_child.sig 层次引用取词 */
 function wordAtPoint(event: React.MouseEvent): string | null {
   const doc = event.currentTarget.ownerDocument
   const range = doc.caretRangeFromPoint?.(event.clientX, event.clientY)
@@ -24,13 +24,14 @@ function wordAtPoint(event: React.MouseEvent): string | null {
   const node = range.startContainer
   if (node.nodeType !== Node.TEXT_NODE) return null
   const text = node.textContent ?? ''
-  const isWordChar = (char: string): boolean => /[A-Za-z0-9_$]/.test(char)
+  const isWordChar = (char: string): boolean => /[A-Za-z0-9_$.]/.test(char)
   let start = range.startOffset
   let end = start
   while (start > 0 && isWordChar(text[start - 1])) start -= 1
   while (end < text.length && isWordChar(text[end])) end += 1
   const word = text.slice(start, end)
-  return /^[A-Za-z_][A-Za-z0-9_$]*$/.test(word) ? word : null
+  // 普通标识符或点分层路径（每段为合法标识符；位选/拼接等形态拒绝）
+  return /^[A-Za-z_][A-Za-z0-9_$]*(?:\.[A-Za-z_][A-Za-z0-9_$]*)*$/.test(word) ? word : null
 }
 
 function baseName(file: string): string {

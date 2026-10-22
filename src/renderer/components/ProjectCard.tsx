@@ -5,7 +5,7 @@
  */
 
 import { Link } from '@tanstack/react-router'
-import { Folder, FolderInput, Pencil, Trash2 } from 'lucide-react'
+import { BellRing, Folder, FolderInput, Pencil, Trash2 } from 'lucide-react'
 import { PHASE_ORDER, type ChipProject, type ProjectSessionActivity } from '@shared/types'
 import { phaseLabel, useTranslation } from '../i18n'
 import type { ManagedRunInfo } from '../store/managedStore'
@@ -35,6 +35,16 @@ export function ProjectCard({ project, activity, managed, onDelete, onMigrate, o
         <div className="mb-2 flex items-center justify-between">
           <h3 className="font-semibold text-zinc-900">{project.name}</h3>
           <div className="flex shrink-0 items-center gap-1.5">
+            {/* 待人处理徽标（待确认决策/待裁决提案）："需要用户"是最高优先级信号，置于状态徽标之前 */}
+            {activity?.pendingActions && activity.pendingActions.decisionRequests + activity.pendingActions.loopDecisions > 0 && (
+              <span
+                className="inline-flex items-center gap-1 rounded border border-orange-300 bg-orange-50 px-2 py-0.5 text-xs font-medium text-orange-700"
+                title={t('projects.pendingActionsTooltip', { titles: activity.pendingActions.titles.join('\n') })}
+              >
+                <BellRing size={11} />
+                {t('projects.pendingActions', { count: activity.pendingActions.decisionRequests + activity.pendingActions.loopDecisions })}
+              </span>
+            )}
             {managed?.running ? (
               <span
                 className="inline-flex items-center gap-1.5 rounded border border-sky-200 bg-sky-50 px-2 py-0.5 text-xs text-sky-700"

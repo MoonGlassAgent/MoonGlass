@@ -150,6 +150,10 @@ importers:
         version: 5.9.3
 
   packages/verification-intelligence-engine:
+    dependencies:
+      '@moonglass/eda-bridge':
+        specifier: workspace:*
+        version: link:../eda-bridge
     devDependencies:
       '@types/node':
         specifier: ^22.10.0
