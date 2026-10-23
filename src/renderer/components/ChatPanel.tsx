@@ -26,6 +26,8 @@ interface SessionInfo {
   isActive: boolean
   /** 会话进程仍在后台运行（如 VERIF 批次会话） */
   isRunning: boolean
+  /** 未答复的待确认决策数（>0 时标签显示待人标记） */
+  pendingDecisions?: number
 }
 
 /** 编排托管的只读会话名标记：VERIF 批次（phase-verif--batch-N）与 RTL 修复会话（phase-verif--fix-RC-*，M3 §4） */
@@ -163,6 +165,14 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
     if (sessionInfo?.projectId === projectId && sessionInfo.providersReady) void refresh()
   }, [projectId, refresh, sessionInfo])
 
+  // 待人决策徽标需要近实时：主进程扫描有 mtime 缓存，4s 轻量轮询即可
+  // （不依赖 sessionInfo 变化——决策请求到达时 sessionInfo 未必变）
+  useEffect(() => {
+    if (sessionInfo?.projectId !== projectId || !sessionInfo.providersReady) return
+    const timer = window.setInterval(() => void refresh(), 4_000)
+    return () => window.clearInterval(timer)
+  }, [projectId, refresh, sessionInfo?.projectId, sessionInfo?.providersReady])
+
   const select = async (sessionName: string): Promise<void> => {
     onActivate?.()
     if (busy || sessions.find((session) => session.name === sessionName)?.isActive) return
@@ -215,11 +225,13 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
       {sessions.map((session) => (
         <span
           key={session.name}
-          title={`${t('chat.tabs.sessionTitle', { label: session.label, count: session.messageCount })}${session.modelLabel ? t('chat.tabs.sessionTitleModel', { model: session.modelLabel }) : t('chat.tabs.sessionTitleNoModel')}`}
+          title={`${t('chat.tabs.sessionTitle', { label: session.label, count: session.messageCount })}${session.modelLabel ? t('chat.tabs.sessionTitleModel', { model: session.modelLabel }) : t('chat.tabs.sessionTitleNoModel')}${(session.pendingDecisions ?? 0) > 0 ? `\n${t('chat.tabs.pendingDecisions', { count: session.pendingDecisions ?? 0 })}` : ''}`}
           className={`flex max-w-44 shrink-0 items-center rounded-full border text-[11px] ${
-            session.isActive
-              ? 'border-sky-300 bg-sky-50 font-medium text-sky-700'
-              : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:bg-white hover:text-zinc-700'
+            (session.pendingDecisions ?? 0) > 0
+              ? 'border-orange-300 bg-orange-50 font-medium text-orange-700'
+              : session.isActive
+                ? 'border-sky-300 bg-sky-50 font-medium text-sky-700'
+                : 'border-transparent text-zinc-500 hover:border-zinc-200 hover:bg-white hover:text-zinc-700'
           }`}
         >
           <button
@@ -233,8 +245,13 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
             title={isBatchSession(session.name) ? t('chat.tabs.peekBatch') : undefined}
             className="min-w-0 truncate px-2.5 py-0.5 disabled:opacity-50"
           >
-            {/* 会话身份的上下文指示点（进行中脉冲），不再是"选中页签"语义 */}
-            {session.isActive && <span className={`mr-1 inline-block size-1.5 rounded-full align-middle ${session.isRunning ? 'animate-pulse bg-sky-500' : 'bg-sky-400'}`} />}
+            {/* 待人标记（橙色脉冲点+计数，最优先）/ 会话身份指示点（当前会话，进行中脉冲） */}
+            {(session.pendingDecisions ?? 0) > 0 ? (
+              <span className="mr-1 inline-flex items-center gap-0.5 align-middle">
+                <span className="inline-block size-1.5 animate-pulse rounded-full bg-orange-500" />
+                <span className="text-[10px] font-semibold">{session.pendingDecisions}</span>
+              </span>
+            ) : session.isActive && <span className={`mr-1 inline-block size-1.5 rounded-full align-middle ${session.isRunning ? 'animate-pulse bg-sky-500' : 'bg-sky-400'}`} />}
             {session.name === 'main' ? t('chat.mainSession') : session.label.replace(/\s*\([^)]*\)$/, '')}
             {isBatchSession(session.name) && (
               <span className={`ml-1 text-[10px] font-normal ${session.isRunning ? 'text-amber-600' : 'opacity-60'}`}>
@@ -342,9 +359,15 @@ export function SessionTabs({ projectId, onActivate }: { projectId: string; onAc
  */
 function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; session: SessionInfo; onClose: () => void }): React.JSX.Element {
   const { t } = useTranslation()
+  const switchSession = useChatStore((store) => store.switchSession)
   const [messages, setMessages] = useState<AgentUiMessage[]>([])
   const [loadError, setLoadError] = useState('')
   const [running, setRunning] = useState(session.isRunning)
+  /** 只读回看中的待确认决策入口：切到该会话处理并关闭回看 */
+  const goToSession = useCallback((): void => {
+    onClose()
+    void switchSession(session.name)
+  }, [onClose, switchSession, session.name])
 
   const load = useCallback(async (): Promise<void> => {
     try {
@@ -405,6 +428,8 @@ function BatchSessionPeek({ projectId, session, onClose }: { projectId: string; 
                 msg={m}
                 decisionDisabled
                 onDecision={noopDecision}
+                decisionReadOnly
+                onGoToSession={goToSession}
               />
             ))}
           </div>
@@ -431,6 +456,11 @@ export function ChatPanel({ projectId, phase, loopDecisions, onLoopDecision }: C
     restartSessionFresh
   } = useChatStore()
   const [input, setInput] = useState('')
+  /** 输入框高度（px；null = 默认两行）。顶边拖拽自由调节，localStorage 持久化 */
+  const [composerHeight, setComposerHeight] = useState<number | null>(() => {
+    const stored = Number(localStorage.getItem('moonglass:composer-height'))
+    return Number.isFinite(stored) && stored >= 40 ? stored : null
+  })
   /** 待发送图片（预处理后的裸 base64）；发送成功清空 */
   const [pendingImages, setPendingImages] = useState<ImageAttachment[]>([])
   /** 图片附件错误（过大 / 解码失败），展示在输入框上方 */
@@ -960,7 +990,42 @@ export function ChatPanel({ projectId, phase, loopDecisions, onLoopDecision }: C
       </div>
 
       {/* 输入区 */}
-      <div className="chat-composer border-t border-zinc-200 p-3">
+      <div className="chat-composer relative border-t border-zinc-200 p-3">
+        {/* 输入框高度调节轨：顶边拖拽自由调高（上拖加高），双击复位默认 */}
+        <div
+          role="separator"
+          aria-orientation="horizontal"
+          title={t('chat.composerResizeHint')}
+          onMouseDown={(e) => {
+            const startY = e.clientY
+            const startH = composerHeight ?? composerRef.current?.offsetHeight ?? 52
+            document.body.style.cursor = 'row-resize'
+            document.body.style.userSelect = 'none'
+            const onMove = (ev: MouseEvent): void => {
+              const next = Math.round(Math.min(Math.max(startH + (startY - ev.clientY), 40), window.innerHeight * 0.55))
+              setComposerHeight(next)
+            }
+            const onUp = (): void => {
+              document.body.style.cursor = ''
+              document.body.style.userSelect = ''
+              document.removeEventListener('mousemove', onMove)
+              document.removeEventListener('mouseup', onUp)
+              setComposerHeight((current) => {
+                if (current !== null) localStorage.setItem('moonglass:composer-height', String(current))
+                return current
+              })
+            }
+            document.addEventListener('mousemove', onMove)
+            document.addEventListener('mouseup', onUp)
+          }}
+          onDoubleClick={() => {
+            setComposerHeight(null)
+            localStorage.removeItem('moonglass:composer-height')
+          }}
+          className="group absolute inset-x-0 -top-1 flex h-2 cursor-row-resize items-center justify-center"
+        >
+          <span className="h-1 w-10 rounded-full bg-zinc-300 opacity-0 transition-opacity group-hover:opacity-100" />
+        </div>
         {pendingImages.length > 0 && (
           <div className="mb-2 flex flex-wrap items-center gap-2">
             {pendingImages.map((image, index) => (
@@ -1035,12 +1100,29 @@ export function ChatPanel({ projectId, phase, loopDecisions, onLoopDecision }: C
                   return
                 }
               }
+              // Ctrl/Alt+Enter 显式换行：Electron/Chromium 下这两个组合的默认插入换行会丢失，手动插入
+              if (e.key === 'Enter' && (e.ctrlKey || e.altKey) && !e.shiftKey && !e.metaKey && !e.nativeEvent.isComposing) {
+                e.preventDefault()
+                const el = e.currentTarget
+                const start = el.selectionStart
+                const next = el.value.slice(0, start) + '\n' + el.value.slice(el.selectionEnd)
+                setInput(next)
+                setHistoryIndex(null)
+                historyDraftRef.current = next
+                // 状态提交后把光标挪到换行符之后
+                requestAnimationFrame(() => {
+                  el.selectionStart = start + 1
+                  el.selectionEnd = start + 1
+                })
+                return
+              }
               if (e.key === 'Enter' && !e.shiftKey && !e.ctrlKey && !e.altKey && !e.metaKey) {
                 e.preventDefault()
                 handleSend()
               }
             }}
             rows={2}
+            style={composerHeight !== null ? { height: composerHeight } : undefined}
             placeholder={streaming ? t('chat.inputPlaceholderStreaming') : t('chat.inputPlaceholder')}
             disabled={streaming}
             className="flex-1 resize-none rounded border border-zinc-300 bg-white px-3 py-2 text-sm text-zinc-800 outline-none focus:border-blue-500 disabled:opacity-60"
@@ -1089,7 +1171,9 @@ function MessageBubbleImpl({
   onDecision,
   decisionDraft,
   decisionHoisted,
-  onScrollToPending
+  onScrollToPending,
+  decisionReadOnly,
+  onGoToSession
 }: {
   msg: AgentUiMessage
   decisionResponse?: AgentDecisionResponse
@@ -1099,6 +1183,9 @@ function MessageBubbleImpl({
   /** 未确认的决策卡被提升到会话底部集中处理；原位置只留占位标记 */
   decisionHoisted?: boolean
   onScrollToPending?: () => void
+  /** 只读回看（BatchSessionPeek）：未答复的决策卡降级为提示卡 + 跳转入口，不呈现假可操作 UI */
+  decisionReadOnly?: boolean
+  onGoToSession?: () => void
 }): React.JSX.Element {
   const { t, locale } = useTranslation()
   const thinkingRef = useRef<HTMLDetailsElement>(null)
@@ -1132,6 +1219,28 @@ function MessageBubbleImpl({
 
   if (msg.role === 'tool') {
     if (msg.decisionRequest) {
+      // 只读回看中的未答复决策：降级为提示卡（回看里出现看似可点实则无效的选项是误导），
+      // 引导用户切到该会话处理；已答复的决策仍按原样展示（回看价值：当时决定了什么）
+      if (decisionReadOnly && !decisionResponse) {
+        return (
+          <div className="message-tool w-full max-w-2xl self-start rounded border border-orange-200 bg-orange-50/60 px-3 py-2">
+            <div className="flex items-center gap-2 text-xs">
+              <span className="size-1.5 animate-pulse rounded-full bg-orange-500" />
+              <span className="min-w-0 flex-1 truncate font-medium text-orange-800">{t('chat.tabs.pendingNotice', { title: msg.decisionRequest.title })}</span>
+              {onGoToSession && (
+                <button
+                  type="button"
+                  onClick={onGoToSession}
+                  className="shrink-0 rounded border border-orange-300 bg-white px-2.5 py-1 text-[11px] font-medium text-orange-700 hover:bg-orange-100"
+                >
+                  {t('chat.tabs.goToSession')}
+                </button>
+              )}
+            </div>
+            <div className="mt-1 text-[11px] text-orange-600">{t('chat.tabs.pendingNoticeHint', { count: msg.decisionRequest.options.length })}</div>
+          </div>
+        )
+      }
       // 待确认项已提升到底部：原位置留可点击的占位标记，避免用户在长会话中翻找
       if (decisionHoisted) {
         return (

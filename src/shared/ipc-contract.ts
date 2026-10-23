@@ -344,7 +344,7 @@ export interface MoonGlassApi {
       reason: 'manifest' | 'root-module' | 'candidate'
     }>>
     elaborate(projectId: string, topModule: string): Promise<DesignDatabase>
-    getCached(projectId: string): Promise<DesignDatabase | null>
+    getCached(projectId: string): Promise<{ database: DesignDatabase; rtlStale: boolean } | null>
     readSource(projectId: string, source: string): Promise<{ file: string; line: number; content: string }>
   }
 }

@@ -57,6 +57,8 @@ export interface VerifRunDecisionEntryView {
   trigger: string
   action: VerifRunDecisionActionView
   rationale: string
+  /** 工程师摘要（决策语言人性化，≤300 字 IP 行为语言）；旧提案没有该字段，回退 rationale 主视觉 */
+  humanSummary?: string
   evidenceRefs: string[]
   status: VerifRunDecisionStatus
   outcome: VerifRunDecisionOutcome | null
@@ -245,6 +247,7 @@ export function normalizeDecisionLedger(raw: unknown): VerifRunDecisionEntryView
       trigger: asString(item.trigger),
       action: normalizeDecisionAction(item.action),
       rationale: asString(item.rationale),
+      humanSummary: asString(item.humanSummary) || undefined,
       evidenceRefs: asStringArray(item.evidenceRefs),
       status: normalizeDecisionStatus(item.status),
       outcome: normalizeDecisionOutcome(item.outcome)

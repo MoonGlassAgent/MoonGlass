@@ -16,7 +16,29 @@ export const designBrowser: DesignBrowserMessages = {
   searchGroups: {
     instances: 'Instances',
     modules: 'Modules',
-    nets: 'Nets'
+    signals: 'Signals'
+  },
+  searchTruncated: 'Showing first {shown} of {total}',
+  databaseInfo: '{count} modules · {time}',
+  rtlStaleBadge: 'RTL changed; re-elaborate recommended',
+  cellKind: 'Cell / Instance',
+  cellDetail: {
+    bitCount: '{count} bits'
+  },
+  instance: {
+    kind: 'Instance',
+    module: 'Module',
+    parameters: 'Parameter Overrides',
+    noParameters: '(no parameter overrides)',
+    connections: 'Connections',
+    exprFallback: '(expression)'
+  },
+  process: {
+    kind: 'Process',
+    clock: 'Clock',
+    reset: 'Reset',
+    drives: 'Drives',
+    reads: 'Reads'
   },
   dismissError: 'Dismiss error',
   autoLoading: 'Auto-loading {top}…',
@@ -29,11 +51,14 @@ export const designBrowser: DesignBrowserMessages = {
   inspectorHint:
     'Click an identifier in the signal list or source to select a net; then expand the Driver / Load trace tree level by level',
   hierarchy: {
+    title: 'HIERARCHY',
+    diagnostics: 'Diagnostics',
     expand: 'Expand',
     collapse: 'Collapse',
     expandNode: 'Expand {name}',
     collapseNode: 'Collapse {name}',
     openDefinitionHint: '{path} (double-click to open module definition)',
+    parameterOverrides: 'Parameter Overrides',
     expandAll: 'Expand All',
     expandAllAria: 'Expand all design hierarchy',
     collapseAll: 'Collapse All',
@@ -42,8 +67,18 @@ export const designBrowser: DesignBrowserMessages = {
     noMatchingInstances: 'No matching instances'
   },
   signals: {
-    searchPlaceholder: 'Search nets',
-    noMatchingSignals: 'No matching nets',
+    title: 'SIGNALS',
+    count: '{module} · {shown}/{total} signals',
+    ports: 'Ports',
+    internalSignals: 'Internal Signals',
+    kinds: {
+      wire: 'wire',
+      reg: 'reg',
+      logic: 'logic',
+      other: 'other'
+    },
+    searchPlaceholder: 'Search signals',
+    noMatchingSignals: 'No matching signals',
     noModuleSelected: 'No module selected'
   },
   source: {
@@ -51,9 +86,19 @@ export const designBrowser: DesignBrowserMessages = {
     emptyHint: 'Select an instance in the hierarchy tree on the left, or double-click an identifier in the source to jump'
   },
   trace: {
+    signal: 'Signal',
+    drivers: 'DRIVERS',
+    loads: 'LOADS / FANOUT',
+    moreEndpoints: '+{count} more endpoints',
     expandTrace: 'Expand trace',
     collapseTrace: 'Collapse trace',
     noFurtherDriver: 'No further drivers',
-    noFurtherLoad: 'No further loads'
+    noFurtherLoad: 'No further loads',
+    badges: {
+      port: 'PORT',
+      cell: 'CELL',
+      pin: 'PIN',
+      stmt: 'STMT'
+    }
   }
 }

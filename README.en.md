@@ -6,9 +6,9 @@ English | [简体中文](./README.md)
 
 MoonGlass connects agent conversations with project files, EDA tools, stage gates, and verification evidence. Engineers can inspect outputs, intervene in decisions, and resume long-running work rather than treating generated RTL as a finished design.
 
-Current product version: **v1.1.8 · Windows x64**
+Current product version: **v1.2.1 · Windows x64**
 
-[Download portable ZIP](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.1.8) · [English quick start](https://moonglassagent.github.io/MoonGlass/index.en.html) · [Documentation](https://moonglassagent.github.io/MoonGlass/) · [Issues](https://github.com/MoonGlassAgent/MoonGlass/issues)
+[Download portable ZIP](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.2.1) · [English quick start](https://moonglassagent.github.io/MoonGlass/index.en.html) · [Documentation](https://moonglassagent.github.io/MoonGlass/) · [Issues](https://github.com/MoonGlassAgent/MoonGlass/issues)
 
 ## What it does
 
@@ -33,7 +33,7 @@ Actual v1.1.8 application screens in English, captured with an isolated MIC_NPU 
 
 ## Quick start
 
-1. Download the Windows x64 ZIP and `SHA256SUMS.txt` from [v1.1.8 Releases](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.1.8).
+1. Download the Windows x64 ZIP and `SHA256SUMS.txt` from [v1.2.1 Releases](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.2.1).
 2. Extract the **entire** archive to a writable folder. Run `MoonGlass.exe` or `Start-MoonGlass.bat`; there is no installer to run.
 3. Open **Settings** and select **English** if needed. Configure your model provider, API key, base URL, and model. API credentials are not included.
 4. Check the development environment and EDA tools in Settings. The package includes selected runtimes, not every tool listed above.
@@ -53,7 +53,7 @@ Use the portable release to run the product. Public source and release binaries 
 
 MoonGlass's AIGV workflow links specification semantics → verification intents → scenarios → stimulus and checkers/oracles → evidence → risk conclusions. A recorded PASS is not automatically current evidence after an RTL change. Unresolved risks, missing evidence, and human approvals are part of the engineering workflow.
 
-Further reading (Chinese): [AIGV methodology](https://moonglassagent.github.io/MoonGlass/MoonGlass-AIGV验证方法学.html) · [User manual](./docs/USER-MANUAL-ZH-CN.md) · [Version notes](./RELEASE-NOTES-v1.1.8-ZH-CN.md).
+Further reading (Chinese): [AIGV methodology](https://moonglassagent.github.io/MoonGlass/MoonGlass-AIGV验证方法学.html) · [User manual](./docs/USER-MANUAL-ZH-CN.md) · [Version notes](./RELEASE-NOTES-v1.2.1-ZH-CN.md).
 
 ## License and commercial use
 

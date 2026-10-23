@@ -4,9 +4,9 @@
 
 MoonGlass 是面向 ASIC/SoC 工程师的芯片开发全流程 AI 工作台。它把需求、规格、架构、RTL、验证、质量和综合组织成一条可追踪、可审查、可恢复的工程链，让 Agent 的工作结果不仅是“生成了一段代码”，而是能够逐步形成设计文件、验证证据、问题记录和交付报告。
 
-当前产品版本：**v1.1.8** ｜ Windows x64 ｜ [本轮公开更新说明](./RELEASE-NOTES-v1.1.8-ZH-CN.md)
+当前产品版本：**v1.2.1** ｜ Windows x64 ｜ [本轮公开更新说明](./RELEASE-NOTES-v1.2.1-ZH-CN.md)
 
-[下载 v1.1.8 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.1.8) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MoonGlass-AIGV验证方法学.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
+[下载 v1.2.1 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.2.1) · [在线使用手册](https://moonglassagent.github.io/MoonGlass/) · [AIGV 方法学说明](./docs/MoonGlass-AIGV验证方法学.html) · [问题与讨论](https://github.com/MoonGlassAgent/MoonGlass/issues)
 
 ## MoonGlass 能做什么
 
@@ -75,7 +75,7 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 
 ## 快速开始
 
-普通用户可下载 [Windows x64 v1.1.8 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.1.8)，完整解压后运行 `MoonGlass.exe`。绿色版包含 MIC_NPU Demo，但不包含用户模型配置、API Key 或会话数据。首次使用：
+普通用户可下载 [Windows x64 v1.2.1 绿色版](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.2.1)，完整解压后运行 `MoonGlass.exe`。绿色版包含 MIC_NPU Demo，但不包含用户模型配置、API Key 或会话数据。首次使用：
 
 1. 在“设置”中配置模型 Provider、API Key、Base URL 和模型列表。
 2. 在“设置”中检查开发环境与 EDA 工具链状态。
@@ -89,7 +89,7 @@ MoonGlass 的验证重点不是只运行几个测试，而是建立“规格语�
 
 本仓库用于阅读、讨论和展示公开 UI、流程框架、共享接口及文档，不是完整应用的构建仓库。仓库没有 `package.json`，不能在这里执行 `pnpm install` 或启动完整应用。
 
-请通过 [Release](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.1.8) 下载 Windows x64 ZIP 绿色版。完整 Agent、EDA、解析与验证执行实现不在公开范围内，详见 [公开源码范围说明](./PUBLIC-SOURCE-SCOPE.md)。公开源码与 Release 二进制并非一一对应的可复现构建关系。
+请通过 [Release](https://github.com/MoonGlassAgent/MoonGlass/releases/tag/v1.2.1) 下载 Windows x64 ZIP 绿色版。完整 Agent、EDA、解析与验证执行实现不在公开范围内，详见 [公开源码范围说明](./PUBLIC-SOURCE-SCOPE.md)。公开源码与 Release 二进制并非一一对应的可复现构建关系。
 
 ## 工程思想
 

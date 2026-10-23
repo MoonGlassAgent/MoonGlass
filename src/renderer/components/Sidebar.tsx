@@ -9,6 +9,7 @@ import { Link, useRouterState } from '@tanstack/react-router'
 import { BookOpen, Boxes, CircleHelp, Factory, FolderKanban, Palette, ScrollText, Settings } from 'lucide-react'
 import { APP_INFO } from '@shared/app-info'
 import logoUrl from '../assets/logo.png'
+import logoBannerUrl from '../assets/logo-banner.png'
 import { useTranslation, type MessageKey } from '../i18n'
 import { ThemePicker } from './ThemePicker'
 
@@ -37,7 +38,8 @@ export function Sidebar(): React.JSX.Element {
       <div className="logo-interaction mb-4" tabIndex={0} aria-label="MoonGlass">
         <img src={logoUrl} alt="MoonGlass" className="logo-small size-9 rounded-lg" />
         <div className="logo-preview" role="tooltip">
-          <img src={logoUrl} alt="" />
+          {/* 悬停放大展示完整横幅 Logo（月亮+眼镜图标 + MoonGlass 月之幻镜字标） */}
+          <img src={logoBannerUrl} alt="" />
           <strong>MoonGlass</strong>
           <span>{t('sidebar.tagline')}</span>
         </div>

@@ -4,6 +4,14 @@ import type { DesignDiagnostic, DesignInstance } from '@moonglass/design-browser
 import { useTranslation } from '../../i18n'
 import { displayModuleName } from './module-name'
 
+/** 实例 tooltip：打开定义提示 + 参数覆盖列表（v3 层次树节点带 parameterOverrides） */
+function instanceTooltip(hint: string, overridesLabel: string, node: DesignInstance): string {
+  const entries = Object.entries(node.parameterOverrides ?? {})
+  if (entries.length === 0) return hint
+  const summary = entries.map(([name, value]) => `${name}=${value}`).join(', ')
+  return `${hint}\n${overridesLabel}: ${summary}`
+}
+
 function HierarchyNode({
   node,
   selected,
@@ -53,7 +61,11 @@ function HierarchyNode({
             event.stopPropagation()
             onOpenDefinition(node)
           }}
-          title={t('designBrowser.hierarchy.openDefinitionHint', { path: node.path })}
+          title={instanceTooltip(
+            t('designBrowser.hierarchy.openDefinitionHint', { path: node.path }),
+            t('designBrowser.hierarchy.parameterOverrides'),
+            node
+          )}
           className="flex min-w-0 flex-1 items-center gap-2 text-left"
         >
           <span className="truncate font-medium">{node.name}</span>
@@ -119,13 +131,14 @@ export function HierarchyPanel({
       node.children.forEach(visit)
     }
     visit(root)
-    return matches.slice(0, 100)
+    // 记录总匹配数，截断时列表末尾显示「仅显示前 N 条 · 共 M 条」
+    return { items: matches.slice(0, 100), total: matches.length }
   }, [root, filter])
 
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center gap-1 border-b border-zinc-200 bg-zinc-50 px-3 py-2">
-        <span className="text-xs font-semibold text-zinc-600">HIERARCHY</span>
+        <span className="text-xs font-semibold text-zinc-600">{t('designBrowser.hierarchy.title')}</span>
         <span className="ml-auto flex items-center gap-1">
           <button
             type="button"
@@ -157,26 +170,40 @@ export function HierarchyPanel({
       </div>
       <div className="min-h-0 flex-1 overflow-auto py-1">
         {flatMatches ? (
-          flatMatches.length === 0 ? (
+          flatMatches.items.length === 0 ? (
             <p className="px-3 py-2 text-xs text-zinc-400">{t('designBrowser.hierarchy.noMatchingInstances')}</p>
           ) : (
-            flatMatches.map((node) => (
-              <button
-                key={node.path}
-                type="button"
-                onClick={() => onSelect(node)}
-                onDoubleClick={() => onOpenDefinition(node)}
-                className={`flex w-full items-center gap-2 px-3 py-1 text-left text-xs ${
-                  selectedPath === node.path ? 'bg-blue-50 text-blue-700' : 'hover:bg-zinc-100'
-                }`}
-                title={node.path}
-              >
-                <span className="truncate font-medium">{node.name}</span>
-                <span className="ml-auto truncate text-zinc-400" title={node.module}>
-                  {displayModuleName(node.module)}
-                </span>
-              </button>
-            ))
+            <>
+              {flatMatches.items.map((node) => (
+                <button
+                  key={node.path}
+                  type="button"
+                  onClick={() => onSelect(node)}
+                  onDoubleClick={() => onOpenDefinition(node)}
+                  className={`flex w-full items-center gap-2 px-3 py-1 text-left text-xs ${
+                    selectedPath === node.path ? 'bg-blue-50 text-blue-700' : 'hover:bg-zinc-100'
+                  }`}
+                  title={instanceTooltip(
+                    node.path,
+                    t('designBrowser.hierarchy.parameterOverrides'),
+                    node
+                  )}
+                >
+                  <span className="truncate font-medium">{node.name}</span>
+                  <span className="ml-auto truncate text-zinc-400" title={node.module}>
+                    {displayModuleName(node.module)}
+                  </span>
+                </button>
+              ))}
+              {flatMatches.total > flatMatches.items.length && (
+                <p className="px-3 py-1 text-[10px] text-zinc-400">
+                  {t('designBrowser.searchTruncated', {
+                    shown: flatMatches.items.length,
+                    total: flatMatches.total
+                  })}
+                </p>
+              )}
+            </>
           )
         ) : (
           <HierarchyNode
@@ -191,7 +218,7 @@ export function HierarchyPanel({
       </div>
       {diagnostics.length > 0 && (
         <div className="max-h-32 shrink-0 overflow-auto border-t border-zinc-200 p-2">
-          <h3 className="mb-1 text-xs font-semibold text-amber-700">Diagnostics</h3>
+          <h3 className="mb-1 text-xs font-semibold text-amber-700">{t('designBrowser.hierarchy.diagnostics')}</h3>
           {diagnostics.map((diagnostic, index) => (
             <p key={index} className="mb-1 text-xs text-amber-700">
               {diagnostic.message}
