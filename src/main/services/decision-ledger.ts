@@ -26,6 +26,19 @@ export const DECISION_LEDGER_LIMIT = 100
 export const DECISION_RATIONALE_MAX = 200
 /** 工程师可读摘要长度上限（决策语言人性化：humanSummary ≤300 字，超长归一化截断） */
 export const DECISION_HUMAN_SUMMARY_MAX = 300
+
+/**
+ * 句读截断（实测痛点：300 字硬截断把句子从中间砍断，如"legacy 与 64-bit 低"）：
+ * 超长时在保真区（上限后半段）找最后一个句读符号收束；保真区内无句读才硬截断。
+ * 写入端（pi-bridge 登记）与读取端（归一化）共用同一口径。
+ */
+export function truncateHumanSummary(text: string): string {
+  const trimmed = text.trim()
+  if (trimmed.length <= DECISION_HUMAN_SUMMARY_MAX) return trimmed
+  const cut = trimmed.slice(0, DECISION_HUMAN_SUMMARY_MAX)
+  const lastStop = Math.max(...['。', '；', '！', '？'].map((p) => cut.lastIndexOf(p)))
+  return lastStop >= DECISION_HUMAN_SUMMARY_MAX / 2 ? cut.slice(0, lastStop + 1) : cut
+}
 /** 决策动作 prompt 长度上限（批 3 合法性校验：≤4000 字） */
 export const DECISION_PROMPT_MAX = 4000
 /** 决策 ID 形态：DEC-<8hex>（§9.2） */
@@ -69,9 +82,9 @@ function normalizeDecision(value: unknown): VerifRunDecision | null {
     item.status === 'proposed' || item.status === 'approved' || item.status === 'rejected' ||
     item.status === 'executed' || item.status === 'superseded' ? item.status : 'rejected'
   const source = item.source === 'llm' || item.source === 'human' ? item.source : 'rule'
-  // humanSummary 透传：仅字符串保留（旧数据无此字段 → undefined），>300 字截断到 300（不报错）
+  // humanSummary 透传：仅字符串保留（旧数据无此字段 → undefined），超长按句读截断（不报错）
   const humanSummary = typeof item.humanSummary === 'string'
-    ? item.humanSummary.slice(0, DECISION_HUMAN_SUMMARY_MAX)
+    ? truncateHumanSummary(item.humanSummary)
     : undefined
   return {
     id: String(item.id ?? ''),

@@ -24,6 +24,7 @@ const {
   decisionLedgerPath,
   extractRunLoopDecisionProposal,
   findNewProposedDecisions,
+  truncateHumanSummary,
   markDecisionStatus,
   nextRunnableDecision,
   pendingProposalEntries,
@@ -111,6 +112,16 @@ assert.equal(summarized.decisions[0].humanSummary, summary)
 assert.equal(summarized.decisions[1].humanSummary, undefined)
 assert.equal(summarized.decisions[2].humanSummary.length, DECISION_HUMAN_SUMMARY_MAX)
 assert.equal(summarized.decisions[3].humanSummary, undefined)
+// A4b. 句读截断（实测痛点：300 字硬截断把句子从中间砍断）：保真区（后半）有句读则句读收束
+const withStop = '前文背景。' + '中'.repeat(200) + '。结论句。' + '尾'.repeat(100)
+const truncatedStop = truncateHumanSummary(withStop)
+assert.ok(truncatedStop.endsWith('。结论句。'), `句读截断应收在句号后：…${truncatedStop.slice(-12)}`)
+assert.ok(truncatedStop.length <= DECISION_HUMAN_SUMMARY_MAX)
+// A4c. 保真区内无句读 → 硬截断兜底（不超上限）
+const noStop = '无'.repeat(DECISION_HUMAN_SUMMARY_MAX + 50)
+assert.equal(truncateHumanSummary(noStop).length, DECISION_HUMAN_SUMMARY_MAX)
+// A4d. 不超上限原样保留（trim 后）
+assert.equal(truncateHumanSummary('  短摘要。 '), '短摘要。')
 // 规则自动记账不带 humanSummary（schema 可选字段，账本保持纯净）
 const ruleRecordNoSummary = appendRunLoopRuleDecision(workspace, { actionId: 'run-batch', prompt: 'p2' })
 assert.equal(ruleRecordNoSummary.humanSummary, undefined)
@@ -278,4 +289,4 @@ assert.equal(extractRunLoopDecisionProposal({ ...proposalEvent, isError: true })
 assert.equal(extractRunLoopDecisionProposal({ ...proposalEvent, toolName: 'record_root_cause' }), null)
 assert.equal(extractRunLoopDecisionProposal({ type: 'tool_execution_end', toolName: 'propose_run_decision', isError: false, result: {} }), null)
 
-console.log('decision-ledger-smoke: OK（归一化+截断/humanSummary 往返+缺字段兼容+300 字截断/rule-auto 记账+outcome 回填/双源登记/decide 迁移/合法性校验九分+通过分支/升级新提案集合/工具事件提取）')
+console.log('decision-ledger-smoke: OK（归一化+截断/humanSummary 往返+缺字段兼容+句读截断（保真区收束/硬截断兜底/短文本原样）/rule-auto 记账+outcome 回填/双源登记/decide 迁移/合法性校验九分+通过分支/升级新提案集合/工具事件提取）')

@@ -363,10 +363,19 @@ function appendRunLoopDecisionLedger(workspace: string, input: {
   do {
     id = `DEC-${randomBytes(4).toString('hex').toUpperCase()}`
   } while (existingIds.has(id))
-  // humanSummary 透传进账本：非空字符串才落盘，>300 字截断到 300（不报错，与主进程归一口径一致）
-  const humanSummary = typeof input.humanSummary === 'string' && input.humanSummary.trim()
-    ? input.humanSummary.trim().slice(0, 300)
-    : undefined
+  // humanSummary 透传进账本：非空字符串才落盘；超长按句读收束截断（≤300 字，与主进程
+  // decision-ledger.truncateHumanSummary 同口径——保真区内最后一个句读符号收束，不硬砍半句）
+  const trimmedSummary = typeof input.humanSummary === 'string' ? input.humanSummary.trim() : ''
+  let humanSummary: string | undefined
+  if (trimmedSummary) {
+    if (trimmedSummary.length <= 300) {
+      humanSummary = trimmedSummary
+    } else {
+      const cut = trimmedSummary.slice(0, 300)
+      const lastStop = Math.max(...['。', '；', '！', '？'].map((p) => cut.lastIndexOf(p)))
+      humanSummary = lastStop >= 150 ? cut.slice(0, lastStop + 1) : cut
+    }
+  }
   const record: RunLoopDecisionRecord = {
     id,
     createdAt: new Date().toISOString(),
@@ -2483,7 +2492,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
     label: 'Propose Run Loop Decision',
     description: '向 MoonGlass 验证运行循环的决策账本登记一条下一步行动提案（verification/results/decision-ledger.json，追加式）。仅当处于循环决策升级会话（规则空转/熔断恢复，由主进程派发）或用户在会话中明确指示改变循环方向时才允许调用；常规验证工作禁止调用本工具。trigger=user-instruction（工程师明确指示）时登记为 source=human 并直接批准，循环自动执行；其余登记为 source=llm、status=proposed，经决策卡片由工程师批准后才执行（顾问模式默认，委托模式未开启）。action.expectedOutput 与 action.stopCriteria 必填且必须非空；derived 类 actionId 必须是推导内核已知动作 id（规则层白名单校验，幻觉动作会在批准时被拒）。',
     promptSnippet: 'Propose the next run-loop action as a ledger decision during an escalation session or on explicit user instruction',
-    promptGuidelines: 'Call only in a run-loop decision escalation session (dispatched by MoonGlass on rule-stall or breaker-recovery) or when the user explicitly instructs a direction change in this conversation. Write the proposal in three parts: ① humanSummary is MANDATORY (≤300 chars) — IP behavior language for the engineer: which signal/register/scenario, what was actually observed, where it diverges from the spec, and what exactly the engineer is asked to decide; never put orchestration jargon there (闭环计数/批次/波次/态势/拍/熔断/账本 stay out of humanSummary). ② rationale keeps the attribution (≤200 chars, orchestration terms allowed). ③ Orchestration details (loop counts, waves, ledger bookkeeping) belong only in action.prompt as execution instructions. expectedOutput and stopCriteria are required and must be non-empty. For derived actions use a real derived action id from the verification guidance kernel; for custom instructions pass actionId=null. After registering, the proposal goes to the engineer via a decision card; do not re-submit duplicates.',
+    promptGuidelines: 'Call only in a run-loop decision escalation session (dispatched by MoonGlass on rule-stall or breaker-recovery) or when the user explicitly instructs a direction change in this conversation. Write the proposal in three parts: ① humanSummary is MANDATORY (≤300 chars) — IP behavior language for the engineer: which signal/register/scenario, what was actually observed, where it diverges from the spec, and what exactly the engineer is asked to decide; never put orchestration jargon there (闭环计数/批次/波次/态势/拍/熔断/账本 stay out of humanSummary). humanSummary MUST end with an explicit adjudication request — what approving means in behavioral terms (e.g. "需要你裁决：修 RTL 还是改规格；批准即按修复 RTL 通道执行"). ② rationale keeps the attribution (≤200 chars, orchestration terms allowed). ③ Orchestration details (loop counts, waves, ledger bookkeeping) belong only in action.prompt as execution instructions. expectedOutput and stopCriteria are required and must be non-empty. For derived actions use a real derived action id from the verification guidance kernel; for custom instructions pass actionId=null. After registering, the proposal goes to the engineer via a decision card; do not re-submit duplicates.',
     parameters: Type.Object({
       trigger: Type.Union([
         Type.Literal('rule-stall', { description: '规则空转升级会话（主进程派发）' }),
