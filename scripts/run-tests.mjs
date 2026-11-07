@@ -17,6 +17,7 @@ const suites = {
     'scripts/ut-escalation-smoke.mjs',
     'scripts/config-space-smoke.mjs',
     'scripts/sim-passed-gate-smoke.mjs',
+    'scripts/probe-mismatch-smoke.mjs',
     'scripts/aigv-bug-001-regression-smoke.mjs',
     'scripts/verification-guidance-smoke.mjs',
     'scripts/scenario-hits-smoke.mjs',
@@ -47,8 +48,10 @@ const suites = {
     'scripts/pending-actions-smoke.mjs',
     'scripts/dead-logic-smoke.mjs',
     'scripts/artifact-drift-smoke.mjs',
+    'scripts/phase-state-reconcile-smoke.mjs',
     'scripts/design-review-smoke.mjs',
     'scripts/design-review-dispatch-smoke.mjs',
+    'scripts/design-review-followup-smoke.mjs',
     'scripts/module-ut-smoke.mjs',
     'scripts/model-context-smoke.mjs',
     'scripts/notification-smoke.mjs'

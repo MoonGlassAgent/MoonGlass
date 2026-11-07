@@ -555,7 +555,15 @@ async function runCocotbSimulationOnce(options: CocotbSimOptions & { coverageUpg
   if (simulator === 'verilator' && process.platform === 'win32' && (!compilerPath || !makePath)) {
     throw new Error('Verilator Windows 仿真需要 g++ 和 mingw32-make/gmake；请在“设置 > 工具链”安装 C/C++ 编译器与 Make')
   }
-  const buildArgs = rtlCoverage ? ['--coverage-line', '--coverage-expr', '--coverage-toggle', '--coverage-fsm'] : []
+  const buildArgs = [
+    // 仿真构建不被警告卡死：Verilator 新版把不少 lint 警告默认升级为 fatal（如位宽
+    // 隐式截断 %Warning-WIDTH），会让 cocotb/覆盖率构建整体失败、验证循环停滞。
+    // lint 质量有独立门禁（verible-lint-zero-error + moonglass 自定义 lint 规则），
+    // 此处 -Wno-fatal 只消除"默认 fatal"：Warning 照打、真实 Error 照败。
+    // 仅 verilator 后端追加——icarus 不认识该选项，不能顺带传入。
+    ...(simulator === 'verilator' ? ['-Wno-fatal'] : []),
+    ...(rtlCoverage ? ['--coverage-line', '--coverage-expr', '--coverage-toggle', '--coverage-fsm'] : [])
+  ]
   const plusargs = rtlCoverage ? [`+verilator+coverage+file+${coverageDataPath.replace(/\\/g, '/')}`] : []
   const script = [
     'from cocotb_tools.runner import get_runner',
@@ -810,6 +818,9 @@ export async function runVerilatorSimulation(
     '--cc',
     '--build',
     '--exe',
+    // 仿真构建不被警告卡死：lint 有独立门禁（verible-lint-zero-error + moonglass 自定义
+    // lint 规则），Verilator 新版默认 fatal 的 lint 警告（如 WIDTH 隐式截断）不得阻断
+    // 编译；本选项只消除"默认 fatal"，Warning 照打、真实 Error 照败。
     '-Wno-fatal',
     // DEFECT: without --top-module Verilator picks its own default top (the
     // first/least-instantiated module of the file list, e.g. psram_reset_sync),

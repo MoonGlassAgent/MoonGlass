@@ -927,9 +927,9 @@ export default function (pi: ExtensionAPI): void {
   pi.registerTool({
     name: 'request_user_decision',
     label: 'Request User Decision',
-    description: '在 MoonGlass 对话中展示结构化单选或多选决策卡。适用于需求、规格、架构和约束等需要用户明确选择的场景。标题与 prompt 必须用 IP 行为语言：从具体信号/寄存器/场景的行为现状说起（实测到了什么、与规格哪里不符、需要工程师裁决什么）；编排术语（批次/闭环/态势/拍/熔断等）禁止出现在标题与 prompt 首段。选项 description 写清每个选项的行为后果。',
+    description: '在 MoonGlass 对话中展示结构化单选或多选决策卡，仅限真正的领域裁决：规格歧义、IP 行为/接口/寄存器语义、面积/性能/功耗取舍、需要工程师承担行为后果的选择。可忽略/样式性/清理性事项（internal 死逻辑、命名风格、纯重构、报告格式、无行为影响的选项）禁止调用本工具——直接在回复中说明并继续推进。没有实质行为后果的决策不应打断自治流水线；拿不准是否值得问时，默认不问、继续干。标题与 prompt 必须用 IP 行为语言：从具体信号/寄存器/场景的行为现状说起（实测到了什么、与规格哪里不符、需要工程师裁决什么）；编排术语（批次/闭环/态势/拍/熔断等）禁止出现在标题与 prompt 首段。选项 description 写清每个选项的行为后果。',
     promptSnippet: 'Ask the user to choose among structured engineering options in the MoonGlass UI',
-    promptGuidelines: 'Use this instead of writing numbered choices in plain text. Title and prompt must be written in IP behavior language — start from the behavior of the concrete signal/register/scenario (what was observed, where it diverges from the spec, what the engineer must decide); never put orchestration jargon (批次/闭环/态势/拍/熔断 etc.) in the title or the first paragraph of the prompt. Option descriptions must state the behavioral consequence of each option (area/performance/power/verification impact). Provide concise trade-offs, mark at most one recommended option, allow custom requirements unless inappropriate, and stop your response after calling the tool until the user answers.',
+    promptGuidelines: 'Reserved for genuine domain adjudication only: spec ambiguity, IP behavior/interface/register semantics, area/performance/power trade-offs, or any choice where an engineer must own the behavioral consequences. Never interrupt the autonomous pipeline for ignorable, stylistic, or cleanup matters (internal dead logic, naming style, pure refactors, report formatting, behavior-neutral options) — keep going with a brief note instead; when unsure whether a question is worth asking, default to not asking and continue. Use this instead of writing numbered choices in plain text. Title and prompt must be written in IP behavior language — start from the behavior of the concrete signal/register/scenario (what was observed, where it diverges from the spec, what the engineer must decide); never put orchestration jargon (批次/闭环/态势/拍/熔断 etc.) in the title or the first paragraph of the prompt. Option descriptions must state the behavioral consequence of each option (area/performance/power/verification impact). Provide concise trade-offs, mark at most one recommended option, allow custom requirements unless inappropriate, and stop your response after calling the tool until the user answers.',
     parameters: Type.Object({
       id: Type.String({ description: '稳定且语义化的决策 ID，例如 spec.data_width' }),
       title: Type.String({ description: '简短决策标题' }),
@@ -1709,7 +1709,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
   pi.registerTool({
     name: 'run_simulation',
     label: 'Run Simulation',
-    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势（同时登记用例反向指针：单用例运行写精确 testName，多用例运行整组写 boundTestcases+boundBy=scenarioIds，供态势页绑定列追溯）；scenario_hits.json 由工具自动写入，禁止手工编辑。purpose 声明运行用途：缺省 regression（回归证据）；mutation/probe 为隔离运行——不写 scenario_hits.json、不回写主 result.json 与主目录日志，结果落盘到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不计入回归判定与场景登记。',
+    description: '运行 Cocotb Python testbench（推荐，Windows 缺省 Icarus）或兼容旧式 Verilator C++ testbench；统一输出日志、JUnit、result.json 和波形。提供 scenarioIds 时自动把 PASS/FAIL 登记到 scenario_hits.json 并重建验证态势（同时登记用例反向指针：单用例运行写精确 testName，多用例运行整组写 boundTestcases+boundBy=scenarioIds，供态势页绑定列追溯）；scenario_hits.json 由工具自动写入，禁止手工编辑。purpose 声明运行用途：缺省 regression（回归证据）；mutation/probe 为隔离运行——不写 scenario_hits.json、不回写主 result.json 与主目录日志，结果落盘到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不计入回归判定与场景登记。probe 自身证据的 passed 语义必须诚实：仿真日志检出 MISMATCH（oracle 预期/实际比对不符）时 passed 强制为 false；无 MISMATCH 时 passed 仅表示运行完成，非判定结论。',
     promptSnippet: 'Run Cocotb or legacy C++ RTL simulation and collect artifacts',
     promptGuidelines: 'Use mode=cocotb with testModule/testDir for MoonGlass verification environments. On Windows prefer simulator=icarus. Use mode=cpp only for an existing C++ testbench. Pass scenarioIds from select_next_verification_batch so scenario hits are auto-registered; never hand-write scenario_hits.json. Mutation/fault-injection or exploratory runs MUST use purpose="mutation" (or "probe") so their expected-FAIL results stay isolated from regression evidence and scenario registration. When authoring tests, bind each test function to its TEST ID in verification/<tb>/test_manifest.json ({"<test函数名>": {"testId": "TEST-..."}}) — or at least put the TEST ID in the first line of the test docstring — so the verification posture panel can map results back to the plan.',
     parameters: Type.Object({
@@ -1720,7 +1720,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
       testDir: Type.Optional(Type.String({ description: 'Cocotb 环境根目录，加入 PYTHONPATH' })),
       testcase: Type.Optional(Type.String({ description: '仅运行指定 @cocotb.test 测试，可选' })),
       scenarioIds: Type.Optional(Type.Array(Type.String({ pattern: '^SCN-[A-F0-9]{8}$' }), { description: '本用例定向关闭的场景 ID，来自 select_next_verification_batch 返回的批次（仅 purpose=regression 时登记）' })),
-      purpose: Type.Optional(Type.Union([Type.Literal('regression'), Type.Literal('mutation'), Type.Literal('probe')], { description: '运行用途，缺省 regression。mutation/probe：变异体故障注入或探查性运行，证据隔离到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不写 scenario_hits.json、不回写主 result.json 与主目录编译/仿真日志，不计入回归判定与场景登记' })),
+      purpose: Type.Optional(Type.Union([Type.Literal('regression'), Type.Literal('mutation'), Type.Literal('probe')], { description: '运行用途，缺省 regression。mutation/probe：变异体故障注入或探查性运行，证据隔离到 verification/results/<topModule>/<purpose>-runs/<用例-时间戳>/，不写 scenario_hits.json、不回写主 result.json 与主目录编译/仿真日志，不计入回归判定与场景登记。probe 时：日志检出 MISMATCH（oracle 比对失败）则 passed=false；否则 passed=运行完成（非判定结论）' })),
       simulator: Type.Optional(Type.Union([Type.Literal('icarus'), Type.Literal('verilator')], { description: 'Cocotb 后端；Windows 缺省 icarus' })),
       tbCpp: Type.Optional(Type.String({ description: 'mode=cpp 时的 C++ 测试台路径' })),
       trace: Type.Optional(Type.Boolean({ description: '是否生成波形，缺省 true' })),
@@ -1821,10 +1821,54 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
           } catch { /* 哈希计算失败不阻断仿真结果本身 */ }
         }
 
+        // probe 证据语义（MISMATCH 不得 PASS）：probe 是隔离观测运行（不写 scenario_hits、
+        // 不进态势），但其自身 result.json 与报告的 passed 必须诚实——仿真日志出现 MISMATCH
+        //（oracle 预期/实际比对不符，如 Scoreboard 比对行）时判失败，不得因"探针目的"豁免；
+        // 无 MISMATCH 时 passed 仅表示"运行完成"，是完成性结论而非判定结论，报告显式注明。
+        // mutation 不在此列：故障注入运行的 MISMATCH 语义由注入约定决定，维持原判定。
+        let probeMismatchCount = 0
+        let probeMismatchLines: string[] = []
+        if (purpose === 'probe') {
+          try {
+            const probeLog = existsSync(result.simulationLogPath)
+              ? readFileSync(result.simulationLogPath, 'utf-8')
+              : result.log
+            const allMismatchLines = probeLog.split(/\r?\n/)
+              .map((line) => line.trim())
+              .filter((line) => line.length > 0
+                && /\bmismatch\b/i.test(line)
+                && !/(?:\bno\b|\bwithout\b|无)\s*mismatch/i.test(line)
+                && !/mismatch[:\s=]*0(?:\D|$)/i.test(line))
+            probeMismatchCount = allMismatchLines.length
+            probeMismatchLines = allMismatchLines.slice(0, 5)
+          } catch { /* 日志读取失败按无 MISMATCH 处理，不虚构失败 */ }
+        }
+        const probeMismatch = purpose === 'probe' && probeMismatchCount > 0
+        // probe 检出 MISMATCH：passed 强制为 false（oracle 比对失败是判定性证据）
+        const effectivePassed = probeMismatch ? false : result.passed
+        if (purpose === 'probe') {
+          try {
+            const data = JSON.parse(readFileSync(result.resultPath, 'utf-8'))
+            writeJsonAtomic(result.resultPath, {
+              ...data,
+              ...(probeMismatch ? { passed: false } : {}),
+              probe: {
+                semantics: probeMismatch ? 'oracle-mismatch' : 'run-completed-not-a-verdict',
+                mismatchCount: probeMismatchCount,
+                mismatchLines: probeMismatchLines
+              }
+            })
+          } catch { /* result.json 回写失败不阻断已得出的诚实结论 */ }
+        }
+
         const report = [
           `## 仿真结果 — ${topModule}`,
           '',
-          `**结果**: ${result.passed ? '✅ 通过' : '❌ 失败'}`,
+          ...(probeMismatch
+            ? [`**结果**: ❌ 失败（probe 观测比对检出 ${probeMismatchCount} 行 MISMATCH——预期与实际不符，passed 强制为 false，不因探针目的豁免）`]
+            : purpose === 'probe'
+              ? ['**结果**: ✅ 运行完成（probe 为观测性运行：passed 仅表示仿真运行完成，非判定结论；检出 MISMATCH 时才会判失败）']
+              : [`**结果**: ${effectivePassed ? '✅ 通过' : '❌ 失败'}`]),
           `**模式**: ${mode === 'cocotb' ? `Cocotb / ${(params.simulator as string | undefined) ?? 'icarus'}` : 'Verilator C++'}`,
           `**运行用途**: ${purpose}${purpose === 'regression' ? '' : '（证据隔离：不计入回归判定与场景登记）'}`,
           `**VCD 波形**: ${result.vcdPath ? `✅ ${result.vcdPath}` : '❌ 未生成'}`,
@@ -1855,6 +1899,11 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
               report.push(`未覆盖检测点合计 ${uncovered.length} 个（含表达式/翻转/FSM 全类型，文件/行/列/层级见 coverage-detail.json）`)
             }
           } catch { /* 明细解析失败不影响仿真结果本身 */ }
+        }
+
+        // probe MISMATCH 证据摘录：oracle 比对失败行直接随报告回显（摘录前 5 行，全量在仿真日志）
+        if (probeMismatch) {
+          report.push('', `### MISMATCH 比对失败（probe oracle 证据，共 ${probeMismatchCount} 行，摘录前 ${probeMismatchLines.length} 行）`, '', ...probeMismatchLines.map((line) => `- ${line}`))
         }
 
         // 波形体积熔断留痕（C6 工具/插桩类）：诚实区分三种行为，不假装外部 TB 也能熔断
@@ -1904,7 +1953,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         }
 
         const diagnostic = updateDiagnosticControl({
-          workspace: resolve(ctx.cwd), topModule, testcase: params.testcase as string | undefined, passed: result.passed,
+          workspace: resolve(ctx.cwd), topModule, testcase: params.testcase as string | undefined, passed: effectivePassed,
           log: result.log, rtlFiles, testDir, hasWaveform: Boolean(result.vcdPath),
           durationMs: Date.now() - simulationStartedAt,
           evidence: [result.compileLogPath, result.simulationLogPath, result.resultPath, result.vcdPath ?? '', result.coverageReportPath ?? ''],
@@ -1967,8 +2016,11 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
         return {
           content: [{ type: 'text', text: report.join('\n') }],
           details: {
-            passed: result.passed,
+            passed: effectivePassed,
             purpose,
+            ...(purpose === 'probe'
+              ? { probeSemantics: probeMismatch ? 'oracle-mismatch' : 'run-completed-not-a-verdict' }
+              : {}),
             logPreview: result.log.slice(0, 1000),
             vcdPath: result.vcdPath,
             compileLogPath: result.compileLogPath,
@@ -1980,7 +2032,7 @@ ${trace ? '  if (tfp) tfp->close();' : ''}
             diagnostic,
             scenarioHits: scenarioHitsRegistered
           },
-          isError: !result.passed
+          isError: !effectivePassed
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err)

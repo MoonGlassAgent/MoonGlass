@@ -114,6 +114,37 @@ const fwd = (p) => p.replace(/\\/g, '/')
   }
 }
 
+// ============ 用例 4：仿真构建 verilator 参数断言（-Wno-fatal 双路径 + 无 fatal 类标志） ============
+// 背景（PSRAM_CTRL 升级提案实测）：Verilator 新版把位宽隐式截断等 lint 警告默认升级为
+// fatal，43 条警告即可让 cocotb/覆盖率构建整体失败。lint 质量有独立门禁
+// （verible-lint-zero-error + moonglass 自定义规则，见 lint.ts），仿真构建只应被
+// 真实 Error 卡死，不被 Warning 卡死。此处用源码文本断言钉住两条构建路径的参数形态：
+//   a) cocotb runner 路径（runCocotbSimulationOnce → runner.build 的 build_args）：
+//      verilator 后端必须带 -Wno-fatal，且必须按 simulator 门控（icarus 不认识该选项）；
+//   b) C++ 测试台路径（runVerilatorSimulation 的 ccArgs）：必须带 -Wno-fatal；
+//   c) 两条路径均不得引入 fatal 类标志（-Werror/-Wfatal/--fatal）。
+{
+  const src = readFileSync(new URL('../packages/eda-bridge/src/simulation.ts', import.meta.url), 'utf-8')
+  const runnerTs = readFileSync(new URL('../packages/eda-bridge/src/tool-runner.ts', import.meta.url), 'utf-8')
+  const cocotbRegion = src.slice(src.indexOf('async function runCocotbSimulationOnce'), src.indexOf('export async function runVerilatorSimulation'))
+  const cppRegion = src.slice(src.indexOf('export async function runVerilatorSimulation'))
+
+  // a) cocotb 路径：buildArgs 语句内 -Wno-fatal 必须门控在 simulator === 'verilator'
+  const buildArgsStmt = cocotbRegion.match(/const buildArgs = \[([\s\S]*?)\n  \]/)?.[1] ?? ''
+  check('cocotb 路径 verilator 构建参数含 -Wno-fatal', buildArgsStmt.includes("'-Wno-fatal'"))
+  check('cocotb 路径 -Wno-fatal 按 simulator 门控（不传给 icarus）',
+    /\.\.\.\(simulator === 'verilator' \? \['-Wno-fatal'\]/.test(buildArgsStmt))
+
+  // b) C++ 测试台路径：ccArgs 数组必须显式包含 -Wno-fatal
+  const ccArgsStmt = cppRegion.match(/const ccArgs = \[([\s\S]*?)\n  \]/)?.[1] ?? ''
+  check('C++ 测试台路径 verilator 编译参数含 -Wno-fatal', ccArgsStmt.includes("'-Wno-fatal'"))
+
+  // c) 两条路径不得引入 fatal 类标志（lint 门禁的 -Wall 属 lint.ts，不在此列）
+  const fatalPattern = /-Werror|-Wfatal|--fatal\b/
+  check('仿真构建参数无 -Werror/-Wfatal/--fatal（simulation.ts）', !fatalPattern.test(src))
+  check('仿真构建参数无 -Werror/-Wfatal/--fatal（tool-runner.ts）', !fatalPattern.test(runnerTs))
+}
+
 // 收尾：删除沙箱；共享 shim 目录留给生产按需重建（内容指纹自动纠偏）
 rmSync(sandbox, { recursive: true, force: true })
 

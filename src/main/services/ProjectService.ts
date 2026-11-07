@@ -15,8 +15,8 @@ import { eq, desc, sql } from 'drizzle-orm'
 import { PHASE_LABELS, PHASE_ORDER, type ArtifactDriftEntry, type ChipProject, type Phase, type PhaseResetMode, type PhaseResetPreview, type PhaseResetResult, type PhaseState, type ProjectImportAssessment, type ProjectMigrationResult } from '@shared/types'
 import type { MoonGlassService } from '../core/lifecycle.ts'
 import { createInitialPhases, markPhaseChanged } from './PhaseEngine.ts'
-import { PHASE_ARTIFACT_PATHS, detectArtifactDrift, selectDownstreamResetTargets } from './artifact-drift.ts'
-import { projectWorkspaceDir } from '../core/paths.ts'
+import { PHASE_ARTIFACT_PATHS, detectArtifactDrift, reconcileProjectPhases, selectDownstreamResetTargets } from './artifact-drift.ts'
+import { moonglassDataDir, projectWorkspaceDir } from '../core/paths.ts'
 import { chipProjects } from '../data/schema/moonglass.ts'
 import type { DbService } from './DbService.ts'
 import { analyzeExistingProject } from './ProjectImportAnalyzer.ts'
@@ -338,7 +338,7 @@ export class ProjectService implements MoonGlassService {
       .from(chipProjects)
       .orderBy(desc(chipProjects.updatedAt))
       .all()
-    return rows.map(rowToProject)
+    return rows.map((row) => this.reconcileProject(rowToProject(row)))
   }
 
   get(id: string): ChipProject | null {
@@ -348,12 +348,53 @@ export class ProjectService implements MoonGlassService {
       .from(chipProjects)
       .where(eq(chipProjects.id, id))
       .get()
-    return row ? rowToProject(row) : null
+    return row ? this.reconcileProject(rowToProject(row)) : null
   }
 
-  /** 返回项目实际工作目录；旧项目保持默认目录，不要求迁移。 */
+  /**
+   * 阶段状态对账（MG-046：deliverables/messageCount 运行期从不写入，与磁盘事实
+   * 长期脱节）。项目被读取/打开/仪表盘刷新时按磁盘实况回填校正：产物从映射路径
+   * 发现、消息数按会话 JSONL 统计。只增不删、不伪造——status 与 gateCheckResults
+   * 绝不写入；有校正才落库并同步 JSON 备份，无变化零写入（轮询安全）。
+   * 保留 updatedAt：对账是校正而非用户编辑，不应扰动列表排序。
+   */
+  private reconcileProject(project: ChipProject): ChipProject {
+    const configured = project.workspacePath?.trim()
+    const workspaceDir = configured ? resolve(configured) : projectWorkspaceDir(project.id, this.dataDir)
+    const sessionDir = join(moonglassDataDir(this.dataDir), 'pi-sessions', project.id)
+    try {
+      const result = reconcileProjectPhases({ phases: project.phases, workspaceDir, sessionDir })
+      if (result.changedPhases.length === 0) return project
+      if (result.deliverablesBackfilledPhases.length > 0) {
+        console.log(`[project-service] 阶段交付物按磁盘事实回填（${project.name}）：${result.deliverablesBackfilledPhases.join('、')}`)
+      }
+      const updated: ChipProject = { ...project, phases: result.phases }
+      this.db
+        .getDb()
+        .update(chipProjects)
+        .set(projectToRow(updated))
+        .where(eq(chipProjects.id, project.id))
+        .run()
+      this.backupToJson()
+      return updated
+    } catch (error) {
+      console.error('[project-service] 阶段状态对账失败（保持原状）', error)
+      return project
+    }
+  }
+
+  /**
+   * 返回项目实际工作目录；旧项目保持默认目录，不要求迁移。
+   * 轻量直读 workspacePath：本方法被 AgentService 高频调用，不走 get()，避免每次触发对账。
+   */
   workspaceDir(projectId: string): string {
-    const configured = this.get(projectId)?.workspacePath?.trim()
+    const row = this.db
+      .getDb()
+      .select({ workspacePath: chipProjects.workspacePath })
+      .from(chipProjects)
+      .where(eq(chipProjects.id, projectId))
+      .get()
+    const configured = row?.workspacePath?.trim()
     return configured ? resolve(configured) : projectWorkspaceDir(projectId, this.dataDir)
   }
 

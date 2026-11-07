@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>MoonGlass 软件问题甄别 — fbc_core issues</title>
+<style>
+body{font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;max-width:1100px;margin:0 auto;padding:24px;color:#1f2933;line-height:1.6;background:#f7f8fa}
+h1{border-bottom:3px solid #3b5bdb;padding-bottom:8px}
+h2{margin-top:36px;border-left:5px solid #3b5bdb;padding-left:10px}
+h3{margin-top:22px}
+a{color:#3b5bdb}
+.note{background:#fff;border:1px solid #dde2e8;border-radius:8px;padding:12px 16px;margin:12px 0}
+.cards{display:flex;flex-wrap:wrap;gap:10px;margin:12px 0}
+.card{background:#fff;border:1px solid #dde2e8;border-radius:8px;padding:12px 16px;min-width:140px}
+.card .n{font-size:28px;font-weight:700;color:#3b5bdb}
+.card .l{font-size:13px;color:#495057}
+table{border-collapse:collapse;width:100%;background:#fff;margin:10px 0 20px}
+th,td{border:1px solid #dde2e8;padding:6px 8px;text-align:left;vertical-align:top;font-size:13px}
+thead th{background:#edf2ff}
+.id{font-family:ui-monospace,monospace;white-space:nowrap}
+.tag{font-size:11px;padding:1px 7px;border-radius:10px;background:#e9ecef;white-space:nowrap}
+.p0{background:#ffe3e3;color:#c92a2a}.p1{background:#fff3bf;color:#8a6d00}
+.p2{background:#d3f9d8;color:#2b8a3e}.p3{background:#e9ecef;color:#495057}
+.c-mg-sw{background:#ffe3e3;color:#c92a2a}.c-mg-policy{background:#fff3bf;color:#8a6d00}
+.c-design-rtl{background:#e7f5ff;color:#1864ab}.c-verif-content{background:#f3d9fa;color:#862e9c}
+.c-ops{background:#e9ecef;color:#495057}
+.src{color:#868e96;font-size:12px}.q{margin-top:4px}
+ul.toc li{margin:4px 0}
+.footer{margin-top:40px;color:#868e96;font-size:12px}
+</style>
+</head>
+<body>
+<h1>MoonGlass 软件问题甄别报告</h1>
+<div class="note">
+<b>工程</b>：fbc_core（<code>/workspace/moonglass/fbc/moonglass_project</code>）·
+<b>编制</b>：2026-11-05（Asia/Shanghai）·
+<b>目的</b>：从 <code>fbc/issues/</code> 与同源可用性追踪流中，区分<strong>真正的 MoonGlass 软件/产品问题</strong> vs 设计/RTL、验证内容、过程噪声。<br/>
+<b>约束</b>：未推进 QA；未改 rtl/refmodel；未改门禁。<br/>
+<b>当前 VERIF 态势</b>：CONDITIONALLY_READY · blockers= ·
+generatedAt 2026-11-05T01:24:20.509Z (≈ 09:24 Asia/Shanghai) · Novelty=EMPIRICALLY_SATURATED<br/>
+<b>AES 报告</b>：未在 <code>/workspace/moonglass</code> 下发现独立 AES 问题 HTML；同源流以 DMA 报告为准。
+</div>
+
+<h2 id="toc">目录</h2>
+<ul class="toc">
+<li><a href="#counts">1. 分类计数</a></li>
+<li><a href="#top">2. Top MG-SW 主题</a></li>
+<li><a href="#mg-sw">3. MG-SW 明细</a></li>
+<li><a href="#mg-pol">4. MG-POLICY 明细</a></li>
+<li><a href="#other">5. DESIGN/RTL · VERIF-CONTENT · OPS</a></li>
+<li><a href="#sources">6. 源文件清单与离散条目映射</a></li>
+<li><a href="#backlog">7. 建议进入 feature backlog 的项（只列表）</a></li>
+<li><a href="#json">8. 机读 JSON</a></li>
+</ul>
+
+<h2 id="counts">1. 分类计数</h2>
+<div class="cards">
+  <div class="card"><div class="n">57</div><div class="l">MG-SW<br/>软件/易用性</div></div>
+  <div class="card"><div class="n">14</div><div class="l">MG-POLICY<br/>流程/策略债</div></div>
+  <div class="card"><div class="n">7</div><div class="l">DESIGN/RTL</div></div>
+  <div class="card"><div class="n">11</div><div class="l">VERIF-CONTENT</div></div>
+  <div class="card"><div class="n">5</div><div class="l">OPS</div></div>
+  <div class="card"><div class="n">94</div><div class="l">离散条目合计</div></div>
+</div>
+<div class="note">
+MG-SW+MG-POLICY 按严重度：
+P0=8 · P1=29 · P2=27 · P3=7。<br/>
+<strong>结论摘要</strong>：issues 目录里「看起来很多」的残余风险/waiver/intent/watch 多数是 <b>VERIF-CONTENT 或 OPS</b>；
+真正该找 MoonGlass（Kimi / MoonGlass_Linux）修的，集中在 <code>moonglass_usability.md</code> 的 GUI/门禁/评审编排，
+以及 DMA 报告里同族复现的阶段状态机与证据语义问题。
+</div>
+
+<h2 id="top">2. Top MG-SW 主题</h2>
+<ol>
+<li>审查 findings 顶层被覆盖 / 不续跑 / 门禁不消费审查（FBC-U-016/025, DMA-019/024, FBC-POL-005）</li><li>deliverables/gates/messageCount 与文件系统长期脱节（FBC-U-010, DMA-006/015/028/041）</li><li>跨阶段 Agent 并行与 VERIF 改 RTL（DMA-037/039）</li><li>probe/假阳性证据语义（DMA-036）与覆盖率可信度（DMA-043, FBC-U-029/031）</li><li>request_user_decision 硬停自治流水线（DMA-030, FBC-U-021/022）</li><li>中文输入丢字 / 剪贴板 / 无 xclip（FBC-U-006/026/030）</li><li>阶段按钮易误推进 QA（FBC-U-028）</li><li>Markdown 未渲染 / 决策卡可视区 / Tab 误触等 GUI 债（FBC-U-012/021/024）</li>
+</ol>
+
+<h2 id="mg-sw">3. MG-SW 明细（57）</h2>
+<p>判定标准：GUI、Agent 循环、签核重建 UX、场景绑定、覆盖率展示、证据新鲜度展示、假阻断、阶段状态与文件系统脱节等——修产品代码，不改 fbc RTL。</p>
+<table><thead><tr><th>ID</th><th>标题</th><th>类</th><th>严重度</th><th>来源 / 证据摘要</th><th>责任方</th><th>相对当前 VERIF</th></tr></thead><tbody>
+<tr><td class='id'>DMA-CASE-019</td><td>多轮审查顶层 findings 被整表替换，追溯断裂</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p0">P0</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=review-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-023</td><td>ARCH 宣称完成但三件套仍缺</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p0">P0</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=Agent 完成定义/门禁</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-024</td><td>三件套已落盘但 rounds[0] F1 仍 pending</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p0">P0</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=review-disposition</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-030</td><td>request_user_decision 对可忽略死逻辑硬停整会话</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p0">P0</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=decision bridge</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-036</td><td>purpose=probe 大量 MISMATCH 仍 PASS</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p0">P0</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=证据语义/runner</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-037</td><td>RTL+VERIF 两阶段 Agent 长时间并行</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p0">P0</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=Agent lifecycle</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-039</td><td>VERIF Agent 在 RTL 仍存活时直接改 RTL</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p0">P0</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=阶段职责边界</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-006</td><td>REQ 文档已落盘但 deliverables/gates 空</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-008</td><td>Agent 宣告完成但 projects 仍 active/ARCH locked</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-012</td><td>修复任务与 finding#1 指令冲突</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=review-orchestration</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-013</td><td>dispositionUpdatedAt 写成未来日期</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=review-writeback</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-014</td><td>修复中 messageCount 恒 0</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-015</td><td>major 修复后 deliverables/gate 仍空</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-016</td><td>disposition 枚举缺 deferred</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=review-schema</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-021</td><td>ARCH active 但 deliverables/gates 空 messageCount=0</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-026</td><td>自报门禁通过但 gates/deliverables 空</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-028</td><td>RTL gateCheckResults/deliverables 空</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-033</td><td>Lint「零 Error」门禁仍报 8 Error</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=lint-gate 语义</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-041</td><td>冒烟 PASS 但 VERIF deliverables 仍空</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-043</td><td>仅 3 例冒烟 functionalCoverage=100；覆盖回退被吞</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=coverage 可信度</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>FBC-U-006</td><td>中文输入丢字/乱码</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>REQ composer 逐字键入长中文丢字；粘贴后完整</div></td><td>MoonGlass_Linux/GUI+IME</td><td>仍开放；与 #30 同源</td></tr>
+<tr><td class='id'>FBC-U-010</td><td>进度条不反映交付物</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>已有完整 REQ 文档时项目卡仍「进度 0/6 (0%)」</div></td><td>MoonGlass_Linux/gate-state</td><td>仍开放；与 DMA CASE-006/015 同族</td></tr>
+<tr><td class='id'>FBC-U-016</td><td>设计评审后未自动续跑</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>review findings 22 条（9 major pending）无决策卡、无自动续跑</div></td><td>MoonGlass_Linux/review-orchestration</td><td>仍开放；与 #25、DMA CASE-024/027 同族</td></tr>
+<tr><td class='id'>FBC-U-025</td><td>语义评审后主会话不续跑</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>phase-rtl--review-rtl-semantic 产出后主 Agent 空闲，findings 全 pending</div></td><td>MoonGlass_Linux/review-orchestration</td><td>仍开放；与 #16 同类</td></tr>
+<tr><td class='id'>FBC-U-028</td><td>阶段按钮易误点推进 QA</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>VERIF 运行中「推进到 VERIF」变「推进到 QA」，易误点弹出强推确认</div></td><td>MoonGlass_Linux/phase-UI</td><td>仍开放；当前用户刻意留 VERIF</td></tr>
+<tr><td class='id'>FBC-U-029</td><td>VERIF 门禁红板与进行中工作并存</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>环境刚搭、result 未刷新即显示覆盖率陈旧/0/228/多条 Error 阻断</div></td><td>MoonGlass_Linux/signoff-UI</td><td>仍开放；现签核 CONDITIONALLY_READY 但 UI 红点体验仍相关</td></tr>
+<tr><td class='id'>FBC-U-030</td><td>无 xclip 导致中文输入丢字</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>盒未装 xclip/xsel；xdotool 打中文仍丢字</div></td><td>MoonGlass_Linux/依赖+输入</td><td>仍开放；建议预装 xclip / 可靠粘贴 / IPC 注入</td></tr>
+<tr><td class='id'>DMA-CASE-001</td><td>标题栏「卷起」易误触</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=GUI</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-002</td><td>agentContext.messageCount 与 session 不同步</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-005</td><td>toolResult 后约 3 分钟无进度 UI</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=GUI</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-017</td><td>edit 工具多块重叠整批失败</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=Agent tools</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-025</td><td>ARCH 期间审查会话仍活动</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=Agent lifecycle</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-029</td><td>RTL messageCount 恒 0</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-state</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-031</td><td>Verilator WARNING 非零退出被当致命</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=tool policy</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-044</td><td>冒烟 PASS 后自动拉起 RTL semantic review 并行</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=orchestration</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>FBC-U-001</td><td>新建 vs 导入文案误导</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>新建项目成功却提示「已有项目已导入…」，易被误读为失败</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放：产品文案/UX，与 VERIF 签核无关</td></tr>
+<tr><td class='id'>FBC-U-005</td><td>打开方式不直观（需双击）</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>单击卡片仅选中；无「打开」按钮；需双击名称进入工作区</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-007</td><td>发送按钮点击热区过小</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>点「发送」右侧白边误点背后窗口，对话未发送</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-008</td><td>bash 工具失败仍继续且噪声大</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>工具调用 bash 失败（exit 1）后 edit 成功；失败展示含 SPEC-FUNC id 技术噪声</div></td><td>MoonGlass_Linux/Agent-tools</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-009</td><td>重开工程闪空树</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>短暂「工作目录暂无文件」与「会话启动中…」后才恢复</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-012</td><td>Agent 气泡 Markdown 未渲染</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>表格/标题/加粗以源码显示</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-014</td><td>阶段切换文案串台</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>推进 ARCH 时标题短暂「架构… · phase-req_spec 会话启动中」</div></td><td>MoonGlass_Linux/phase-UI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-017</td><td>推进面板门禁文案滞后</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>已在 ARCH，右侧仍显示 REQ_SPEC 入门禁文案</div></td><td>MoonGlass_Linux/gate-UI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-018</td><td>自动化 DOM 空根（#root）</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>Playwright/localhost:5173 #root 为空；真实 UI 在另一 Electron 窗</div></td><td>MoonGlass_Linux/dev-server</td><td>仍开放；阻塞外部自动化</td></tr>
+<tr><td class='id'>FBC-U-019</td><td>bash 工具偶发 NameError</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>bash 失败 NameError: name &#x27;new2&#x27; is not defined；用户可见失败卡</div></td><td>MoonGlass_Linux/Agent-tools</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-021</td><td>决策卡高于可视区</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>标题/推荐/提交无法同屏；仍需滚动</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放；与 DMA CASE-030 体验相关</td></tr>
+<tr><td class='id'>FBC-U-022</td><td>完成本项后文案误导且不可撤销</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>1/1 完成页脚仍「等待其他确认项」；卡片锁定无撤销</div></td><td>MoonGlass_Linux/decision-UI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-023</td><td>思考过程英文原文倾倒</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>英文原文倾倒进对话</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-024</td><td>会话 Tab 关闭钮易误触</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>关闭钮叠在截断的模型名标签上</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-026</td><td>系统剪贴板注入失败</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>Chromium/Electron 有时忽略 X11 clipboard</div></td><td>MoonGlass_Linux/Electron+环境</td><td>仍开放；与 #6/#30 相关</td></tr>
+<tr><td class='id'>FBC-U-002</td><td>导入副作用说明不全</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>帮助只说补缺目录、不覆盖；未说明写入阶段证据/README/.gitignore 等脚手架</div></td><td>MoonGlass_Linux/docs</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-003</td><td>描述框单行无法审阅长中文</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>长中文描述无法在提交前完整审阅</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-004</td><td>目录行图标无标签</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>文件夹与圆形箭头两图标无文字说明</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-011</td><td>文件树文件名截断</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>如 product_requ…，长文件名难辨认</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-013</td><td>收尾文案计数不一致</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>写「仍开放的两项」却列出三条</div></td><td>Agent 产出 / 可选产品校验</td><td>偏 Agent 幻觉；产品侧可加一致性校验</td></tr>
+<tr><td class='id'>FBC-U-015</td><td>composer 提示笔误</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>「↑/↓ 回调历史」疑为「回顾历史」</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+<tr><td class='id'>FBC-U-020</td><td>思考过程默认展开占空间</td><td><span class="tag c-mg-sw">MG-SW</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>空闲后「思考过程」仍展开在最终答案下</div></td><td>MoonGlass_Linux/GUI</td><td>仍开放</td></tr>
+</tbody></table>
+
+<h2 id="mg-pol">4. MG-POLICY 明细（14）</h2>
+<p>判定标准：产品流程/策略与现场方法论不匹配，表现为「只能 WAIVE / 手工空轮 / 外部脚本」等产品债。</p>
+<table><thead><tr><th>ID</th><th>标题</th><th>类</th><th>严重度</th><th>来源 / 证据摘要</th><th>责任方</th><th>相对当前 VERIF</th></tr></thead><tbody>
+<tr><td class='id'>FBC-POL-005</td><td>审查 findings 未纳入出门禁权威消费</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p0">P0</span></td><td><div class='src'>dma4d CASE-009/011; fbc usability #16/#25</div><div class='q'>审查仍有大量 major pending 时 UI 仍可推进下一阶段；评审后主会话不续跑</div></td><td>MoonGlass_Linux/gate+review</td><td>fbc 与 DMA 两工程均复现同族；产品门禁策略债</td></tr>
+<tr><td class='id'>DMA-CASE-009</td><td>完成与 13 major pending 并存，门禁未消费审查</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate+review</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-011</td><td>审查仍有 13 major 时 UI 可推进 ARCH</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate-UI</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-018</td><td>第 2 轮仍登记 arch-consistency 且并行开审</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=review</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-022</td><td>已进 ARCH 后仍产出 REQ 层 major 且 pending</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=review</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-027</td><td>宣称完成时仍残留 major pending</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=gate+review</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-032</td><td>RTL 无冒烟即汇报其余已完成</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=RTL 出口定义</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-042</td><td>扩写 TC003 使 result.json 整体翻 FAIL</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=冒烟聚合口径</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>FBC-POL-001</td><td>双 Oracle 对 PERF/SEC/AREA/过程类条款一律要求两独立功能域</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/dual_oracle_waiver_draft.md; signoff_blocker_close_plan.md</div><div class='q'>剩余不可诚实双 Oracle 的条款以 RR-WAIVER 关闭；PERF/SEC/VER 过程/静态类缺口诚实缺口→96→WAIVE 40</div></td><td>MoonGlass_Linux/verification-engine 策略</td><td>现场已 WAIVE/CONDITIONALLY_READY；产品债仍在：域分类应允许 ORACLE-STATIC/PERF/FORMAL 而非逼 WAIVE</td></tr>
+<tr><td class='id'>FBC-POL-002</td><td>覆盖率/证据新鲜度按单次 run 口径，与已批准合并口径冲突致红点</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>parent VERIF posture; moonglass_usability.md #29; MG-014 相关</div><div class='q'>VERIF 红点提示覆盖率相对 rtlHash 陈旧，但合并口径已批准；门禁红板与进行中工作并存</div></td><td>MoonGlass_Linux/signoff-freshness</td><td>签核 blockers=[] 仍可能有 UI 陈旧提示；与 backlog MG-014 同源扩展</td></tr>
+<tr><td class='id'>DMA-CASE-007</td><td>REQ 阶段发起 arch-consistency 审查类型可能错位</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=review</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-034</td><td>解卡后 RTL 未空闲即被推进 VERIF</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=phase transition</div></td><td>MoonGlass_Linux</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>FBC-POL-003</td><td>Novelty Saturation 在 snapshot 变更后需人工空轮刷满</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>risk_intent_coverage_11.md; dual_oracle_waiver_draft.md</div><div class='q'>新增 Intent 改变 snapshotId → Novelty 归零；须对同一快照补录 ≥3 轮 NO_PROGRESS</div></td><td>MoonGlass_Linux/exploration-engine</td><td>本工程已 EMPIRICALLY_SATURATED；流程债仍在</td></tr>
+<tr><td class='id'>FBC-POL-004</td><td>IMPACT_UNKNOWN 需外部脚本 bulk-bind 才能清零</td><td><span class="tag c-mg-policy">MG-POLICY</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>signoff_blocker_close_plan.md</div><div class='q'>项目内无独立 impact-regression 脚本；用 refresh_scenario_bindings.py 刷新 hits 后 IMPACT_UNKNOWN 清零</div></td><td>MoonGlass_Linux/evidence-binding</td><td>本工程已清零；缺一等公民绑定 UX</td></tr>
+</tbody></table>
+
+<h2 id="other">5. 非软件类（DESIGN/RTL · VERIF-CONTENT · OPS）</h2>
+<h3>DESIGN/RTL（7）</h3>
+<table><thead><tr><th>ID</th><th>标题</th><th>类</th><th>严重度</th><th>来源 / 证据摘要</th><th>责任方</th><th>相对当前 VERIF</th></tr></thead><tbody>
+<tr><td class='id'>FBC-RR-004</td><td>mode_win_cnt 2^16 wrap 规格未写清</td><td><span class="tag c-design-rtl">DESIGN/RTL</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/residual_risk_disposition.md</div><div class='q'>observation-only，无功能扇出</div></td><td>fbc VERIF/docs</td><td>规格补注；非功能缺陷</td></tr>
+<tr><td class='id'>FBC-REF-001</td><td>llsegfbc_para.h 全局 FILE* 多 TU 重复定义</td><td><span class="tag c-design-rtl">DESIGN/RTL</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/refmodel_notes.md</div><div class='q'>改 extern + debug.c</div></td><td>fbc/refmodel</td><td>已在 refmodel 侧处理（本任务未改代码）</td></tr>
+<tr><td class='id'>FBC-REF-002</td><td>DEBUG_* 仅声明无实现</td><td><span class="tag c-design-rtl">DESIGN/RTL</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/refmodel_notes.md</div><div class='q'>空实现桩</div></td><td>fbc/refmodel</td><td>已在 refmodel 侧处理（本任务未改代码）</td></tr>
+<tr><td class='id'>FBC-REF-003</td><td>Configure 缺 include / void main</td><td><span class="tag c-design-rtl">DESIGN/RTL</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/refmodel_notes.md</div><div class='q'>编译修复</div></td><td>fbc/refmodel</td><td>已在 refmodel 侧处理（本任务未改代码）</td></tr>
+<tr><td class='id'>FBC-REF-004</td><td>D1/D2 log2(0) 位宽爆炸</td><td><span class="tag c-design-rtl">DESIGN/RTL</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/refmodel_notes.md</div><div class='q'>算法特判 msq_bit/start_k=0</div></td><td>fbc/refmodel</td><td>已在 refmodel 侧处理（本任务未改代码）</td></tr>
+<tr><td class='id'>FBC-REF-005</td><td>cfg.c Type2 Place 指针就地推进二次解析写飞</td><td><span class="tag c-design-rtl">DESIGN/RTL</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/refmodel_notes.md</div><div class='q'>一进程一配置无碍</div></td><td>fbc/refmodel</td><td>已在 refmodel 侧处理（本任务未改代码）</td></tr>
+<tr><td class='id'>DMA-CASE-035</td><td>冒烟 TC001 真实 FAIL</td><td><span class="tag c-design-rtl">DESIGN/RTL</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=DUT/TB—DMA IP 内容</div></td><td>dma IP/TB</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+</tbody></table>
+<h3>VERIF-CONTENT（11）</h3>
+<table><thead><tr><th>ID</th><th>标题</th><th>类</th><th>严重度</th><th>来源 / 证据摘要</th><th>责任方</th><th>相对当前 VERIF</th></tr></thead><tbody>
+<tr><td class='id'>FBC-U-027</td><td>smoke README 新旧结论并存</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>表写 GOLDEN PASS，文末旧记录仍写解码未闭合</div></td><td>项目文档（fbc）</td><td>内容问题，非 MG 产品</td></tr>
+<tr><td class='id'>FBC-RR-001</td><td>TC018 harness v1–v3 PREUNSAT/截断 bug 致 formal ERROR 陈旧记录</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/residual_risk_disposition.md</div><div class='q'>superseded by v4；CLOSE-WITH-EVIDENCE</div></td><td>fbc VERIF/docs</td><td>已处置（保留路径）</td></tr>
+<tr><td class='id'>FBC-RR-002</td><td>TC018 v4 BMC d4 深度不足叙事</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>fbc/issues/residual_risk_disposition.md</div><div class='q'>rerun bmc depth 20 PASS；prove 已 PASS</div></td><td>fbc VERIF/docs</td><td>已关闭</td></tr>
+<tr><td class='id'>FBC-RR-003</td><td>Negative-space SCN reset/cfg/counter 五条</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/residual_risk_disposition.md</div><div class='q'>规格已覆盖；建议补 mid-segment reset/cfg 测与 mode_win_cnt wrap 规格注</div></td><td>fbc VERIF/docs</td><td>APPROVE；观测计数 wrap 为唯一规格缺口</td></tr>
+<tr><td class='id'>FBC-WO-001</td><td>40 条双 Oracle INSUFFICIENT 以 RR-WAIVER 关闭（PERF/AREA/SEC/VER/CDC/IF/META/FORMAL）</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dual_oracle_waiver_draft.md</div><div class='q'>criticalInsufficient=0；仍 INSUFFICIENT 但 WAIVED=40；signoff CONDITIONALLY_READY</div></td><td>fbc VERIF 签核</td><td>已落地；非 MG 软件 bug（策略见 FBC-POL-001）</td></tr>
+<tr><td class='id'>FBC-RI-001</td><td>11 个高分风险候选缺 AGENT_INTENT 覆盖</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>risk_intent_coverage_11.md</div><div class='q'>uncoveredRiskCandidates 11→0；11 条 BIND 诚实挂接既有 PASS</div></td><td>fbc VERIF</td><td>已关闭</td></tr>
+<tr><td class='id'>DMA-CASE-003</td><td>文档版本历史写成 2025</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=Agent 产出</div></td><td>dma IP/TB</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-004</td><td>章程 FIFO 默认深度自相矛盾</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=Agent 产出</div></td><td>dma IP/TB</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-010</td><td>规格条数自相矛盾 49 vs 59</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=Agent</div></td><td>dma IP/TB</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-020</td><td>Agent 写入错误未来日期</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=Agent</div></td><td>dma IP/TB</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+<tr><td class='id'>DMA-CASE-040</td><td>冒烟 FAIL 根因 TB golden 索引错误</td><td><span class="tag c-verif-content">VERIF-CONTENT</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=DMA TB</div></td><td>dma IP/TB</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+</tbody></table>
+<h3>OPS（5）</h3>
+<table><thead><tr><th>ID</th><th>标题</th><th>类</th><th>严重度</th><th>来源 / 证据摘要</th><th>责任方</th><th>相对当前 VERIF</th></tr></thead><tbody>
+<tr><td class='id'>FBC-U-031</td><td>覆盖率缺 g++/build-essential</td><td><span class="tag c-ops">OPS</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>fbc/issues/moonglass_usability.md</div><div class='q'>apt 源失败；W3 覆盖率门禁无法 Verilator 覆盖编译</div></td><td>环境/启动脚本</td><td>环境债；产品应预检并降级提示（见 DMA CASE-043）</td></tr>
+<tr><td class='id'>FBC-MAP-001</td><td>scenario_map.py SyntaxError（enc_cfg_mid 落在 dict 外）</td><td><span class="tag c-ops">OPS</span></td><td><span class="tag p1">P1</span></td><td><div class='src'>scenario_map_syntax_fix.md</div><div class='q'>orphan enc_cfg_mid left outside closed W3_SIGNOFF dict；现已收入 L192，py_compile OK</div></td><td>操作员/Agent 内容</td><td>已修复；非 MG 产品缺陷</td></tr>
+<tr><td class='id'>FBC-WATCH-001</td><td>VERIF watch 快照：blockers=2（双 Oracle 96 + Novelty）</td><td><span class="tag c-ops">OPS</span></td><td><span class="tag p3">P3</span></td><td><div class='src'>verif_watch_status.md / verif_watch_live.json</div><div class='q'>2026-11-04 14:15 NOT_READY blockers=2；后续已清</div></td><td>过程记录</td><td>历史快照；当前 CONDITIONALLY_READY blockers=[]</td></tr>
+<tr><td class='id'>FBC-REF-006</td><td>环境无 make / apt 失败</td><td><span class="tag c-ops">OPS</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>fbc/issues/refmodel_notes.md</div><div class='q'>scripts/build.sh</div></td><td>fbc/refmodel</td><td>已在 refmodel 侧处理（本任务未改代码）</td></tr>
+<tr><td class='id'>DMA-CASE-038</td><td>cocotb sys.executable 与 tabbypy3 不一致</td><td><span class="tag c-ops">OPS</span></td><td><span class="tag p2">P2</span></td><td><div class='src'>dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html</div><div class='q'>子系统=工具链</div></td><td>环境</td><td>DMA 探针 2026-10-29 记录；与 fbc 易用性多处同族复现→产品级</td></tr>
+</tbody></table>
+
+<h2 id="sources">6. 源文件与离散条目</h2>
+<table>
+<thead><tr><th>源文件</th><th>角色</th><th>本报告条目</th></tr></thead>
+<tbody>
+<tr><td><a href="moonglass_usability.md">moonglass_usability.md</a></td><td>fbc 开发过程易用性主账</td><td>FBC-U-001…031</td></tr>
+<tr><td><a href="residual_risk_disposition.md">residual_risk_disposition.md</a></td><td>formal/negative-space 处置</td><td>FBC-RR-001…004</td></tr>
+<tr><td><a href="dual_oracle_waiver_draft.md">dual_oracle_waiver_draft.md</a></td><td>双 Oracle WAIVE 草案</td><td>FBC-WO-001 + 支撑 FBC-POL-001</td></tr>
+<tr><td><a href="signoff_blocker_close_plan.md">signoff_blocker_close_plan.md</a></td><td>签核阻断清零计划</td><td>支撑 FBC-POL-001/004；历史 OPS</td></tr>
+<tr><td><a href="verif_watch_status.md">verif_watch_status.md</a> / live.json</td><td>短窗 watch 快照</td><td>FBC-WATCH-001</td></tr>
+<tr><td><a href="scenario_map_syntax_fix.md">scenario_map_syntax_fix.md</a></td><td>map 语法修复笔记</td><td>FBC-MAP-001（OPS）</td></tr>
+<tr><td><a href="refmodel_notes.md">refmodel_notes.md</a></td><td>参考模型编译/算法坑</td><td>FBC-REF-001…006</td></tr>
+<tr><td><a href="risk_intent_coverage_11.md">risk_intent_coverage_11.md</a> + payload/result</td><td>11 风险 Intent 收口</td><td>FBC-RI-001（已关）</td></tr>
+<tr><td><a href="/workspace/moonglass/dma4d_probe/MoonGlass_npu_dma_4d_问题报告.html">MoonGlass_npu_dma_4d_问题报告.html</a></td><td>同源可用性/门禁追踪流（DMA）</td><td>DMA-CASE-001…044</td></tr>
+</tbody>
+</table>
+
+<h2 id="backlog">7. 建议进入 feature backlog 的项（只列表，未改 backlog）</h2>
+<div class="note">现有 <a href="/workspace/moonglass/moonglass_feature_backlog.html">moonglass_feature_backlog.html</a> 为 MG-001…044（市场/平台/MCP/工程状态）。
+下列易用性/门禁项<strong>不是</strong>已有 ID 的清晰重复；与 MG-010/014/028 仅主题相关。本任务<strong>未编辑</strong> backlog。</div>
+<table>
+<thead><tr><th>建议新 ID</th><th>标题</th><th>映射本报告</th><th>与现有 MG 关系</th></tr></thead>
+<tbody>
+<tr><td class='id'>MG-045</td><td>门禁消费审查 findings（major pending 禁止推进；评审后自动续跑/决策卡）</td><td>FBC-POL-005, FBC-U-016, FBC-U-025, DMA-CASE-009, DMA-CASE-011, DMA-CASE-019, DMA-CASE-024</td><td>部分触及 MG-028/MG-010，但现 backlog 无「审查↔门禁」专项</td></tr><tr><td class='id'>MG-046</td><td>阶段 deliverables/gateCheckResults/messageCount 与工作区事实同步</td><td>FBC-U-010, DMA-CASE-006, DMA-CASE-014, DMA-CASE-015, DMA-CASE-028, DMA-CASE-041</td><td>贴近 MG-010 工程状态事实源</td></tr><tr><td class='id'>MG-047</td><td>阶段切换杀停上阶段 Agent；禁止 VERIF 写 rtl/</td><td>DMA-CASE-037, DMA-CASE-039, DMA-CASE-034</td><td>无现成 MG-xxx</td></tr><tr><td class='id'>MG-048</td><td>证据语义：probe 失败不得 PASS；覆盖率回退可见；合并覆盖率新鲜度</td><td>DMA-CASE-036, DMA-CASE-043, FBC-U-029, FBC-POL-002</td><td>扩展 MG-014</td></tr><tr><td class='id'>MG-049</td><td>多 Oracle 域分类（FUNC/FORMAL/STATIC/PERF/PROCESS）减少假双 Oracle 缺口</td><td>FBC-POL-001, FBC-WO-001</td><td>无</td></tr><tr><td class='id'>MG-050</td><td>Composer 中文 IME/剪贴板可靠输入 + 预装 xclip</td><td>FBC-U-006, FBC-U-026, FBC-U-030</td><td>无；Linux 平台相关 MG-001</td></tr><tr><td class='id'>MG-051</td><td>决策卡：可忽略 finding 默认策略、可视区、可撤销</td><td>DMA-CASE-030, FBC-U-021, FBC-U-022</td><td>无</td></tr><tr><td class='id'>MG-052</td><td>阶段推进按钮防误触（VERIF 中不改标成推进 QA）+ 门禁文案跟阶段</td><td>FBC-U-028, FBC-U-014, FBC-U-017</td><td>无</td></tr><tr><td class='id'>MG-053</td><td>Novelty/探索轮在 snapshot 微调后的继承或一键确认</td><td>FBC-POL-003</td><td>无</td></tr><tr><td class='id'>MG-054</td><td>场景 hit 一等公民绑定 UI（替代手工 refresh 脚本清 IMPACT_UNKNOWN）</td><td>FBC-POL-004</td><td>无</td></tr>
+</tbody>
+</table>
+
+<h2 id="json">8. 机读 JSON</h2>
+<p><a href="moonglass_software_issues.json"><code>moonglass_software_issues.json</code></a> — 含全部条目字段与 backlogCandidates。</p>
+
+<div class="footer">生成于 box · 分类口径：JUDGE intent — 用户用答案找「真 MoonGlass 软件问题」而非把 waiver/RTL 坑算进产品缺陷。</div>
+</body></html>

@@ -41,6 +41,7 @@ import { applyScenarioAvoidance, isDiagnosticStalled, isTransientSessionError, j
 import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixAuditRelativePath, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { appendRtlFixOutcome, readRtlFixOutcomeLedger } from './rtl-fix-outcome-ledger.ts'
+import { mergeFindingsAcrossRounds, pendingMajorCount, readDesignReviewFindings } from './design-review.ts'
 import { readScenarioChannelSnapshot, readScenarioLabels, readVerifLoopLedger, updateVerifLoopLedger, type VerifBatchLoopLedger } from './verif-loop-ledger.ts'
 import {
   applyRunLoopBudgetOverrides,
@@ -443,6 +444,81 @@ export function buildDesignReviewDispatchPlan(input: { type: string; scope: stri
     ''
   ].join('\n')
   return { phase, sessionNameBase: `${phaseMainSessionName(phase)}--review-${input.type}`, prompt, reportRelPath, findingsRelPath }
+}
+
+/**
+ * 审查会话正常 settle 后的主会话续跑（§8 派发链收尾，dispatchDesignReviewSession 调用）：
+ * 向发起该 review 的会话投递一条跟进消息（复用 pi prompt 投递，与 startTask/prompt 同一
+ * RPC 命令 `command({ type: 'prompt', message })`），让 settle 后主会话知道接着干什么。
+ * 消息内容含：审查报告路径、发现清单路径、pending major 计数（跨轮合并口径，清单缺失按 0 计）、
+ * 下一步指令（按发现清单逐项处置：fixed/waived/pending 三态，处置完阶段出口门禁自然通过）。
+ *
+ * 投递纪律（调用契约）：
+ * - 仅在正常 settle 分支调用（异常 / watchdog 熔断走 markDesignReviewRequestError，不投递）；
+ * - 防重：newlyConsumed 是 markDesignReviewRequestConsumed 的返回值，只有本次 settle 新消费了
+ *   请求才投递，幂等重复结算 / consumed 落盘失败一律不投（同一 review 请求只续跑一次）；
+ * - 发起会话已 dispose / 不在线（sourceAlive=false 或 target=null）或忙碌（未就绪 / 正在流式）
+ *   时不投递，只经 emitStatus 落一条状态消息留痕，绝不抛错——续跑是增强能力，不能炸主流程；
+ * - send / emitStatus 均为注入出口（真实实现分别为 pi prompt 命令与 emit status），
+ *   send 同步抛错会被吞掉并降级为 send-failed 状态消息。
+ *
+ * 返回投递结果，供调用方记日志与 smoke 断言：
+ * 'delivered' 已投递；'skipped-not-consumed' 防重闸未过；'skipped-source-gone' 发起会话不在线；
+ * 'skipped-source-busy' 发起会话忙碌；'send-failed' 投递出口抛错（已降级记录）。
+ */
+export function runDesignReviewFollowUp(input: {
+  /** 防重闸：markDesignReviewRequestConsumed 本次是否新消费了请求（true 才允许投递） */
+  newlyConsumed: boolean
+  /** 发起会话是否仍在线（前台同一对象或仍挂后台；dispose 后为 false） */
+  sourceAlive: boolean
+  /** 发起会话就绪/流式状态快照；sourceAlive=false 时传 null */
+  target: { ready: boolean; isStreaming: boolean } | null
+  type: string
+  round: number
+  reviewSessionName: string
+  model: string
+  reportRelPath: string
+  findingsRelPath: string
+  /** 项目工作目录（读取发现清单统计 pending major 用） */
+  workspace: string
+  /** 消息投递出口：真实实现为 pi prompt 命令（fire-and-forget，异步拒绝由调用方兜底） */
+  send: (message: string) => void
+  /** 状态消息出口：真实实现为 emit status；实现方保证不抛 */
+  emitStatus: (message: string) => void
+}): 'delivered' | 'skipped-not-consumed' | 'skipped-source-gone' | 'skipped-source-busy' | 'send-failed' {
+  // 防重闸：consumed 未新写入（幂等重复结算 / 落盘失败）不投递，同一请求只续跑一次
+  if (!input.newlyConsumed) return 'skipped-not-consumed'
+  // 清单统计走 design-review.ts 归一化口径：坏 JSON / 缺文件按 0 计，绝不抛
+  const findings = readDesignReviewFindings(input.workspace, input.findingsRelPath.replaceAll('\\', '/'))
+  const merged = findings ? mergeFindingsAcrossRounds(findings) : []
+  const pendingMajor = pendingMajorCount(findings)
+  const reportPath = input.reportRelPath.replaceAll('\\', '/')
+  const findingsPath = input.findingsRelPath.replaceAll('\\', '/')
+  const message = [
+    `[MoonGlass 编排] 独立审查会话 ${input.reviewSessionName} 已正常完成（${input.type} 第 ${input.round} 轮，模型 ${input.model}）`,
+    `- 审查报告：${reportPath}`,
+    `- 发现清单：${findingsPath}（共 ${merged.length} 条发现，其中 pending major ${pendingMajor} 条）`,
+    '下一步：按发现清单逐项处置每条发现——处置只能是三态之一：fixed（已修复）/ waived（豁免，须写明理由）/ pending（暂不处置），处置结论回写到发现清单的「处置」字段；全部发现处置到非 pending 后，阶段出口门禁自然通过，无需其他操作。'
+  ].join('\n')
+  const summary = `报告 ${reportPath}，发现清单 ${findingsPath}（共 ${merged.length} 条发现，pending major ${pendingMajor} 条）`
+  if (!input.sourceAlive || !input.target) {
+    // 发起会话已 dispose / 不在线：只落状态消息留痕，不抛错（不能因续跑失败把流程炸了）
+    input.emitStatus(`${input.type} 独立审查已完成（${summary}），但发起会话已结束或不在线，跟进指令未投递；请回到 ${input.type === 'arch-consistency' ? 'ARCH' : 'RTL'} 阶段会话查看审查产物，并按发现清单逐项处置。`)
+    return 'skipped-source-gone'
+  }
+  if (!input.target.ready || input.target.isStreaming) {
+    input.emitStatus(`${input.type} 独立审查已完成（${summary}），但发起会话${input.target.isStreaming ? '正在处理其他任务' : '尚未就绪'}，本次未投递跟进指令；审查产物已落盘，可稍后要求该会话按发现清单逐项处置。`)
+    return 'skipped-source-busy'
+  }
+  try {
+    input.send(message)
+    input.emitStatus(`${input.type} 审查跟进已送达发起会话：${summary}。`)
+    return 'delivered'
+  } catch (error) {
+    // 投递出口同步抛错：降级为状态消息留痕，绝不向上抛
+    input.emitStatus(`${input.type} 审查跟进投递失败（${error instanceof Error ? error.message : String(error)}）；审查产物已落盘（${summary}），可手动要求会话按发现清单逐项处置。`)
+    return 'send-failed'
+  }
 }
 
 export class AgentService implements MoonGlassService {
@@ -2965,9 +3041,12 @@ argument-hint: "<模块名>"
         failRequest(`审查会话被 watchdog 熔断：${run.watchdogAbort}`)
         this.emit(projectId, { type: 'error', message: `${request.type} 审查会话被 watchdog 熔断：${run.watchdogAbort}（请求保持未消费，可重新发起）` }, source.activeSessionName)
       } else {
-        // settle 后标记该请求 consumed（带 settledAt / 会话名 / 模型身份）
+        // settle 后标记该请求 consumed（带 settledAt / 会话名 / 模型身份）；
+        // 返回值同时是续跑防重闸：只有本次 settle 新消费了请求才向发起会话投递跟进
+        // （幂等重复结算 / 落盘失败一律不投，同一 review 请求只续跑一次）
+        let newlyConsumed = false
         try {
-          markDesignReviewRequestConsumed(workspace, request.type, { sessionName, model, settledAt })
+          newlyConsumed = markDesignReviewRequestConsumed(workspace, request.type, { sessionName, model, settledAt })
         } catch (markError) {
           console.error('[agent-service] review-request.json consumed 标记落盘失败', markError)
         }
@@ -2975,6 +3054,9 @@ argument-hint: "<模块名>"
           type: 'status',
           message: `${request.type} 独立审查会话 ${sessionName} 已完成（模型 ${model}）：报告 ${plan.reportRelPath.replace(/\\/g, '/')}，发现清单 ${plan.findingsRelPath.replace(/\\/g, '/')}；请按发现清单逐条处置发现。`
         }, source.activeSessionName)
+        // 正常 settle → 向发起该 review 的会话续跑跟进（异常 / 熔断分支走 failRequest，不投递）；
+        // 发起会话不在线 / 忙碌时内部降级为状态消息留痕，绝不影响本会话收尾
+        this.resumeAfterDesignReview(projectId, source, request, plan, sessionName, model, newlyConsumed)
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
@@ -2994,6 +3076,49 @@ argument-hint: "<模块名>"
         if (activeMap.get(request.type) === sessionName) activeMap.delete(request.type)
         if (activeMap.size === 0) this.activeDesignReviews.delete(projectId)
       }
+    }
+  }
+
+  /**
+   * 审查 settle 后续跑（§8 派发链收尾）：向发起该 review 的会话（parentSession 血缘来源）
+   * 投递跟进消息。会话在线判定沿用 RTL 修复判定送达口径：前台同一对象或仍挂后台（切阶段
+   * park 的会话可后台续跑）视为在线；投递复用 pi prompt 命令（与 startTask/prompt 同一
+   * RPC 通道），fire-and-forget，异步拒绝仅告警。整体 try/catch 兜底 + 纯函数内部分级降级：
+   * 发起会话 dispose / 不在线 / 忙碌 / 投递失败都只落状态消息留痕，绝不把派发收尾炸掉。
+   */
+  private resumeAfterDesignReview(
+    projectId: string,
+    source: PiSession,
+    request: DesignReviewDispatchRequest,
+    plan: DesignReviewDispatchPlan,
+    reviewSessionName: string,
+    model: string,
+    newlyConsumed: boolean
+  ): void {
+    try {
+      const sourceAlive = this.sessions.get(projectId) === source
+        || this.backgroundSessions.get(projectId)?.get(resolve(source.currentSessionFile)) === source
+      runDesignReviewFollowUp({
+        newlyConsumed,
+        sourceAlive,
+        target: sourceAlive ? { ready: source.ready, isStreaming: source.isStreaming } : null,
+        type: request.type,
+        round: request.round,
+        reviewSessionName,
+        model,
+        reportRelPath: plan.reportRelPath,
+        findingsRelPath: plan.findingsRelPath,
+        workspace: this.workspaceDir(projectId),
+        send: (message) => {
+          void source.client.command({ type: 'prompt', message }, 15 * 60_000)
+            .catch((error) => console.warn('[agent-service] 审查跟进消息发送失败', error))
+        },
+        emitStatus: (message) => {
+          this.emit(projectId, { type: 'status', message }, source.activeSessionName)
+        }
+      })
+    } catch (error) {
+      console.warn('[agent-service] 审查 settle 后续跑失败（仅记录，不影响主流程）', error)
     }
   }
 
