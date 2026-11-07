@@ -84,7 +84,11 @@ export const verifRun: Messages['verifRun'] = {
     stopCriteriaLabel: 'Stop criteria',
     evidenceCount: '{count} evidence refs',
     approve: 'Approve',
+    approveExecute: 'Approve & Execute',
     reject: 'Reject',
+    approveHint: 'Execute this proposal and resume the loop',
+    rejectHint: 'Do not execute; the loop pauses and waits for your guidance',
+    decideHint: 'Approve = run this proposal next; Reject = do not run it, loop pauses for your call',
     deciding: 'Submitting…',
     historyTitle: 'Decision history ({count})',
     outcome: {

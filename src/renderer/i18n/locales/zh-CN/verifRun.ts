@@ -84,7 +84,11 @@ export const verifRun = {
     stopCriteriaLabel: '停止条件',
     evidenceCount: '证据 {count} 条',
     approve: '批准',
+    approveExecute: '批准并执行',
     reject: '否决',
+    approveHint: '按此提案派发执行，循环恢复推进',
+    rejectHint: '不执行该提案，循环暂停并等待你的进一步指示',
+    decideHint: '批准 = 按此提案执行下一步；否决 = 不执行，循环暂停待人处置',
     deciding: '提交中…',
     historyTitle: '决策历史（{count}）',
     outcome: {

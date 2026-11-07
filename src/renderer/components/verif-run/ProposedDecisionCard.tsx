@@ -75,14 +75,16 @@ export function ProposedDecisionCard({ decision, onDecide }: ProposedDecisionCar
     <div className="mt-2 flex items-center gap-2">
       {!detailsOpen && <span className="text-[10px] text-zinc-400">{t('verifRun.loop.evidenceCount', { count: decision.evidenceRefs.length })}</span>}
       <div className="ml-auto flex gap-2">
-        <button type="button" onClick={() => void decide('approved')} disabled={busy} className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
-          <Check size={12} />{t('verifRun.loop.approve')}
+        <button type="button" onClick={() => void decide('approved')} disabled={busy} title={t('verifRun.loop.approveHint')} className="inline-flex items-center gap-1 rounded border border-emerald-300 bg-white px-2.5 py-1 text-xs font-medium text-emerald-700 hover:bg-emerald-50 disabled:opacity-50">
+          <Check size={12} />{t('verifRun.loop.approveExecute')}
         </button>
-        <button type="button" onClick={() => void decide('rejected')} disabled={busy} className="inline-flex items-center gap-1 rounded border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50">
+        <button type="button" onClick={() => void decide('rejected')} disabled={busy} title={t('verifRun.loop.rejectHint')} className="inline-flex items-center gap-1 rounded border border-red-300 bg-white px-2.5 py-1 text-xs font-medium text-red-700 hover:bg-red-50 disabled:opacity-50">
           <X size={12} />{t('verifRun.loop.reject')}
         </button>
       </div>
     </div>
+    {/* 操作语义提示：让"批准/否决意味着什么"不靠猜（实测用户疑惑点） */}
+    <p className="mt-1.5 text-[10px] text-zinc-400">{t('verifRun.loop.decideHint')}</p>
     {error && <p className="mt-2 rounded border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11px] text-red-700">{error}</p>}
   </div>
 }
