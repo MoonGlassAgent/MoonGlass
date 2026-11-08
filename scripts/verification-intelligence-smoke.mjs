@@ -725,4 +725,41 @@ const staticFailScenario = staticFailBuild.verificationState.scenarios.find((sce
 if (staticFailScenario?.status !== 'FAILED' || staticFailScenario.state.judgment !== 'FAIL' || staticFailScenario.state.closure === 'VERIFIED') throw new Error(`BUG-VERIF-BATCH-001 ③：static FAIL（最新登记）未生效或被 sim PASS 抬升：${staticFailScenario?.status}/${staticFailScenario?.state.judgment}`)
 rmSync(staticChannelRoot, { recursive: true, force: true })
 
+// ===== 过程/性能义务通道分类修复（实测 DEC-53D87167：IMP/PERF/PWR 条款漏判进 simulation → 验证侧反复弹决策）=====
+const obligationRoot = mkdtempSync(join(tmpdir(), 'moonglass-obligation-channel-'))
+mkdirSync(join(obligationRoot, 'docs', '02_requirements'), { recursive: true })
+mkdirSync(join(obligationRoot, 'rtl'), { recursive: true })
+writeFileSync(join(obligationRoot, 'docs', '02_requirements', 'product_requirements.md'), `
+# 实测卡片原文措辞（DEC-53D87167）
+- SPEC-IMP-001 P1: MBIST 方案评审必须通过并归档评审记录。
+- SPEC-IMP-002 P1: DFT 报告必须无违例。
+- SPEC-IMP-004 P1: 多配置编译必须通过（配置矩阵全量构建）。
+- SPEC-IMP-005 P1: CR 值必须满足指标要求。
+- SPEC-PERF-001 P0: M2M 带宽利用率不低于 80%。
+- SPEC-PERF-002 P0: 多通道访问不得出现饥饿。
+- SPEC-PWR-001 P1: 功耗必须满足功耗预算要求。
+- SPEC-PWR-002 P1: 静态功耗与动态功耗必须分别统计。
+- SPEC-PWR-003 P1: 漏电功耗必须单独评估。
+- SPEC-FUNC-001 P0: 读写的数据必须保持一致。
+`, 'utf-8')
+writeFileSync(join(obligationRoot, 'rtl', 'dummy.v'), 'module dummy(input a, output b); assign b = a; endmodule\n', 'utf-8')
+writeFileSync(join(obligationRoot, 'rtl', 'design.json'), JSON.stringify({ topModule: 'dummy', filelist: 'filelist.f' }), 'utf-8')
+const obligationBuild = buildVerificationIntelligence(obligationRoot)
+const obligationClauses = obligationBuild.requirementModel.requirements
+// 全部 9 条过程/性能义务 → synthesis 通道（VERIF 分母排除、acceptancePhase=SYNTH）
+const nonFuncClauses = obligationClauses.filter((item) => !item.id.startsWith('SPEC-FUNC'))
+if (!nonFuncClauses.every((item) => item.channel === 'synthesis')) {
+  throw new Error(`过程/性能义务漏判进非 synthesis 通道：${nonFuncClauses.map((item) => `${item.id}=${item.channel}`).join('、')}`)
+}
+// 功能行为条款仍归 simulation（宁漏勿冤不被误扩）
+if (obligationClauses.find((item) => item.id === 'SPEC-FUNC-001')?.channel !== 'simulation') throw new Error('功能行为条款仍应归 simulation（宁漏勿冤）')
+const obligationMapping = obligationBuild.verificationState.specMapping
+if (obligationMapping.clauseTotal !== 1) throw new Error(`过程/性能义务不应计入 VERIF 分母：clauseTotal=${obligationMapping.clauseTotal}`)
+if (obligationMapping.synthesisClauseTotal !== 9) throw new Error(`synthesis 单列计数错误：${obligationMapping.synthesisClauseTotal}`)
+if (!obligationMapping.clauses.filter((item) => item.channel === 'synthesis').every((item) => item.acceptancePhase === 'SYNTH')) throw new Error('过程/性能义务的 acceptancePhase 应为 SYNTH')
+// 不为它们派生 basic 仿真候选（不产生"激励缺失"类验证缺口/工程师裁决）
+const derivedForObligation = obligationBuild.verificationState.scenarios.filter((scenario) => /SPEC-(?:IMP|PERF|PWR)/.test(scenario.reason || scenario.id))
+if (derivedForObligation.length !== 0) throw new Error(`过程/性能义务不应派生仿真场景候选：${derivedForObligation.map((scenario) => scenario.id).join('、')}`)
+rmSync(obligationRoot, { recursive: true, force: true })
+
 console.log(`Verification Intelligence smoke passed: ${second.risks.length} risks, ${second.verificationState.scenarioCount} scenarios`)

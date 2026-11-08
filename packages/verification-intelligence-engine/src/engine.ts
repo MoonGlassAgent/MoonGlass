@@ -290,9 +290,28 @@ const STATIC_CLAUSE_RULES: Array<{ pattern: RegExp; reason: string }> = [
   { pattern: /结构检查|静态检查|可综合性检查/i, reason: '命中结构/静态检查类措辞' }
 ]
 
+/**
+ * 过程/性能义务规则（实测漏判：DEC-53D87167 的 13 条 IMP/PERF/PWR 条款——
+ * MBIST 方案评审、DFT 报告无违例、多配置编译、CR 值、M2M 带宽、多通道无饥饿、PWR——
+ * 不含"面积 X mm²/时序 Y ns"措辞而漏判进 simulation，顶层端口无可观测信号，
+ * 仿真永远跑不出 PASS，被迫升级为工程师裁决）。
+ * 这些义务由 SYNTH/QA 闭环（acceptancePhase=SYNTH，VERIF 分母排除），不需要数值目标。
+ * 宁漏勿冤：仅命中明确的评审/构建/性能/功耗义务措辞才改判；功能行为措辞不在此列。
+ */
+const SYNTHESIS_OBLIGATION_RULES: Array<{ pattern: RegExp; reason: string }> = [
+  { pattern: /方案评审|设计评审|评审报告|评审记录|无违例|无违规|合规报告/i, reason: '过程/评审类义务（评审与合规报告由 QA/SYNTH 闭环，不产生仿真缺口）' },
+  { pattern: /多配置编译|配置矩阵|编译配置|多配置.*(?:编译|构建)/i, reason: '多配置编译/构建义务（SYNTH 通道）' },
+  { pattern: /\bCR\s*值|压缩比|compression\s*ratio/i, reason: 'CR/压缩比性能目标（SYNTH 通道）' },
+  { pattern: /带宽|吞吐率?|饥饿|公平性/i, reason: '带宽/吞吐/公平性性能义务（SYNTH 通道）' },
+  { pattern: /功耗|静态功耗|动态功耗|漏电|\bpower\b/i, reason: '功耗义务（SYNTH 通道）' }
+]
+
 function classifyChannel(text: string): { channel: SpecClauseChannel; reason: string } {
   if (SYNTHESIS_CLAUSE_KEYWORD.test(text) && SYNTHESIS_NUMERIC_TARGET.test(text)) {
     return { channel: 'synthesis', reason: '命中 PPA 数值目标措辞（面积/时序/功耗/门数/频率）' }
+  }
+  for (const rule of SYNTHESIS_OBLIGATION_RULES) {
+    if (rule.pattern.test(text)) return { channel: 'synthesis', reason: rule.reason }
   }
   for (const rule of STATIC_CLAUSE_RULES) {
     if (rule.pattern.test(text)) return { channel: 'static', reason: rule.reason }
