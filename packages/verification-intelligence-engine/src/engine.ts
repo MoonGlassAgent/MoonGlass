@@ -1697,6 +1697,11 @@ function scenarioHits(workspace: string, currentRtlHash?: string): Map<string, S
 /** 执行派生状态：只能由仿真/Formal 证据自动派生，recordScenarioAdjudication 拒绝宣布。 */
 const EXECUTION_DERIVED_STATUS: ScenarioStatus[] = ['VERIFIED', 'FAILED', 'REACHED', 'NOT_REACHED', 'PARTIAL', 'FORMAL_PROVED', 'FORMAL_UNREACHABLE']
 
+/** 裁决持久化状态（另一团队 TDD 口径）：WAIVED（豁免）/BLOCKED_BY_SPEC（规格阻断）。
+ * 这些是工程师具名裁决，具有终局性——后续即使产生更新的 FAIL hit，也不得回写为 FAILED；
+ * hit 仅作执行事实透传（evidence/failureSummary 照常保留），不推翻裁决。 */
+const ADJUDICATION_STICKY_STATUS: ScenarioStatus[] = ['WAIVED', 'BLOCKED_BY_SPEC']
+
 /**
  * BUG-VERIF-BATCH-001 §3.4 场景级闭环通道匹配：
  * method='static' 的场景只认 channel='static' 的 hit；通道不匹配的 hit 对该场景视同无 hit——
@@ -1730,7 +1735,10 @@ function refreshScenarioWithHits(item: VerificationScenario, hits: ReturnType<ty
   const adjudicatedAt = Date.parse(item.adjudicatedAt ?? '')
   const decisionIsNewer = Number.isFinite(adjudicatedAt) && adjudicatedAt > (hit?.observedAt ?? 0)
   const keepDecision = Boolean(hit) && decisionIsNewer && !EXECUTION_DERIVED_STATUS.includes(item.status)
-  let status = keepDecision ? item.status : (hit?.status ?? item.status)
+  // 裁决持久化：WAIVED/BLOCKED_BY_SPEC 为具名终局裁决，即使 hit 更新也保持原裁决；
+  // 其余状态维持"裁决晚于证据则裁决生效、否则证据优先"的既有口径
+  const sticky = ADJUDICATION_STICKY_STATUS.includes(item.status)
+  let status = sticky ? item.status : (keepDecision ? item.status : (hit?.status ?? item.status))
   const rtlChanged = Boolean(item.rtlHash && item.rtlHash !== rtlHash)
   // BUG-AIGV-001 D2/R4：hit 自身 rtlHash 陈旧即判 IMPACT_UNKNOWN 并触发降级，不回退历史 state
   const staleHit = Boolean(hit && hit.rtlHash && hit.rtlHash !== rtlHash)
