@@ -46,7 +46,7 @@
     "vite": "^7.0.0"
   },
   "dependencies": {
-    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.5.2",
     "@electron-toolkit/utils": "^4.0.0",
     "@monaco-editor/react": "^4.7.0",
     "@moonglass/design-browser-engine": "workspace:*",
