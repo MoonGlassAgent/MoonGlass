@@ -10,8 +10,8 @@
  * → 修复会话 settle 后用 judgeRtlFixOutcome 判定回归结果并回送来源会话。
  */
 
-import { readdirSync, readFileSync, type Dirent } from 'node:fs'
-import { join } from 'node:path'
+import { existsSync, readdirSync, readFileSync, type Dirent } from 'node:fs'
+import { join, resolve } from 'node:path'
 
 /** 修复会话的触发记录：record_root_cause verdict=confirmed 工具结果（result.details.record 子集）。 */
 export interface PendingRtlFix {
@@ -52,6 +52,46 @@ export function extractConfirmedRtlFix(event: Record<string, unknown>): PendingR
     fix: String(record.fix ?? ''),
     failureSignature: String(record.failureSignature ?? ''),
     evidence: Array.isArray(record.evidence) ? record.evidence.map(String) : []
+  }
+}
+
+/**
+ * 修复派单前置过滤（fix-dispatch-filter 变更一，2026-11-11）：
+ * scenario-registry 中当前裁决状态为 BLOCKED_BY_SPEC 或 WAIVED 的 Scenario，一律不得进入
+ * fix-regressions / RTL 修复会话派发队列——即使同 testcase 再次产生 FAIL hit，证据照常落
+ * scenario_hits.json（仅作证据登记），也不触发派单。FAIL hit 对这类场景已由引擎
+ * refreshScenarioWithHits 保证不回写 registry status（判断类裁决持久优先级，变更二），
+ * 本门禁是派发侧的独立前置过滤（纵深防御，读最新 registry，防登记后裁决的竞态）。
+ *
+ * 专门门禁语义：BLOCKED_BY_SPEC 场景（如 SCN-8A521B7D，悬置决策卡
+ * spec-sched-002b-lookahead-feature-r2）只要裁决未被改变，持续阻断派单；决策卡返回并
+ * 据此重新裁决后（转 PLANNED 走 W2 增补验证 / 更新条款重新派生 / 版本化规格解除阻断，
+ * 或 WAIVED 具名豁免），本过滤随 registry status 自动恢复或维持对应通道。
+ */
+export type FixDispatchGate =
+  | { blocked: false }
+  | { blocked: true; status: string; reason: string }
+
+/** 判断类裁决状态集合：这些状态的场景不得因 FAIL hit / FAILED 派生状态进入修复派单。 */
+const FIX_DISPATCH_EXCLUDED_STATUSES = new Set(['BLOCKED_BY_SPEC', 'WAIVED'])
+
+export function judgeFixDispatchGate(workspaceDir: string, scenarioId: string): FixDispatchGate {
+  const target = scenarioId.toUpperCase()
+  const registryPath = join(resolve(workspaceDir), 'verification', 'intelligence', 'scenario-registry.json')
+  if (!existsSync(registryPath)) return { blocked: false }
+  try {
+    const registry = JSON.parse(readFileSync(registryPath, 'utf-8')) as { scenarios?: Array<{ id?: unknown; status?: unknown }> }
+    const scenario = (registry.scenarios ?? []).find((item) => String(item.id ?? '').toUpperCase() === target)
+    if (!scenario) return { blocked: false }
+    const status = String(scenario.status ?? '')
+    if (!FIX_DISPATCH_EXCLUDED_STATUSES.has(status)) return { blocked: false }
+    return {
+      blocked: true,
+      status,
+      reason: `场景 ${target} 当前裁决状态为 ${status}（判断类裁决，FAIL hit 仅作证据登记）；仅当用户经决策卡/具名审批改变裁决后才恢复派单评估`
+    }
+  } catch {
+    return { blocked: false }
   }
 }
 
