@@ -162,8 +162,64 @@ export const IPC = {
     Elaborate: 'design-browser:elaborate',
     GetCached: 'design-browser:get-cached',
     ReadSource: 'design-browser:read-source'
+  },
+  Board: {
+    /** 流程看板归一模型（BOARD-AND-REVIEW-CLOSED-LOOP 片 B）：主进程读既有账本归一，只读视图 */
+    GetModel: 'board:get-model'
   }
 } as const
+
+// ==================== 流程看板统一卡片模型（设计文档 BOARD-AND-REVIEW-CLOSED-LOOP §2） ====================
+// 类型集中定义在本契约文件（shared 侧唯一来源）：board-model.ts（主进程归一器）与
+// preload/renderer 共用同一份形状；数据全部来自既有账本，不新造数据管道。
+
+/** 看板任务类型：批次 / RTL 修复 / 设计审查 / 模块 UT / 决策提案 / 验证运行循环 */
+export type BoardTaskKind = 'batch' | 'rtl-fix' | 'design-review' | 'module-ut' | 'decision' | 'run-loop'
+
+/** 任务状态五类：成功 / 进行中 / 要求修改 / 待人 / 未开始 */
+export type BoardTaskStatus = 'success' | 'running' | 'needs-fix' | 'pending-human' | 'not-started'
+
+/** 尝试判定：success / failed / no-evidence / circuit-broken / error / running */
+export type BoardAttemptVerdict = 'success' | 'failed' | 'no-evidence' | 'circuit-broken' | 'error' | 'running'
+
+/** 单次尝试记录（每次派发一次新会话 = 一次 attempt） */
+export interface BoardAttempt {
+  /** 第几次尝试（从 1 起，按派发时间升序） */
+  index: number
+  /** provider/model（取账本登记的会话实际用模；账本未登记留空串） */
+  model: string
+  verdict: BoardAttemptVerdict
+  /** 派发时刻（ISO；账本未登记留空串） */
+  startedAt: string
+  /** 结算时刻（未结算缺省） */
+  settledAt?: string
+  /** 一句话判定理由（FAIL 指纹/no-evidence 原因等） */
+  note?: string
+}
+
+/** 看板任务卡（稳定 id：batch-N / RC-* / DEC-* / review-<type>-<round> / ut-<module> / run-loop） */
+export interface BoardTask {
+  id: string
+  kind: BoardTaskKind
+  /** 任务一句话（场景标题/根因/审查类型/动作指令） */
+  title: string
+  phase: Phase
+  status: BoardTaskStatus
+  /** 每次派发一次新会话 = 一次 attempt（按时间升序） */
+  attempts: BoardAttempt[]
+}
+
+/** 看板阶段列（6 阶段固定顺序，空列保留） */
+export interface BoardPhaseColumn {
+  phase: Phase
+  tasks: BoardTask[]
+}
+
+/** 看板归一模型：buildBoardModel 产出，updatedAt 为各账本更新时间的最大值 */
+export interface BoardModel {
+  phases: BoardPhaseColumn[]
+  updatedAt: string
+}
 
 /** preload 暴露给渲染进程的 API 形状 */
 export interface MoonGlassApi {
@@ -346,6 +402,10 @@ export interface MoonGlassApi {
     elaborate(projectId: string, topModule: string): Promise<DesignDatabase>
     getCached(projectId: string): Promise<{ database: DesignDatabase; rtlStale: boolean } | null>
     readSource(projectId: string, source: string): Promise<{ file: string; line: number; content: string }>
+  }
+  board: {
+    /** 流程看板归一模型：阶段列 + 任务卡 + 尝试记录（只读视图，数据全部来自既有账本） */
+    getBoardModel(projectId: string): Promise<BoardModel>
   }
 }
 

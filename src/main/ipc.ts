@@ -11,6 +11,7 @@ import type { ImageAttachment, IpLibraryImportInput, LlmProviderConfig, Phase, P
 import type { ApplicationServices } from './core/application'
 import { pathToFileURL } from 'node:url'
 import { generateProjectDashboard } from './services/ProjectDashboardService'
+import { buildBoardModel } from './services/board-model'
 import { GATE_RULES } from './services/PhaseEngine'
 import { currentRtlHashOf, readWorkbenchEvidence, readWorkbenchSource } from './services/verification-evidence-reader'
 import { buildVerificationWorkbench, workbenchEvidenceRefs } from '@shared/verification-workbench'
@@ -429,4 +430,11 @@ export function registerIpcHandlers(services: ApplicationServices): void {
   ipcMain.handle(IPC.DesignBrowser.ReadSource, (_e, projectId: string, source: string) =>
     designBrowser.readSource(projects.workspaceDir(projectId), source)
   )
+
+  // ==================== 流程看板（只读归一视图：数据全部来自既有账本） ====================
+  ipcMain.handle(IPC.Board.GetModel, (_e, projectId: string) => {
+    const project = projects.get(projectId)
+    if (!project) throw new Error(`项目不存在: ${projectId}`)
+    return buildBoardModel(projects.workspaceDir(projectId), projectId)
+  })
 }

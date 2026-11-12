@@ -148,6 +148,9 @@ const api: MoonGlassApi = {
     getCached: (projectId: string) => ipcRenderer.invoke(IPC.DesignBrowser.GetCached, projectId),
     readSource: (projectId: string, source: string) =>
       ipcRenderer.invoke(IPC.DesignBrowser.ReadSource, projectId, source)
+  },
+  board: {
+    getBoardModel: (projectId: string) => ipcRenderer.invoke(IPC.Board.GetModel, projectId)
   }
 }
 

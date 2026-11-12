@@ -137,8 +137,14 @@ assert.ok(
 assert.ok(dispatchBody.includes('newlyConsumed = markDesignReviewRequestConsumed('), 'consumed 返回值必须接住作防重闸')
 assert.ok(dispatchBody.includes('failRequest(`审查会话异常'), '异常出口应保持不投递（failRequest）')
 const resumeBody = extractFunction(agentSource, 'private resumeAfterDesignReview(')
+// 闭环入口（BOARD-AND-REVIEW-CLOSED-LOOP §3 片 A）：活跃实例守卫 + 异步闭环实例
+for (const marker of ['reviewUpdateLoopsActive', 'runReviewUpdateLoopInstance(', 'newlyConsumed']) {
+  assert.ok(resumeBody.includes(marker), `闭环入口缺少关键接入点：${marker}`)
+}
+// 跟进投递出口已迁入闭环实例（片 A）：原口径断言打在实例方法上
+const loopInstanceBody = extractFunction(agentSource, 'private async runReviewUpdateLoopInstance(')
 for (const marker of ['runDesignReviewFollowUp(', "type: 'prompt'", 'sourceAlive', 'backgroundSessions', 'ready', 'isStreaming']) {
-  assert.ok(resumeBody.includes(marker), `续跑包装缺少关键接入点：${marker}`)
+  assert.ok(loopInstanceBody.includes(marker), `续跑实例缺少关键接入点：${marker}`)
 }
 
 // ===== 1. settle 正常 → 生成跟进消息（含路径与 pending major 计数）=====

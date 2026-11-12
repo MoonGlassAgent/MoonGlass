@@ -19,6 +19,7 @@ const suites = {
     'scripts/sim-passed-gate-smoke.mjs',
     'scripts/probe-mismatch-smoke.mjs',
     'scripts/aigv-bug-001-regression-smoke.mjs',
+    'scripts/fix-dispatch-filter-smoke.mjs',
     'scripts/verification-guidance-smoke.mjs',
     'scripts/scenario-hits-smoke.mjs',
     'scripts/verif-batch-verdict-smoke.mjs',
@@ -52,9 +53,12 @@ const suites = {
     'scripts/design-review-smoke.mjs',
     'scripts/design-review-dispatch-smoke.mjs',
     'scripts/design-review-followup-smoke.mjs',
+    'scripts/review-closed-loop-smoke.mjs',
     'scripts/module-ut-smoke.mjs',
     'scripts/model-context-smoke.mjs',
-    'scripts/notification-smoke.mjs'
+    'scripts/notification-smoke.mjs',
+    'scripts/board-model-smoke.mjs',
+    'scripts/board-page-smoke.mjs'
   ],
   integration: [
     'scripts/design-browser-smoke.mjs',

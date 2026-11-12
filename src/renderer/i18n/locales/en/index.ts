@@ -1,4 +1,5 @@
 import type { Messages } from '../zh-CN/index.ts'
+import { board } from './board.ts'
 import { chat } from './chat.ts'
 import { common } from './common.ts'
 import { components } from './components.ts'
@@ -19,6 +20,7 @@ import { verifRun } from './verifRun.ts'
 import { workspace } from './workspace.ts'
 
 export const en: Messages = {
+  board,
   chat,
   common,
   components,

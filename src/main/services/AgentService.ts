@@ -38,7 +38,7 @@ import type { AgentModelStore } from './AgentModelStore.ts'
 import { PiRpcClient } from '../ai/runtime/pi/PiRpcClient.ts'
 import { AgentRunWatchdog, isTruncatedWithoutToolCall, type WatchdogAction } from './AgentRunWatchdog.ts'
 import { applyScenarioAvoidance, isDiagnosticStalled, isTransientSessionError, judgeBatchBreakers, judgeBatchCompletion, readDiagnosticControl, readExecutionPlanBatch } from './verif-batch-verdict.ts'
-import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
+import { buildRtlFixPrompt, extractConfirmedRtlFix, judgeFixDispatchGate, judgeRtlFixOutcome, type PendingRtlFix, type RtlFixJudgment } from './rtl-fix-verdict.ts'
 import { clearRtlFixFlag, countBlockedAttempts, diffRtlSnapshots, readRtlFixFlag, rtlFixAuditRelativePath, rtlFixGateReason, snapshotRtlTree, writeRtlFixAudit, writeRtlFixFlag, type RtlTreeSnapshot } from './rtl-fix-audit.ts'
 import { appendRtlFixOutcome, readRtlFixOutcomeLedger } from './rtl-fix-outcome-ledger.ts'
 import { mergeFindingsAcrossRounds, pendingMajorCount, readDesignReviewFindings } from './design-review.ts'
@@ -404,6 +404,41 @@ export function markDesignReviewRequestError(workspace: string, type: string, er
   return false
 }
 
+/** 闭环请求登记结果：record 为本次登记或去重返回的请求记录 */
+export interface DesignReviewRequestAppendResult {
+  record: Record<string, unknown>
+  deduplicated: boolean
+}
+
+/**
+ * 闭环再跑轮的请求登记（主进程侧，与桥接 request_design_review 同一账本口径；
+ * 闭环再派发不能经 pi 工具事件，直接由主进程追加）：
+ * 同类型已存在未消费请求时幂等去重（返回既有记录，不重复追加）；否则原子追加
+ * { type, scope?, requestedAt, round, origin }——round 由闭环显式给定（当前轮+1），
+ * origin 留痕闭环派生（区分会话经工具自发登记的请求）。
+ */
+export function appendDesignReviewRequestRecord(
+  workspace: string,
+  type: string,
+  scope: string,
+  round: number,
+  origin = 'review-update-closed-loop'
+): DesignReviewRequestAppendResult {
+  const requests = readDesignReviewRequestRecords(workspace)
+  const pending = requests.find((item) => item.type === type && item.consumed !== true)
+  if (pending) return { record: pending, deduplicated: true }
+  const record: Record<string, unknown> = {
+    type,
+    ...(scope.trim() ? { scope: scope.trim() } : {}),
+    requestedAt: new Date().toISOString(),
+    round,
+    origin
+  }
+  requests.push(record)
+  writeDesignReviewRequestRecords(workspace, requests)
+  return { record, deduplicated: false }
+}
+
 export interface DesignReviewDispatchPlan {
   phase: Phase
   /** 会话名基（重名时追加时间戳，沿用 runRtlFixSession 做法） */
@@ -447,9 +482,10 @@ export function buildDesignReviewDispatchPlan(input: { type: string; scope: stri
 }
 
 /**
- * 审查会话正常 settle 后的主会话续跑（§8 派发链收尾，dispatchDesignReviewSession 调用）：
- * 向发起该 review 的会话投递一条跟进消息（复用 pi prompt 投递，与 startTask/prompt 同一
- * RPC 命令 `command({ type: 'prompt', message })`），让 settle 后主会话知道接着干什么。
+ * 审查会话正常 settle 后的主会话续跑（§8 派发链收尾，dispatchDesignReviewSession 经
+ * review-update 闭环的 deliver 出口调用——闭环四拍之①的投递载体）：向发起该 review
+ * 的会话投递一条跟进消息（复用 pi prompt 投递，与 startTask/prompt 同一 RPC 命令
+ * `command({ type: 'prompt', message })`），让 settle 后主会话知道接着干什么。
  * 消息内容含：审查报告路径、发现清单路径、pending major 计数（跨轮合并口径，清单缺失按 0 计）、
  * 下一步指令（按发现清单逐项处置：fixed/waived/pending 三态，处置完阶段出口门禁自然通过）。
  *
@@ -521,6 +557,146 @@ export function runDesignReviewFollowUp(input: {
   }
 }
 
+// ==================== review-update 闭环（BOARD-AND-REVIEW-CLOSED-LOOP-ZH-CN.md §3，片 A） ====================
+
+/** 闭环再跑预算上限（§3.3：处置后仍有 pending major 时最多再跑 2 轮 review-update） */
+export const REVIEW_UPDATE_MAX_EXTRA_ROUNDS = 2
+
+/** review-update 闭环单轮实例终态（§3.3 收敛与停止） */
+export type ReviewUpdateLoopOutcome =
+  | 'skipped-not-consumed' // 防重闸未过（consumed 非新写入）：同一请求不重复续跑
+  | 'converged'            // pendingMajor 归零且阶段门禁自动重跑通过（放行）
+  | 'gate-blocked'         // pendingMajor 归零但门禁存在 error 级失败（待人按门禁结果处置）
+  | 'redispatched'         // 仍有 pending major，预算内再派一轮 review（round+1），本实例退出
+  | 'paused-human'         // 再跑 2 轮仍未清零：暂停待人（附清单），不无限循环
+  | 'delivery-timeout'     // 跟进指令在预算内无法送达（原会话持续忙碌/发送失败）
+
+/** 闭环再跑预算：跨实例按 projectId::review 类型持久（AgentService 持有），收敛后清零 */
+export interface ReviewUpdateLoopBudget {
+  extraRoundsUsed: number
+}
+
+/**
+ * review-update 闭环单轮实例（设计文档 §3 的②③④拍；①拍投递由 deliver 注入出口承担）：
+ * 一次独立审查 settle 之后，驱动发起会话（或其关闭时派生的更新会话）真实处置发现清单
+ * （fixed/waived/pending 三态写回「处置」字段），轮询确认处置落定后自动复核收敛。
+ *
+ * 判定口径（§3.3）：
+ * - pendingMajor（跨轮合并口径）归零 → rerunGate 自动重跑阶段门禁，通过即放行（converged）；
+ * - 处置后仍有 pending major → budget.extraRoundsUsed+1，预算内 redispatchReview（当前轮+1）
+ *   再跑一轮 review-update（本实例退出，新一轮 settle 后由派发链自然接续下一实例）；
+ * - 超过 REVIEW_UPDATE_MAX_EXTRA_ROUNDS 轮仍未清零 → emitPausedHuman 附未清零清单，停止循环。
+ *
+ * 等待语义（拍②「不能只当完成」）：跟进投递后以 baseline 轮询 pendingMajor，必须变化且
+ * 稳定一个轮询粒度才认定处置落定（消化处置方的中间写盘）；原会话处置途中关闭 → 派生
+ * 更新会话接管（每实例至多一次）；预算内毫无变化按「本轮未清零」走再派发/暂停收敛，
+ * 绝不把未处置当完成。全部副作用经注入出口完成（deliver / dispatchUpdateSession /
+ * redispatchReview / rerunGate / emitPausedHuman / emitStatus / sleep），
+ * smoke 以假出口直跑，不真起 pi。
+ */
+export async function runReviewUpdateClosedLoop(input: {
+  /** 防重闸：markDesignReviewRequestConsumed 本次是否新消费（false 整个闭环不启动） */
+  newlyConsumed: boolean
+  type: string
+  /** 本轮 review 轮次（再派发轮 = 当前轮 + 1） */
+  round: number
+  /** 发现清单相对路径（展示用，反斜杠归一为正斜杠） */
+  findingsRelPath: string
+  /** 再跑预算（跨实例持久；本函数收敛时清零） */
+  budget: ReviewUpdateLoopBudget
+  /** 拍①投递出口：复用 runDesignReviewFollowUp 口径（内部含在线/就绪/发送判定与降级） */
+  deliver: () => 'delivered' | 'skipped-not-consumed' | 'skipped-source-gone' | 'skipped-source-busy' | 'send-failed'
+  /** 读发现清单 pending major（跨轮合并口径；清单缺失按 0 计） */
+  readPendingMajor: () => number
+  /** 原会话在线判定（处置等待期间持续检测；离线即派生更新会话接管） */
+  isSourceOnline: () => boolean
+  /** 派生更新会话（phase-<phase>--review-update-<type>）接管处置（每实例至多调用一次） */
+  dispatchUpdateSession: () => void
+  /** 再跑一轮 review：登记当前轮+1 请求并派发独立审查会话 */
+  redispatchReview: (nextRound: number) => void
+  /** 阶段门禁自动重跑（PhaseEngine 现有 gate check 路径） */
+  rerunGate: () => Promise<{ passed: boolean; detail: string }>
+  /** 暂停待人出口（附未清零清单，文案由实现方组织） */
+  emitPausedHuman: () => void
+  emitStatus: (message: string) => void
+  /** 等待出口（smoke 注入假时钟） */
+  sleep: (ms: number) => Promise<void>
+  now?: () => number
+  pollIntervalMs?: number
+  disposeTimeoutMs?: number
+}): Promise<ReviewUpdateLoopOutcome> {
+  const now = input.now ?? (() => Date.now())
+  const pollInterval = input.pollIntervalMs ?? 15_000
+  const disposeTimeout = input.disposeTimeoutMs ?? 60 * 60_000
+  const findingsPath = input.findingsRelPath.replaceAll('\\', '/')
+  // 拍④ 防重：同一 review 请求（consumed 非新写入）不启动闭环，不投递/不派生
+  if (!input.newlyConsumed) return 'skipped-not-consumed'
+  const deadline = now() + disposeTimeout
+  let updateSessionDispatched = false
+  // 拍① + 拍③（§3.2 原会话优先，关闭才新开）：在线一律投递回原会话；不在线派生更新会话接管处置
+  for (;;) {
+    const delivered = input.deliver()
+    if (delivered === 'delivered') break
+    if (delivered === 'skipped-not-consumed') return 'skipped-not-consumed'
+    if (delivered === 'skipped-source-gone') {
+      input.dispatchUpdateSession()
+      updateSessionDispatched = true
+      input.emitStatus(`${input.type} 审查跟进：发起会话已关闭，已派生更新会话（review-update）接管发现处置。`)
+      break
+    }
+    // 忙碌 / 发送失败：原会话在线，等一个轮询粒度后重投（§3.2 在线一律回原会话）
+    if (now() >= deadline) {
+      input.emitStatus(`${input.type} 审查跟进指令在 ${Math.round(disposeTimeout / 60_000)} 分钟内未能送达发起会话（持续忙碌或投递失败），闭环暂不启动；审查产物已落盘（${findingsPath}），可手动要求会话按发现清单逐项处置。`)
+      return 'delivery-timeout'
+    }
+    await input.sleep(pollInterval)
+  }
+  // 拍② 更新驱动验证：以 baseline 轮询 pendingMajor（合并口径），变化且稳定一个轮询粒度
+  // 才认定处置落定——若原会话不做处置，预算耗尽按「本轮未清零」走收敛，绝不当完成
+  const baseline = input.readPendingMajor()
+  let settled = baseline
+  if (baseline !== 0) {
+    let candidate: number | null = null
+    for (;;) {
+      if (now() >= deadline) break
+      // 处置途中原会话关闭 → 派生更新会话接管（每实例至多一次）
+      if (!updateSessionDispatched && !input.isSourceOnline()) {
+        input.dispatchUpdateSession()
+        updateSessionDispatched = true
+        input.emitStatus(`${input.type} 处置途中发起会话已关闭，已派生更新会话（review-update）接管剩余发现处置。`)
+      }
+      await input.sleep(pollInterval)
+      const current = input.readPendingMajor()
+      if (current === baseline) { candidate = null; continue }
+      if (candidate === null) { candidate = current; continue }
+      if (candidate !== current) { candidate = current; continue }
+      settled = current
+      break
+    }
+  }
+  // 拍③④ 自动复核与收敛（§3.3）
+  if (settled === 0) {
+    input.emitStatus(`${input.type} 发现处置完成（pending major 0），自动重跑阶段门禁。`)
+    const gate = await input.rerunGate()
+    if (gate.passed) {
+      input.budget.extraRoundsUsed = 0
+      input.emitStatus(`${input.type} review-update 闭环收敛：${gate.detail}`)
+      return 'converged'
+    }
+    input.emitStatus(`${input.type} 发现已处置（pending major 0），但阶段门禁重跑未通过：${gate.detail}（待人按阶段看板门禁结果处置）`)
+    return 'gate-blocked'
+  }
+  // 仍有 pending major：本轮更新未清零 → 记一轮再跑预算
+  input.budget.extraRoundsUsed += 1
+  if (input.budget.extraRoundsUsed > REVIEW_UPDATE_MAX_EXTRA_ROUNDS) {
+    input.emitPausedHuman()
+    return 'paused-human'
+  }
+  input.redispatchReview(input.round + 1)
+  input.emitStatus(`${input.type} 处置后仍有 pending major ${settled} 条，自动再派第 ${input.round + 1} 轮独立审查（闭环再跑 ${input.budget.extraRoundsUsed}/${REVIEW_UPDATE_MAX_EXTRA_ROUNDS} 轮后仍不清零将暂停待人）。`)
+  return 'redispatched'
+}
+
 export class AgentService implements MoonGlassService {
   readonly name = 'agent-service'
 
@@ -531,6 +707,10 @@ export class AgentService implements MoonGlassService {
   private backgroundSessions = new Map<string, Map<string, PiSession>>()
   /** 设计评审左移（§8）：每项目正在运行的独立审查会话（type → 会话名），并发守卫据此拒绝同类型重复派发 */
   private activeDesignReviews = new Map<string, Map<string, string>>()
+  /** review-update 闭环（§3）：正在运行的闭环实例键（projectId::review 类型），防嵌套/防重复续跑 */
+  private reviewUpdateLoopsActive = new Set<string>()
+  /** review-update 闭环（§3.3）：再跑预算（projectId::review 类型 → 已消耗轮数，收敛后清零，最多 2 轮） */
+  private reviewUpdateRoundBudget = new Map<string, ReviewUpdateLoopBudget>()
   /** 模块 UT 软建议去重：项目::模块 → 最近一次提示时间戳（ms），1 小时冷却窗口（MODULE-UT §2） */
   private moduleUtHintedAt = new Map<string, number>()
   /** 启动对账阶段产生、待 attachEmitter 后补发的状态提示（start() 时渲染端事件通道尚未接入） */
@@ -2687,6 +2867,18 @@ argument-hint: "<模块名>"
    * 异步派发：失败仅通知 UI，不影响来源会话的 settle 流程。
    */
   private spawnRtlFixSession(projectId: string, source: PiSession, fix: PendingRtlFix): void {
+    // fix-dispatch-filter 变更一：修复派单前置过滤——判断类裁决（BLOCKED_BY_SPEC/WAIVED）场景
+    // 不得进入修复派发队列（FAIL hit 已照常落 scenario_hits.json 作证据登记）。SCN-8A521B7D
+    // 专门门禁由此泛化实现：悬置决策卡 spec-sched-002b-lookahead-feature-r2 返回并重新裁决前，
+    // 该场景持续被阻断；重新裁决后随 registry status 自动恢复对应通道。
+    const gate = judgeFixDispatchGate(this.workspaceDir(projectId), fix.scenarioId)
+    if (gate.blocked) {
+      this.emit(projectId, {
+        type: 'status',
+        message: `修复派单已阻断：根因 ${fix.rootCauseId}（${fix.scenarioId}）${gate.reason}；FAIL 证据保留在 scenario_hits.json，不派发修复会话。`
+      }, source.activeSessionName)
+      return
+    }
     void this.runRtlFixSession(projectId, source, fix).catch((error) => {
       console.warn('[agent-service] RTL 修复会话派发失败', error)
       this.emit(projectId, {
@@ -3054,8 +3246,9 @@ argument-hint: "<模块名>"
           type: 'status',
           message: `${request.type} 独立审查会话 ${sessionName} 已完成（模型 ${model}）：报告 ${plan.reportRelPath.replace(/\\/g, '/')}，发现清单 ${plan.findingsRelPath.replace(/\\/g, '/')}；请按发现清单逐条处置发现。`
         }, source.activeSessionName)
-        // 正常 settle → 向发起该 review 的会话续跑跟进（异常 / 熔断分支走 failRequest，不投递）；
-        // 发起会话不在线 / 忙碌时内部降级为状态消息留痕，绝不影响本会话收尾
+        // 正常 settle → 向发起该 review 的会话续跑跟进并启动 review-update 闭环（异常 / 熔断分支走
+        // failRequest，不投递不闭环）；闭环内的降级（不在线派生更新会话 / 忙碌重试 / 暂停待人）
+        // 都在 dispatch 外部异步消化，绝不影响本会话收尾
         this.resumeAfterDesignReview(projectId, source, request, plan, sessionName, model, newlyConsumed)
       }
     } catch (error) {
@@ -3080,11 +3273,12 @@ argument-hint: "<模块名>"
   }
 
   /**
-   * 审查 settle 后续跑（§8 派发链收尾）：向发起该 review 的会话（parentSession 血缘来源）
-   * 投递跟进消息。会话在线判定沿用 RTL 修复判定送达口径：前台同一对象或仍挂后台（切阶段
-   * park 的会话可后台续跑）视为在线；投递复用 pi prompt 命令（与 startTask/prompt 同一
-   * RPC 通道），fire-and-forget，异步拒绝仅告警。整体 try/catch 兜底 + 纯函数内部分级降级：
-   * 发起会话 dispose / 不在线 / 忙碌 / 投递失败都只落状态消息留痕，绝不把派发收尾炸掉。
+   * 审查 settle 后闭环入口（§3 闭环四拍之①的触发点，dispatchDesignReviewSession 调用）：
+   * 同一 review 请求只续跑一次——consumed 防重闸（newlyConsumed，闭环内再次校验）+
+   * 内存活跃实例守卫（reviewUpdateLoopsActive：再派发轮的 settle 交叠/重复结算时防嵌套）。
+   * 跟进投递（拍①）、更新驱动验证与自动复核收敛（拍②③④）、原会话关闭时派生更新会话
+   * 全部由 runReviewUpdateLoopInstance 异步驱动；一切降级闭环内部消化并落状态消息，
+   * 绝不把派发收尾炸掉。
    */
   private resumeAfterDesignReview(
     projectId: string,
@@ -3095,30 +3289,231 @@ argument-hint: "<模块名>"
     model: string,
     newlyConsumed: boolean
   ): void {
-    try {
-      const sourceAlive = this.sessions.get(projectId) === source
-        || this.backgroundSessions.get(projectId)?.get(resolve(source.currentSessionFile)) === source
-      runDesignReviewFollowUp({
-        newlyConsumed,
-        sourceAlive,
-        target: sourceAlive ? { ready: source.ready, isStreaming: source.isStreaming } : null,
-        type: request.type,
-        round: request.round,
-        reviewSessionName,
-        model,
-        reportRelPath: plan.reportRelPath,
-        findingsRelPath: plan.findingsRelPath,
-        workspace: this.workspaceDir(projectId),
-        send: (message) => {
-          void source.client.command({ type: 'prompt', message }, 15 * 60_000)
-            .catch((error) => console.warn('[agent-service] 审查跟进消息发送失败', error))
-        },
-        emitStatus: (message) => {
-          this.emit(projectId, { type: 'status', message }, source.activeSessionName)
+    const loopKey = `${projectId}::${request.type}`
+    if (this.reviewUpdateLoopsActive.has(loopKey)) {
+      // 防重兜底：同类型闭环实例在跑（时序异常的重复 settle），不重复续跑/重复派生
+      console.warn(`[agent-service] ${request.type} review-update 闭环已在运行，跳过重复续跑（${loopKey}）`)
+      return
+    }
+    this.reviewUpdateLoopsActive.add(loopKey)
+    void this.runReviewUpdateLoopInstance(projectId, source, request, plan, reviewSessionName, model, newlyConsumed)
+      .catch((error) => console.warn('[agent-service] review-update 闭环异常（仅记录，不影响主流程）', error))
+      .finally(() => { this.reviewUpdateLoopsActive.delete(loopKey) })
+  }
+
+  /**
+   * review-update 闭环实例执行体：组装 runReviewUpdateClosedLoop 的注入出口——
+   * deliver 复用 runDesignReviewFollowUp（在线判定 + 跟进消息「必须逐条把处置写回清单的
+   * 「处置」字段」+ pi prompt 投递）；readPendingMajor 走 design-review.ts 跨轮合并口径；
+   * dispatchUpdateSession 派生 phase-<phase>--review-update-<type> 更新会话接管处置；
+   * redispatchReview 登记当前轮+1 请求并复用 dispatchDesignReviewSession 再派一轮独立审查；
+   * rerunGate 复用 PhaseEngine 现有 gate check 路径（ARCH→RTL / RTL→VERIF），结果落库
+   * 供阶段看板展示（软门禁口径不变：方向盘仍在人，本闭环只重跑门禁不自动推进阶段）。
+   * 再跑预算按 projectId::review 类型跨实例持久，收敛后清零（§3.3 最多 2 轮）。
+   */
+  private async runReviewUpdateLoopInstance(
+    projectId: string,
+    source: PiSession,
+    request: DesignReviewDispatchRequest,
+    plan: DesignReviewDispatchPlan,
+    reviewSessionName: string,
+    model: string,
+    newlyConsumed: boolean
+  ): Promise<void> {
+    const workspace = this.workspaceDir(projectId)
+    const findingsRel = plan.findingsRelPath.replaceAll('\\', '/')
+    const loopKey = `${projectId}::${request.type}`
+    let budget = this.reviewUpdateRoundBudget.get(loopKey)
+    if (!budget) {
+      budget = { extraRoundsUsed: 0 }
+      this.reviewUpdateRoundBudget.set(loopKey, budget)
+    }
+    const sourceOnline = (): boolean =>
+      this.sessions.get(projectId) === source
+      || this.backgroundSessions.get(projectId)?.get(resolve(source.currentSessionFile)) === source
+    const emitStatus = (message: string): void => {
+      this.emit(projectId, { type: 'status', message }, source.activeSessionName)
+    }
+    await runReviewUpdateClosedLoop({
+      newlyConsumed,
+      type: request.type,
+      round: request.round,
+      findingsRelPath: plan.findingsRelPath,
+      budget,
+      deliver: () => {
+        const alive = sourceOnline()
+        if (!alive) return 'skipped-source-gone'
+        if (!source.ready || source.isStreaming) return 'skipped-source-busy'
+        return runDesignReviewFollowUp({
+          newlyConsumed,
+          sourceAlive: alive,
+          target: { ready: source.ready, isStreaming: source.isStreaming },
+          type: request.type,
+          round: request.round,
+          reviewSessionName,
+          model,
+          reportRelPath: plan.reportRelPath,
+          findingsRelPath: plan.findingsRelPath,
+          workspace,
+          send: (message) => {
+            void source.client.command({ type: 'prompt', message }, 15 * 60_000)
+              .catch((error) => console.warn('[agent-service] 审查跟进消息发送失败', error))
+          },
+          emitStatus
+        })
+      },
+      readPendingMajor: () => pendingMajorCount(readDesignReviewFindings(workspace, findingsRel)),
+      isSourceOnline: sourceOnline,
+      dispatchUpdateSession: () => { this.dispatchReviewUpdateSession(projectId, source, request, plan) },
+      redispatchReview: (nextRound) => { this.redispatchDesignReviewRound(projectId, source, request, nextRound) },
+      rerunGate: async () => {
+        const project = this.projects.get(projectId)
+        if (!project) return { passed: false, detail: '项目不存在，无法重跑门禁' }
+        if (project.currentPhase !== plan.phase) {
+          // 阶段已切换（用户推进/回退后旧审查的闭环才收敛）：不跨阶段乱跑门禁，待人手动检查
+          return { passed: false, detail: `阶段已切换（当前 ${PHASE_LABELS[project.currentPhase]}），跳过 ${PHASE_LABELS[plan.phase]} 出口门禁自动重跑` }
         }
-      })
+        const gateTargetPhase: Phase = plan.phase === 'ARCH' ? 'RTL' : 'VERIF'
+        const results = await this.phaseEngine.runGateChecks(project, gateTargetPhase, { workspaceDir: workspace })
+        project.phases[project.currentPhase].gateCheckResults = results
+        this.projects.save(project)
+        const failed = results.filter((item) => item.severity === 'error' && !item.passed)
+        return failed.length === 0
+          ? { passed: true, detail: `阶段门禁重跑通过（${PHASE_LABELS[plan.phase]} → ${PHASE_LABELS[gateTargetPhase]}），可在阶段看板确认推进` }
+          : { passed: false, detail: `门禁失败 ${failed.length} 项：${failed.map((item) => `${item.checkName}（${item.message}）`).join('；')}` }
+      },
+      emitPausedHuman: () => {
+        const findings = readDesignReviewFindings(workspace, findingsRel)
+        const pendingList = findings
+          ? mergeFindingsAcrossRounds(findings).filter((item) => item.严重度 === 'major' && item.处置 === 'pending')
+          : []
+        const listText = pendingList.length
+          ? pendingList.map((item) => `${item.描述}（${item.位置}）`).join('；')
+          : `（清单不可读，请直接查看 ${findingsRel}）`
+        this.emit(projectId, {
+          type: 'status',
+          message: `${request.type} review-update 闭环已再跑 ${Math.max(0, budget.extraRoundsUsed - 1)} 轮仍未清零，暂停待人：发现清单仍有 ${pendingList.length} 条 pending major 未处置——${listText}。请人工逐条处置（fixed/waived 写回「处置」字段）后再推进。`
+        }, source.activeSessionName)
+      },
+      emitStatus,
+      sleep: (ms) => new Promise((resolveSleep) => setTimeout(resolveSleep, ms))
+    })
+  }
+
+  /**
+   * 闭环再跑一轮 review（§3.3 最多 2 轮）：先经 appendDesignReviewRequestRecord 登记
+   * 当前轮+1 的审查请求（主进程侧原子追加，与桥工具同一账本口径；同类型未消费请求
+   * 存在时幂等去重），再复用 dispatchDesignReviewSession 派发独立审查会话——其 settle
+   * 后经派发链 resumeAfterDesignReview 自然接续下一个闭环实例（此时上一实例已退出，
+   * 活跃守卫不拦截），同请求仍只续跑一次。
+   */
+  private redispatchDesignReviewRound(projectId: string, source: PiSession, request: DesignReviewDispatchRequest, nextRound: number): void {
+    const workspace = this.workspaceDir(projectId)
+    try {
+      appendDesignReviewRequestRecord(workspace, request.type, request.scope, nextRound)
     } catch (error) {
-      console.warn('[agent-service] 审查 settle 后续跑失败（仅记录，不影响主流程）', error)
+      this.emit(projectId, { type: 'error', message: `${request.type} 第 ${nextRound} 轮审查请求登记失败：${error instanceof Error ? error.message : String(error)}；闭环不再自动续跑，可手动发起审查。` }, source.activeSessionName)
+      return
+    }
+    void this.dispatchDesignReviewSession(projectId, source, { type: request.type, scope: request.scope, round: nextRound }).catch((error) => {
+      console.warn('[agent-service] 闭环再派发审查会话失败', error)
+      this.emit(projectId, { type: 'error', message: `${request.type} 第 ${nextRound} 轮审查会话派发失败：${error instanceof Error ? error.message : String(error)}（请求保持未消费，可重新发起）` }, source.activeSessionName)
+    })
+  }
+
+  /**
+   * 派生 review-update 更新会话（§3.2 原会话关闭才新开，不再只留状态消息）：
+   * 发起会话已 dispose/不在线时，派 phase-<phase>--review-update-<type> 独立后台会话
+   * 接管处置——手写会话头（parentSession 血缘指向发起会话文件）→ 后台平行会话（主会话
+   * 保持前台）→ 模型继承发起会话/阶段主会话 → runReviewUpdateSession 有界执行处置
+   * prompt。闭环实例继续轮询发现清单 pendingMajor 收敛，与本会话以文件为契约互不依赖。
+   */
+  private dispatchReviewUpdateSession(projectId: string, source: PiSession, request: DesignReviewDispatchRequest, plan: DesignReviewDispatchPlan): void {
+    const project = this.projects.get(projectId)
+    if (!project) return
+    if (this.readyProviders().length === 0) {
+      this.emit(projectId, { type: 'error', message: `${request.type} 发起会话已关闭，但没有任何已启用且配置完成的模型服务，无法派生更新会话接管处置；请回到 ${PHASE_LABELS[plan.phase]} 阶段会话按发现清单逐项处置。` }, source.activeSessionName)
+      return
+    }
+    const workspace = this.workspaceDir(projectId)
+    // 会话名重名时追加时间戳（沿用 dispatchDesignReviewSession 做法）
+    let sessionName = `${phaseMainSessionName(plan.phase)}--review-update-${request.type}`
+    let sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    if (existsSync(sessionFile)) {
+      sessionName = `${sessionName}-${Date.now().toString(36)}`
+      sessionFile = join(this.sessionDir(projectId), `session-${sessionName}.jsonl`)
+    }
+    const now = new Date().toISOString()
+    writeFileSync(sessionFile, [
+      JSON.stringify({
+        type: 'session',
+        version: 3,
+        id: randomUUID(),
+        timestamp: now,
+        cwd: workspace,
+        // 会话血缘：指向发起审查请求的会话文件（pi 官方格式为会话文件路径）
+        parentSession: resolve(source.currentSessionFile)
+      }),
+      JSON.stringify({ type: 'session_info', id: randomUUID().slice(0, 8), parentId: null, timestamp: now, name: `review 处置接续 ${request.type} (${plan.phase})` })
+    ].join('\n') + '\n', 'utf-8')
+
+    const previousActive = this.sessions.get(projectId)
+    let session: PiSession
+    try {
+      session = this.spawnSession(projectId, plan.phase, project.name, sessionFile)
+    } catch (error) {
+      rmSync(sessionFile, { force: true })
+      this.emit(projectId, { type: 'error', message: `${request.type} 更新会话进程启动失败：${error instanceof Error ? error.message : String(error)}；请回到阶段会话按发现清单逐项处置。` }, source.activeSessionName)
+      return
+    }
+    this.sessions.delete(projectId)
+    if (previousActive) this.sessions.set(projectId, previousActive)
+    this.backgroundFor(projectId).set(resolve(sessionFile), session)
+    void this.runReviewUpdateSession(projectId, session, request, plan, sessionName).catch((error) =>
+      console.error('[agent-service] review-update 更新会话执行异常（应由 runReviewUpdateSession 兜住）', error))
+  }
+
+  /**
+   * review-update 更新会话执行体：构造处置 prompt（报告/清单路径 + pending major 计数 +
+   * 三态处置写回指令，措辞与跟进消息同口径——必须逐条回写清单「处置」字段）→
+   * runBatchToSettled（60 分钟有界会话）→ settle（正常/异常/熔断）后一律 release：
+   * 摘除后台表、dispose 进程（JSONL 保留可回看）、状态/错误消息留痕。
+   * 闭环实例独立轮询发现清单收敛，不依赖本函数返回值。
+   */
+  private async runReviewUpdateSession(projectId: string, session: PiSession, request: DesignReviewDispatchRequest, plan: DesignReviewDispatchPlan, sessionName: string): Promise<void> {
+    const workspace = this.workspaceDir(projectId)
+    const findingsRel = plan.findingsRelPath.replaceAll('\\', '/')
+    let outcomeNote: string | null = null
+    try {
+      const findings = readDesignReviewFindings(workspace, findingsRel)
+      const merged = findings ? mergeFindingsAcrossRounds(findings) : []
+      const pendingMajor = pendingMajorCount(findings)
+      const prompt = [
+        `[MoonGlass 编排] 你是接续处置会话：原 ${request.type} 审查的发起会话已关闭，由本更新会话（${sessionName}）接管发现的处置。`,
+        `- 审查报告：${plan.reportRelPath.replaceAll('\\', '/')}`,
+        `- 发现清单：${findingsRel}（共 ${merged.length} 条发现，其中 pending major ${pendingMajor} 条）`,
+        '任务：按发现清单逐项处置每条发现——处置只能是三态之一：fixed（已修复）/ waived（豁免，须写明理由）/ pending（暂不处置），处置结论必须逐条回写到发现清单的「处置」字段（沿用既有四字段结构，多轮 rounds[] 的处置状态按「位置+描述」键合并保留，不得丢弃历史处置结论）。',
+        'fixed 项的修复按正常工程路径修改对应文件；全部处置写回后即结束回合，不要发起新的 review，也不要扩大修改范围。'
+      ].join('\n')
+      const run = await this.runBatchToSettled(session, prompt, RUN_LOOP_TASK_TIMEOUT_MS)
+      if (run.errorMessage) outcomeNote = `更新会话异常：${run.errorMessage}`
+      else if (run.watchdogAbort) outcomeNote = `更新会话被 watchdog 熔断：${run.watchdogAbort}`
+    } catch (error) {
+      outcomeNote = `更新会话执行失败：${error instanceof Error ? error.message : String(error)}`
+    } finally {
+      // 更新会话收尾：释放进程资源（JSONL 保留，可经会话列表只读回看）
+      const background = this.backgroundSessions.get(projectId)
+      const key = resolve(session.currentSessionFile)
+      if (background?.get(key) === session) {
+        background.delete(key)
+        if (background.size === 0) this.backgroundSessions.delete(projectId)
+      }
+      session.client.dispose()
+    }
+    if (outcomeNote) {
+      this.emit(projectId, { type: 'error', message: `${request.type} ${outcomeNote}；发现清单可能未处置完成，请人工确认（${findingsRel}）。` }, sessionName)
+    } else {
+      this.emit(projectId, { type: 'status', message: `${request.type} 更新会话 ${sessionName} 已结束，发现处置结果以清单「处置」字段为准（${findingsRel}）。` }, sessionName)
     }
   }
 

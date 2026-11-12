@@ -13,6 +13,7 @@ import { AppLayout } from './layouts/AppLayout'
 import { ProjectsPage } from './pages/ProjectsPage'
 
 const WorkspacePage = lazyRouteComponent(() => import('./pages/WorkspacePage'), 'WorkspacePage')
+const BoardPage = lazyRouteComponent(() => import('./pages/BoardPage'), 'BoardPage')
 const DesignBrowserPage = lazyRouteComponent(() => import('./pages/DesignBrowserPage'), 'DesignBrowserPage')
 const VerificationPosturePage = lazyRouteComponent(() => import('./pages/VerificationPosturePage'), 'VerificationPosturePage')
 const IpLibraryPage = lazyRouteComponent(() => import('./pages/IpLibraryPage'), 'IpLibraryPage')
@@ -59,6 +60,12 @@ const verificationPostureRoute = createRoute({
   component: VerificationPosturePage
 })
 
+const boardRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: '/board/$projectId',
+  component: BoardPage
+})
+
 const ipLibraryRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: '/ip-library',
@@ -99,6 +106,7 @@ const routeTree = rootRoute.addChildren([
   indexRoute,
   projectsRoute,
   workspaceRoute,
+  boardRoute,
   designBrowserRoute,
   verificationPostureRoute,
   ipLibraryRoute,
