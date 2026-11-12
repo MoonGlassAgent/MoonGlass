@@ -1317,6 +1317,13 @@ export function WorkspacePage(): React.JSX.Element {
           >
             RTL Design Browser
           </Link>
+          <Link
+            to="/board/$projectId"
+            params={{ projectId }}
+            className="rounded border border-violet-300 bg-violet-50 px-3 py-1.5 text-xs font-medium text-violet-700 hover:bg-violet-100"
+          >
+            {t('workspace.board')}
+          </Link>
         </div>
         {(managedRunning || managedSteps.length > 0) && (
           <div className="mb-3 flex items-center gap-2 overflow-x-auto rounded border border-blue-200 bg-blue-50 px-3 py-2 text-xs">

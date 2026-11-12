@@ -14,6 +14,7 @@ export const workspace = {
   generateDashboard: '生成总体报告',
   generatingDashboard: '正在生成…',
   verificationPosture: '验证态势',
+  board: '流程看板',
 
   // 门禁检查结果区
   gate: {

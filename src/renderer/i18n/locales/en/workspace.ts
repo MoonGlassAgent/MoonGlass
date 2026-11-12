@@ -8,6 +8,7 @@ export const workspace: WorkspaceMessages = {
   generateDashboard: 'Generate Dashboard',
   generatingDashboard: 'Generating…',
   verificationPosture: 'Verification Posture',
+  board: 'Process Board',
 
   gate: {
     recheck: '🔄 Re-run Gate Checks',
