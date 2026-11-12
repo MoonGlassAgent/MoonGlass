@@ -8,6 +8,8 @@ export const board = {
   reload: '重新加载',
   updatedAt: '账本更新：{time}',
   taskCount: '{count} 项任务',
+  attemptCount: '{count} 次尝试',
+  columnEmpty: '此阶段暂无任务',
   status: {
     success: '成功',
     running: '进行中',

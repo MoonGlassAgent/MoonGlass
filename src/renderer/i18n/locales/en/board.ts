@@ -8,6 +8,8 @@ export const board: BoardMessages = {
   reload: 'Reload',
   updatedAt: 'Ledgers updated: {time}',
   taskCount: '{count} tasks',
+  attemptCount: '{count} attempts',
+  columnEmpty: 'No tasks in this phase yet',
   status: {
     success: 'Success',
     running: 'Running',
